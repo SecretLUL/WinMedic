@@ -1,5 +1,5 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
-use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
+use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
 use crate::safety::reg_backup::RegBackupManager;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -8,11 +8,39 @@ use tokio::time::sleep;
 use winreg::RegKey;
 use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE};
 
-pub struct RegistryStartupModule;
+pub struct RegistryStartupModule {
+    config: ModuleConfig,
+}
 
 impl RegistryStartupModule {
-    pub fn new() -> Self {
-        Self
+    pub fn new(config: ModuleConfig) -> Self {
+        Self { config }
+    }
+
+    /// Export `key_path` before it is modified.
+    ///
+    /// Fails closed: if backups are enabled but the export does not succeed, the
+    /// caller must abort rather than delete a value it cannot restore.
+    async fn backup_before_change(
+        &self,
+        backup_mgr: &RegBackupManager,
+        key_path: &str,
+        description: &str,
+    ) -> Result<(), String> {
+        if !self.config.auto_backup_registry {
+            return Ok(());
+        }
+
+        backup_mgr
+            .export_key(key_path, description)
+            .await
+            .map(|_| ())
+            .map_err(|e| {
+                format!(
+                    "Abgebrochen: Registry-Sicherung von '{}' fehlgeschlagen ({}). Es wurde nichts verändert.",
+                    key_path, e
+                )
+            })
     }
 
     async fn send_progress(
@@ -246,9 +274,12 @@ impl DiagnosticModule for RegistryStartupModule {
         if let Some(val_name) = issue_id.strip_prefix("reg_orphaned_hkcu_") {
             let clean_name = val_name.replace('_', " ");
             let key_path = r"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run";
-            let _ = backup_mgr
-                .export_key(key_path, "Vor Löschung von verwaistem HKCU Run Key")
-                .await;
+            self.backup_before_change(
+                &backup_mgr,
+                key_path,
+                "Vor Löschung von verwaistem HKCU Run Key",
+            )
+            .await?;
 
             let hkcu = RegKey::predef(HKEY_CURRENT_USER);
             if let Ok(run_key) = hkcu
@@ -265,9 +296,12 @@ impl DiagnosticModule for RegistryStartupModule {
         if let Some(val_name) = issue_id.strip_prefix("reg_orphaned_hklm_") {
             let clean_name = val_name.replace('_', " ");
             let key_path = r"HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Run";
-            let _ = backup_mgr
-                .export_key(key_path, "Vor Löschung von verwaistem HKLM Run Key")
-                .await;
+            self.backup_before_change(
+                &backup_mgr,
+                key_path,
+                "Vor Löschung von verwaistem HKLM Run Key",
+            )
+            .await?;
 
             let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
             if let Ok(run_key) = hklm

@@ -1,16 +1,18 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
-use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
+use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
 use crate::utils::cmd::{run_cmd, run_powershell};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 use tokio::time::sleep;
 
-pub struct StorageModule;
+pub struct StorageModule {
+    config: ModuleConfig,
+}
 
 impl StorageModule {
-    pub fn new() -> Self {
-        Self
+    pub fn new(config: ModuleConfig) -> Self {
+        Self { config }
     }
 
     async fn send_progress(
@@ -186,7 +188,7 @@ impl DiagnosticModule for StorageModule {
             total_temp_files += count;
         }
 
-        if total_temp_mb > 1000 {
+        if total_temp_mb > self.config.temp_clean_threshold_mb {
             issues.push(Issue::new(
                 "storage_temp_bloat",
                 self.id(),
@@ -208,8 +210,8 @@ impl DiagnosticModule for StorageModule {
                 88,
                 "Temporäre Dateien im normalen Bereich",
                 Some(&format!(
-                    "✔ Temp-Dateien: {} MB ({} Dateien).",
-                    total_temp_mb, total_temp_files
+                    "✔ Temp-Dateien: {} MB ({} Dateien), Schwelle liegt bei {} MB.",
+                    total_temp_mb, total_temp_files, self.config.temp_clean_threshold_mb
                 )),
             )
             .await;

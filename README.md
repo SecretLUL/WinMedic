@@ -25,9 +25,9 @@
 
 Unlike opaque one-click cleanup tools, **WinMedic** is built on four fundamental principles:
 1. **Zero Runtime Dependencies**: Single, compact, portable native `.exe` binary without .NET, Python, or external runtime requirements.
-2. **Safety First**: Automatic **Windows System Restore Points (VSS)** and **Registry Snapshots** are taken prior to any modification.
-3. **Full Transparency**: Every single issue is explained in plain language with technical logs, severity levels, risk scores, and step-by-step fix previews.
-4. **Blazing Speed**: Tokio async parallelism executes multi-module system scans in seconds.
+2. **Safety First**: Automatic **Windows System Restore Points (VSS)** and **Registry Snapshots** are taken prior to any modification — and every snapshot can be rolled back from inside the app.
+3. **Full Transparency**: Every single issue is explained in plain language with technical logs, severity levels, risk scores, and step-by-step fix previews. A **dry-run mode** shows exactly what would happen before anything is touched.
+4. **Always Interruptible**: Any running scan or repair can be aborted with `[Esc]` (or `Ctrl+C` headless) — child processes are terminated with it.
 
 ---
 
@@ -48,8 +48,24 @@ Unlike opaque one-click cleanup tools, **WinMedic** is built on four fundamental
 
 Before WinMedic touches your system:
 1. **Windows System Restore Point (VSS)**: A checkpoint named `"WinMedic Auto-Restore Point (Vor Reparatur)"` is automatically triggered via WMI / PowerShell.
-2. **Registry Snapshotting**: Every modified registry key is exported into `%APPDATA%\WinMedic\backups\reg_<timestamp>.reg` prior to modification.
-3. **Structured Audit Log**: Every scan, fix, exit code, and action is logged in human-readable `%APPDATA%\WinMedic\logs\audit.log` and `%APPDATA%\WinMedic\logs\history.json`.
+2. **Registry Snapshotting**: Every modified registry key is exported into `%APPDATA%\WinMedic\backups\reg_<timestamp>.reg` prior to modification. If the export fails, the fix is aborted instead of applied.
+3. **One-Key Rollback**: Any stored snapshot can be restored directly from the **Backups & Logs** tab with `[U]`, after an explicit confirmation prompt.
+4. **Dry-Run First**: `[D]` in the TUI or `--dry-run` on the CLI lists every command a repair would execute, without executing any of it.
+5. **Structured Audit Log**: Every scan, fix, simulation, rollback, and cancellation is logged in human-readable `%APPDATA%\WinMedic\logs\audit.log` and `%APPDATA%\WinMedic\logs\history.json`.
+
+---
+
+## ⚙️ Configuration
+
+Settings live in the **`[6]` Einstellungen** tab and are persisted to `%APPDATA%\WinMedic\config.json` immediately on change.
+
+| Setting | Default | Effect |
+| :--- | :--- | :--- |
+| VSS restore point before repair | `on` | Creates a system checkpoint before the first fix of a run |
+| Back up registry before change | `on` | Exports affected keys to `.reg`; when off, registry fixes run unprotected |
+| Restart services automatically | `on` | Allows fixes to stop/start Windows services; when off, those fixes are skipped rather than half-applied |
+| Temp file threshold | `500 MB` | Size at which junk files are reported as an issue |
+| Event log window | `24 h` | How far back the event log module searches for critical events |
 
 ---
 
@@ -57,17 +73,20 @@ Before WinMedic touches your system:
 
 | Shortcut | Action |
 | :--- | :--- |
-| **`[1]` - `[5]`** | Switch tabs (Dashboard, Health Scan, Issue Triage, Repair Center, Backups & Logs) |
+| **`[1]` - `[6]`** | Switch tabs (Dashboard, Health Scan, Issue Triage, Repair Center, Backups & Logs, Settings) |
 | **`[Tab]` / `[Shift+Tab]`** | Cycle forward / backward through tabs |
 | **`[S]`** | Start full system health scan |
 | **`[R]`** | Re-run scan / refresh current view |
-| **`[Space]`** | Toggle checkbox selection for highlighted issue |
+| **`[Space]`** | Toggle checkbox selection for highlighted issue (toggles a switch in Settings) |
 | **`[A]`** | Select all detected issues (1-Click Auto-Fix) |
 | **`[N]`** | Deselect all issues |
 | **`[F]`** | Proceed to Repair Center / Execute repairs |
+| **`[D]`** | Toggle dry-run mode — repairs are shown, not executed |
+| **`[U]`** | Restore the selected registry snapshot (Backups & Logs tab) |
+| **`[←]` / `[→]`** | Adjust the highlighted numeric setting (Settings tab) |
 | **`[↑]` / `[↓]` or `[j]` / `[k]`** | Navigate list items and logs |
 | **`[?]`** | Open interactive Help Modal overlay |
-| **`[Esc]`** | Close modal or return to Dashboard |
+| **`[Esc]`** | Abort a running scan/repair, close a modal, or return to Dashboard |
 | **`[Q]`** | Exit WinMedic safely |
 
 ---
@@ -83,6 +102,9 @@ winmedic.exe --scan
 # Run scan and automatically repair all safe detected issues
 winmedic.exe --auto-fix
 
+# Show exactly which commands a repair run would execute, without executing them
+winmedic.exe --dry-run
+
 # Output diagnostic findings as structured JSON for automation
 winmedic.exe --json
 
@@ -91,6 +113,27 @@ winmedic.exe --auto-fix --no-vss
 
 # Request Windows Administrator elevation
 winmedic.exe --elevate
+```
+
+A running headless job can be aborted with `Ctrl+C`; WinMedic terminates the child process it is currently waiting on instead of leaving an orphaned `DISM` or `chkdsk` behind.
+
+### Exit Codes
+
+Headless runs report their outcome through `%ERRORLEVEL%`, so scripts and monitoring agents can branch on the result:
+
+| Code | Meaning |
+| :---: | :--- |
+| `0` | No open issues above informational level |
+| `1` | Open warnings |
+| `2` | Open critical issues |
+| `3` | At least one repair failed |
+| `4` | `--auto-fix` requested without Administrator privileges |
+| `5` | Internal WinMedic error |
+| `6` | Run aborted with `Ctrl+C`; findings are incomplete |
+
+```powershell
+winmedic.exe --scan
+if ($LASTEXITCODE -ge 2) { Write-Host "Kritische Befunde – Ticket eroeffnen" }
 ```
 
 ---

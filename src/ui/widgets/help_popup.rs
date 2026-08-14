@@ -5,166 +5,115 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
+/// A section heading followed by its `(key, description)` pairs.
+type Section = (&'static str, &'static [(&'static str, &'static str)]);
+
+const SECTIONS: &[Section] = &[
+    (
+        "Navigation",
+        &[
+            (
+                "[1] - [6]",
+                "Tab wechseln (Dashboard, Scan, Triage, Fix, Logs, Einstellungen)",
+            ),
+            ("[Tab] / [Shift+Tab]", "Vorwärts / rückwärts durch die Tabs"),
+            ("[↑]/[↓] oder [j]/[k]", "In Listen navigieren"),
+            ("[Esc]", "Zurück zum Dashboard"),
+        ],
+    ),
+    (
+        "Scan & Reparatur",
+        &[
+            ("[S] / [R]", "System-Health-Scan starten bzw. wiederholen"),
+            ("[Space]", "Problem für Reparatur an-/abwählen"),
+            ("[A] / [N]", "Alle Probleme aus-/abwählen"),
+            ("[F]", "Ausgewählte Reparaturen ausführen"),
+            ("[D]", "Simulationsmodus – zeigt Schritte, ändert nichts"),
+            ("[Esc]", "Laufenden Scan oder Reparaturlauf abbrechen"),
+        ],
+    ),
+    (
+        "Sicherungen & Rollback (Tab 5)",
+        &[
+            ("[↑]/[↓]", "Registry-Sicherung auswählen"),
+            (
+                "[U]",
+                "Markierte .reg-Sicherung nach Rückfrage zurückspielen",
+            ),
+            ("[R]", "Wiederherstellungspunkte & Log neu laden"),
+        ],
+    ),
+    (
+        "Einstellungen (Tab 6)",
+        &[
+            ("[Space] / [Enter]", "Schalter umlegen"),
+            ("[←] / [→]", "Zahlenwert verringern / erhöhen"),
+        ],
+    ),
+];
+
 pub fn render_help_popup(f: &mut Frame, area: Rect) {
-    let popup_width = 74.min(area.width.saturating_sub(4));
-    let popup_height = 24.min(area.height.saturating_sub(4));
-
-    let x = (area.width.saturating_sub(popup_width)) / 2;
-    let y = (area.height.saturating_sub(popup_height)) / 2;
-    let popup_area = Rect::new(x, y, popup_width, popup_height);
-
-    f.render_widget(Clear, popup_area);
-
-    let text = vec![
+    let mut text: Vec<Line> = vec![
         Line::from(vec![Span::styled(
-            "  🩺 WinMedic – Keyboard Shortcuts & Guide",
+            format!(
+                "  🩺 WinMedic v{} – Tastenkürzel",
+                env!("CARGO_PKG_VERSION")
+            ),
             Style::default()
                 .fg(Theme::CYAN)
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "  Navigation:",
-            Style::default()
-                .fg(Theme::CYAN)
-                .add_modifier(Modifier::UNDERLINED),
-        )]),
-        Line::from(vec![
-            Span::styled(
-                "    [1] - [5]         ",
-                Style::default()
-                    .fg(Theme::AMBER)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "Zwischen den Tabs wechseln (Dashboard, Scan, Triage, Fix, Logs)",
-                Style::default().fg(Theme::TEXT_WHITE),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "    [Tab]             ",
-                Style::default()
-                    .fg(Theme::AMBER)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "Fokus zwischen Listen und Detail-Panels umschalten",
-                Style::default().fg(Theme::TEXT_WHITE),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "    [↑] / [↓] / [j/k] ",
-                Style::default()
-                    .fg(Theme::AMBER)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "In Listen und Protokollen navigieren",
-                Style::default().fg(Theme::TEXT_WHITE),
-            ),
-        ]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "  Aktionen & Reparatur:",
-            Style::default()
-                .fg(Theme::CYAN)
-                .add_modifier(Modifier::UNDERLINED),
-        )]),
-        Line::from(vec![
-            Span::styled(
-                "    [S]               ",
-                Style::default()
-                    .fg(Theme::AMBER)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "Gesamten System-Health-Scan starten",
-                Style::default().fg(Theme::TEXT_WHITE),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "    [Space]           ",
-                Style::default()
-                    .fg(Theme::AMBER)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "Ausgewähltes Problem für Reparatur an-/abwählen",
-                Style::default().fg(Theme::TEXT_WHITE),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "    [A]               ",
-                Style::default()
-                    .fg(Theme::AMBER)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "Alle sicheren Probleme auswählen (1-Klick Auto-Fix)",
-                Style::default().fg(Theme::TEXT_WHITE),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "    [N]               ",
-                Style::default()
-                    .fg(Theme::AMBER)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "Alle Probleme abwählen",
-                Style::default().fg(Theme::TEXT_WHITE),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "    [F]               ",
-                Style::default()
-                    .fg(Theme::AMBER)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "Reparatur-Center öffnen und ausgewählte Fixes anwenden",
-                Style::default().fg(Theme::TEXT_WHITE),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "    [R]               ",
-                Style::default()
-                    .fg(Theme::AMBER)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "Re-Scan ausführen / Ansicht aktualisieren",
-                Style::default().fg(Theme::TEXT_WHITE),
-            ),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                "  Sicherheit:",
-                Style::default()
-                    .fg(Theme::EMERALD)
-                    .add_modifier(Modifier::UNDERLINED),
-            ),
-            Span::styled(
-                " Vor jedem Fix wird automatisch ein VSS Restore Point & Registry-Backup erstellt.",
-                Style::default().fg(Theme::MUTED),
-            ),
-        ]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "  Drücken Sie [?] oder [Esc], um diese Hilfe zu schließen.",
-            Style::default()
-                .fg(Theme::MUTED)
-                .add_modifier(Modifier::ITALIC),
-        )]),
     ];
+
+    for (heading, entries) in SECTIONS {
+        text.push(Line::from(vec![Span::styled(
+            format!("  {}:", heading),
+            Style::default()
+                .fg(Theme::CYAN)
+                .add_modifier(Modifier::UNDERLINED),
+        )]));
+        for (key, desc) in *entries {
+            text.push(Line::from(vec![
+                Span::styled(
+                    format!("    {:<22}", key),
+                    Style::default()
+                        .fg(Theme::AMBER)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(*desc, Style::default().fg(Theme::TEXT_WHITE)),
+            ]));
+        }
+        text.push(Line::from(""));
+    }
+
+    text.push(Line::from(vec![
+        Span::styled(
+            "  Sicherheit:",
+            Style::default()
+                .fg(Theme::EMERALD)
+                .add_modifier(Modifier::UNDERLINED),
+        ),
+        Span::styled(
+            " VSS-Wiederherstellungspunkt und Registry-Backup sind in Tab [6] konfigurierbar.",
+            Style::default().fg(Theme::MUTED),
+        ),
+    ]));
+    text.push(Line::from(""));
+    text.push(Line::from(vec![Span::styled(
+        "  Drücken Sie [?] oder [Esc], um diese Hilfe zu schließen.",
+        Style::default()
+            .fg(Theme::MUTED)
+            .add_modifier(Modifier::ITALIC),
+    )]));
+
+    let popup_width = 86.min(area.width.saturating_sub(4));
+    let popup_height = (text.len() as u16 + 2).min(area.height.saturating_sub(2));
+    let x = (area.width.saturating_sub(popup_width)) / 2;
+    let y = (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    f.render_widget(Clear, popup_area);
 
     let block = Block::default()
         .title(" HILFE & TASTENKÜRZEL ")

@@ -1,5 +1,5 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
-use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
+use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
 use crate::utils::cmd::run_cmd;
 use std::path::Path;
 use std::time::Duration;
@@ -8,11 +8,13 @@ use tokio::time::sleep;
 use winreg::RegKey;
 use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ};
 
-pub struct WindowsUpdatesModule;
+pub struct WindowsUpdatesModule {
+    config: ModuleConfig,
+}
 
 impl WindowsUpdatesModule {
-    pub fn new() -> Self {
-        Self
+    pub fn new(config: ModuleConfig) -> Self {
+        Self { config }
     }
 
     async fn send_progress(
@@ -257,6 +259,14 @@ impl DiagnosticModule for WindowsUpdatesModule {
                 Duration::from_secs(10),
             )
             .await;
+
+            if !self.config.auto_restart_services {
+                return Ok(format!(
+                    "Dienst '{}' wurde auf Starttyp 'Manuell' gesetzt. Start übersprungen, da 'Dienste automatisch neu starten' in den Einstellungen deaktiviert ist.",
+                    svc
+                ));
+            }
+
             let _ = run_cmd("net.exe", &["start", svc], Duration::from_secs(10)).await;
             return Ok(format!(
                 "Dienst '{}' wurde auf Starttyp 'Manuell' gesetzt und gestartet.",
@@ -266,6 +276,16 @@ impl DiagnosticModule for WindowsUpdatesModule {
 
         match issue_id {
             "wu_cache_bloat" => {
+                // Clearing the cache requires stopping wuauserv/bits/cryptsvc. Doing
+                // that without being allowed to start them again would leave Windows
+                // Update broken, so refuse instead of half-applying the fix.
+                if !self.config.auto_restart_services {
+                    return Err(
+                        "Übersprungen: Das Leeren des Update-Caches erfordert das Anhalten und Neustarten von wuauserv, bits und cryptsvc. Aktivieren Sie 'Dienste automatisch neu starten' in den Einstellungen [6]."
+                            .to_string(),
+                    );
+                }
+
                 if let Some(ref tx) = log_tx {
                     let _ = tx.send("Stoppe Windows Update Dienste...".to_string()).await;
                 }

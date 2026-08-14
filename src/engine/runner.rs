@@ -1,9 +1,13 @@
+use crate::config::AppConfig;
 use crate::engine::issue::{Issue, Severity};
-use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress, get_all_modules};
+use crate::modules::{
+    DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress, get_all_modules,
+};
 use crate::safety::audit::AuditLogger;
 use crate::safety::restore_point::create_system_restore_point;
 use std::sync::Arc;
 use tokio::sync::mpsc::{Sender, channel};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
 pub enum ScanEvent {
@@ -17,6 +21,10 @@ pub enum ScanEvent {
         module_id: String,
         error: String,
     },
+    ScanCancelled {
+        completed_modules: usize,
+        total_modules: usize,
+    },
     ScanCompleted {
         total_issues: usize,
         health_score: u8,
@@ -25,6 +33,10 @@ pub enum ScanEvent {
 
 #[derive(Debug, Clone)]
 pub enum RepairEvent {
+    /// Emitted instead of [`RepairEvent::VssStarted`] when running a simulation.
+    DryRunStarted {
+        issue_count: usize,
+    },
     VssStarted,
     VssCompleted {
         success: bool,
@@ -43,10 +55,42 @@ pub enum RepairEvent {
         success: bool,
         message: String,
     },
+    RepairsCancelled {
+        fixed_count: usize,
+        failed_count: usize,
+        remaining: usize,
+    },
     AllRepairsCompleted {
         fixed_count: usize,
         failed_count: usize,
     },
+}
+
+/// How a repair run should behave.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RepairOptions {
+    /// Create a VSS restore point before touching anything.
+    pub create_vss: bool,
+    /// Report what each fix *would* do without executing it.
+    pub dry_run: bool,
+}
+
+impl RepairOptions {
+    pub fn from_config(config: &AppConfig, dry_run: bool) -> Self {
+        Self {
+            create_vss: config.create_vss_before_repair,
+            dry_run,
+        }
+    }
+}
+
+impl Default for RepairOptions {
+    fn default() -> Self {
+        Self {
+            create_vss: true,
+            dry_run: false,
+        }
+    }
 }
 
 pub struct DiagnosticEngine {
@@ -55,9 +99,9 @@ pub struct DiagnosticEngine {
 }
 
 impl DiagnosticEngine {
-    pub fn new() -> Self {
+    pub fn new(config: &AppConfig) -> Self {
         Self {
-            modules: get_all_modules(),
+            modules: get_all_modules(&ModuleConfig::from(config)),
             audit_logger: AuditLogger::new(),
         }
     }
@@ -81,11 +125,27 @@ impl DiagnosticEngine {
         score.clamp(0, 100) as u8
     }
 
-    /// Run full diagnostic scan across all modules
-    pub async fn run_scan(&self, event_tx: Sender<ScanEvent>) -> Vec<Issue> {
+    /// Run full diagnostic scan across all modules.
+    ///
+    /// Cancelling `cancel` drops the running module future, which in turn drops
+    /// its child process handle — `kill_on_drop` then terminates long-running
+    /// tools such as DISM. Issues collected by already finished modules are kept
+    /// and returned.
+    pub async fn run_scan(
+        &self,
+        event_tx: Sender<ScanEvent>,
+        cancel: CancellationToken,
+    ) -> Vec<Issue> {
         let mut all_issues = Vec::new();
+        let total_modules = self.modules.len();
 
-        for module in &self.modules {
+        for (completed, module) in self.modules.iter().enumerate() {
+            if cancel.is_cancelled() {
+                self.finish_cancelled_scan(&event_tx, completed, total_modules)
+                    .await;
+                return all_issues;
+            }
+
             let mod_id = module.id().to_string();
             let _ = event_tx
                 .send(ScanEvent::ModuleStarted(mod_id.clone()))
@@ -102,9 +162,29 @@ impl DiagnosticEngine {
                 }
             });
 
-            match module.scan(Some(prog_tx)).await {
+            let outcome = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => None,
+                result = module.scan(Some(prog_tx)) => Some(result),
+            };
+
+            let _ = forward_handle.await;
+
+            let Some(result) = outcome else {
+                self.audit_logger.log(
+                    "SCAN",
+                    &mod_id,
+                    module.name(),
+                    "WARNING",
+                    "Scan durch Benutzer abgebrochen.",
+                );
+                self.finish_cancelled_scan(&event_tx, completed, total_modules)
+                    .await;
+                return all_issues;
+            };
+
+            match result {
                 Ok(issues) => {
-                    let _ = forward_handle.await;
                     let _ = event_tx
                         .send(ScanEvent::ModuleFinished {
                             module_id: mod_id.clone(),
@@ -123,7 +203,6 @@ impl DiagnosticEngine {
                     all_issues.extend(issues);
                 }
                 Err(err) => {
-                    let _ = forward_handle.await;
                     let _ = event_tx
                         .send(ScanEvent::ModuleFailed {
                             module_id: mod_id.clone(),
@@ -154,14 +233,50 @@ impl DiagnosticEngine {
         all_issues
     }
 
-    /// Execute repairs for selected issues
+    async fn finish_cancelled_scan(
+        &self,
+        event_tx: &Sender<ScanEvent>,
+        completed_modules: usize,
+        total_modules: usize,
+    ) {
+        let _ = event_tx
+            .send(ScanEvent::ScanCancelled {
+                completed_modules,
+                total_modules,
+            })
+            .await;
+    }
+
+    /// Execute (or simulate) repairs for the selected issues.
     pub async fn run_repairs(
         &self,
         issues: &mut [Issue],
-        create_vss: bool,
+        options: RepairOptions,
         event_tx: Sender<RepairEvent>,
+        cancel: CancellationToken,
     ) -> (usize, usize) {
-        if create_vss {
+        let pending = issues
+            .iter()
+            .filter(|i| i.is_selected && !i.is_fixed)
+            .count();
+
+        if options.dry_run {
+            let _ = event_tx
+                .send(RepairEvent::DryRunStarted {
+                    issue_count: pending,
+                })
+                .await;
+            self.audit_logger.log(
+                "DRYRUN",
+                "engine",
+                "Reparatur-Simulation",
+                "INFO",
+                &format!(
+                    "Simulation gestartet für {} ausgewählte Probleme. Es wurde nichts verändert.",
+                    pending
+                ),
+            );
+        } else if options.create_vss {
             let _ = event_tx.send(RepairEvent::VssStarted).await;
             let vss_res =
                 create_system_restore_point("WinMedic Auto-Restore Point (Vor Reparatur)").await;
@@ -187,11 +302,36 @@ impl DiagnosticEngine {
 
         let mut fixed_count = 0;
         let mut failed_count = 0;
+        let mut processed = 0;
 
         for issue in issues.iter_mut() {
             if !issue.is_selected || issue.is_fixed {
                 continue;
             }
+
+            if cancel.is_cancelled() {
+                let _ = event_tx
+                    .send(RepairEvent::RepairsCancelled {
+                        fixed_count,
+                        failed_count,
+                        remaining: pending.saturating_sub(processed),
+                    })
+                    .await;
+                self.audit_logger.log(
+                    "FIX",
+                    "engine",
+                    "Reparaturlauf",
+                    "WARNING",
+                    &format!(
+                        "Abgebrochen nach {} Reparaturen ({} offen).",
+                        processed,
+                        pending.saturating_sub(processed)
+                    ),
+                );
+                return (fixed_count, failed_count);
+            }
+
+            processed += 1;
 
             let _ = event_tx
                 .send(RepairEvent::FixStarted {
@@ -200,72 +340,14 @@ impl DiagnosticEngine {
                 })
                 .await;
 
+            if options.dry_run {
+                self.simulate_fix(issue, &event_tx).await;
+                fixed_count += 1;
+                continue;
+            }
+
             let mod_opt = self.modules.iter().find(|m| m.id() == issue.module_id);
-            if let Some(module) = mod_opt {
-                let (prog_tx, mut prog_rx) = channel::<FixProgress>(50);
-                let evt_tx_clone = event_tx.clone();
-                let issue_id_clone = issue.id.clone();
-
-                let forward_handle = tokio::spawn(async move {
-                    while let Some(prog) = prog_rx.recv().await {
-                        if let Some(line) = prog.console_line {
-                            let _ = evt_tx_clone
-                                .send(RepairEvent::FixOutput {
-                                    issue_id: issue_id_clone.clone(),
-                                    line,
-                                })
-                                .await;
-                        }
-                    }
-                });
-
-                match module.fix(&issue.id, Some(prog_tx)).await {
-                    Ok(msg) => {
-                        let _ = forward_handle.await;
-                        issue.is_fixed = true;
-                        issue.fix_error = None;
-                        fixed_count += 1;
-
-                        let _ = event_tx
-                            .send(RepairEvent::FixFinished {
-                                issue_id: issue.id.clone(),
-                                success: true,
-                                message: msg.clone(),
-                            })
-                            .await;
-
-                        self.audit_logger.log(
-                            "FIX",
-                            &issue.module_id,
-                            &issue.title,
-                            "SUCCESS",
-                            &msg,
-                        );
-                    }
-                    Err(err) => {
-                        let _ = forward_handle.await;
-                        issue.is_fixed = false;
-                        issue.fix_error = Some(err.clone());
-                        failed_count += 1;
-
-                        let _ = event_tx
-                            .send(RepairEvent::FixFinished {
-                                issue_id: issue.id.clone(),
-                                success: false,
-                                message: err.clone(),
-                            })
-                            .await;
-
-                        self.audit_logger.log(
-                            "FIX",
-                            &issue.module_id,
-                            &issue.title,
-                            "FAILED",
-                            &err,
-                        );
-                    }
-                }
-            } else {
+            let Some(module) = mod_opt else {
                 failed_count += 1;
                 let _ = event_tx
                     .send(RepairEvent::FixFinished {
@@ -274,6 +356,93 @@ impl DiagnosticEngine {
                         message: "Modul nicht gefunden".to_string(),
                     })
                     .await;
+                continue;
+            };
+
+            let (prog_tx, mut prog_rx) = channel::<FixProgress>(50);
+            let evt_tx_clone = event_tx.clone();
+            let issue_id_clone = issue.id.clone();
+
+            let forward_handle = tokio::spawn(async move {
+                while let Some(prog) = prog_rx.recv().await {
+                    if let Some(line) = prog.console_line {
+                        let _ = evt_tx_clone
+                            .send(RepairEvent::FixOutput {
+                                issue_id: issue_id_clone.clone(),
+                                line,
+                            })
+                            .await;
+                    }
+                }
+            });
+
+            let outcome = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => None,
+                result = module.fix(&issue.id, Some(prog_tx)) => Some(result),
+            };
+
+            let _ = forward_handle.await;
+
+            let Some(result) = outcome else {
+                issue.fix_error = Some("Reparatur durch Benutzer abgebrochen.".to_string());
+                let _ = event_tx
+                    .send(RepairEvent::FixFinished {
+                        issue_id: issue.id.clone(),
+                        success: false,
+                        message: "Abgebrochen durch Benutzer.".to_string(),
+                    })
+                    .await;
+                self.audit_logger.log(
+                    "FIX",
+                    &issue.module_id,
+                    &issue.title,
+                    "WARNING",
+                    "Reparatur durch Benutzer abgebrochen.",
+                );
+                let _ = event_tx
+                    .send(RepairEvent::RepairsCancelled {
+                        fixed_count,
+                        failed_count,
+                        remaining: pending.saturating_sub(processed),
+                    })
+                    .await;
+                return (fixed_count, failed_count);
+            };
+
+            match result {
+                Ok(msg) => {
+                    issue.is_fixed = true;
+                    issue.fix_error = None;
+                    fixed_count += 1;
+
+                    let _ = event_tx
+                        .send(RepairEvent::FixFinished {
+                            issue_id: issue.id.clone(),
+                            success: true,
+                            message: msg.clone(),
+                        })
+                        .await;
+
+                    self.audit_logger
+                        .log("FIX", &issue.module_id, &issue.title, "SUCCESS", &msg);
+                }
+                Err(err) => {
+                    issue.is_fixed = false;
+                    issue.fix_error = Some(err.clone());
+                    failed_count += 1;
+
+                    let _ = event_tx
+                        .send(RepairEvent::FixFinished {
+                            issue_id: issue.id.clone(),
+                            success: false,
+                            message: err.clone(),
+                        })
+                        .await;
+
+                    self.audit_logger
+                        .log("FIX", &issue.module_id, &issue.title, "FAILED", &err);
+                }
             }
         }
 
@@ -286,6 +455,45 @@ impl DiagnosticEngine {
 
         (fixed_count, failed_count)
     }
+
+    /// Report the planned steps for `issue` without touching the system.
+    ///
+    /// Deliberately leaves `is_fixed` untouched so a simulation never makes the
+    /// health score look better than the machine actually is.
+    async fn simulate_fix(&self, issue: &Issue, event_tx: &Sender<RepairEvent>) {
+        let emit = |line: String| async {
+            let _ = event_tx
+                .send(RepairEvent::FixOutput {
+                    issue_id: issue.id.clone(),
+                    line,
+                })
+                .await;
+        };
+
+        emit(format!("[SIMULATION] Geplant: {}", issue.recommended_fix)).await;
+        for (idx, step) in issue.fix_steps.iter().enumerate() {
+            emit(format!("[SIMULATION]   {}. {}", idx + 1, step)).await;
+        }
+        if issue.fix_steps.is_empty() {
+            emit("[SIMULATION]   (keine Einzelschritte hinterlegt)".to_string()).await;
+        }
+
+        let message = format!(
+            "Simulation: {} Schritt(e) würden ausgeführt. Es wurde nichts verändert.",
+            issue.fix_steps.len()
+        );
+
+        let _ = event_tx
+            .send(RepairEvent::FixFinished {
+                issue_id: issue.id.clone(),
+                success: true,
+                message: message.clone(),
+            })
+            .await;
+
+        self.audit_logger
+            .log("DRYRUN", &issue.module_id, &issue.title, "INFO", &message);
+    }
 }
 
 #[cfg(test)]
@@ -293,9 +501,8 @@ mod tests {
     use super::*;
     use crate::engine::issue::{RiskScore, Severity};
 
-    #[test]
-    fn test_health_score_calculation() {
-        let mut issues = vec![
+    fn sample_issues() -> Vec<Issue> {
+        vec![
             Issue::new(
                 "test_1",
                 "system_integrity",
@@ -320,7 +527,12 @@ mod tests {
                 "Fix",
                 vec!["Step 1".to_string()],
             ),
-        ];
+        ]
+    }
+
+    #[test]
+    fn test_health_score_calculation() {
+        let mut issues = sample_issues();
 
         // 100 - 25 (Critical) - 10 (Warning) = 65
         let score = DiagnosticEngine::calculate_health_score(&issues);
@@ -331,5 +543,97 @@ mod tests {
         let score_after_fix = DiagnosticEngine::calculate_health_score(&issues);
         assert_eq!(score_after_fix, 90);
     }
-}
 
+    #[tokio::test]
+    async fn test_dry_run_does_not_mark_issues_fixed() {
+        let engine = DiagnosticEngine::new(&AppConfig::default());
+        let mut issues = sample_issues();
+        let (tx, mut rx) = channel::<RepairEvent>(100);
+
+        let options = RepairOptions {
+            create_vss: true,
+            dry_run: true,
+        };
+        let (fixed, failed) = engine
+            .run_repairs(&mut issues, options, tx, CancellationToken::new())
+            .await;
+
+        assert_eq!(fixed, 2, "both issues should be simulated");
+        assert_eq!(failed, 0);
+        assert!(
+            issues.iter().all(|i| !i.is_fixed),
+            "a simulation must not mark anything as fixed"
+        );
+        assert_eq!(
+            DiagnosticEngine::calculate_health_score(&issues),
+            65,
+            "health score must be unaffected by a simulation"
+        );
+
+        let mut saw_dry_run_start = false;
+        let mut saw_vss = false;
+        while let Ok(evt) = rx.try_recv() {
+            match evt {
+                RepairEvent::DryRunStarted { issue_count } => {
+                    saw_dry_run_start = true;
+                    assert_eq!(issue_count, 2);
+                }
+                RepairEvent::VssStarted => saw_vss = true,
+                _ => {}
+            }
+        }
+        assert!(saw_dry_run_start);
+        assert!(!saw_vss, "a simulation must not create a restore point");
+    }
+
+    #[tokio::test]
+    async fn test_cancelled_repairs_stop_before_first_fix() {
+        let engine = DiagnosticEngine::new(&AppConfig::default());
+        let mut issues = sample_issues();
+        let (tx, mut rx) = channel::<RepairEvent>(100);
+
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let options = RepairOptions {
+            create_vss: false,
+            dry_run: false,
+        };
+        let (fixed, failed) = engine.run_repairs(&mut issues, options, tx, cancel).await;
+
+        assert_eq!((fixed, failed), (0, 0));
+        assert!(issues.iter().all(|i| !i.is_fixed));
+
+        let mut cancelled_remaining = None;
+        while let Ok(evt) = rx.try_recv() {
+            if let RepairEvent::RepairsCancelled { remaining, .. } = evt {
+                cancelled_remaining = Some(remaining);
+            }
+        }
+        assert_eq!(cancelled_remaining, Some(2));
+    }
+
+    #[tokio::test]
+    async fn test_cancelled_scan_reports_progress() {
+        let engine = DiagnosticEngine::new(&AppConfig::default());
+        let (tx, mut rx) = channel::<ScanEvent>(200);
+
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let issues = engine.run_scan(tx, cancel).await;
+        assert!(issues.is_empty());
+
+        let mut cancelled = None;
+        while let Ok(evt) = rx.try_recv() {
+            if let ScanEvent::ScanCancelled {
+                completed_modules,
+                total_modules,
+            } = evt
+            {
+                cancelled = Some((completed_modules, total_modules));
+            }
+        }
+        assert_eq!(cancelled, Some((0, 6)));
+    }
+}

@@ -1,13 +1,68 @@
 use crate::config::AppConfig;
 use crate::engine::issue::{Issue, Severity};
-use crate::engine::runner::{DiagnosticEngine, RepairEvent, ScanEvent};
+use crate::engine::runner::{DiagnosticEngine, RepairEvent, RepairOptions, ScanEvent};
 use crate::modules::ModuleStatus;
 use crate::safety::audit::{AuditEntry, AuditLogger};
 use crate::safety::reg_backup::{BackupRecord, RegBackupManager};
+use crate::safety::restore_point::list_restore_points;
 use crate::utils::admin::is_admin;
 use crate::utils::hardware::{SystemTelemetry, TelemetryCollector};
 use std::sync::Arc;
-use tokio::sync::mpsc::{Receiver, channel};
+use tokio::sync::mpsc::{Receiver, UnboundedReceiver, UnboundedSender, channel};
+use tokio_util::sync::CancellationToken;
+
+/// Number of tabs in the main navigation.
+pub const TAB_COUNT: usize = 6;
+
+pub const TAB_DASHBOARD: usize = 0;
+pub const TAB_SCANNER: usize = 1;
+pub const TAB_TRIAGE: usize = 2;
+pub const TAB_REPAIR: usize = 3;
+pub const TAB_HISTORY: usize = 4;
+pub const TAB_SETTINGS: usize = 5;
+
+/// Results of short-lived background tasks that are not part of a scan or a
+/// repair run (restore point lookups, registry rollbacks).
+#[derive(Debug, Clone)]
+pub enum BackgroundEvent {
+    RestorePointsLoaded(Vec<String>),
+    RollbackFinished { success: bool, message: String },
+}
+
+/// An action that needs an explicit yes before it touches the system.
+#[derive(Debug, Clone)]
+pub enum ConfirmRequest {
+    Rollback {
+        description: String,
+        key_path: String,
+        file_path: String,
+    },
+}
+
+impl ConfirmRequest {
+    pub fn title(&self) -> &'static str {
+        match self {
+            ConfirmRequest::Rollback { .. } => "REGISTRY-SICHERUNG WIEDERHERSTELLEN?",
+        }
+    }
+
+    pub fn body(&self) -> Vec<String> {
+        match self {
+            ConfirmRequest::Rollback {
+                description,
+                key_path,
+                file_path,
+            } => vec![
+                "Die folgende Registry-Sicherung wird per 'reg import' zurückgespielt.".to_string(),
+                "Bestehende Werte unter diesem Schlüssel werden dabei überschrieben.".to_string(),
+                String::new(),
+                format!("Sicherung:  {}", description),
+                format!("Schlüssel:  {}", key_path),
+                format!("Datei:      {}", file_path),
+            ],
+        }
+    }
+}
 
 pub struct App {
     pub active_tab: usize,
@@ -35,6 +90,8 @@ pub struct App {
 
     // Live Repair State
     pub is_fixing: bool,
+    /// Simulate repairs instead of executing them.
+    pub dry_run: bool,
     pub current_fix_title: String,
     pub fixed_count: usize,
     pub failed_count: usize,
@@ -48,15 +105,27 @@ pub struct App {
     pub audit_entries: Vec<AuditEntry>,
     pub backup_records: Vec<BackupRecord>,
     pub vss_restore_points: Vec<String>,
+    pub selected_backup_index: usize,
+    pub restore_points_loading: bool,
+    restore_points_requested: bool,
+    pub is_restoring: bool,
+
+    // Settings
+    pub selected_setting_index: usize,
 
     // UI state
     pub status_message: Option<String>,
     pub show_help: bool,
+    pub pending_confirm: Option<ConfirmRequest>,
     pub should_quit: bool,
 
     // Internal async event channels
     pub scan_event_rx: Option<Receiver<ScanEvent>>,
     pub repair_event_rx: Option<Receiver<RepairEvent>>,
+    /// Cancels whichever scan or repair run is currently active.
+    cancel_token: Option<CancellationToken>,
+    bg_tx: UnboundedSender<BackgroundEvent>,
+    bg_rx: UnboundedReceiver<BackgroundEvent>,
 }
 
 impl App {
@@ -64,35 +133,20 @@ impl App {
         let mut telemetry_collector = TelemetryCollector::new();
         let telemetry = Some(telemetry_collector.refresh());
         let admin_flag = is_admin();
-        let engine = Arc::new(DiagnosticEngine::new());
+        let config = AppConfig::load();
+        let engine = Arc::new(DiagnosticEngine::new(&config));
         let audit_logger = AuditLogger::new();
         let reg_backup_mgr = RegBackupManager::new();
         let audit_entries = audit_logger.get_history();
         let backup_records = reg_backup_mgr.list_backups();
+        let (bg_tx, bg_rx) = tokio::sync::mpsc::unbounded_channel();
 
-        let mut module_progress_list = Vec::new();
-        let mut module_statuses = Vec::new();
-
-        for m in engine.modules() {
-            module_progress_list.push((
-                m.id().to_string(),
-                m.name().to_string(),
-                m.icon().to_string(),
-                0u8,
-                false,
-            ));
-            module_statuses.push((
-                m.id().to_string(),
-                m.name().to_string(),
-                m.icon().to_string(),
-                ModuleStatus::Idle,
-            ));
-        }
+        let (module_progress_list, module_statuses) = Self::module_lists(&engine);
 
         Self {
-            active_tab: 0,
+            active_tab: TAB_DASHBOARD,
             is_admin: admin_flag,
-            config: AppConfig::load(),
+            config,
             telemetry_collector,
             telemetry,
             engine,
@@ -107,6 +161,7 @@ impl App {
             module_statuses,
             scan_log_messages: vec!["WinMedic initialisiert. Bereit für Diagnose.".to_string()],
             is_fixing: false,
+            dry_run: false,
             current_fix_title: String::new(),
             fixed_count: 0,
             failed_count: 0,
@@ -118,26 +173,67 @@ impl App {
             audit_entries,
             backup_records,
             vss_restore_points: Vec::new(),
+            selected_backup_index: 0,
+            restore_points_loading: false,
+            restore_points_requested: false,
+            is_restoring: false,
+            selected_setting_index: 0,
             status_message: Some("Bereit".to_string()),
             show_help: false,
+            pending_confirm: None,
             should_quit: false,
             scan_event_rx: None,
             repair_event_rx: None,
+            cancel_token: None,
+            bg_tx,
+            bg_rx,
         }
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn module_lists(
+        engine: &DiagnosticEngine,
+    ) -> (
+        Vec<(String, String, String, u8, bool)>,
+        Vec<(String, String, String, ModuleStatus)>,
+    ) {
+        let mut progress = Vec::new();
+        let mut statuses = Vec::new();
+        for m in engine.modules() {
+            progress.push((
+                m.id().to_string(),
+                m.name().to_string(),
+                m.icon().to_string(),
+                0u8,
+                false,
+            ));
+            statuses.push((
+                m.id().to_string(),
+                m.name().to_string(),
+                m.icon().to_string(),
+                ModuleStatus::Idle,
+            ));
+        }
+        (progress, statuses)
     }
 
     pub fn refresh_telemetry(&mut self) {
         self.telemetry = Some(self.telemetry_collector.refresh());
     }
 
+    /// True while a scan or a repair run is in flight.
+    pub fn is_busy(&self) -> bool {
+        self.is_scanning || self.is_fixing
+    }
+
     pub fn start_scan(&mut self) {
-        if self.is_scanning || self.is_fixing {
+        if self.is_busy() {
             return;
         }
 
         self.is_scanning = true;
         self.scan_overall_progress = 0;
-        self.active_tab = 1; // Switch to Scanner Tab
+        self.active_tab = TAB_SCANNER;
         self.issues.clear();
         self.selected_issue_index = 0;
         self.scan_log_messages.clear();
@@ -155,16 +251,19 @@ impl App {
         let (tx, rx) = channel::<ScanEvent>(100);
         self.scan_event_rx = Some(rx);
 
+        let cancel = CancellationToken::new();
+        self.cancel_token = Some(cancel.clone());
+
         let engine_clone = self.engine.clone();
         tokio::spawn(async move {
-            engine_clone.run_scan(tx).await;
+            engine_clone.run_scan(tx, cancel).await;
         });
 
-        self.status_message = Some("Diagnose-Scan läuft...".to_string());
+        self.status_message = Some("Diagnose-Scan läuft... [Esc] bricht ab".to_string());
     }
 
     pub fn start_repairs(&mut self) {
-        if self.is_fixing || self.is_scanning {
+        if self.is_busy() {
             return;
         }
 
@@ -180,36 +279,102 @@ impl App {
         }
 
         self.is_fixing = true;
-        self.active_tab = 3; // Switch to Repair Center Tab
+        self.active_tab = TAB_REPAIR;
         self.fixed_count = 0;
         self.failed_count = 0;
         self.total_to_fix = selected_count;
-        self.vss_status = "Initialisiere...".to_string();
+        self.vss_status = if self.dry_run {
+            "Simulation".to_string()
+        } else {
+            "Initialisiere...".to_string()
+        };
         self.repair_console_lines.clear();
-        self.repair_console_lines.push(format!(
-            "Starte Reparatur von {} ausgewählten Problemen...",
-            selected_count
-        ));
+        self.repair_console_lines.push(if self.dry_run {
+            format!(
+                "SIMULATION: Zeige geplante Schritte für {} Probleme. Es wird nichts verändert.",
+                selected_count
+            )
+        } else {
+            format!(
+                "Starte Reparatur von {} ausgewählten Problemen...",
+                selected_count
+            )
+        });
 
         let (tx, rx) = channel::<RepairEvent>(100);
         self.repair_event_rx = Some(rx);
 
+        let cancel = CancellationToken::new();
+        self.cancel_token = Some(cancel.clone());
+
         let mut issues_clone = self.issues.clone();
         let engine_clone = self.engine.clone();
-        let create_vss = self.config.create_vss_before_repair;
+        let options = RepairOptions::from_config(&self.config, self.dry_run);
 
         tokio::spawn(async move {
             engine_clone
-                .run_repairs(&mut issues_clone, create_vss, tx)
+                .run_repairs(&mut issues_clone, options, tx, cancel)
                 .await;
         });
 
-        self.status_message = Some("Reparaturen werden ausgeführt...".to_string());
+        self.status_message = Some(if self.dry_run {
+            "Simulation läuft... [Esc] bricht ab".to_string()
+        } else {
+            "Reparaturen werden ausgeführt... [Esc] bricht ab".to_string()
+        });
+    }
+
+    /// Signal the running scan or repair to stop at the next safe point.
+    ///
+    /// Returns false when there was nothing to cancel.
+    pub fn cancel_current_operation(&mut self) -> bool {
+        let Some(token) = self.cancel_token.as_ref() else {
+            return false;
+        };
+        if token.is_cancelled() {
+            return true;
+        }
+
+        token.cancel();
+        let target = if self.is_scanning {
+            "Scan"
+        } else {
+            "Reparatur"
+        };
+        self.status_message = Some(format!("{} wird abgebrochen...", target));
+        let line = format!("⏹ Abbruch angefordert – laufender {} wird beendet.", target);
+        if self.is_scanning {
+            self.scan_log_messages.push(line);
+        } else {
+            self.repair_console_lines.push(line);
+        }
+        true
+    }
+
+    /// Toggle simulation mode. Not allowed while a run is in progress.
+    pub fn toggle_dry_run(&mut self) {
+        if self.is_busy() {
+            self.status_message = Some(
+                "Simulationsmodus kann während eines Laufs nicht geändert werden.".to_string(),
+            );
+            return;
+        }
+        self.dry_run = !self.dry_run;
+        self.status_message = Some(if self.dry_run {
+            "Simulationsmodus AN – [F] zeigt nur die geplanten Schritte.".to_string()
+        } else {
+            "Simulationsmodus AUS – [F] führt Reparaturen wirklich aus.".to_string()
+        });
     }
 
     pub fn process_background_events(&mut self) {
-        // 1. Process Scan Events
-        let mut finished_scan = false;
+        self.process_scan_events();
+        self.process_repair_events();
+        self.process_bg_events();
+    }
+
+    fn process_scan_events(&mut self) {
+        let mut scan_ended = false;
         if let Some(ref mut rx) = self.scan_event_rx {
             while let Ok(event) = rx.try_recv() {
                 match event {
@@ -280,6 +445,27 @@ impl App {
                         self.scan_log_messages
                             .push(format!("Fehler in Modul '{}': {}", module_id, error));
                     }
+                    ScanEvent::ScanCancelled {
+                        completed_modules,
+                        total_modules,
+                    } => {
+                        self.is_scanning = false;
+                        scan_ended = true;
+                        self.health_score = DiagnosticEngine::calculate_health_score(&self.issues);
+                        for item in &mut self.module_statuses {
+                            if item.3 == ModuleStatus::Scanning {
+                                item.3 = ModuleStatus::Idle;
+                            }
+                        }
+                        let msg = format!(
+                            "Scan abgebrochen nach {}/{} Modulen ({} Teilergebnisse behalten).",
+                            completed_modules,
+                            total_modules,
+                            self.issues.len()
+                        );
+                        self.scan_log_messages.push(format!("⏹ {}", msg));
+                        self.status_message = Some(msg);
+                    }
                     ScanEvent::ScanCompleted {
                         total_issues,
                         health_score,
@@ -287,7 +473,7 @@ impl App {
                         self.health_score = health_score;
                         self.scan_overall_progress = 100;
                         self.is_scanning = false;
-                        finished_scan = true;
+                        scan_ended = true;
                         self.status_message = Some(format!(
                             "Scan abgeschlossen: {} Probleme gefunden (Health: {}/100)",
                             total_issues, health_score
@@ -296,16 +482,25 @@ impl App {
                 }
             }
         }
-        if finished_scan {
+        if scan_ended {
             self.scan_event_rx = None;
+            self.cancel_token = None;
             self.audit_entries = self.audit_logger.get_history();
         }
+    }
 
-        // 2. Process Repair Events
-        let mut finished_repair = false;
+    fn process_repair_events(&mut self) {
+        let mut repair_ended = false;
         if let Some(ref mut rx) = self.repair_event_rx {
             while let Ok(event) = rx.try_recv() {
                 match event {
+                    RepairEvent::DryRunStarted { issue_count } => {
+                        self.vss_status = "Simulation (kein VSS)".to_string();
+                        self.repair_console_lines.push(format!(
+                            "Simuliere {} Reparatur(en) – kein Wiederherstellungspunkt nötig.",
+                            issue_count
+                        ));
+                    }
                     RepairEvent::VssStarted => {
                         self.vss_status = "Erstelle Restore Point...".to_string();
                         self.repair_console_lines.push(
@@ -322,8 +517,11 @@ impl App {
                     }
                     RepairEvent::FixStarted { issue_id: _, title } => {
                         self.current_fix_title = title.clone();
-                        self.repair_console_lines
-                            .push(format!("Repariere: {}", title));
+                        self.repair_console_lines.push(if self.dry_run {
+                            format!("Simuliere: {}", title)
+                        } else {
+                            format!("Repariere: {}", title)
+                        });
                     }
                     RepairEvent::FixOutput { issue_id: _, line } => {
                         self.repair_console_lines.push(line);
@@ -333,43 +531,99 @@ impl App {
                         success,
                         message,
                     } => {
-                        if let Some(issue) = self.issues.iter_mut().find(|i| i.id == issue_id) {
-                            issue.is_fixed = success;
-                            if !success {
-                                issue.fix_error = Some(message.clone());
+                        // A simulation must never flip an issue to "fixed".
+                        if !self.dry_run {
+                            if let Some(issue) = self.issues.iter_mut().find(|i| i.id == issue_id) {
+                                issue.is_fixed = success;
+                                if !success {
+                                    issue.fix_error = Some(message.clone());
+                                }
                             }
                         }
                         if success {
                             self.fixed_count += 1;
-                            self.repair_console_lines
-                                .push(format!("✔ Erfolgreich: {}", message));
+                            self.repair_console_lines.push(format!("✔ {}", message));
                         } else {
                             self.failed_count += 1;
                             self.repair_console_lines
                                 .push(format!("✖ Fehler: {}", message));
                         }
                     }
+                    RepairEvent::RepairsCancelled {
+                        fixed_count,
+                        failed_count,
+                        remaining,
+                    } => {
+                        self.is_fixing = false;
+                        repair_ended = true;
+                        self.fixed_count = fixed_count;
+                        self.failed_count = failed_count;
+                        self.health_score = DiagnosticEngine::calculate_health_score(&self.issues);
+                        let msg = format!(
+                            "Reparatur abgebrochen: {} erledigt, {} fehlgeschlagen, {} nicht mehr ausgeführt.",
+                            fixed_count, failed_count, remaining
+                        );
+                        self.repair_console_lines.push(format!("⏹ {}", msg));
+                        self.status_message = Some(msg);
+                    }
                     RepairEvent::AllRepairsCompleted {
                         fixed_count,
                         failed_count,
                     } => {
                         self.is_fixing = false;
-                        finished_repair = true;
+                        repair_ended = true;
                         self.fixed_count = fixed_count;
                         self.failed_count = failed_count;
                         self.health_score = DiagnosticEngine::calculate_health_score(&self.issues);
-                        self.status_message = Some(format!(
-                            "Reparatur fertig: {} behoben, {} fehlgeschlagen",
-                            fixed_count, failed_count
-                        ));
+                        self.status_message = Some(if self.dry_run {
+                            format!(
+                                "Simulation fertig: {} Reparatur(en) geplant, nichts verändert.",
+                                fixed_count
+                            )
+                        } else {
+                            format!(
+                                "Reparatur fertig: {} behoben, {} fehlgeschlagen",
+                                fixed_count, failed_count
+                            )
+                        });
                     }
                 }
             }
         }
-        if finished_repair {
+        if repair_ended {
             self.repair_event_rx = None;
+            self.cancel_token = None;
             self.audit_entries = self.audit_logger.get_history();
             self.backup_records = self.reg_backup_mgr.list_backups();
+            self.clamp_backup_selection();
+        }
+    }
+
+    fn process_bg_events(&mut self) {
+        while let Ok(event) = self.bg_rx.try_recv() {
+            match event {
+                BackgroundEvent::RestorePointsLoaded(points) => {
+                    self.restore_points_loading = false;
+                    self.status_message = Some(if points.is_empty() {
+                        "Keine Windows-Wiederherstellungspunkte gefunden.".to_string()
+                    } else {
+                        format!("{} Wiederherstellungspunkte geladen.", points.len())
+                    });
+                    self.vss_restore_points = points;
+                }
+                BackgroundEvent::RollbackFinished { success, message } => {
+                    self.is_restoring = false;
+                    self.status_message = Some(message.clone());
+                    self.audit_logger.log(
+                        "RESTORE",
+                        "reg_backup",
+                        "Registry-Rollback",
+                        if success { "SUCCESS" } else { "FAILED" },
+                        &message,
+                    );
+                    self.audit_entries = self.audit_logger.get_history();
+                }
+            }
         }
     }
 
@@ -407,8 +661,179 @@ impl App {
         }
     }
 
+    // ---------------------------------------------------------------- history
+
     pub fn load_history_data(&mut self) {
         self.audit_entries = self.audit_logger.get_history();
         self.backup_records = self.reg_backup_mgr.list_backups();
+        self.clamp_backup_selection();
+
+        // Querying VSS costs a PowerShell round trip, so only do it the first
+        // time the tab is opened. [R] forces a refresh afterwards.
+        if !self.restore_points_requested {
+            self.refresh_restore_points();
+        }
+    }
+
+    pub fn refresh_restore_points(&mut self) {
+        if self.restore_points_loading {
+            return;
+        }
+        self.restore_points_requested = true;
+        self.restore_points_loading = true;
+        let tx = self.bg_tx.clone();
+        tokio::spawn(async move {
+            let points = list_restore_points().await;
+            let _ = tx.send(BackgroundEvent::RestorePointsLoaded(points));
+        });
+    }
+
+    fn clamp_backup_selection(&mut self) {
+        if self.backup_records.is_empty() {
+            self.selected_backup_index = 0;
+        } else if self.selected_backup_index >= self.backup_records.len() {
+            self.selected_backup_index = self.backup_records.len() - 1;
+        }
+    }
+
+    /// Backup records newest first — the order the history tab renders them in.
+    pub fn backups_newest_first(&self) -> Vec<&BackupRecord> {
+        self.backup_records.iter().rev().collect()
+    }
+
+    pub fn next_backup(&mut self) {
+        if !self.backup_records.is_empty() {
+            self.selected_backup_index =
+                (self.selected_backup_index + 1) % self.backup_records.len();
+        }
+    }
+
+    pub fn prev_backup(&mut self) {
+        if !self.backup_records.is_empty() {
+            if self.selected_backup_index == 0 {
+                self.selected_backup_index = self.backup_records.len() - 1;
+            } else {
+                self.selected_backup_index -= 1;
+            }
+        }
+    }
+
+    /// Ask for confirmation before importing the selected `.reg` backup.
+    pub fn request_rollback(&mut self) {
+        if self.is_busy() || self.is_restoring {
+            self.status_message =
+                Some("Rollback nicht möglich, während ein anderer Vorgang läuft.".to_string());
+            return;
+        }
+
+        let ordered = self.backups_newest_first();
+        let Some(record) = ordered.get(self.selected_backup_index) else {
+            self.status_message = Some(
+                "Keine Registry-Sicherung vorhanden. Sicherungen entstehen bei Registry-Fixes."
+                    .to_string(),
+            );
+            return;
+        };
+
+        self.pending_confirm = Some(ConfirmRequest::Rollback {
+            description: record.description.clone(),
+            key_path: record.key_path.clone(),
+            file_path: record.file_path.clone(),
+        });
+    }
+
+    pub fn dismiss_confirm(&mut self) {
+        if self.pending_confirm.take().is_some() {
+            self.status_message = Some("Abgebrochen – es wurde nichts verändert.".to_string());
+        }
+    }
+
+    /// Execute whatever action the confirmation dialog was asking about.
+    pub fn confirm_pending_action(&mut self) {
+        let Some(request) = self.pending_confirm.take() else {
+            return;
+        };
+
+        match request {
+            ConfirmRequest::Rollback {
+                description,
+                file_path,
+                ..
+            } => {
+                self.is_restoring = true;
+                self.status_message = Some(format!("Stelle '{}' wieder her...", description));
+
+                let tx = self.bg_tx.clone();
+                let mgr = RegBackupManager::new();
+                tokio::spawn(async move {
+                    let (success, message) = match mgr.restore_key(&file_path).await {
+                        Ok(msg) => (true, msg),
+                        Err(err) => (false, format!("Rollback fehlgeschlagen: {}", err)),
+                    };
+                    let _ = tx.send(BackgroundEvent::RollbackFinished { success, message });
+                });
+            }
+        }
+    }
+
+    // --------------------------------------------------------------- settings
+
+    pub fn next_setting(&mut self) {
+        self.selected_setting_index = (self.selected_setting_index + 1) % AppConfig::SETTING_COUNT;
+    }
+
+    pub fn prev_setting(&mut self) {
+        if self.selected_setting_index == 0 {
+            self.selected_setting_index = AppConfig::SETTING_COUNT - 1;
+        } else {
+            self.selected_setting_index -= 1;
+        }
+    }
+
+    pub fn toggle_current_setting(&mut self) {
+        if self.config.toggle_setting(self.selected_setting_index) {
+            self.apply_config_change();
+        }
+    }
+
+    pub fn adjust_current_setting(&mut self, increase: bool) {
+        if self
+            .config
+            .adjust_setting(self.selected_setting_index, increase)
+        {
+            self.apply_config_change();
+        }
+    }
+
+    /// Persist the config and rebuild the engine so modules pick up new
+    /// thresholds on the next scan.
+    fn apply_config_change(&mut self) {
+        match self.config.save() {
+            Ok(()) => {
+                self.status_message = Some(format!(
+                    "Einstellung gespeichert: {}",
+                    AppConfig::config_path().display()
+                ));
+            }
+            Err(e) => {
+                self.status_message = Some(format!(
+                    "Einstellung konnte nicht gespeichert werden: {}",
+                    e
+                ));
+            }
+        }
+
+        if self.is_busy() {
+            return;
+        }
+
+        self.engine = Arc::new(DiagnosticEngine::new(&self.config));
+        let (progress, statuses) = Self::module_lists(&self.engine);
+        self.module_progress_list = progress;
+        // Findings from the last scan stay on screen; only reset the per-module
+        // badges once there is nothing left to explain them.
+        if self.issues.is_empty() {
+            self.module_statuses = statuses;
+        }
     }
 }

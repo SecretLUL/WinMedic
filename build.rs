@@ -12,7 +12,8 @@ fn main() {
     );
     res.set("CompanyName", "SecretLUL");
     res.set("LegalCopyright", "Copyright (c) 2026 SecretLUL");
-    res.compile().expect("Failed to compile Windows PE resources");
+    res.compile()
+        .expect("Failed to compile Windows PE resources");
 }
 
 #[cfg(not(windows))]
