@@ -287,3 +287,49 @@ impl DiagnosticEngine {
         (fixed_count, failed_count)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::issue::{RiskScore, Severity};
+
+    #[test]
+    fn test_health_score_calculation() {
+        let mut issues = vec![
+            Issue::new(
+                "test_1",
+                "system_integrity",
+                "Critical Issue",
+                "Category",
+                Severity::Critical,
+                RiskScore::Low,
+                "Description",
+                "Details",
+                "Fix",
+                vec!["Step 1".to_string()],
+            ),
+            Issue::new(
+                "test_2",
+                "storage",
+                "Warning Issue",
+                "Category",
+                Severity::Warning,
+                RiskScore::Low,
+                "Description",
+                "Details",
+                "Fix",
+                vec!["Step 1".to_string()],
+            ),
+        ];
+
+        // 100 - 25 (Critical) - 10 (Warning) = 65
+        let score = DiagnosticEngine::calculate_health_score(&issues);
+        assert_eq!(score, 65);
+
+        // After fixing the critical issue: 100 - 10 = 90
+        issues[0].is_fixed = true;
+        let score_after_fix = DiagnosticEngine::calculate_health_score(&issues);
+        assert_eq!(score_after_fix, 90);
+    }
+}
+

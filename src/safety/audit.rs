@@ -89,3 +89,15 @@ impl AuditLogger {
         std::fs::read_to_string(log_file).unwrap_or_default()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_audit_logger_creation() {
+        let logger = AuditLogger::new();
+        assert!(logger.log_dir().exists());
+    }
+}
+
