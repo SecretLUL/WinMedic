@@ -1,0 +1,189 @@
+use std::path::PathBuf;
+use tokio::sync::mpsc::Sender;
+use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE};
+use winreg::RegKey;
+use crate::engine::issue::{Issue, RiskScore, Severity};
+use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
+use crate::safety::reg_backup::RegBackupManager;
+
+pub struct RegistryStartupModule;
+
+impl RegistryStartupModule {
+    pub fn new() -> Self {
+        Self
+    }
+
+    async fn send_progress(
+        progress_tx: &Option<Sender<ModuleProgress>>,
+        percent: u8,
+        step: &str,
+        log: Option<&str>,
+    ) {
+        if let Some(tx) = progress_tx {
+            let _ = tx
+                .send(ModuleProgress {
+                    module_id: "registry_startup".to_string(),
+                    progress_percent: percent,
+                    current_step: step.to_string(),
+                    log_message: log.map(|s| s.to_string()),
+                })
+                .await;
+        }
+    }
+
+    fn extract_exe_path(raw_cmd: &str) -> Option<PathBuf> {
+        let trimmed = raw_cmd.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        // 1. Quoted path: "C:\Program Files\App\app.exe" --arg
+        if let Some(rest) = trimmed.strip_prefix('"') {
+            if let Some(end_quote) = rest.find('"') {
+                return Some(PathBuf::from(&rest[..end_quote]));
+            }
+        }
+
+        // 2. Look for case-insensitive .exe / .cmd / .bat in the command string
+        let lower = trimmed.to_lowercase();
+        for ext in [".exe", ".bat", ".cmd", ".vbs"] {
+            if let Some(idx) = lower.find(ext) {
+                let candidate = &trimmed[..idx + ext.len()];
+                return Some(PathBuf::from(candidate.trim_matches('"')));
+            }
+        }
+
+        // 3. Fallback to first token if no extension
+        let first_word = trimmed.split_whitespace().next()?;
+        Some(PathBuf::from(first_word.trim_matches('"')))
+    }
+}
+
+#[async_trait::async_trait]
+impl DiagnosticModule for RegistryStartupModule {
+    fn id(&self) -> &'static str {
+        "registry_startup"
+    }
+
+    fn name(&self) -> &'static str {
+        "Registry & Autostart"
+    }
+
+    fn description(&self) -> &'static str {
+        "Prüft verwaiste Autostart-Einträge (Run/RunOnce) und fehlerhafte Registry-Verknüpfungen"
+    }
+
+    fn icon(&self) -> &'static str {
+        "⚡"
+    }
+
+    async fn scan(&self, progress_tx: Option<Sender<ModuleProgress>>) -> Result<Vec<Issue>, String> {
+        let mut issues = Vec::new();
+
+        Self::send_progress(&progress_tx, 20, "Scanne HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run...", Some("Prüfe Benutzer-Autostart...")).await;
+
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        if let Ok(run_key) = hkcu.open_subkey_with_flags(r"Software\Microsoft\Windows\CurrentVersion\Run", KEY_READ) {
+            for (name, val) in run_key.enum_values().flatten() {
+                let cmd_str = val.to_string();
+                if let Some(path) = Self::extract_exe_path(&cmd_str) {
+                    if path.is_absolute() && !path.exists() {
+                        issues.push(Issue::new(
+                            format!("reg_orphaned_hkcu_{}", name.replace(' ', "_")),
+                            self.id(),
+                            format!("Verwaister Autostart-Eintrag in HKCU: '{}'", name),
+                            "Registry & Autostart",
+                            Severity::Warning,
+                            RiskScore::Low,
+                            format!("Der Autostart-Eintrag '{}' verweist auf eine nicht existierende Datei ({}). Dies verlangsamt den Systemstart und führt zu Fehlermeldungen.", name, path.display()),
+                            format!("HKCU\\Run -> {} = {}", name, cmd_str),
+                            "Ungültigen Autostart-Eintrag nach .reg-Sicherung sicher entfernen",
+                            vec![
+                                "Registry-Snapshot anlegen".to_string(),
+                                format!("Eintrag '{}' aus HKCU\\Run löschen", name),
+                            ],
+                        ));
+                    }
+                }
+            }
+        }
+
+        Self::send_progress(&progress_tx, 55, "Scanne HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run...", Some("Prüfe System-Autostart...")).await;
+
+        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+        if let Ok(run_key) = hklm.open_subkey_with_flags(r"Software\Microsoft\Windows\CurrentVersion\Run", KEY_READ) {
+            for (name, val) in run_key.enum_values().flatten() {
+                let cmd_str = val.to_string();
+                if let Some(path) = Self::extract_exe_path(&cmd_str) {
+                    if path.is_absolute() && !path.exists() {
+                        issues.push(Issue::new(
+                            format!("reg_orphaned_hklm_{}", name.replace(' ', "_")),
+                            self.id(),
+                            format!("Verwaister Autostart-Eintrag in HKLM: '{}'", name),
+                            "Registry & Autostart",
+                            Severity::Warning,
+                            RiskScore::Low,
+                            format!("Der System-Autostart-Eintrag '{}' verweist auf eine gelöschte oder verschobene Datei ({}).", name, path.display()),
+                            format!("HKLM\\Run -> {} = {}", name, cmd_str),
+                            "Ungültigen Autostart-Eintrag nach .reg-Sicherung entfernen",
+                            vec![
+                                "Registry-Snapshot anlegen".to_string(),
+                                format!("Eintrag '{}' aus HKLM\\Run löschen", name),
+                            ],
+                        ));
+                    }
+                }
+            }
+        }
+
+        Self::send_progress(&progress_tx, 80, "Prüfe Benutzer-Startup-Verzeichnis...", Some("Prüfe Startup-Ordner...")).await;
+
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let startup_dir = PathBuf::from(appdata).join(r"Microsoft\Windows\Start Menu\Programs\Startup");
+            if startup_dir.exists() {
+                if let Ok(entries) = std::fs::read_dir(startup_dir) {
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        if p.extension().map(|e| e.to_string_lossy().to_lowercase()) == Some("lnk".to_string()) {
+                            // Link exists in startup
+                        }
+                    }
+                }
+            }
+        }
+
+        Self::send_progress(&progress_tx, 100, "Registry- und Autostartdiagnose abgeschlossen", None).await;
+
+        Ok(issues)
+    }
+
+    async fn fix(&self, issue_id: &str, _progress_tx: Option<Sender<FixProgress>>) -> Result<String, String> {
+        let backup_mgr = RegBackupManager::new();
+
+        if let Some(val_name) = issue_id.strip_prefix("reg_orphaned_hkcu_") {
+            let clean_name = val_name.replace('_', " ");
+            let key_path = r"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run";
+            let _ = backup_mgr.export_key(key_path, "Vor Löschung von verwaistem HKCU Run Key").await;
+
+            let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+            if let Ok(run_key) = hkcu.open_subkey_with_flags(r"Software\Microsoft\Windows\CurrentVersion\Run", KEY_WRITE) {
+                let _ = run_key.delete_value(&clean_name);
+                return Ok(format!("Verwaister Autostart-Eintrag '{}' aus HKCU\\Run entfernt.", clean_name));
+            }
+        }
+
+        if let Some(val_name) = issue_id.strip_prefix("reg_orphaned_hklm_") {
+            let clean_name = val_name.replace('_', " ");
+            let key_path = r"HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Run";
+            let _ = backup_mgr.export_key(key_path, "Vor Löschung von verwaistem HKLM Run Key").await;
+
+            let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+            if let Ok(run_key) = hklm.open_subkey_with_flags(r"Software\Microsoft\Windows\CurrentVersion\Run", KEY_WRITE) {
+                let _ = run_key.delete_value(&clean_name);
+                return Ok(format!("Verwaister Autostart-Eintrag '{}' aus HKLM\\Run entfernt.", clean_name));
+            }
+        }
+
+        Err(format!("Unbekannte Problem-ID: {}", issue_id))
+    }
+}

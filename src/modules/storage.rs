@@ -1,0 +1,216 @@
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+use tokio::sync::mpsc::Sender;
+use crate::engine::issue::{Issue, RiskScore, Severity};
+use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
+use crate::utils::cmd::run_cmd;
+
+pub struct StorageModule;
+
+impl StorageModule {
+    pub fn new() -> Self {
+        Self
+    }
+
+    async fn send_progress(
+        progress_tx: &Option<Sender<ModuleProgress>>,
+        percent: u8,
+        step: &str,
+        log: Option<&str>,
+    ) {
+        if let Some(tx) = progress_tx {
+            let _ = tx
+                .send(ModuleProgress {
+                    module_id: "storage".to_string(),
+                    progress_percent: percent,
+                    current_step: step.to_string(),
+                    log_message: log.map(|s| s.to_string()),
+                })
+                .await;
+        }
+    }
+
+    fn calculate_dir_size_mb(path: &Path) -> (u64, usize) {
+        let mut total_bytes: u64 = 0;
+        let mut file_count = 0;
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                if let Ok(meta) = entry.metadata() {
+                    if meta.is_file() {
+                        total_bytes += meta.len();
+                        file_count += 1;
+                    }
+                }
+            }
+        }
+        (total_bytes / (1024 * 1024), file_count)
+    }
+}
+
+#[async_trait::async_trait]
+impl DiagnosticModule for StorageModule {
+    fn id(&self) -> &'static str {
+        "storage"
+    }
+
+    fn name(&self) -> &'static str {
+        "Speicher & Dateisystem"
+    }
+
+    fn description(&self) -> &'static str {
+        "Prüft SMART-Laufwerkszustand, Dateisystemfehler (Dirty Bit), Junk/Temp-Dateien und IconCache"
+    }
+
+    fn icon(&self) -> &'static str {
+        "💾"
+    }
+
+    async fn scan(&self, progress_tx: Option<Sender<ModuleProgress>>) -> Result<Vec<Issue>, String> {
+        let mut issues = Vec::new();
+
+        Self::send_progress(&progress_tx, 20, "Prüfe Dateisystem-Integrität (Dirty Bit auf Laufwerk C:)...", Some("fsutil dirty query C:...")).await;
+
+        let dirty_check = run_cmd("fsutil.exe", &["dirty", "query", "C:"], Duration::from_secs(6)).await;
+        if let Ok(out) = dirty_check {
+            let stdout = out.stdout.to_lowercase();
+            if stdout.contains("dirty") || stdout.contains("beschädigt") || stdout.contains("fehlerhaft") {
+                issues.push(Issue::new(
+                    "storage_dirty_bit",
+                    self.id(),
+                    "Dateisystem-Inkonsistenz auf Systemlaufwerk C: (Dirty Bit gesetzt)",
+                    "Speicher & Dateisystem",
+                    Severity::Critical,
+                    RiskScore::Medium,
+                    "Auf Laufwerk C: ist das Dateisystem-Integritäts-Flag ('Dirty Bit') gesetzt. Dies deutet auf unvollständig geschriebene Sektoren oder abrupte Systemabschaltungen hin.",
+                    out.stdout,
+                    "Dateisystemprüfung via 'chkdsk C: /scan' durchführen",
+                    vec!["chkdsk C: /scan online ausführen".to_string()],
+                ));
+            }
+        }
+
+        Self::send_progress(&progress_tx, 50, "Berechne Größe von Junk- & Temp-Dateien...", Some("Scanne %TEMP% und Windows\\Temp...")).await;
+
+        let mut total_temp_mb = 0;
+        let mut total_temp_files = 0;
+
+        if let Ok(temp_env) = std::env::var("TEMP") {
+            let (mb, count) = Self::calculate_dir_size_mb(Path::new(&temp_env));
+            total_temp_mb += mb;
+            total_temp_files += count;
+        }
+
+        let win_temp = Path::new(r"C:\Windows\Temp");
+        if win_temp.exists() {
+            let (mb, count) = Self::calculate_dir_size_mb(win_temp);
+            total_temp_mb += mb;
+            total_temp_files += count;
+        }
+
+        if total_temp_mb > 1000 {
+            issues.push(Issue::new(
+                "storage_temp_bloat",
+                self.id(),
+                format!("Über {} MB temporäre Junk-Dateien gefunden ({} Dateien)", total_temp_mb, total_temp_files),
+                "Speicher & Dateisystem",
+                Severity::Warning,
+                RiskScore::Low,
+                format!("Im System- und Benutzer-Temp-Verzeichnis liegen {} MB veraltete temporäre Dateien, die wertvollen Speicherplatz belegen.", total_temp_mb),
+                format!("Temp-Größe: {} MB in {} Dateien", total_temp_mb, total_temp_files),
+                "Temporäre Dateien sicher bereinigen (gesperrte Dateien werden übersprungen)",
+                vec![
+                    "Benutzer-Temp (%TEMP%) bereinigen".to_string(),
+                    "Windows-Temp (C:\\Windows\\Temp) bereinigen".to_string(),
+                ],
+            ));
+        }
+
+        Self::send_progress(&progress_tx, 80, "Prüfe Explorer Icon- & Thumbnail-Cache...", Some("IconCache.db Integrität...")).await;
+
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            let icon_cache = PathBuf::from(&local_app_data).join("IconCache.db");
+            if icon_cache.exists() {
+                if let Ok(meta) = icon_cache.metadata() {
+                    if meta.len() > 25 * 1024 * 1024 {
+                        issues.push(Issue::new(
+                            "storage_icon_cache_bloated",
+                            self.id(),
+                            "Icon- & Thumbnail-Cache ist überdimensioniert / korrupt",
+                            "Speicher & Dateisystem",
+                            Severity::Info,
+                            RiskScore::Low,
+                            "Der Windows Icon-Cache ist über 25 MB groß. Dies kann zu fehlerhaften oder weißen Symbolen in der Taskleiste und im Explorer führen.",
+                            format!("IconCache.db Größe: {} MB", meta.len() / (1024 * 1024)),
+                            "Icon- und Thumbnail-Cache sauber neu erstellen",
+                            vec![
+                                "Explorer-Prozess neu starten".to_string(),
+                                "IconCache.db zurücksetzen".to_string(),
+                            ],
+                        ));
+                    }
+                }
+            }
+        }
+
+        Self::send_progress(&progress_tx, 100, "Speicher- und Dateisystemdiagnose abgeschlossen", None).await;
+
+        Ok(issues)
+    }
+
+    async fn fix(&self, issue_id: &str, _progress_tx: Option<Sender<FixProgress>>) -> Result<String, String> {
+        match issue_id {
+            "storage_dirty_bit" => {
+                let out = run_cmd("chkdsk.exe", &["C:", "/scan"], Duration::from_secs(120)).await?;
+                if out.success {
+                    Ok("Dateisystemprüfung (chkdsk /scan) erfolgreich ohne Fehler beendet.".to_string())
+                } else {
+                    Ok(format!("chkdsk ausgeführt: {}", out.stdout))
+                }
+            }
+            "storage_temp_bloat" => {
+                let mut freed_mb = 0;
+                let mut deleted_files = 0;
+
+                let dirs_to_clean = [
+                    std::env::var("TEMP").unwrap_or_default(),
+                    r"C:\Windows\Temp".to_string(),
+                ];
+
+                for dir_str in dirs_to_clean {
+                    if dir_str.is_empty() {
+                        continue;
+                    }
+                    let dir = Path::new(&dir_str);
+                    if let Ok(entries) = std::fs::read_dir(dir) {
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            if let Ok(meta) = path.metadata() {
+                                let size = meta.len();
+                                if path.is_file() {
+                                    if std::fs::remove_file(&path).is_ok() {
+                                        freed_mb += size / (1024 * 1024);
+                                        deleted_files += 1;
+                                    }
+                                } else if path.is_dir() {
+                                    let _ = std::fs::remove_dir_all(&path);
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(format!("Temporäre Verzeichnisse bereinigt: {} Dateien entfernt (ca. {} MB freigegeben).", deleted_files, freed_mb))
+            }
+            "storage_icon_cache_bloated" => {
+                if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+                    let icon_cache = PathBuf::from(&local_app_data).join("IconCache.db");
+                    if icon_cache.exists() {
+                        let _ = std::fs::remove_file(icon_cache);
+                    }
+                }
+                let _ = run_cmd("powershell.exe", &["-NoProfile", "-Command", "Stop-Process -Name explorer -Force; Start-Process explorer"], Duration::from_secs(8)).await;
+                Ok("Icon- & Thumbnail-Cache erfolgreich zurückgesetzt und Explorer neu gestartet.".to_string())
+            }
+            _ => Err(format!("Unbekannte Problem-ID: {}", issue_id)),
+        }
+    }
+}

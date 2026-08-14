@@ -1,0 +1,203 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%" shape-rendering="geometricPrecision" text-rendering="geometricPrecision">
+  <defs>
+    <!-- Background Canvas Gradient -->
+    <radialGradient id="bgGrad" cx="50%" cy="35%" r="75%">
+      <stop offset="0%" stop-color="#1E293B"/>
+      <stop offset="60%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#070B14"/>
+    </radialGradient>
+
+    <!-- Neon Glow Cyan Gradient -->
+    <linearGradient id="neonCyan" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="50%" stop-color="#00D2FF"/>
+      <stop offset="100%" stop-color="#00F5D4"/>
+    </linearGradient>
+
+    <!-- Neon Emerald Gradient -->
+    <linearGradient id="neonEmerald" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#34D399"/>
+      <stop offset="100%" stop-color="#10B981"/>
+    </linearGradient>
+
+    <!-- Shield Face Gradient -->
+    <linearGradient id="shieldBg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#1E2B45" stop-opacity="0.95"/>
+      <stop offset="50%" stop-color="#111B2C" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#0A101C" stop-opacity="0.98"/>
+    </linearGradient>
+
+    <!-- Shield Outer Rim Border Gradient -->
+    <linearGradient id="shieldBorder" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00D2FF"/>
+      <stop offset="50%" stop-color="#10B981"/>
+      <stop offset="100%" stop-color="#0369A1"/>
+    </linearGradient>
+
+    <!-- Soft Glow Filter -->
+    <filter id="cyanGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Intense Pulse Glow Filter -->
+    <filter id="pulseGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="14" result="blur1"/>
+      <feGaussianBlur stdDeviation="5" result="blur2"/>
+      <feMerge>
+        <feMergeNode in="blur1"/>
+        <feMergeNode in="blur2"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Drop Shadow Filter -->
+    <filter id="dropShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#000000" flood-opacity="0.6"/>
+    </filter>
+  </defs>
+
+  <!-- Base App Icon Rounded Canvas -->
+  <rect width="512" height="512" rx="112" fill="url(#bgGrad)"/>
+  <rect width="508" height="508" x="2" y="2" rx="110" fill="none" stroke="url(#shieldBorder)" stroke-width="2" stroke-opacity="0.25"/>
+
+  <!-- Background Ambient Cyber Glow -->
+  <circle cx="256" cy="256" r="160" fill="#00D2FF" opacity="0.14" filter="url(#cyanGlow)"/>
+  <circle cx="256" cy="270" r="120" fill="#10B981" opacity="0.12" filter="url(#pulseGlow)"/>
+
+  <!-- Centered Main Shield & Cross Group with Shadow -->
+  <g filter="url(#dropShadow)">
+    <!-- Outer Shield Outer Contour (Perfect Centering) -->
+    <path d="M 256 52 
+             L 404 106 
+             C 404 246, 356 360, 256 424 
+             C 156 360, 108 246, 108 106 
+             Z" 
+          fill="url(#shieldBg)" 
+          stroke="url(#shieldBorder)" 
+          stroke-width="6" 
+          stroke-linejoin="round"/>
+
+    <!-- Inner Shield Inset Accent Line -->
+    <path d="M 256 74 
+             L 380 120 
+             C 380 236, 340 334, 256 392 
+             C 172 334, 132 236, 132 120 
+             Z" 
+          fill="none" 
+          stroke="#00D2FF" 
+          stroke-opacity="0.35" 
+          stroke-width="2.5" 
+          stroke-dasharray="9 7"/>
+
+    <!-- Circuit Trace Lines on Shield Body -->
+    <g stroke="url(#neonCyan)" stroke-width="3.5" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="0.85">
+      <!-- Left Circuit Branches -->
+      <path d="M 158 165 L 186 165 L 204 183 L 204 218"/>
+      <circle cx="158" cy="165" r="5" fill="url(#neonCyan)"/>
+      <circle cx="204" cy="218" r="4" fill="url(#neonCyan)"/>
+
+      <path d="M 140 240 L 170 240 L 198 268"/>
+      <circle cx="140" cy="240" r="5" fill="url(#neonCyan)"/>
+      <circle cx="198" cy="268" r="4" fill="url(#neonCyan)"/>
+
+      <path d="M 166 315 L 202 315 L 220 297"/>
+      <circle cx="166" cy="315" r="5" fill="url(#neonCyan)"/>
+
+      <!-- Right Circuit Branches -->
+      <path d="M 354 165 L 326 165 L 308 183 L 308 218"/>
+      <circle cx="354" cy="165" r="5" fill="url(#neonCyan)"/>
+      <circle cx="308" cy="218" r="4" fill="url(#neonCyan)"/>
+
+      <path d="M 372 240 L 342 240 L 314 268"/>
+      <circle cx="372" cy="240" r="5" fill="url(#neonCyan)"/>
+      <circle cx="314" cy="268" r="4" fill="url(#neonCyan)"/>
+
+      <path d="M 346 315 L 310 315 L 292 297"/>
+      <circle cx="346" cy="315" r="5" fill="url(#neonCyan)"/>
+    </g>
+
+    <!-- Central Medical Cross Outline (Centered at Y=240) -->
+    <path d="M 228 136
+             L 284 136
+             A 7 7 0 0 1 291 143
+             L 291 207
+             L 355 207
+             A 7 7 0 0 1 362 214
+             L 362 270
+             A 7 7 0 0 1 355 277
+             L 291 277
+             L 291 341
+             A 7 7 0 0 1 284 348
+             L 228 348
+             A 7 7 0 0 1 221 341
+             L 221 277
+             L 157 277
+             A 7 7 0 0 1 150 270
+             L 150 214
+             A 7 7 0 0 1 157 207
+             L 221 207
+             L 221 143
+             A 7 7 0 0 1 228 136
+             Z"
+          fill="#0C1524"
+          stroke="url(#neonCyan)"
+          stroke-width="5.5"
+          stroke-linejoin="round"/>
+
+    <!-- Inner Cross Subtle Shading -->
+    <path d="M 235 150 L 277 150 L 277 220 L 347 220 L 347 262 L 277 262 L 277 332 L 235 332 L 235 262 L 165 262 L 165 220 L 235 220 Z"
+          fill="none"
+          stroke="#1E293B"
+          stroke-width="2.5"/>
+
+    <!-- High-Voltage Vital Heartbeat (ECG / Pulse) across the cross -->
+    <!-- Glow Underlayer -->
+    <path d="M 98 242 
+             L 174 242 
+             L 196 242 
+             L 212 208 
+             L 230 286 
+             L 256 162 
+             L 278 308 
+             L 298 224 
+             L 312 256 
+             L 324 242 
+             L 414 242" 
+          fill="none" 
+          stroke="#00F5D4" 
+          stroke-width="14" 
+          stroke-linecap="round" 
+          stroke-linejoin="round" 
+          opacity="0.6" 
+          filter="url(#pulseGlow)"/>
+
+    <!-- Sharp Center Heartbeat Line -->
+    <path d="M 98 242 
+             L 174 242 
+             L 196 242 
+             L 212 208 
+             L 230 286 
+             L 256 162 
+             L 278 308 
+             L 298 224 
+             L 312 256 
+             L 324 242 
+             L 414 242" 
+          fill="none" 
+          stroke="#FFFFFF" 
+          stroke-width="5.5" 
+          stroke-linecap="round" 
+          stroke-linejoin="round"/>
+
+    <!-- Pulse End Terminal Nodes -->
+    <circle cx="98" cy="242" r="7" fill="#00D2FF" filter="url(#cyanGlow)"/>
+    <circle cx="98" cy="242" r="3.5" fill="#FFFFFF"/>
+    <circle cx="414" cy="242" r="7" fill="#00F5D4" filter="url(#cyanGlow)"/>
+    <circle cx="414" cy="242" r="3.5" fill="#FFFFFF"/>
+  </g>
+</svg>

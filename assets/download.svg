@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2037.4209999999998 698.6" width="2037.4209999999998" height="698.6" style="--bg:#1F1F1F;--fg:#CCCCCC;--line:#CCCCCC;--accent:#0078D4;--muted:#CCCCCCCC;--surface:#181818;--border:#CCCCCC;background:var(--bg)">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap');
+  text { font-family: 'Inter', system-ui, sans-serif; }
+  svg {
+    /* Derived from --bg and --fg (overridable via --line, --accent, etc.) */
+    --_text:          var(--fg);
+    --_text-sec:      var(--muted, color-mix(in srgb, var(--fg) 60%, var(--bg)));
+    --_text-muted:    var(--muted, color-mix(in srgb, var(--fg) 40%, var(--bg)));
+    --_text-faint:    color-mix(in srgb, var(--fg) 25%, var(--bg));
+    --_line:          var(--line, color-mix(in srgb, var(--fg) 50%, var(--bg)));
+    --_arrow:         var(--accent, color-mix(in srgb, var(--fg) 85%, var(--bg)));
+    --_node-fill:     var(--surface, color-mix(in srgb, var(--fg) 3%, var(--bg)));
+    --_node-stroke:   var(--border, color-mix(in srgb, var(--fg) 20%, var(--bg)));
+    --_group-fill:    var(--bg);
+    --_group-hdr:     color-mix(in srgb, var(--fg) 5%, var(--bg));
+    --_inner-stroke:  color-mix(in srgb, var(--fg) 12%, var(--bg));
+    --_key-badge:     color-mix(in srgb, var(--fg) 10%, var(--bg));
+  }
+</style>
+<defs>
+  <marker id="arrowhead" markerWidth="8" markerHeight="5" refX="7" refY="2.5" orient="auto">
+    <polygon points="0 0, 8 2.5, 0 5" fill="var(--_arrow)" stroke="var(--_arrow)" stroke-width="0.75" stroke-linejoin="round" />
+  </marker>
+  <marker id="arrowhead-start" markerWidth="8" markerHeight="5" refX="1" refY="2.5" orient="auto-start-reverse">
+    <polygon points="8 0, 0 2.5, 8 5" fill="var(--_arrow)" stroke="var(--_arrow)" stroke-width="0.75" stroke-linejoin="round" />
+  </marker>
+</defs>
+<g class="subgraph" data-id="Core_Engine_WinMedic_Core_Engine" data-label="Core Engine [WinMedic Core Engine]">
+  <rect x="40" y="369" width="1957.4209999999998" height="198.70000000000002" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="40" y="369" width="1957.4209999999998" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="52" y="383" font-size="12" font-weight="600" fill="var(--_text-sec)" dy="4.199999999999999">Core Engine [WinMedic Core Engine]</text>
+</g>
+<polyline class="edge" data-from="User" data-to="TUI" data-style="solid" data-arrow-start="false" data-arrow-end="true" data-label="Keyboard / Navigation" points="592.7472500000001,76.9 592.74725,193.2" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="CLI" data-to="Engine" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="783.48025,230.1 783.48025,254.10000000000002 688.11375,254.10000000000002 688.11375,278.1" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="TUI" data-to="Engine" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="592.74725,230.1 592.74725,254.10000000000002 688.11375,254.10000000000002 688.11375,278.1" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="Engine" data-to="Safety" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="688.11375,315 688.11375,364 220.32125000000002,364 220.32125000000002,413" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="Engine" data-to="Runner" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="688.11375,315 688.11375,364 1155.90625,364 1155.90625,413" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="M1" data-to="WinAPI" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="503.27149999999995,551.6999999999999 503.27149999999995,586.7 1170.35575,586.7 1170.35575,621.7" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="M2" data-to="WinAPI" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="754.396,551.6999999999999 754.396,586.7 1170.35575,586.7 1170.35575,621.7" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="M3" data-to="WinAPI" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="1032.1965,551.6999999999999 1032.1965,586.7 1170.35575,586.7 1170.35575,621.7" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="M4" data-to="WinAPI" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="1279.6159999999998,551.6999999999999 1279.6159999999998,586.7 1170.35575,586.7 1170.35575,621.7" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="M5" data-to="WinAPI" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="1537.7799999999997,551.6999999999999 1537.7799999999997,586.7 1170.35575,586.7 1170.35575,621.7" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="M6" data-to="WinAPI" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="1837.4399999999998,551.6999999999999 1837.4399999999998,586.7 1170.35575,586.7 1170.35575,621.7" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="Safety" data-to="VSS" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="220.32125000000002,449.9 220.32125000000002,473.9 131.06799999999998,473.9 131.06799999999998,497.9" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="Safety" data-to="RegBackup" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="220.32125000000002,449.9 220.32125000000002,473.9 309.57449999999994,473.9 309.57449999999994,497.9" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="Runner" data-to="M1" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="1155.90625,449.9 1155.90625,473.9 503.27149999999995,473.9 503.27149999999995,497.9" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="Runner" data-to="M2" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="1155.90625,449.9 1155.90625,473.9 754.396,473.9 754.396,497.9" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="Runner" data-to="M3" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="1155.90625,449.9 1155.90625,473.9 1032.1965,473.9 1032.1965,497.9" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="Runner" data-to="M4" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="1155.90625,449.9 1155.90625,473.9 1279.6159999999998,473.9 1279.6159999999998,497.9" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="Runner" data-to="M5" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="1155.90625,449.9 1155.90625,473.9 1537.7799999999997,473.9 1537.7799999999997,497.9" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="Runner" data-to="M6" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="1155.90625,449.9 1155.90625,473.9 1837.4399999999998,473.9 1837.4399999999998,497.9" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<g class="edge-label" data-from="User" data-to="TUI" data-label="Keyboard / Navigation">
+  <rect x="531.7472500000001" y="119.9" width="121.60000000000001" height="30.3" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="592.5472500000001" y="135.05" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)" dy="3.8499999999999996">Keyboard / Navigation</text>
+</g>
+<g class="node" data-id="User" data-label="Terminal User" data-shape="stadium">
+  <rect x="529.9057500000001" y="40" width="125.68299999999999" height="36.900000000000006" rx="18.450000000000003" ry="18.450000000000003" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="592.7472500000001" y="58.45" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">Terminal User</text>
+</g>
+<g class="node" data-id="TUI" data-label="Ratatui UI Layer" data-shape="rectangle">
+  <rect x="525.08925" y="193.2" width="135.316" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="592.74725" y="211.64999999999998" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">Ratatui UI Layer</text>
+</g>
+<g class="node" data-id="CLI" data-label="CLI Flags --scan --auto-fix" data-shape="rectangle">
+  <rect x="688.40525" y="193.2" width="190.14999999999995" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="783.48025" y="211.64999999999998" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">CLI Flags --scan --auto-fix</text>
+</g>
+<g class="node" data-id="Engine" data-label="WinMedic Diagnostic Engine" data-shape="rectangle">
+  <rect x="584.14675" y="278.1" width="207.93399999999997" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="688.11375" y="296.55" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">WinMedic Diagnostic Engine</text>
+</g>
+<g class="node" data-id="WinAPI" data-label="Win32 API &amp; System Tools" data-shape="rectangle">
+  <rect x="1074.16925" y="621.7" width="192.373" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="1170.35575" y="640.1500000000001" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">Win32 API &amp; System Tools</text>
+</g>
+<g class="node" data-id="Safety" data-label="Safety &amp; Backup Manager" data-shape="rectangle">
+  <rect x="123.76425000000003" y="413" width="193.114" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="220.32125000000002" y="431.45" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">Safety &amp; Backup Manager</text>
+</g>
+<g class="node" data-id="VSS" data-label="VSS Restore Point" data-shape="rectangle">
+  <rect x="56" y="497.9" width="150.136" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="131.06799999999998" y="516.35" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">VSS Restore Point</text>
+</g>
+<g class="node" data-id="RegBackup" data-label="Registry Snapshot" data-shape="rectangle">
+  <rect x="234.13599999999997" y="497.9" width="150.877" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="309.57449999999994" y="516.35" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">Registry Snapshot</text>
+</g>
+<g class="node" data-id="Runner" data-label="Parallel Task Runner / Tokio" data-shape="rectangle">
+  <rect x="1050.82775" y="413" width="210.15699999999998" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="1155.90625" y="431.45" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">Parallel Task Runner / Tokio</text>
+</g>
+<g class="node" data-id="M1" data-label="System Integrity Module
+DISM / SFC / VSS" data-shape="rectangle">
+  <rect x="413.013" y="497.9" width="180.517" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="503.27149999999995" y="524.8" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="503.27149999999995" dy="-3.9000000000000012">System Integrity Module</tspan><tspan x="503.27149999999995" dy="16.900000000000002">DISM / SFC / VSS</tspan></text>
+</g>
+<g class="node" data-id="M2" data-label="Windows Update &amp; Services
+SoftwareDistribution / BITS / wuauserv" data-shape="rectangle">
+  <rect x="621.53" y="497.9" width="265.73199999999997" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="754.396" y="524.8" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="754.396" dy="-3.9000000000000012">Windows Update &amp; Services</tspan><tspan x="754.396" dy="16.900000000000002">SoftwareDistribution / BITS / wuauserv</tspan></text>
+</g>
+<g class="node" data-id="M3" data-label="Network &amp; DNS Module
+Winsock / TCP-IP / DNS / Firewall" data-shape="rectangle">
+  <rect x="915.262" y="497.9" width="233.86899999999994" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="1032.1965" y="524.8" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="1032.1965" dy="-3.9000000000000012">Network &amp; DNS Module</tspan><tspan x="1032.1965" dy="16.900000000000002">Winsock / TCP-IP / DNS / Firewall</tspan></text>
+</g>
+<g class="node" data-id="M4" data-label="Event Log &amp; Crash Analysis
+wevtutil / MiniDumps / WHEA" data-shape="rectangle">
+  <rect x="1177.1309999999999" y="497.9" width="204.96999999999997" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="1279.6159999999998" y="524.8" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="1279.6159999999998" dy="-3.9000000000000012">Event Log &amp; Crash Analysis</tspan><tspan x="1279.6159999999998" dy="16.900000000000002">wevtutil / MiniDumps / WHEA</tspan></text>
+</g>
+<g class="node" data-id="M5" data-label="Storage &amp; Filesystem
+SMART / Chkdsk / Temp / IconCache" data-shape="rectangle">
+  <rect x="1410.1009999999999" y="497.9" width="255.35799999999995" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="1537.7799999999997" y="524.8" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="1537.7799999999997" dy="-3.9000000000000012">Storage &amp; Filesystem</tspan><tspan x="1537.7799999999997" dy="16.900000000000002">SMART / Chkdsk / Temp / IconCache</tspan></text>
+</g>
+<g class="node" data-id="M6" data-label="Registry &amp; Startup Module
+Orphaned Run Keys / System Consistency" data-shape="rectangle">
+  <rect x="1693.4589999999998" y="497.9" width="287.962" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="1837.4399999999998" y="524.8" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="1837.4399999999998" dy="-3.9000000000000012">Registry &amp; Startup Module</tspan><tspan x="1837.4399999999998" dy="16.900000000000002">Orphaned Run Keys / System Consistency</tspan></text>
+</g>
+</svg>

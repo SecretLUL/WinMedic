@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+Cargo.lock.tmp
+.DS_Store
+Thumbs.db
+*.pdb
+*.exe
+.idea/
+.vscode/

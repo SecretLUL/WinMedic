@@ -1,0 +1,34 @@
+[package]
+name = "winmedic"
+version = "0.1.0"
+edition = "2024"
+authors = ["Ammar <https://github.com/SecretLUL>"]
+description = "High-performance Windows Self-Healing & Diagnostic TUI in Rust"
+readme = "README.md"
+license = "MIT"
+keywords = ["windows", "diagnostics", "repair", "tui", "ratatui"]
+categories = ["command-line-utilities", "system-administration"]
+
+[dependencies]
+async-trait = "0.1"
+ratatui = "0.29"
+crossterm = "0.28"
+tokio = { version = "1.40", features = ["full"] }
+clap = { version = "4.5", features = ["derive"] }
+sysinfo = "0.33"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+winreg = "0.52"
+anyhow = "1.0"
+thiserror = "2.0"
+colored = "3.0"
+regex = "1.11"
+dirs = "6.0"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
