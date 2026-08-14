@@ -1,5 +1,8 @@
 #[cfg(windows)]
 fn main() {
+    println!("cargo:rerun-if-changed=assets/icon.ico");
+    println!("cargo:rerun-if-changed=build.rs");
+
     let mut res = winres::WindowsResource::new();
     res.set_icon("assets/icon.ico");
     res.set("ProductName", "WinMedic");
@@ -9,13 +12,7 @@ fn main() {
     );
     res.set("CompanyName", "SecretLUL");
     res.set("LegalCopyright", "Copyright (c) 2026 SecretLUL");
-    res.compile().unwrap();
-
-    let out_dir = std::env::var("OUT_DIR").unwrap();
-    let res_path = std::path::Path::new(&out_dir).join("resource.res");
-    if res_path.exists() {
-        println!("cargo:rustc-link-arg={}", res_path.display());
-    }
+    res.compile().expect("Failed to compile Windows PE resources");
 }
 
 #[cfg(not(windows))]

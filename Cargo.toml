@@ -2,12 +2,17 @@
 name = "winmedic"
 version = "0.1.0"
 edition = "2024"
+build = "build.rs"
 authors = ["Ammar <https://github.com/SecretLUL>"]
 description = "High-performance Windows Self-Healing & Diagnostic TUI in Rust"
 readme = "README.md"
 license = "MIT"
 keywords = ["windows", "diagnostics", "repair", "tui", "ratatui"]
 categories = ["command-line-utilities", "system-administration"]
+
+[[bin]]
+name = "winmedic"
+path = "src/main.rs"
 
 [dependencies]
 async-trait = "0.1"
@@ -34,4 +39,3 @@ opt-level = 3
 lto = true
 codegen-units = 1
 panic = "abort"
-strip = true
