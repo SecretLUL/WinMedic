@@ -42,35 +42,6 @@ Unlike opaque one-click cleanup tools, **WinMedic** is built on four fundamental
 
 ---
 
-## 🖥️ Terminal Interface
-
-```text
-┌─ WinMedic v0.1.0 ────────────────────── [ CPU: 12% | RAM: 6.2/16GB | Win 11 23H2 | VSS: Ready ] ─┐
-│ [1] Dashboard  │ [2] Health Scan (●) │ [3] Issue Triage [3] │ [4] Repair Center │ [5] Backups & Logs │
-├───────────────────────────────────────┬─────────────────────────────────────────────────────────────┤
-│ 📂 DIAGNOSE-MODULE                     │ 🔍 PROBLEM-DETAILS & REPARATUR-VORSCHLAG                     │
-│                                       │                                                             │
-│  [✔] 1. System-Integrität (DISM/SFC)  │  Titel:      Windows Update Store beschädigt (0x80070002)   │
-│  [✖] 2. Windows Update & Dienste [2]  │  Kategorie:  Windows Update & Services                     │
-│  [✔] 3. Netzwerk & DNS                │  Schweregrad:🔴 KRITISCH          Risiko-Score: 🟢 GERING   │
-│  [▲] 4. Event-Log & Crash-Dump   [1]  │                                                             │
-│  [✔] 5. Speicher & Dateisystem        │  Beschreibung:                                              │
-│  [✔] 6. Registry & Autostart          │  Der SoftwareDistribution-Cache enthält unvollständige      │
-│                                       │  Pakete. Dienst 'wuauserv' meldet Timeouts beim Start.      │
-│ ───────────────────────────────────── │                                                             │
-│ 📊 SCAN-STATUS                        │  Empfohlene Reparatur (Auto-Fix):                           │
-│  Fortschritt: [████████████░░] 85%    │  1. Dienste stoppen (wuauserv, bits, cryptsvc)              │
-│  Gefunden: 3 Probleme (1 Kritisch)    │  2. Cache 'SoftwareDistribution.old' sicher archivieren    │
-│  Health-Score: 78 / 100               │  3. Windows-Update-Dienste sauber neu registrieren & starten│
-│                                       │                                                             │
-│  [Space] Modul an-/abwählen           │  [ VSS Restore Point wird vor Ausführung automatisch erstellt ]
-├───────────────────────────────────────┴─────────────────────────────────────────────────────────────┤
-│ [A] ⚡ 1-Klick Auto-Fix All   [F] 🔧 Ausgewählte beheben   [R] 🔄 Re-Scan   [Tab] Panel wechseln   [Q] Exit │
-└─────────────────────────────────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
 ## ⚡ Core Diagnostic & Healing Modules
 
 | Module | What It Checks | What It Fixes |
