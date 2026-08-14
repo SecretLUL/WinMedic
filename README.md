@@ -78,7 +78,11 @@ Settings live in the **`[6]` Einstellungen** tab and are persisted to `%APPDATA%
 | **`[S]`** | Start full system health scan |
 | **`[R]`** | Re-run scan / refresh current view |
 | **`[Space]`** | Toggle checkbox selection for highlighted issue (toggles a switch in Settings) |
-| **`[A]`** | Select all detected issues (1-Click Auto-Fix) |
+| **`[c]` / `[w]` / `[i]`** | Filter issues by severity (Critical / Warning / Info) in Triage tab |
+| **`[m]`** | Filter issues by diagnostic module (cycle through modules) in Triage tab |
+| **`[/]`** | Fulltext live search across findings, details & descriptions |
+| **`[x]`** | Reset all active filters and search queries |
+| **`[A]`** | Select all visible detected issues (1-Click Auto-Fix) |
 | **`[N]`** | Deselect all issues |
 | **`[F]`** | Proceed to Repair Center / Execute repairs |
 | **`[D]`** | Toggle dry-run mode — repairs are shown, not executed |
@@ -87,7 +91,7 @@ Settings live in the **`[6]` Einstellungen** tab and are persisted to `%APPDATA%
 | **`[←]` / `[→]`** | Adjust the highlighted numeric setting (Settings tab) |
 | **`[↑]` / `[↓]` or `[j]` / `[k]`** | Navigate list items and logs |
 | **`[?]`** | Open interactive Help Modal overlay |
-| **`[Esc]`** | Abort a running scan/repair, close a modal, or return to Dashboard |
+| **`[Esc]`** | Clear filters / abort a running operation / close modal / return to Dashboard |
 | **`[Q]`** | Exit WinMedic safely |
 
 ---

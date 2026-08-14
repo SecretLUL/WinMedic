@@ -461,6 +461,24 @@ fn handle_key(app: &mut App, code: KeyCode) {
         return;
     }
 
+    if app.active_tab == TAB_TRIAGE && app.is_searching {
+        match code {
+            KeyCode::Esc | KeyCode::Enter => {
+                app.is_searching = false;
+            }
+            KeyCode::Backspace => {
+                app.search_query.pop();
+                app.clamp_filtered_selection();
+            }
+            KeyCode::Char(c) => {
+                app.search_query.push(c);
+                app.clamp_filtered_selection();
+            }
+            _ => {}
+        }
+        return;
+    }
+
     match code {
         KeyCode::Char('q') | KeyCode::Char('Q') => app.should_quit = true,
         KeyCode::Char('?') => app.show_help = true,
@@ -555,6 +573,23 @@ fn handle_key(app: &mut App, code: KeyCode) {
             _ => {}
         },
 
+        KeyCode::Char('/') if app.active_tab == TAB_TRIAGE => app.is_searching = true,
+        KeyCode::Char('c') | KeyCode::Char('C') if app.active_tab == TAB_TRIAGE => {
+            app.toggle_severity_filter(engine::issue::Severity::Critical);
+        }
+        KeyCode::Char('w') | KeyCode::Char('W') if app.active_tab == TAB_TRIAGE => {
+            app.toggle_severity_filter(engine::issue::Severity::Warning);
+        }
+        KeyCode::Char('i') | KeyCode::Char('I') if app.active_tab == TAB_TRIAGE => {
+            app.toggle_severity_filter(engine::issue::Severity::Info);
+        }
+        KeyCode::Char('m') | KeyCode::Char('M') if app.active_tab == TAB_TRIAGE => {
+            app.cycle_module_filter();
+        }
+        KeyCode::Char('x') | KeyCode::Char('X') if app.active_tab == TAB_TRIAGE => {
+            app.clear_filters();
+        }
+
         KeyCode::Left | KeyCode::Char('h') => {
             if app.active_tab == TAB_SETTINGS {
                 app.adjust_current_setting(false);
@@ -566,9 +601,13 @@ fn handle_key(app: &mut App, code: KeyCode) {
             }
         }
 
-        // Esc cancels a running operation first, and only then navigates back.
-        KeyCode::Esc if !app.cancel_current_operation() && app.active_tab != TAB_DASHBOARD => {
-            app.active_tab = TAB_DASHBOARD;
+        // Esc clears active filters first, cancels a running operation second, and navigates back to dashboard third.
+        KeyCode::Esc => {
+            if app.active_tab == TAB_TRIAGE && app.has_active_filters() {
+                app.clear_filters();
+            } else if !app.cancel_current_operation() && app.active_tab != TAB_DASHBOARD {
+                app.active_tab = TAB_DASHBOARD;
+            }
         }
 
         _ => {}

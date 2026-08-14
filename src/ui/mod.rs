@@ -8,7 +8,7 @@ use crate::app::{
 use crate::ui::views::dashboard::render_dashboard;
 use crate::ui::views::fix_progress::render_fix_progress;
 use crate::ui::views::history::{HistoryViewState, render_history};
-use crate::ui::views::issue_list::render_issue_list;
+use crate::ui::views::issue_list::{IssueListViewState, render_issue_list};
 use crate::ui::views::scanner::render_scanner;
 use crate::ui::views::settings::render_settings;
 use crate::ui::widgets::confirm_popup::render_confirm_popup;
@@ -83,7 +83,17 @@ pub fn render_app(f: &mut Frame, app: &App) {
             );
         }
         TAB_TRIAGE => {
-            render_issue_list(f, body_area, &app.issues, app.selected_issue_index);
+            let filtered_indices = app.filtered_issue_indices();
+            let state = IssueListViewState {
+                issues: &app.issues,
+                filtered_indices: &filtered_indices,
+                selected_filtered_index: app.selected_filtered_index,
+                severity_filter: app.severity_filter,
+                module_filter: app.module_filter.as_deref(),
+                search_query: &app.search_query,
+                is_searching: app.is_searching,
+            };
+            render_issue_list(f, body_area, &state);
         }
         TAB_REPAIR => {
             render_fix_progress(

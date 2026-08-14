@@ -38,13 +38,13 @@ pub fn render_footer(
                 ("Q", "Beenden"),
             ],
             TAB_TRIAGE => vec![
-                ("↑/↓", "Navigieren"),
-                ("Space", "An-/Abwählen"),
-                ("A", "Alle"),
-                ("N", "Keine"),
-                ("D", "Simulation"),
+                ("↑/↓", "Wahl"),
+                ("Space", "An/Ab"),
+                ("C/W/I", "Filter"),
+                ("/", "Suche"),
                 ("F", "Reparieren"),
                 ("E", "Bericht"),
+                ("?", "Hilfe"),
                 ("Q", "Beenden"),
             ],
             TAB_REPAIR => vec![

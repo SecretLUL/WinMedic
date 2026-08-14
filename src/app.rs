@@ -105,6 +105,13 @@ pub struct App {
     pub selected_issue_index: usize,
     pub health_score: u8,
 
+    // Issue Filtering & Search
+    pub severity_filter: Option<Severity>,
+    pub module_filter: Option<String>,
+    pub search_query: String,
+    pub is_searching: bool,
+    pub selected_filtered_index: usize,
+
     // Live Scanner State
     pub is_scanning: bool,
     pub scan_overall_progress: u8,
@@ -179,6 +186,11 @@ impl App {
             issues: Vec::new(),
             selected_issue_index: 0,
             health_score: 100,
+            severity_filter: None,
+            module_filter: None,
+            search_query: String::new(),
+            is_searching: false,
+            selected_filtered_index: 0,
             is_scanning: false,
             scan_overall_progress: 0,
             scan_active_module_name: "Bereit".to_string(),
@@ -665,38 +677,156 @@ impl App {
         }
     }
 
+    pub fn filtered_issue_indices(&self) -> Vec<usize> {
+        self.issues
+            .iter()
+            .enumerate()
+            .filter(|(_idx, issue)| {
+                // Severity filter
+                if let Some(sev) = self.severity_filter {
+                    if issue.severity != sev {
+                        return false;
+                    }
+                }
+                // Module filter
+                if let Some(ref mod_id) = self.module_filter {
+                    if &issue.module_id != mod_id {
+                        return false;
+                    }
+                }
+                // Search query
+                if !self.search_query.is_empty() {
+                    let q = self.search_query.to_lowercase();
+                    let matches_title = issue.title.to_lowercase().contains(&q);
+                    let matches_desc = issue.description.to_lowercase().contains(&q);
+                    let matches_cat = issue.category.to_lowercase().contains(&q);
+                    let matches_mod = issue.module_id.to_lowercase().contains(&q);
+                    let matches_tech = issue.technical_details.to_lowercase().contains(&q);
+                    if !matches_title
+                        && !matches_desc
+                        && !matches_cat
+                        && !matches_mod
+                        && !matches_tech
+                    {
+                        return false;
+                    }
+                }
+                true
+            })
+            .map(|(idx, _)| idx)
+            .collect()
+    }
+
+    pub fn clamp_filtered_selection(&mut self) {
+        let count = self.filtered_issue_indices().len();
+        if count == 0 {
+            self.selected_filtered_index = 0;
+        } else if self.selected_filtered_index >= count {
+            self.selected_filtered_index = count - 1;
+        }
+    }
+
     pub fn toggle_selected_issue(&mut self) {
-        if let Some(issue) = self.issues.get_mut(self.selected_issue_index) {
-            issue.is_selected = !issue.is_selected;
+        let indices = self.filtered_issue_indices();
+        if let Some(&orig_idx) = indices.get(self.selected_filtered_index) {
+            if let Some(issue) = self.issues.get_mut(orig_idx) {
+                if !issue.is_fixed {
+                    issue.is_selected = !issue.is_selected;
+                }
+            }
         }
     }
 
     pub fn select_all_issues(&mut self) {
-        for issue in &mut self.issues {
-            issue.is_selected = true;
+        let indices = self.filtered_issue_indices();
+        for &orig_idx in &indices {
+            if let Some(issue) = self.issues.get_mut(orig_idx) {
+                if !issue.is_fixed {
+                    issue.is_selected = true;
+                }
+            }
         }
     }
 
     pub fn deselect_all_issues(&mut self) {
-        for issue in &mut self.issues {
-            issue.is_selected = false;
+        let indices = self.filtered_issue_indices();
+        for &orig_idx in &indices {
+            if let Some(issue) = self.issues.get_mut(orig_idx) {
+                issue.is_selected = false;
+            }
         }
     }
 
     pub fn next_issue(&mut self) {
-        if !self.issues.is_empty() {
-            self.selected_issue_index = (self.selected_issue_index + 1) % self.issues.len();
+        let indices = self.filtered_issue_indices();
+        if !indices.is_empty() {
+            self.selected_filtered_index = (self.selected_filtered_index + 1) % indices.len();
         }
     }
 
     pub fn prev_issue(&mut self) {
-        if !self.issues.is_empty() {
-            if self.selected_issue_index == 0 {
-                self.selected_issue_index = self.issues.len() - 1;
+        let indices = self.filtered_issue_indices();
+        if !indices.is_empty() {
+            if self.selected_filtered_index == 0 {
+                self.selected_filtered_index = indices.len() - 1;
             } else {
-                self.selected_issue_index -= 1;
+                self.selected_filtered_index -= 1;
             }
         }
+    }
+
+    pub fn toggle_severity_filter(&mut self, sev: Severity) {
+        if self.severity_filter == Some(sev) {
+            self.severity_filter = None;
+        } else {
+            self.severity_filter = Some(sev);
+        }
+        self.clamp_filtered_selection();
+    }
+
+    pub fn cycle_module_filter(&mut self) {
+        let mut module_ids: Vec<String> = self
+            .engine
+            .modules()
+            .iter()
+            .map(|m| m.id().to_string())
+            .collect();
+        module_ids.dedup();
+
+        if module_ids.is_empty() {
+            self.module_filter = None;
+            return;
+        }
+
+        self.module_filter = match &self.module_filter {
+            None => Some(module_ids[0].clone()),
+            Some(current) => {
+                if let Some(pos) = module_ids.iter().position(|m| m == current) {
+                    if pos + 1 < module_ids.len() {
+                        Some(module_ids[pos + 1].clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+        };
+        self.clamp_filtered_selection();
+    }
+
+    pub fn clear_filters(&mut self) {
+        self.severity_filter = None;
+        self.module_filter = None;
+        self.search_query.clear();
+        self.is_searching = false;
+        self.clamp_filtered_selection();
+    }
+
+    pub fn has_active_filters(&self) -> bool {
+        self.severity_filter.is_some()
+            || self.module_filter.is_some()
+            || !self.search_query.is_empty()
     }
 
     // ---------------------------------------------------------------- history
@@ -946,5 +1076,71 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("WinMedic Diagnosebericht"));
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_app_filter_and_search() {
+        let mut app = App::new();
+        app.issues = vec![
+            Issue::new(
+                "sfc_1",
+                "system_integrity",
+                "CBS log corrupt",
+                "System",
+                Severity::Critical,
+                crate::engine::issue::RiskScore::Low,
+                "SFC corrupt",
+                "details",
+                "fix",
+                vec![],
+            ),
+            Issue::new(
+                "temp_1",
+                "storage",
+                "Temp bloat files",
+                "Storage",
+                Severity::Warning,
+                crate::engine::issue::RiskScore::Low,
+                "Temp bloat",
+                "details",
+                "fix",
+                vec![],
+            ),
+            Issue::new(
+                "net_1",
+                "network",
+                "DNS cache full",
+                "Network",
+                Severity::Info,
+                crate::engine::issue::RiskScore::Low,
+                "DNS flush",
+                "details",
+                "fix",
+                vec![],
+            ),
+        ];
+
+        // Initially all 3 are returned
+        assert_eq!(app.filtered_issue_indices(), vec![0, 1, 2]);
+
+        // Filter by Critical
+        app.toggle_severity_filter(Severity::Critical);
+        assert_eq!(app.filtered_issue_indices(), vec![0]);
+
+        // Toggle again to reset severity filter
+        app.toggle_severity_filter(Severity::Critical);
+        assert_eq!(app.filtered_issue_indices(), vec![0, 1, 2]);
+
+        // Filter by module
+        app.module_filter = Some("storage".to_string());
+        assert_eq!(app.filtered_issue_indices(), vec![1]);
+
+        // Search text
+        app.clear_filters();
+        app.search_query = "DNS".to_string();
+        assert_eq!(app.filtered_issue_indices(), vec![2]);
+
+        app.clear_filters();
+        assert_eq!(app.filtered_issue_indices(), vec![0, 1, 2]);
     }
 }
