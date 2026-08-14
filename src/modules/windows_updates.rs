@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
+use tokio::time::sleep;
 use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ};
 use winreg::RegKey;
 use crate::engine::issue::{Issue, RiskScore, Severity};
@@ -54,7 +55,9 @@ impl DiagnosticModule for WindowsUpdatesModule {
     async fn scan(&self, progress_tx: Option<Sender<ModuleProgress>>) -> Result<Vec<Issue>, String> {
         let mut issues = Vec::new();
 
+        // 1. Service Status
         Self::send_progress(&progress_tx, 15, "Prüfe Windows Update Dienste (wuauserv, bits, cryptsvc)...", Some("Dienststatus abfragen...")).await;
+        sleep(Duration::from_millis(150)).await;
 
         let services = [
             ("wuauserv", "Windows Update Dienst"),
@@ -82,11 +85,15 @@ impl DiagnosticModule for WindowsUpdatesModule {
                             format!("net start {}", svc),
                         ],
                     ));
+                } else {
+                    Self::send_progress(&progress_tx, 35, &format!("Dienst '{}' aktiv", svc), Some(&format!("✔ Dienst '{}' ({}) ist funktionsfähig.", svc_name, svc))).await;
                 }
             }
         }
 
-        Self::send_progress(&progress_tx, 50, "Prüfe SoftwareDistribution Cache-Integrität...", Some("Prüfe C:\\Windows\\SoftwareDistribution\\Download...")).await;
+        // 2. SoftwareDistribution Cache
+        Self::send_progress(&progress_tx, 55, "Prüfe SoftwareDistribution Cache-Integrität...", Some("Prüfe C:\\Windows\\SoftwareDistribution\\Download...")).await;
+        sleep(Duration::from_millis(150)).await;
 
         let soft_dist = Path::new(r"C:\Windows\SoftwareDistribution\Download");
         if soft_dist.exists() {
@@ -120,10 +127,14 @@ impl DiagnosticModule for WindowsUpdatesModule {
                         "Dienste sauber neu starten".to_string(),
                     ],
                 ));
+            } else {
+                Self::send_progress(&progress_tx, 75, "Update-Cache unauffällig", Some(&format!("✔ SoftwareDistribution Cache: {} MB ({} Pakete).", total_size_mb, file_count))).await;
             }
         }
 
-        Self::send_progress(&progress_tx, 80, "Prüfe auf ausstehende System-Neustarts (Pending Reboot)...", Some("Registry RebootPending prüfen...")).await;
+        // 3. Pending Reboot Keys
+        Self::send_progress(&progress_tx, 85, "Prüfe auf ausstehende System-Neustarts (Pending Reboot)...", Some("Registry RebootPending prüfen...")).await;
+        sleep(Duration::from_millis(150)).await;
 
         let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
         let pending_keys = [
@@ -131,8 +142,10 @@ impl DiagnosticModule for WindowsUpdatesModule {
             r"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired",
         ];
 
+        let mut reboot_found = false;
         for p_key in pending_keys {
             if hklm.open_subkey_with_flags(p_key, KEY_READ).is_ok() {
+                reboot_found = true;
                 issues.push(Issue::new(
                     "wu_reboot_pending",
                     self.id(),
@@ -147,6 +160,10 @@ impl DiagnosticModule for WindowsUpdatesModule {
                 ));
                 break;
             }
+        }
+
+        if !reboot_found {
+            Self::send_progress(&progress_tx, 95, "Keine ausstehenden Update-Neustarts", Some("✔ Keine blockierenden Reboot-Pending-Schlüssel gefunden.")).await;
         }
 
         Self::send_progress(&progress_tx, 100, "Windows Update Diagnose abgeschlossen", None).await;

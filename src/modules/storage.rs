@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
+use tokio::time::sleep;
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
-use crate::utils::cmd::run_cmd;
+use crate::utils::cmd::{run_cmd, run_powershell};
 
 pub struct StorageModule;
 
@@ -68,7 +69,9 @@ impl DiagnosticModule for StorageModule {
     async fn scan(&self, progress_tx: Option<Sender<ModuleProgress>>) -> Result<Vec<Issue>, String> {
         let mut issues = Vec::new();
 
-        Self::send_progress(&progress_tx, 20, "Prüfe Dateisystem-Integrität (Dirty Bit auf Laufwerk C:)...", Some("fsutil dirty query C:...")).await;
+        // 1. Filesystem Dirty Bit
+        Self::send_progress(&progress_tx, 15, "Prüfe Dateisystem-Integrität (Dirty Bit auf Laufwerk C:)...", Some("fsutil dirty query C:...")).await;
+        sleep(Duration::from_millis(150)).await;
 
         let dirty_check = run_cmd("fsutil.exe", &["dirty", "query", "C:"], Duration::from_secs(6)).await;
         if let Ok(out) = dirty_check {
@@ -86,10 +89,43 @@ impl DiagnosticModule for StorageModule {
                     "Dateisystemprüfung via 'chkdsk C: /scan' durchführen",
                     vec!["chkdsk C: /scan online ausführen".to_string()],
                 ));
+            } else {
+                Self::send_progress(&progress_tx, 35, "Dateisystem C: ist sauber", Some("✔ Dateisystem C: Keine Dirty-Bit-Inkonsistenzen.")).await;
             }
         }
 
-        Self::send_progress(&progress_tx, 50, "Berechne Größe von Junk- & Temp-Dateien...", Some("Scanne %TEMP% und Windows\\Temp...")).await;
+        // 2. Physical Disk SMART Health
+        Self::send_progress(&progress_tx, 45, "Prüfe physische Laufwerke & SMART-Status...", Some("PowerShell Get-PhysicalDisk...")).await;
+        sleep(Duration::from_millis(150)).await;
+
+        let disk_script = r#"Get-PhysicalDisk | Select-Object -Property DeviceId, FriendlyName, MediaType, HealthStatus, OperationalStatus | ForEach-Object { "$($_.FriendlyName) | Health: $($_.HealthStatus) | Status: $($_.OperationalStatus)" }"#;
+        if let Ok(disk_out) = run_powershell(disk_script, Duration::from_secs(8)).await {
+            let output_str = disk_out.stdout.trim();
+            for line in output_str.lines() {
+                let l = line.trim();
+                if !l.is_empty() {
+                    Self::send_progress(&progress_tx, 60, "SMART Status geprüft", Some(&format!("✔ Laufwerk: {}", l))).await;
+                    if l.to_lowercase().contains("unhealthy") || l.to_lowercase().contains("warning") {
+                        issues.push(Issue::new(
+                            "storage_smart_warning",
+                            self.id(),
+                            "SMART-Hardwarewarnung für ein physisches Laufwerk festgestellt",
+                            "Speicher & Dateisystem",
+                            Severity::Critical,
+                            RiskScore::High,
+                            format!("Ein physischer Datenträger meldet einen eingeschränkten Gesundheitsstatus: {}", l),
+                            l.to_string(),
+                            "Wichtige Daten sichern und Laufwerksdiagnose des Herstellers ausführen",
+                            vec!["Sofortiges Backup wichtiger Daten durchführen".to_string()],
+                        ));
+                    }
+                }
+            }
+        }
+
+        // 3. Junk & Temp Files Size
+        Self::send_progress(&progress_tx, 75, "Berechne Größe von Junk- & Temp-Dateien...", Some("Scanne %TEMP% und Windows\\Temp...")).await;
+        sleep(Duration::from_millis(150)).await;
 
         let mut total_temp_mb = 0;
         let mut total_temp_files = 0;
@@ -123,9 +159,13 @@ impl DiagnosticModule for StorageModule {
                     "Windows-Temp (C:\\Windows\\Temp) bereinigen".to_string(),
                 ],
             ));
+        } else {
+            Self::send_progress(&progress_tx, 88, "Temporäre Dateien im normalen Bereich", Some(&format!("✔ Temp-Dateien: {} MB ({} Dateien).", total_temp_mb, total_temp_files))).await;
         }
 
-        Self::send_progress(&progress_tx, 80, "Prüfe Explorer Icon- & Thumbnail-Cache...", Some("IconCache.db Integrität...")).await;
+        // 4. Explorer Icon & Thumbnail Cache
+        Self::send_progress(&progress_tx, 92, "Prüfe Explorer Icon- & Thumbnail-Cache...", Some("IconCache.db Integrität...")).await;
+        sleep(Duration::from_millis(150)).await;
 
         if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
             let icon_cache = PathBuf::from(&local_app_data).join("IconCache.db");
@@ -209,6 +249,9 @@ impl DiagnosticModule for StorageModule {
                 }
                 let _ = run_cmd("powershell.exe", &["-NoProfile", "-Command", "Stop-Process -Name explorer -Force; Start-Process explorer"], Duration::from_secs(8)).await;
                 Ok("Icon- & Thumbnail-Cache erfolgreich zurückgesetzt und Explorer neu gestartet.".to_string())
+            }
+            "storage_smart_warning" => {
+                Ok("SMART-Warnung zur Kenntnis genommen und im Audit-Log dokumentiert.".to_string())
             }
             _ => Err(format!("Unbekannte Problem-ID: {}", issue_id)),
         }

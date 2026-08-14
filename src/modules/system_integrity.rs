@@ -1,5 +1,6 @@
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
+use tokio::time::sleep;
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
 use crate::utils::cmd::{run_cmd, run_cmd_streaming};
@@ -51,7 +52,9 @@ impl DiagnosticModule for SystemIntegrityModule {
     async fn scan(&self, progress_tx: Option<Sender<ModuleProgress>>) -> Result<Vec<Issue>, String> {
         let mut issues = Vec::new();
 
+        // 1. DISM CheckHealth
         Self::send_progress(&progress_tx, 15, "Prüfe Windows Component Store (DISM CheckHealth)...", Some("DISM /Online /Cleanup-Image /CheckHealth wird ausgeführt...")).await;
+        sleep(Duration::from_millis(150)).await;
 
         let dism_check = run_cmd(
             "dism.exe",
@@ -79,14 +82,18 @@ impl DiagnosticModule for SystemIntegrityModule {
                             "Komponentenspeicher synchronisieren und Cache auffrischen".to_string(),
                         ],
                     ));
+                } else {
+                    Self::send_progress(&progress_tx, 35, "DISM Component Store ist intakt", Some("✔ DISM CheckHealth: Keine Beschädigungen im Komponentenspeicher festgestellt.")).await;
                 }
             }
             Err(e) => {
-                Self::send_progress(&progress_tx, 30, "DISM Check übersprungen (keine Admin-Rechte oder Timeout)", Some(&e)).await;
+                Self::send_progress(&progress_tx, 35, "DISM Check übersprungen (eingeschränkte Rechte)", Some(&e)).await;
             }
         }
 
+        // 2. VSS Service Status
         Self::send_progress(&progress_tx, 55, "Prüfe Volumenschattenkopie & VSS-Dienste...", Some("Abfrage von VSS und swprv Dienststatus...")).await;
+        sleep(Duration::from_millis(150)).await;
 
         let vss_query = run_cmd("sc.exe", &["query", "vss"], Duration::from_secs(10)).await;
         if let Ok(vss_out) = vss_query {
@@ -104,10 +111,14 @@ impl DiagnosticModule for SystemIntegrityModule {
                     "VSS-Dienst-Starttyp auf 'Manuell/Demand' zurücksetzen und Dienst aktivieren",
                     vec!["sc config vss start= demand".to_string(), "net start vss".to_string()],
                 ));
+            } else {
+                Self::send_progress(&progress_tx, 70, "VSS-Dienst bereit", Some("✔ VSS-Dienststatus: Bereit für Wiederherstellungspunkte.")).await;
             }
         }
 
-        Self::send_progress(&progress_tx, 80, "Prüfe CBS-Systemprotokolle auf Integritätsfehler...", Some("CBS.log Inspektion...")).await;
+        // 3. CBS Logs Inspection
+        Self::send_progress(&progress_tx, 85, "Prüfe CBS-Systemprotokolle auf Integritätsfehler...", Some("CBS.log Inspektion...")).await;
+        sleep(Duration::from_millis(150)).await;
 
         let cbs_log_path = r"C:\Windows\Logs\CBS\CBS.log";
         if let Ok(cbs_content) = std::fs::read_to_string(cbs_log_path) {
@@ -125,6 +136,8 @@ impl DiagnosticModule for SystemIntegrityModule {
                     "SFC /scannow ausführen, um Systemdateien aus dem lokalen Komponentenspeicher wiederherzustellen",
                     vec!["sfc /scannow im Hintergrund ausführen und defekte Systemdateien reparieren".to_string()],
                 ));
+            } else {
+                Self::send_progress(&progress_tx, 95, "CBS Protokolle unauffällig", Some("✔ Keine kritischen CBS-Integritätsverletzungen gemeldet.")).await;
             }
         }
 

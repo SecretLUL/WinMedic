@@ -1,5 +1,6 @@
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
+use tokio::time::sleep;
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
 use winreg::RegKey;
 use crate::engine::issue::{Issue, RiskScore, Severity};
@@ -53,7 +54,9 @@ impl DiagnosticModule for NetworkModule {
     async fn scan(&self, progress_tx: Option<Sender<ModuleProgress>>) -> Result<Vec<Issue>, String> {
         let mut issues = Vec::new();
 
-        Self::send_progress(&progress_tx, 20, "Teste DNS-Namensauflösung...", Some("Ping/Lookup auf Standard-DNS-Server...")).await;
+        // 1. DNS Resolution Check
+        Self::send_progress(&progress_tx, 20, "Teste DNS-Namensauflösung...", Some("Lookup auf Google & Cloudflare DNS...")).await;
+        sleep(Duration::from_millis(150)).await;
 
         let dns_lookup = run_cmd("nslookup.exe", &["dns.google", "8.8.8.8"], Duration::from_secs(6)).await;
         let mut dns_healthy = false;
@@ -64,7 +67,6 @@ impl DiagnosticModule for NetworkModule {
         }
 
         if !dns_healthy {
-            // Also test alternative lookup
             let ping_test = run_cmd("ping.exe", &["-n", "1", "-w", "1500", "1.1.1.1"], Duration::from_secs(4)).await;
             let ip_reachable = match ping_test {
                 Ok(out) => out.stdout.contains("TTL="),
@@ -72,7 +74,6 @@ impl DiagnosticModule for NetworkModule {
             };
 
             if ip_reachable {
-                // IP is reachable, but DNS lookup failed! Classic DNS cache / configuration corruption
                 issues.push(Issue::new(
                     "net_dns_failure",
                     self.id(),
@@ -105,9 +106,13 @@ impl DiagnosticModule for NetworkModule {
                     ],
                 ));
             }
+        } else {
+            Self::send_progress(&progress_tx, 45, "DNS-Auflösung erfolgreich", Some("✔ DNS-Namensauflösung und IP-Routing sind einwandfrei.")).await;
         }
 
-        Self::send_progress(&progress_tx, 60, "Prüfe Proxy-Einstellungen in der Windows-Registry...", Some("Registry Internet Settings...")).await;
+        // 2. Proxy Settings in Registry
+        Self::send_progress(&progress_tx, 65, "Prüfe Proxy-Einstellungen in der Windows-Registry...", Some("Registry Internet Settings...")).await;
+        sleep(Duration::from_millis(150)).await;
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         if let Ok(inet_settings) = hkcu.open_subkey_with_flags(r"Software\Microsoft\Windows\CurrentVersion\Internet Settings", KEY_READ) {
@@ -129,10 +134,14 @@ impl DiagnosticModule for NetworkModule {
                         vec!["ProxyEnable in Registry auf 0 setzen".to_string()],
                     ));
                 }
+            } else {
+                Self::send_progress(&progress_tx, 80, "Direkte Internetverbindung aktiv", Some("✔ Keine blockierenden manuellen Proxy-Server konfiguriert.")).await;
             }
         }
 
+        // 3. Winsock Catalog
         Self::send_progress(&progress_tx, 85, "Prüfe Winsock-Katalog-Integrität...", Some("netsh winsock audit...")).await;
+        sleep(Duration::from_millis(150)).await;
 
         let winsock_audit = run_cmd("netsh.exe", &["winsock", "show", "catalog"], Duration::from_secs(6)).await;
         if let Ok(out) = winsock_audit {
@@ -149,6 +158,8 @@ impl DiagnosticModule for NetworkModule {
                     "Winsock-Katalog auf Werkseinstellungen zurücksetzen",
                     vec!["netsh winsock reset ausführen".to_string()],
                 ));
+            } else {
+                Self::send_progress(&progress_tx, 95, "Winsock-Katalog intakt", Some("✔ Winsock LSP-Katalog ist konsistent.")).await;
             }
         }
 

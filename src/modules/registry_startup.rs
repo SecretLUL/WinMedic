@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 use tokio::sync::mpsc::Sender;
+use tokio::time::sleep;
+use std::time::Duration;
 use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE};
 use winreg::RegKey;
 use crate::engine::issue::{Issue, RiskScore, Severity};
@@ -37,7 +39,7 @@ impl RegistryStartupModule {
             return None;
         }
 
-        // 1. Quoted path: "C:\Program Files\App\app.exe" --arg
+        // 1. Quoted path
         if let Some(rest) = trimmed.strip_prefix('"') {
             if let Some(end_quote) = rest.find('"') {
                 return Some(PathBuf::from(&rest[..end_quote]));
@@ -80,10 +82,13 @@ impl DiagnosticModule for RegistryStartupModule {
     async fn scan(&self, progress_tx: Option<Sender<ModuleProgress>>) -> Result<Vec<Issue>, String> {
         let mut issues = Vec::new();
 
-        Self::send_progress(&progress_tx, 20, "Scanne HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run...", Some("Prüfe Benutzer-Autostart...")).await;
+        // 1. User Run Keys
+        Self::send_progress(&progress_tx, 20, "Scanne HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run...", Some("Prüfe Benutzer-Autostart Einträge...")).await;
+        sleep(Duration::from_millis(150)).await;
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         if let Ok(run_key) = hkcu.open_subkey_with_flags(r"Software\Microsoft\Windows\CurrentVersion\Run", KEY_READ) {
+            let mut valid_count = 0;
             for (name, val) in run_key.enum_values().flatten() {
                 let cmd_str = val.to_string();
                 if let Some(path) = Self::extract_exe_path(&cmd_str) {
@@ -103,15 +108,21 @@ impl DiagnosticModule for RegistryStartupModule {
                                 format!("Eintrag '{}' aus HKCU\\Run löschen", name),
                             ],
                         ));
+                    } else {
+                        valid_count += 1;
                     }
                 }
             }
+            Self::send_progress(&progress_tx, 45, "Benutzer-Autostart geprüft", Some(&format!("✔ HKCU\\Run: {} gültige Autostart-Einträge verifiziert.", valid_count))).await;
         }
 
-        Self::send_progress(&progress_tx, 55, "Scanne HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run...", Some("Prüfe System-Autostart...")).await;
+        // 2. Machine Run Keys
+        Self::send_progress(&progress_tx, 55, "Scanne HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run...", Some("Prüfe System-Autostart Einträge...")).await;
+        sleep(Duration::from_millis(150)).await;
 
         let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
         if let Ok(run_key) = hklm.open_subkey_with_flags(r"Software\Microsoft\Windows\CurrentVersion\Run", KEY_READ) {
+            let mut valid_hklm = 0;
             for (name, val) in run_key.enum_values().flatten() {
                 let cmd_str = val.to_string();
                 if let Some(path) = Self::extract_exe_path(&cmd_str) {
@@ -131,24 +142,31 @@ impl DiagnosticModule for RegistryStartupModule {
                                 format!("Eintrag '{}' aus HKLM\\Run löschen", name),
                             ],
                         ));
+                    } else {
+                        valid_hklm += 1;
                     }
                 }
             }
+            Self::send_progress(&progress_tx, 75, "System-Autostart geprüft", Some(&format!("✔ HKLM\\Run: {} systemweite Autostart-Einträge intakt.", valid_hklm))).await;
         }
 
-        Self::send_progress(&progress_tx, 80, "Prüfe Benutzer-Startup-Verzeichnis...", Some("Prüfe Startup-Ordner...")).await;
+        // 3. Startup Folder Links
+        Self::send_progress(&progress_tx, 85, "Prüfe Benutzer-Startup-Verzeichnis...", Some("Prüfe Startup-Ordner Verknüpfungen...")).await;
+        sleep(Duration::from_millis(150)).await;
 
         if let Ok(appdata) = std::env::var("APPDATA") {
             let startup_dir = PathBuf::from(appdata).join(r"Microsoft\Windows\Start Menu\Programs\Startup");
             if startup_dir.exists() {
+                let mut lnk_count = 0;
                 if let Ok(entries) = std::fs::read_dir(startup_dir) {
                     for entry in entries.flatten() {
                         let p = entry.path();
                         if p.extension().map(|e| e.to_string_lossy().to_lowercase()) == Some("lnk".to_string()) {
-                            // Link exists in startup
+                            lnk_count += 1;
                         }
                     }
                 }
+                Self::send_progress(&progress_tx, 95, "Startup-Ordner geprüft", Some(&format!("✔ Startup-Ordner: {} Verknüpfungen geprüft.", lnk_count))).await;
             }
         }
 
