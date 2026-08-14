@@ -44,11 +44,13 @@ pub fn render_footer(
                 ("N", "Keine"),
                 ("D", "Simulation"),
                 ("F", "Reparieren"),
+                ("E", "Bericht"),
                 ("Q", "Beenden"),
             ],
             TAB_REPAIR => vec![
                 ("F", "Reparaturen ausführen"),
                 ("D", "Simulation"),
+                ("E", "Bericht"),
                 ("R", "Erneut scannen"),
                 ("?", "Hilfe"),
                 ("Q", "Beenden"),
@@ -56,6 +58,7 @@ pub fn render_footer(
             TAB_HISTORY => vec![
                 ("↑/↓", "Sicherung wählen"),
                 ("U", "Rollback"),
+                ("E", "Bericht"),
                 ("R", "Aktualisieren"),
                 ("?", "Hilfe"),
                 ("Q", "Beenden"),

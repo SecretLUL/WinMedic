@@ -29,6 +29,7 @@ const SECTIONS: &[Section] = &[
             ("[A] / [N]", "Alle Probleme aus-/abwählen"),
             ("[F]", "Ausgewählte Reparaturen ausführen"),
             ("[D]", "Simulationsmodus – zeigt Schritte, ändert nichts"),
+            ("[E]", "Diagnosebericht als HTML exportieren"),
             ("[Esc]", "Laufenden Scan oder Reparaturlauf abbrechen"),
         ],
     ),

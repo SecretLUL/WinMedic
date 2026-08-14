@@ -82,6 +82,7 @@ Settings live in the **`[6]` Einstellungen** tab and are persisted to `%APPDATA%
 | **`[N]`** | Deselect all issues |
 | **`[F]`** | Proceed to Repair Center / Execute repairs |
 | **`[D]`** | Toggle dry-run mode — repairs are shown, not executed |
+| **`[E]`** | Export diagnostic & repair report as self-contained HTML |
 | **`[U]`** | Restore the selected registry snapshot (Backups & Logs tab) |
 | **`[←]` / `[→]`** | Adjust the highlighted numeric setting (Settings tab) |
 | **`[↑]` / `[↓]` or `[j]` / `[k]`** | Navigate list items and logs |
@@ -99,8 +100,18 @@ WinMedic can also run without the TUI for automated scripts, CI/CD, or batch IT 
 # Run headless system scan and output styled summary
 winmedic.exe --scan
 
+# Run scan and export self-contained HTML report for clients / archiving
+winmedic.exe --scan --output report.html
+
+# Export report in Markdown or JSON format
+winmedic.exe --scan --output report.md
+winmedic.exe --scan --output report.json
+
 # Run scan and automatically repair all safe detected issues
 winmedic.exe --auto-fix
+
+# Run fixes and export updated report with audit history
+winmedic.exe --auto-fix --output final_report.html
 
 # Show exactly which commands a repair run would execute, without executing them
 winmedic.exe --dry-run

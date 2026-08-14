@@ -74,6 +74,10 @@ struct CliArgs {
     #[arg(short, long)]
     json: bool,
 
+    /// Save report to file (.html, .md, or .json based on extension)
+    #[arg(short, long, value_name = "FILE")]
+    output: Option<std::path::PathBuf>,
+
     /// Skip creating a Windows System Restore point before repairs
     #[arg(long)]
     no_vss: bool,
@@ -86,7 +90,7 @@ struct CliArgs {
 impl CliArgs {
     /// Anything that runs without the interactive TUI.
     fn is_headless(&self) -> bool {
-        self.scan || self.auto_fix || self.json || self.dry_run
+        self.scan || self.auto_fix || self.json || self.dry_run || self.output.is_some()
     }
 
     /// Whether a repair pass (real or simulated) should follow the scan.
@@ -229,6 +233,8 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
 
     let mut issues = engine_handle.await?;
 
+    let audit_logger = crate::safety::audit::AuditLogger::new();
+
     // With repairs to follow, the JSON document is emitted at the very end so it
     // reflects the post-repair state instead of a snapshot that is already stale.
     let defer_json = args.json && args.runs_repairs() && !scan_cancelled;
@@ -240,7 +246,11 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     } else if !defer_json {
         println!(
             "{}",
-            DiagnosticReporter::to_json(&issues, DiagnosticEngine::calculate_health_score(&issues))
+            DiagnosticReporter::to_json(
+                &issues,
+                DiagnosticEngine::calculate_health_score(&issues),
+                &audit_logger.get_history()
+            )
         );
     }
 
@@ -340,8 +350,31 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     if defer_json {
         println!(
             "{}",
-            DiagnosticReporter::to_json(&issues, DiagnosticEngine::calculate_health_score(&issues))
+            DiagnosticReporter::to_json(
+                &issues,
+                DiagnosticEngine::calculate_health_score(&issues),
+                &audit_logger.get_history()
+            )
         );
+    }
+
+    if let Some(ref out_path) = args.output {
+        let health = DiagnosticEngine::calculate_health_score(&issues);
+        let audit_entries = audit_logger.get_history();
+        match DiagnosticReporter::save_report(out_path, &issues, health, &audit_entries) {
+            Ok(()) => {
+                if !quiet {
+                    println!("📄 Bericht gespeichert: {}", out_path.display());
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "Fehler beim Speichern des Berichts nach '{}': {}",
+                    out_path.display(),
+                    e
+                );
+            }
+        }
     }
 
     let code = if scan_cancelled || repairs_cancelled {
@@ -493,6 +526,15 @@ fn handle_key(app: &mut App, code: KeyCode) {
                 app.request_rollback();
             }
         }
+
+        KeyCode::Char('e') | KeyCode::Char('E') => match app.export_report() {
+            Ok(path) => {
+                app.status_message = Some(format!("📄 Bericht exportiert: {}", path.display()));
+            }
+            Err(err) => {
+                app.status_message = Some(err);
+            }
+        },
 
         KeyCode::Char(' ') | KeyCode::Enter => match app.active_tab {
             TAB_TRIAGE => app.toggle_selected_issue(),

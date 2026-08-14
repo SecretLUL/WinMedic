@@ -1,5 +1,6 @@
 use crate::config::AppConfig;
 use crate::engine::issue::{Issue, Severity};
+use crate::engine::reporter::DiagnosticReporter;
 use crate::engine::runner::{DiagnosticEngine, RepairEvent, RepairOptions, ScanEvent};
 use crate::modules::ModuleStatus;
 use crate::safety::audit::{AuditEntry, AuditLogger};
@@ -891,6 +892,22 @@ impl App {
             self.module_statuses = statuses;
         }
     }
+
+    /// Export the current scan/repair report as an HTML file in the reports directory.
+    pub fn export_report(&mut self) -> Result<std::path::PathBuf, String> {
+        let base = dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        let report_dir = base.join("WinMedic").join("reports");
+        let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+        let filename = format!("winmedic_report_{}.html", timestamp);
+        let path = report_dir.join(filename);
+
+        let health = DiagnosticEngine::calculate_health_score(&self.issues);
+        self.audit_entries = self.audit_logger.get_history();
+
+        DiagnosticReporter::save_report(&path, &self.issues, health, &self.audit_entries)
+            .map(|_| path)
+            .map_err(|e| format!("Export fehlgeschlagen: {}", e))
+    }
 }
 
 #[cfg(test)]
@@ -917,5 +934,17 @@ mod tests {
         assert_eq!(req.confirm_label(), "Wiederherstellen");
         assert_eq!(req.dismiss_label(), "Abbrechen");
         assert!(!req.body().is_empty());
+    }
+
+    #[test]
+    fn test_app_export_report() {
+        let mut app = App::new();
+        let res = app.export_report();
+        assert!(res.is_ok());
+        let path = res.unwrap();
+        assert!(path.exists());
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("WinMedic Diagnosebericht"));
+        let _ = std::fs::remove_file(path);
     }
 }
