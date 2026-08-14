@@ -23,6 +23,9 @@ pub async fn run_cmd(
     cmd.args(args);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    // Dropping the future (e.g. when the user cancels a running scan) must take
+    // the child process with it, otherwise a DISM or chkdsk run keeps going.
+    cmd.kill_on_drop(true);
 
     #[cfg(windows)]
     {
@@ -89,6 +92,9 @@ pub async fn run_cmd_streaming(
     cmd.args(args);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    // Dropping the future (e.g. when the user cancels a running scan) must take
+    // the child process with it, otherwise a DISM or chkdsk run keeps going.
+    cmd.kill_on_drop(true);
 
     #[cfg(windows)]
     {

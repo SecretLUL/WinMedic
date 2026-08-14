@@ -14,6 +14,7 @@ pub fn render_header(
     is_admin: bool,
     issue_count: usize,
     is_scanning: bool,
+    dry_run: bool,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -57,9 +58,21 @@ pub fn render_header(
         )
     };
 
+    let mode_badge = if dry_run {
+        Span::styled(
+            " [SIMULATION] ",
+            Style::default()
+                .fg(Theme::BG_DEEP)
+                .bg(Theme::AMBER)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled("", Style::default())
+    };
+
     let top_line = Line::from(vec![
         Span::styled(
-            " 🩺 WinMedic v0.1.0 ",
+            format!(" 🩺 WinMedic v{} ", env!("CARGO_PKG_VERSION")),
             Style::default()
                 .fg(Theme::CYAN)
                 .add_modifier(Modifier::BOLD),
@@ -69,6 +82,7 @@ pub fn render_header(
             "Windows Self-Healing Engine ",
             Style::default().fg(Theme::MUTED),
         ),
+        mode_badge,
         Span::styled("│ ", Style::default().fg(Theme::BORDER)),
         Span::styled(
             format!(" {} ", cpu_str),
@@ -114,6 +128,7 @@ pub fn render_header(
         format!(" [3] Issue Triage{} ", triage_badge),
         " [4] Repair Center ".to_string(),
         " [5] Backups & Logs ".to_string(),
+        " [6] Einstellungen ".to_string(),
     ];
 
     let tabs = Tabs::new(tab_titles)

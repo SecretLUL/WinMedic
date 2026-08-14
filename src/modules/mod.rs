@@ -5,9 +5,39 @@ pub mod storage;
 pub mod system_integrity;
 pub mod windows_updates;
 
+use crate::config::AppConfig;
 use crate::engine::issue::Issue;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
+
+/// The subset of [`AppConfig`] that diagnostic modules need at scan/fix time.
+///
+/// Modules receive this at construction, so changing a setting means rebuilding
+/// the engine rather than threading config through every call site.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleConfig {
+    pub temp_clean_threshold_mb: u64,
+    pub max_event_log_hours: u32,
+    pub auto_backup_registry: bool,
+    pub auto_restart_services: bool,
+}
+
+impl Default for ModuleConfig {
+    fn default() -> Self {
+        Self::from(&AppConfig::default())
+    }
+}
+
+impl From<&AppConfig> for ModuleConfig {
+    fn from(cfg: &AppConfig) -> Self {
+        Self {
+            temp_clean_threshold_mb: cfg.temp_clean_threshold_mb,
+            max_event_log_hours: cfg.max_event_log_hours,
+            auto_backup_registry: cfg.auto_backup_registry,
+            auto_restart_services: cfg.auto_restart_services,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModuleStatus {
@@ -55,14 +85,14 @@ pub trait DiagnosticModule: Send + Sync {
     ) -> Result<String, String>;
 }
 
-/// Create all 6 diagnostic modules
-pub fn get_all_modules() -> Vec<Arc<dyn DiagnosticModule>> {
+/// Create all 6 diagnostic modules, configured from the user's settings.
+pub fn get_all_modules(cfg: &ModuleConfig) -> Vec<Arc<dyn DiagnosticModule>> {
     vec![
         Arc::new(system_integrity::SystemIntegrityModule::new()),
-        Arc::new(windows_updates::WindowsUpdatesModule::new()),
+        Arc::new(windows_updates::WindowsUpdatesModule::new(cfg.clone())),
         Arc::new(network::NetworkModule::new()),
-        Arc::new(event_log::EventLogModule::new()),
-        Arc::new(storage::StorageModule::new()),
-        Arc::new(registry_startup::RegistryStartupModule::new()),
+        Arc::new(event_log::EventLogModule::new(cfg.clone())),
+        Arc::new(storage::StorageModule::new(cfg.clone())),
+        Arc::new(registry_startup::RegistryStartupModule::new(cfg.clone())),
     ]
 }

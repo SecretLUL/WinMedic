@@ -15,6 +15,7 @@ pub fn render_fix_progress(
     total_to_fix: usize,
     vss_status: &str,
     console_lines: &[String],
+    dry_run: bool,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -33,15 +34,26 @@ pub fn render_fix_progress(
         0
     };
 
-    let title_str = if is_fixing {
-        format!(" REPARATUR LÄUFT – Aktuell: {} ", current_issue_title)
-    } else if total_to_fix > 0 && (fixed_count + failed_count >= total_to_fix) {
-        " REPARATUR-DURCHLAUF ABGESCHLOSSEN ".to_string()
-    } else {
-        " REPARATUR-CENTER – Bereit zur Ausführung (Drücken Sie [F]) ".to_string()
+    let title_str = match (dry_run, is_fixing) {
+        (true, true) => format!(" ⚠ SIMULATION LÄUFT – Aktuell: {} ", current_issue_title),
+        (true, false) if total_to_fix > 0 && (fixed_count + failed_count >= total_to_fix) => {
+            " ⚠ SIMULATION ABGESCHLOSSEN – es wurde nichts verändert ".to_string()
+        }
+        (true, false) => {
+            " ⚠ SIMULATIONSMODUS – [F] zeigt die geplanten Schritte, [D] schaltet um ".to_string()
+        }
+        (false, true) => format!(" REPARATUR LÄUFT – Aktuell: {} ", current_issue_title),
+        (false, false) if total_to_fix > 0 && (fixed_count + failed_count >= total_to_fix) => {
+            " REPARATUR-DURCHLAUF ABGESCHLOSSEN ".to_string()
+        }
+        (false, false) => {
+            " REPARATUR-CENTER – Bereit zur Ausführung (Drücken Sie [F]) ".to_string()
+        }
     };
 
-    let gauge_color = if progress_percent >= 100 && failed_count == 0 {
+    let gauge_color = if dry_run {
+        Theme::AMBER
+    } else if progress_percent >= 100 && failed_count == 0 {
         Theme::EMERALD
     } else if failed_count > 0 {
         Theme::AMBER
@@ -127,9 +139,17 @@ pub fn render_fix_progress(
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("✔ {} erfolgreich behoben", fixed_count),
+                if dry_run {
+                    format!("◻ {} Reparatur(en) geplant", fixed_count)
+                } else {
+                    format!("✔ {} erfolgreich behoben", fixed_count)
+                },
                 Style::default()
-                    .fg(Theme::EMERALD)
+                    .fg(if dry_run {
+                        Theme::AMBER
+                    } else {
+                        Theme::EMERALD
+                    })
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(" │ ", Style::default().fg(Theme::BORDER)),

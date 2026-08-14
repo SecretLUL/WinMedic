@@ -100,4 +100,3 @@ mod tests {
         assert!(logger.log_dir().exists());
     }
 }
-

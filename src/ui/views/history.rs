@@ -7,14 +7,18 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 
-pub fn render_history(
-    f: &mut Frame,
-    area: Rect,
-    audit_entries: &[AuditEntry],
-    backup_records: &[BackupRecord],
-    vss_restore_points: &[String],
-    log_dir_path: &str,
-) {
+pub struct HistoryViewState<'a> {
+    pub audit_entries: &'a [AuditEntry],
+    /// Backup records, newest first — the order shown and selected against.
+    pub backup_records: &'a [&'a BackupRecord],
+    pub selected_backup_index: usize,
+    pub vss_restore_points: &'a [String],
+    pub restore_points_loading: bool,
+    pub is_restoring: bool,
+    pub log_dir_path: &'a str,
+}
+
+pub fn render_history(f: &mut Frame, area: Rect, state: &HistoryViewState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -29,7 +33,8 @@ pub fn render_history(
         .split(chunks[0]);
 
     // Left Pane: Audit History List
-    let audit_items: Vec<ListItem> = audit_entries
+    let audit_items: Vec<ListItem> = state
+        .audit_entries
         .iter()
         .rev()
         .take(25)
@@ -77,13 +82,18 @@ pub fn render_history(
             .add_modifier(Modifier::BOLD),
     )])];
 
-    if vss_restore_points.is_empty() {
+    if state.restore_points_loading {
         backup_lines.push(Line::from(vec![Span::styled(
-            "   (Keine vorherigen VSS-Restore-Points abgefragt)",
+            "   ⏳ Frage Windows-Wiederherstellungspunkte ab...",
+            Style::default().fg(Theme::AMBER),
+        )]));
+    } else if state.vss_restore_points.is_empty() {
+        backup_lines.push(Line::from(vec![Span::styled(
+            "   (Keine Wiederherstellungspunkte gefunden – [R] aktualisiert)",
             Style::default().fg(Theme::MUTED),
         )]));
     } else {
-        for rp in vss_restore_points.iter().take(5) {
+        for rp in state.vss_restore_points.iter().take(5) {
             backup_lines.push(Line::from(vec![
                 Span::styled("   ✔ ", Style::default().fg(Theme::EMERALD)),
                 Span::styled(rp.as_str(), Style::default().fg(Theme::TEXT_WHITE)),
@@ -99,33 +109,71 @@ pub fn render_history(
             .add_modifier(Modifier::BOLD),
     )]));
 
-    if backup_records.is_empty() {
+    if state.backup_records.is_empty() {
         backup_lines.push(Line::from(vec![Span::styled(
             "   (Bisher keine Registry-Modifikationen mit Backup)",
             Style::default().fg(Theme::MUTED),
         )]));
     } else {
-        for rec in backup_records.iter().rev().take(6) {
+        // Only a handful of entries fit; scroll the window so the selected
+        // backup stays visible even with a long backup history.
+        const VISIBLE: usize = 6;
+        let offset = state
+            .selected_backup_index
+            .saturating_sub(VISIBLE - 1)
+            .min(state.backup_records.len().saturating_sub(VISIBLE));
+
+        if offset > 0 {
+            backup_lines.push(Line::from(vec![Span::styled(
+                format!("   ↑ {} neuere Sicherung(en)", offset),
+                Style::default().fg(Theme::MUTED),
+            )]));
+        }
+
+        for (idx, rec) in state
+            .backup_records
+            .iter()
+            .enumerate()
+            .skip(offset)
+            .take(VISIBLE)
+        {
+            let is_current = idx == state.selected_backup_index;
+            let (marker, title_style) = if is_current {
+                (
+                    " ▶ ",
+                    Style::default()
+                        .fg(Theme::BG_DEEP)
+                        .bg(Theme::CYAN)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                ("   ", Style::default().fg(Theme::TEXT_WHITE))
+            };
+
             backup_lines.push(Line::from(vec![
-                Span::styled("   📦 ", Style::default().fg(Theme::AMBER)),
+                Span::styled(marker, Style::default().fg(Theme::CYAN)),
+                Span::styled("📦 ", Style::default().fg(Theme::AMBER)),
                 Span::styled(
                     format!("[{}] ", rec.timestamp),
                     Style::default().fg(Theme::MUTED),
                 ),
-                Span::styled(
-                    rec.description.clone(),
-                    Style::default().fg(Theme::TEXT_WHITE),
-                ),
+                Span::styled(rec.description.clone(), title_style),
             ]));
             backup_lines.push(Line::from(vec![Span::styled(
-                format!("      Pfad: {}", rec.file_path),
+                format!("      {}", rec.key_path),
                 Style::default().fg(Theme::MUTED),
             )]));
         }
     }
 
+    let backup_title = if state.is_restoring {
+        "SICHERUNGEN – ⏳ ROLLBACK LÄUFT..."
+    } else {
+        "SICHERUNGEN – [↑/↓] Auswahl  [U] Rollback  [R] VSS aktualisieren"
+    };
+
     let backup_box = Paragraph::new(backup_lines)
-        .block(Theme::card_block("SICHERUNGEN & WIEDERHERSTELLUNG"))
+        .block(Theme::card_block(backup_title))
         .wrap(Wrap { trim: true });
 
     f.render_widget(backup_box, main_split[1]);
@@ -139,17 +187,17 @@ pub fn render_history(
                     .fg(Theme::CYAN)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(log_dir_path, Style::default().fg(Theme::EMERALD)),
+            Span::styled(state.log_dir_path, Style::default().fg(Theme::EMERALD)),
         ]),
         Line::from(vec![
             Span::styled(
-                "  Rollback-Tipp: ",
+                "  Rollback: ",
                 Style::default()
                     .fg(Theme::AMBER)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "Um eine Registry-Sicherung wiederherzustellen, doppelklicken Sie auf die entsprechende .reg-Datei oder führen Sie 'reg import <datei.reg>' aus.",
+                "[U] spielt die markierte .reg-Sicherung nach Rückfrage zurück. Alternativ 'reg import <datei.reg>' ausführen.",
                 Style::default().fg(Theme::MUTED),
             ),
         ]),
