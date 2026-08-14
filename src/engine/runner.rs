@@ -2,9 +2,11 @@ use crate::config::AppConfig;
 use crate::engine::issue::{Issue, Severity};
 use crate::modules::{
     DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress, get_all_modules,
+    get_all_modules_with_runner,
 };
 use crate::safety::audit::AuditLogger;
 use crate::safety::restore_point::create_system_restore_point;
+use crate::utils::cmd::CommandRunner;
 use std::sync::Arc;
 use tokio::sync::mpsc::{Sender, channel};
 use tokio::task::JoinSet;
@@ -103,6 +105,13 @@ impl DiagnosticEngine {
     pub fn new(config: &AppConfig) -> Self {
         Self {
             modules: get_all_modules(&ModuleConfig::from(config)),
+            audit_logger: AuditLogger::new(),
+        }
+    }
+
+    pub fn with_runner(config: &AppConfig, runner: Arc<dyn CommandRunner>) -> Self {
+        Self {
+            modules: get_all_modules_with_runner(&ModuleConfig::from(config), runner),
             audit_logger: AuditLogger::new(),
         }
     }
@@ -692,5 +701,47 @@ mod tests {
         assert_eq!(started_modules.len(), 6, "all 6 modules should start");
         assert_eq!(finished_or_failed, 6, "all 6 modules should finish or fail");
         assert!(saw_completed, "scan should emit ScanCompleted");
+    }
+
+    #[tokio::test]
+    async fn test_diagnostic_engine_with_mock_runner() {
+        use crate::utils::cmd::{CmdOutput, MockCommandRunner};
+
+        let mock = MockCommandRunner::new();
+        // Mock DISM corruption
+        mock.add_response(
+            "dism.exe",
+            CmdOutput::ok(
+                "The component store is repairable. The operation completed successfully.",
+            ),
+        );
+        // Mock disabled Windows Update service
+        mock.add_response(
+            "query wuauserv",
+            CmdOutput::ok("STATE: 1 STOPPED \n START_TYPE: DISABLED"),
+        );
+        // Mock disabled VSS
+        mock.add_response(
+            "query vss",
+            CmdOutput::ok("STATE: 1 STOPPED \n START_TYPE: DISABLED"),
+        );
+        mock.add_response("query bits", CmdOutput::ok("STATE: 4 RUNNING"));
+        mock.add_response("query cryptsvc", CmdOutput::ok("STATE: 4 RUNNING"));
+        mock.add_response("dirty query C:", CmdOutput::ok("Volume - C: is clean"));
+        mock.add_response("Get-PhysicalDisk", CmdOutput::ok("SSD | Health: Healthy"));
+        mock.add_response("nslookup.exe", CmdOutput::ok("Address: 8.8.8.8"));
+        mock.add_response("show catalog", CmdOutput::ok("Winsock Provider"));
+        mock.add_response("Level=1", CmdOutput::ok(""));
+        mock.add_response("WHEA-Logger", CmdOutput::ok(""));
+
+        let engine = DiagnosticEngine::with_runner(&AppConfig::default(), Arc::new(mock));
+        let (tx, _rx) = channel::<ScanEvent>(200);
+
+        let issues = engine.run_scan(tx, CancellationToken::new()).await;
+
+        // Should detect DISM corruption and disabled WU / VSS services
+        assert!(issues.iter().any(|i| i.id == "sys_dism_corrupt"));
+        assert!(issues.iter().any(|i| i.id == "wu_svc_disabled_wuauserv"));
+        assert!(issues.iter().any(|i| i.id == "sys_vss_disabled"));
     }
 }

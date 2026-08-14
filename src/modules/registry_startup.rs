@@ -1,7 +1,9 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
 use crate::safety::reg_backup::RegBackupManager;
+use crate::utils::cmd::CommandRunner;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 use tokio::time::sleep;
@@ -14,6 +16,10 @@ pub struct RegistryStartupModule {
 
 impl RegistryStartupModule {
     pub fn new(config: ModuleConfig) -> Self {
+        Self { config }
+    }
+
+    pub fn with_runner(config: ModuleConfig, _runner: Arc<dyn CommandRunner>) -> Self {
         Self { config }
     }
 

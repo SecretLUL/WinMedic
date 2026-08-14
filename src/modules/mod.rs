@@ -85,14 +85,36 @@ pub trait DiagnosticModule: Send + Sync {
     ) -> Result<String, String>;
 }
 
-/// Create all 6 diagnostic modules, configured from the user's settings.
-pub fn get_all_modules(cfg: &ModuleConfig) -> Vec<Arc<dyn DiagnosticModule>> {
+/// Create all 6 diagnostic modules, configured from the user's settings with a specific CommandRunner.
+pub fn get_all_modules_with_runner(
+    cfg: &ModuleConfig,
+    runner: Arc<dyn crate::utils::cmd::CommandRunner>,
+) -> Vec<Arc<dyn DiagnosticModule>> {
     vec![
-        Arc::new(system_integrity::SystemIntegrityModule::new()),
-        Arc::new(windows_updates::WindowsUpdatesModule::new(cfg.clone())),
-        Arc::new(network::NetworkModule::new()),
-        Arc::new(event_log::EventLogModule::new(cfg.clone())),
-        Arc::new(storage::StorageModule::new(cfg.clone())),
-        Arc::new(registry_startup::RegistryStartupModule::new(cfg.clone())),
+        Arc::new(system_integrity::SystemIntegrityModule::with_runner(
+            runner.clone(),
+        )),
+        Arc::new(windows_updates::WindowsUpdatesModule::with_runner(
+            cfg.clone(),
+            runner.clone(),
+        )),
+        Arc::new(network::NetworkModule::with_runner(runner.clone())),
+        Arc::new(event_log::EventLogModule::with_runner(
+            cfg.clone(),
+            runner.clone(),
+        )),
+        Arc::new(storage::StorageModule::with_runner(
+            cfg.clone(),
+            runner.clone(),
+        )),
+        Arc::new(registry_startup::RegistryStartupModule::with_runner(
+            cfg.clone(),
+            runner,
+        )),
     ]
+}
+
+/// Create all 6 diagnostic modules, configured from the user's settings using the default OS runner.
+pub fn get_all_modules(cfg: &ModuleConfig) -> Vec<Arc<dyn DiagnosticModule>> {
+    get_all_modules_with_runner(cfg, Arc::new(crate::utils::cmd::SystemCommandRunner::new()))
 }

@@ -1,18 +1,24 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
-use crate::utils::cmd::{run_cmd, run_powershell};
+use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 use tokio::time::sleep;
 
 pub struct StorageModule {
     config: ModuleConfig,
+    runner: Arc<dyn CommandRunner>,
 }
 
 impl StorageModule {
     pub fn new(config: ModuleConfig) -> Self {
-        Self { config }
+        Self::with_runner(config, Arc::new(SystemCommandRunner::new()))
+    }
+
+    pub fn with_runner(config: ModuleConfig, runner: Arc<dyn CommandRunner>) -> Self {
+        Self { config, runner }
     }
 
     async fn send_progress(
@@ -84,12 +90,14 @@ impl DiagnosticModule for StorageModule {
         .await;
         sleep(Duration::from_millis(150)).await;
 
-        let dirty_check = run_cmd(
-            "fsutil.exe",
-            &["dirty", "query", "C:"],
-            Duration::from_secs(6),
-        )
-        .await;
+        let dirty_check = self
+            .runner
+            .run(
+                "fsutil.exe",
+                &["dirty", "query", "C:"],
+                Duration::from_secs(6),
+            )
+            .await;
         if let Ok(out) = dirty_check {
             let stdout = out.stdout.to_lowercase();
             if stdout.contains("dirty")
@@ -130,7 +138,11 @@ impl DiagnosticModule for StorageModule {
         sleep(Duration::from_millis(150)).await;
 
         let disk_script = r#"Get-PhysicalDisk | Select-Object -Property DeviceId, FriendlyName, MediaType, HealthStatus, OperationalStatus | ForEach-Object { "$($_.FriendlyName) | Health: $($_.HealthStatus) | Status: $($_.OperationalStatus)" }"#;
-        if let Ok(disk_out) = run_powershell(disk_script, Duration::from_secs(8)).await {
+        if let Ok(disk_out) = self
+            .runner
+            .run_powershell(disk_script, Duration::from_secs(8))
+            .await
+        {
             let output_str = disk_out.stdout.trim();
             for line in output_str.lines() {
                 let l = line.trim();
@@ -270,7 +282,10 @@ impl DiagnosticModule for StorageModule {
     ) -> Result<String, String> {
         match issue_id {
             "storage_dirty_bit" => {
-                let out = run_cmd("chkdsk.exe", &["C:", "/scan"], Duration::from_secs(120)).await?;
+                let out = self
+                    .runner
+                    .run("chkdsk.exe", &["C:", "/scan"], Duration::from_secs(120))
+                    .await?;
                 if out.success {
                     Ok(
                         "Dateisystemprüfung (chkdsk /scan) erfolgreich ohne Fehler beendet."
@@ -323,16 +338,18 @@ impl DiagnosticModule for StorageModule {
                         let _ = std::fs::remove_file(icon_cache);
                     }
                 }
-                let _ = run_cmd(
-                    "powershell.exe",
-                    &[
-                        "-NoProfile",
-                        "-Command",
-                        "Stop-Process -Name explorer -Force; Start-Process explorer",
-                    ],
-                    Duration::from_secs(8),
-                )
-                .await;
+                let _ = self
+                    .runner
+                    .run(
+                        "powershell.exe",
+                        &[
+                            "-NoProfile",
+                            "-Command",
+                            "Stop-Process -Name explorer -Force; Start-Process explorer",
+                        ],
+                        Duration::from_secs(8),
+                    )
+                    .await;
                 Ok(
                     "Icon- & Thumbnail-Cache erfolgreich zurückgesetzt und Explorer neu gestartet."
                         .to_string(),
@@ -343,5 +360,28 @@ impl DiagnosticModule for StorageModule {
             ),
             _ => Err(format!("Unbekannte Problem-ID: {}", issue_id)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::cmd::{CmdOutput, MockCommandRunner};
+
+    #[tokio::test]
+    async fn test_storage_detects_dirty_bit() {
+        let mock = MockCommandRunner::new();
+        mock.add_response("dirty query C:", CmdOutput::ok("Volume - C: is Dirty"));
+        mock.add_response(
+            "Get-PhysicalDisk",
+            CmdOutput::ok("NVMe SSD | Health: Healthy | Status: OK"),
+        );
+
+        let module = StorageModule::with_runner(ModuleConfig::default(), Arc::new(mock));
+        let issues = module.scan(None).await.unwrap();
+
+        let dirty_issue = issues.iter().find(|i| i.id == "storage_dirty_bit");
+        assert!(dirty_issue.is_some());
+        assert_eq!(dirty_issue.unwrap().severity, Severity::Critical);
     }
 }

@@ -1,16 +1,206 @@
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Command as TokioCommand;
 use tokio::sync::mpsc::Sender;
 use tokio::time::timeout;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CmdOutput {
     pub success: bool,
     pub exit_code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
+}
+
+impl CmdOutput {
+    pub fn ok(stdout: impl Into<String>) -> Self {
+        Self {
+            success: true,
+            exit_code: Some(0),
+            stdout: stdout.into(),
+            stderr: String::new(),
+        }
+    }
+
+    pub fn failed(exit_code: i32, stderr: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            exit_code: Some(exit_code),
+            stdout: String::new(),
+            stderr: stderr.into(),
+        }
+    }
+
+    pub fn with_output(
+        exit_code: i32,
+        stdout: impl Into<String>,
+        stderr: impl Into<String>,
+    ) -> Self {
+        Self {
+            success: exit_code == 0,
+            exit_code: Some(exit_code),
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+        }
+    }
+}
+
+/// Abstract runner for executing system commands, enabling deterministic unit testing
+/// of diagnostic detection and repair parsing logic without real system execution.
+#[async_trait::async_trait]
+pub trait CommandRunner: Send + Sync {
+    async fn run(
+        &self,
+        program: &str,
+        args: &[&str],
+        timeout_duration: Duration,
+    ) -> Result<CmdOutput, String>;
+
+    async fn run_streaming(
+        &self,
+        program: &str,
+        args: &[&str],
+        log_tx: Option<Sender<String>>,
+        timeout_duration: Duration,
+    ) -> Result<CmdOutput, String>;
+
+    async fn run_powershell(
+        &self,
+        command_str: &str,
+        timeout_duration: Duration,
+    ) -> Result<CmdOutput, String> {
+        self.run(
+            "powershell",
+            &["-NoProfile", "-NonInteractive", "-Command", command_str],
+            timeout_duration,
+        )
+        .await
+    }
+}
+
+/// Production runner executing actual OS processes via tokio::process::Command.
+#[derive(Debug, Default, Clone)]
+pub struct SystemCommandRunner;
+
+impl SystemCommandRunner {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait::async_trait]
+impl CommandRunner for SystemCommandRunner {
+    async fn run(
+        &self,
+        program: &str,
+        args: &[&str],
+        timeout_duration: Duration,
+    ) -> Result<CmdOutput, String> {
+        run_cmd(program, args, timeout_duration).await
+    }
+
+    async fn run_streaming(
+        &self,
+        program: &str,
+        args: &[&str],
+        log_tx: Option<Sender<String>>,
+        timeout_duration: Duration,
+    ) -> Result<CmdOutput, String> {
+        run_cmd_streaming(program, args, log_tx, timeout_duration).await
+    }
+}
+
+/// Mock runner allowing tests to inject canned command outputs and verify executed commands.
+#[derive(Default, Clone)]
+pub struct MockCommandRunner {
+    responses: Arc<Mutex<Vec<(String, CmdOutput)>>>,
+    default_response: Arc<Mutex<Option<CmdOutput>>>,
+    executed_commands: Arc<Mutex<Vec<String>>>,
+}
+
+impl MockCommandRunner {
+    pub fn new() -> Self {
+        Self {
+            responses: Arc::new(Mutex::new(Vec::new())),
+            default_response: Arc::new(Mutex::new(None)),
+            executed_commands: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn with_default_success() -> Self {
+        Self {
+            responses: Arc::new(Mutex::new(Vec::new())),
+            default_response: Arc::new(Mutex::new(Some(CmdOutput::ok("")))),
+            executed_commands: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Register a mock response for commands matching `match_substring`.
+    pub fn add_response(&self, match_substring: impl Into<String>, output: CmdOutput) {
+        self.responses
+            .lock()
+            .unwrap()
+            .push((match_substring.into(), output));
+    }
+
+    /// Retrieve all executed command strings.
+    pub fn executed(&self) -> Vec<String> {
+        self.executed_commands.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl CommandRunner for MockCommandRunner {
+    async fn run(
+        &self,
+        program: &str,
+        args: &[&str],
+        _timeout_duration: Duration,
+    ) -> Result<CmdOutput, String> {
+        let full_cmd = format!("{} {}", program, args.join(" "));
+        self.executed_commands
+            .lock()
+            .unwrap()
+            .push(full_cmd.clone());
+
+        let responses = self.responses.lock().unwrap();
+        for (pattern, output) in responses.iter() {
+            if full_cmd.contains(pattern) || program.contains(pattern) {
+                return Ok(output.clone());
+            }
+        }
+
+        let def = self.default_response.lock().unwrap();
+        if let Some(ref default_out) = *def {
+            return Ok(default_out.clone());
+        }
+
+        Err(format!(
+            "No mock response configured for command: '{}'",
+            full_cmd
+        ))
+    }
+
+    async fn run_streaming(
+        &self,
+        program: &str,
+        args: &[&str],
+        log_tx: Option<Sender<String>>,
+        timeout_duration: Duration,
+    ) -> Result<CmdOutput, String> {
+        let res = self.run(program, args, timeout_duration).await?;
+        if let Some(ref tx) = log_tx {
+            for line in res.stdout.lines() {
+                let _ = tx.send(line.to_string()).await;
+            }
+            for line in res.stderr.lines() {
+                let _ = tx.send(format!("[STDERR] {}", line)).await;
+            }
+        }
+        Ok(res)
+    }
 }
 
 /// Execute a system command with timeout and return the complete output.
@@ -172,4 +362,42 @@ pub async fn run_powershell(command_str: &str, timeout_dur: Duration) -> Result<
         timeout_dur,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_mock_command_runner() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "dism.exe",
+            CmdOutput::ok("The component store is repairable."),
+        );
+        mock.add_response("sfc.exe", CmdOutput::failed(1, "Corrupted files"));
+
+        let out1 = mock
+            .run(
+                "dism.exe",
+                &["/Online", "/Cleanup-Image", "/CheckHealth"],
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+        assert!(out1.success);
+        assert_eq!(out1.stdout, "The component store is repairable.");
+
+        let out2 = mock
+            .run("sfc.exe", &["/verifyonly"], Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(!out2.success);
+        assert_eq!(out2.stderr, "Corrupted files");
+
+        let executed = mock.executed();
+        assert_eq!(executed.len(), 2);
+        assert!(executed[0].contains("dism.exe"));
+        assert!(executed[1].contains("sfc.exe"));
+    }
 }
