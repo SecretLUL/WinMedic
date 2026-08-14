@@ -23,11 +23,12 @@
 
 **WinMedic** is a state-of-the-art terminal application (TUI) designed to autonomously diagnose, categorize, and safely repair Windows operating system errors, performance bottlenecks, update stalls, and broken configurations.
 
-Unlike opaque one-click cleanup tools, **WinMedic** is built on four fundamental principles:
+Unlike opaque one-click cleanup tools, **WinMedic** is built on five fundamental principles:
 1. **Zero Runtime Dependencies**: Single, compact, portable native `.exe` binary without .NET, Python, or external runtime requirements.
-2. **Safety First**: Automatic **Windows System Restore Points (VSS)** and **Registry Snapshots** are taken prior to any modification — and every snapshot can be rolled back from inside the app.
-3. **Full Transparency**: Every single issue is explained in plain language with technical logs, severity levels, risk scores, and step-by-step fix previews. A **dry-run mode** shows exactly what would happen before anything is touched.
-4. **Always Interruptible**: Any running scan or repair can be aborted with `[Esc]` (or `Ctrl+C` headless) — child processes are terminated with it.
+2. **True Parallel Diagnostics**: All diagnostic modules execute concurrently via Tokio `JoinSet` for blazing-fast hardware and OS analysis.
+3. **Safety First**: Automatic **Windows System Restore Points (VSS)** and **Registry Snapshots** are taken prior to any modification — and every snapshot can be rolled back from inside the app.
+4. **Full Transparency & Live Triage**: Every issue is explained with technical logs, severity levels, risk scores, and step-by-step fix previews. A **dry-run mode** shows planned steps without changing anything, with instant live search and severity filtering.
+5. **Always Interruptible & Bounded**: Any running scan or repair can be aborted with `[Esc]` (or `Ctrl+C` headless) terminating child processes. Memory usage is bounded via a 2000-line ring-buffer.
 
 ---
 
@@ -51,7 +52,8 @@ Before WinMedic touches your system:
 2. **Registry Snapshotting**: Every modified registry key is exported into `%APPDATA%\WinMedic\backups\reg_<timestamp>.reg` prior to modification. If the export fails, the fix is aborted instead of applied.
 3. **One-Key Rollback**: Any stored snapshot can be restored directly from the **Backups & Logs** tab with `[U]`, after an explicit confirmation prompt.
 4. **Dry-Run First**: `[D]` in the TUI or `--dry-run` on the CLI lists every command a repair would execute, without executing any of it.
-5. **Structured Audit Log**: Every scan, fix, simulation, rollback, and cancellation is logged in human-readable `%APPDATA%\WinMedic\logs\audit.log` and `%APPDATA%\WinMedic\logs\history.json`.
+5. **High-Performance Audit Logging**: Every scan, fix, simulation, rollback, and cancellation is appended in $O(1)$ to `%APPDATA%\WinMedic\logs\history.jsonl` (with automatic 5 MB log rotation) and formatted human-readable `%APPDATA%\WinMedic\logs\audit.log`.
+6. **Self-Contained Report Export**: Complete diagnostic findings can be exported at any time with `[E]` or `--output <file>` as responsive, standalone HTML, Markdown, or JSON reports.
 
 ---
 
