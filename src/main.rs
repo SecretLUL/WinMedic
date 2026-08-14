@@ -525,10 +525,8 @@ fn handle_key(app: &mut App, code: KeyCode) {
         }
 
         // Esc cancels a running operation first, and only then navigates back.
-        KeyCode::Esc => {
-            if !app.cancel_current_operation() && app.active_tab != TAB_DASHBOARD {
-                app.active_tab = TAB_DASHBOARD;
-            }
+        KeyCode::Esc if !app.cancel_current_operation() && app.active_tab != TAB_DASHBOARD => {
+            app.active_tab = TAB_DASHBOARD;
         }
 
         _ => {}
