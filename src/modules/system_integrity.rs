@@ -1,9 +1,9 @@
-use std::time::Duration;
-use tokio::sync::mpsc::Sender;
-use tokio::time::sleep;
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
 use crate::utils::cmd::{run_cmd, run_cmd_streaming};
+use std::time::Duration;
+use tokio::sync::mpsc::Sender;
+use tokio::time::sleep;
 
 pub struct SystemIntegrityModule;
 
@@ -49,11 +49,20 @@ impl DiagnosticModule for SystemIntegrityModule {
         "🛡"
     }
 
-    async fn scan(&self, progress_tx: Option<Sender<ModuleProgress>>) -> Result<Vec<Issue>, String> {
+    async fn scan(
+        &self,
+        progress_tx: Option<Sender<ModuleProgress>>,
+    ) -> Result<Vec<Issue>, String> {
         let mut issues = Vec::new();
 
         // 1. DISM CheckHealth
-        Self::send_progress(&progress_tx, 15, "Prüfe Windows Component Store (DISM CheckHealth)...", Some("DISM /Online /Cleanup-Image /CheckHealth wird ausgeführt...")).await;
+        Self::send_progress(
+            &progress_tx,
+            15,
+            "Prüfe Windows Component Store (DISM CheckHealth)...",
+            Some("DISM /Online /Cleanup-Image /CheckHealth wird ausgeführt..."),
+        )
+        .await;
         sleep(Duration::from_millis(150)).await;
 
         let dism_check = run_cmd(
@@ -66,7 +75,11 @@ impl DiagnosticModule for SystemIntegrityModule {
         match dism_check {
             Ok(output) => {
                 let stdout = output.stdout.to_lowercase();
-                if stdout.contains("repairable") || stdout.contains("reparierbar") || stdout.contains("corrupted") || stdout.contains("beschädigt") {
+                if stdout.contains("repairable")
+                    || stdout.contains("reparierbar")
+                    || stdout.contains("corrupted")
+                    || stdout.contains("beschädigt")
+                {
                     issues.push(Issue::new(
                         "sys_dism_corrupt",
                         self.id(),
@@ -87,12 +100,24 @@ impl DiagnosticModule for SystemIntegrityModule {
                 }
             }
             Err(e) => {
-                Self::send_progress(&progress_tx, 35, "DISM Check übersprungen (eingeschränkte Rechte)", Some(&e)).await;
+                Self::send_progress(
+                    &progress_tx,
+                    35,
+                    "DISM Check übersprungen (eingeschränkte Rechte)",
+                    Some(&e),
+                )
+                .await;
             }
         }
 
         // 2. VSS Service Status
-        Self::send_progress(&progress_tx, 55, "Prüfe Volumenschattenkopie & VSS-Dienste...", Some("Abfrage von VSS und swprv Dienststatus...")).await;
+        Self::send_progress(
+            &progress_tx,
+            55,
+            "Prüfe Volumenschattenkopie & VSS-Dienste...",
+            Some("Abfrage von VSS und swprv Dienststatus..."),
+        )
+        .await;
         sleep(Duration::from_millis(150)).await;
 
         let vss_query = run_cmd("sc.exe", &["query", "vss"], Duration::from_secs(10)).await;
@@ -112,17 +137,36 @@ impl DiagnosticModule for SystemIntegrityModule {
                     vec!["sc config vss start= demand".to_string(), "net start vss".to_string()],
                 ));
             } else {
-                Self::send_progress(&progress_tx, 70, "VSS-Dienst bereit", Some("✔ VSS-Dienststatus: Bereit für Wiederherstellungspunkte.")).await;
+                Self::send_progress(
+                    &progress_tx,
+                    70,
+                    "VSS-Dienst bereit",
+                    Some("✔ VSS-Dienststatus: Bereit für Wiederherstellungspunkte."),
+                )
+                .await;
             }
         }
 
         // 3. CBS Logs Inspection
-        Self::send_progress(&progress_tx, 85, "Prüfe CBS-Systemprotokolle auf Integritätsfehler...", Some("CBS.log Inspektion...")).await;
+        Self::send_progress(
+            &progress_tx,
+            85,
+            "Prüfe CBS-Systemprotokolle auf Integritätsfehler...",
+            Some("CBS.log Inspektion..."),
+        )
+        .await;
         sleep(Duration::from_millis(150)).await;
 
         let cbs_log_path = r"C:\Windows\Logs\CBS\CBS.log";
         if let Ok(cbs_content) = std::fs::read_to_string(cbs_log_path) {
-            let last_chunk: String = cbs_content.chars().rev().take(15000).collect::<String>().chars().rev().collect();
+            let last_chunk: String = cbs_content
+                .chars()
+                .rev()
+                .take(15000)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
             if last_chunk.contains("Cannot repair member file") || last_chunk.contains("Corrupt") {
                 issues.push(Issue::new(
                     "sys_sfc_corrupt",
@@ -137,16 +181,32 @@ impl DiagnosticModule for SystemIntegrityModule {
                     vec!["sfc /scannow im Hintergrund ausführen und defekte Systemdateien reparieren".to_string()],
                 ));
             } else {
-                Self::send_progress(&progress_tx, 95, "CBS Protokolle unauffällig", Some("✔ Keine kritischen CBS-Integritätsverletzungen gemeldet.")).await;
+                Self::send_progress(
+                    &progress_tx,
+                    95,
+                    "CBS Protokolle unauffällig",
+                    Some("✔ Keine kritischen CBS-Integritätsverletzungen gemeldet."),
+                )
+                .await;
             }
         }
 
-        Self::send_progress(&progress_tx, 100, "System-Integritätsprüfung abgeschlossen", None).await;
+        Self::send_progress(
+            &progress_tx,
+            100,
+            "System-Integritätsprüfung abgeschlossen",
+            None,
+        )
+        .await;
 
         Ok(issues)
     }
 
-    async fn fix(&self, issue_id: &str, progress_tx: Option<Sender<FixProgress>>) -> Result<String, String> {
+    async fn fix(
+        &self,
+        issue_id: &str,
+        progress_tx: Option<Sender<FixProgress>>,
+    ) -> Result<String, String> {
         let log_tx = if let Some(ref tx) = progress_tx {
             let (str_tx, mut str_rx) = tokio::sync::mpsc::channel::<String>(100);
             let tx_clone = tx.clone();
@@ -179,26 +239,36 @@ impl DiagnosticModule for SystemIntegrityModule {
                 )
                 .await?;
                 if out.success {
-                    Ok("DISM /RestoreHealth erfolgreich abgeschlossen. Component Store repariert.".to_string())
+                    Ok(
+                        "DISM /RestoreHealth erfolgreich abgeschlossen. Component Store repariert."
+                            .to_string(),
+                    )
                 } else {
                     Err(format!("DISM-Reparatur fehlgeschlagen: {}", out.stderr))
                 }
             }
             "sys_vss_disabled" => {
-                let _ = run_cmd("sc.exe", &["config", "vss", "start=", "demand"], Duration::from_secs(10)).await;
+                let _ = run_cmd(
+                    "sc.exe",
+                    &["config", "vss", "start=", "demand"],
+                    Duration::from_secs(10),
+                )
+                .await;
                 let _ = run_cmd("net.exe", &["start", "vss"], Duration::from_secs(10)).await;
-                Ok("Volume Shadow Copy (VSS) Dienst wurde erfolgreich konfiguriert und gestartet.".to_string())
+                Ok(
+                    "Volume Shadow Copy (VSS) Dienst wurde erfolgreich konfiguriert und gestartet."
+                        .to_string(),
+                )
             }
             "sys_sfc_corrupt" => {
-                let out = run_cmd_streaming(
-                    "sfc.exe",
-                    &["/scannow"],
-                    log_tx,
-                    Duration::from_secs(600),
-                )
-                .await?;
+                let out =
+                    run_cmd_streaming("sfc.exe", &["/scannow"], log_tx, Duration::from_secs(600))
+                        .await?;
                 if out.success {
-                    Ok("SFC /scannow erfolgreich abgeschlossen. Systemdateien repariert.".to_string())
+                    Ok(
+                        "SFC /scannow erfolgreich abgeschlossen. Systemdateien repariert."
+                            .to_string(),
+                    )
                 } else {
                     Ok(format!("SFC ausgeführt: {}", out.stdout))
                 }

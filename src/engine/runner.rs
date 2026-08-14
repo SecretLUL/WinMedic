@@ -1,27 +1,52 @@
-use std::sync::Arc;
-use tokio::sync::mpsc::{channel, Sender};
 use crate::engine::issue::{Issue, Severity};
-use crate::modules::{get_all_modules, DiagnosticModule, FixProgress, ModuleProgress};
+use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress, get_all_modules};
 use crate::safety::audit::AuditLogger;
 use crate::safety::restore_point::create_system_restore_point;
+use std::sync::Arc;
+use tokio::sync::mpsc::{Sender, channel};
 
 #[derive(Debug, Clone)]
 pub enum ScanEvent {
     ModuleStarted(String),
     ModuleProgressUpdate(ModuleProgress),
-    ModuleFinished { module_id: String, issues: Vec<Issue> },
-    ModuleFailed { module_id: String, error: String },
-    ScanCompleted { total_issues: usize, health_score: u8 },
+    ModuleFinished {
+        module_id: String,
+        issues: Vec<Issue>,
+    },
+    ModuleFailed {
+        module_id: String,
+        error: String,
+    },
+    ScanCompleted {
+        total_issues: usize,
+        health_score: u8,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub enum RepairEvent {
     VssStarted,
-    VssCompleted { success: bool, message: String },
-    FixStarted { issue_id: String, title: String },
-    FixOutput { issue_id: String, line: String },
-    FixFinished { issue_id: String, success: bool, message: String },
-    AllRepairsCompleted { fixed_count: usize, failed_count: usize },
+    VssCompleted {
+        success: bool,
+        message: String,
+    },
+    FixStarted {
+        issue_id: String,
+        title: String,
+    },
+    FixOutput {
+        issue_id: String,
+        line: String,
+    },
+    FixFinished {
+        issue_id: String,
+        success: bool,
+        message: String,
+    },
+    AllRepairsCompleted {
+        fixed_count: usize,
+        failed_count: usize,
+    },
 }
 
 pub struct DiagnosticEngine {
@@ -62,14 +87,18 @@ impl DiagnosticEngine {
 
         for module in &self.modules {
             let mod_id = module.id().to_string();
-            let _ = event_tx.send(ScanEvent::ModuleStarted(mod_id.clone())).await;
+            let _ = event_tx
+                .send(ScanEvent::ModuleStarted(mod_id.clone()))
+                .await;
 
             let (prog_tx, mut prog_rx) = channel::<ModuleProgress>(50);
             let evt_tx_clone = event_tx.clone();
 
             let forward_handle = tokio::spawn(async move {
                 while let Some(prog) = prog_rx.recv().await {
-                    let _ = evt_tx_clone.send(ScanEvent::ModuleProgressUpdate(prog)).await;
+                    let _ = evt_tx_clone
+                        .send(ScanEvent::ModuleProgressUpdate(prog))
+                        .await;
                 }
             });
 
@@ -134,7 +163,8 @@ impl DiagnosticEngine {
     ) -> (usize, usize) {
         if create_vss {
             let _ = event_tx.send(RepairEvent::VssStarted).await;
-            let vss_res = create_system_restore_point("WinMedic Auto-Restore Point (Vor Reparatur)").await;
+            let vss_res =
+                create_system_restore_point("WinMedic Auto-Restore Point (Vor Reparatur)").await;
             let _ = event_tx
                 .send(RepairEvent::VssCompleted {
                     success: vss_res.success,
@@ -146,7 +176,11 @@ impl DiagnosticEngine {
                 "BACKUP",
                 "vss",
                 "System Restore Point",
-                if vss_res.success { "SUCCESS" } else { "WARNING" },
+                if vss_res.success {
+                    "SUCCESS"
+                } else {
+                    "WARNING"
+                },
                 &vss_res.message,
             );
         }

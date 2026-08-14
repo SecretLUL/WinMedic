@@ -1,10 +1,10 @@
+use crate::ui::theme::Theme;
+use crate::utils::hardware::SystemTelemetry;
+use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Tabs};
-use ratatui::Frame;
-use crate::ui::theme::Theme;
-use crate::utils::hardware::SystemTelemetry;
 
 pub fn render_header(
     f: &mut Frame,
@@ -24,29 +24,66 @@ pub fn render_header(
     let (cpu_str, ram_str, os_str) = if let Some(t) = telemetry {
         (
             format!("CPU: {:.1}%", t.cpu_usage),
-            format!("RAM: {:.1}/{:.1}GB", (t.ram_used_mb as f32 / 1024.0), (t.ram_total_mb as f32 / 1024.0)),
+            format!(
+                "RAM: {:.1}/{:.1}GB",
+                (t.ram_used_mb as f32 / 1024.0),
+                (t.ram_total_mb as f32 / 1024.0)
+            ),
             format!("{} {}", t.os_name, t.os_version),
         )
     } else {
-        ("CPU: --%".to_string(), "RAM: --/--GB".to_string(), "Windows".to_string())
+        (
+            "CPU: --%".to_string(),
+            "RAM: --/--GB".to_string(),
+            "Windows".to_string(),
+        )
     };
 
     let admin_badge = if is_admin {
-        Span::styled(" [ADMIN: YES] ", Style::default().fg(Theme::BG_DEEP).bg(Theme::EMERALD).add_modifier(Modifier::BOLD))
+        Span::styled(
+            " [ADMIN: YES] ",
+            Style::default()
+                .fg(Theme::BG_DEEP)
+                .bg(Theme::EMERALD)
+                .add_modifier(Modifier::BOLD),
+        )
     } else {
-        Span::styled(" [ADMIN: NO] ", Style::default().fg(Theme::BG_DEEP).bg(Theme::CORAL).add_modifier(Modifier::BOLD))
+        Span::styled(
+            " [ADMIN: NO] ",
+            Style::default()
+                .fg(Theme::BG_DEEP)
+                .bg(Theme::CORAL)
+                .add_modifier(Modifier::BOLD),
+        )
     };
 
     let top_line = Line::from(vec![
-        Span::styled(" 🩺 WinMedic v0.1.0 ", Style::default().fg(Theme::CYAN).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " 🩺 WinMedic v0.1.0 ",
+            Style::default()
+                .fg(Theme::CYAN)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled("─ ", Style::default().fg(Theme::BORDER)),
-        Span::styled("Windows Self-Healing Engine ", Style::default().fg(Theme::MUTED)),
+        Span::styled(
+            "Windows Self-Healing Engine ",
+            Style::default().fg(Theme::MUTED),
+        ),
         Span::styled("│ ", Style::default().fg(Theme::BORDER)),
-        Span::styled(format!(" {} ", cpu_str), Style::default().fg(Theme::TEXT_WHITE)),
+        Span::styled(
+            format!(" {} ", cpu_str),
+            Style::default().fg(Theme::TEXT_WHITE),
+        ),
         Span::styled("│ ", Style::default().fg(Theme::BORDER)),
-        Span::styled(format!(" {} ", ram_str), Style::default().fg(Theme::TEXT_WHITE)),
+        Span::styled(
+            format!(" {} ", ram_str),
+            Style::default().fg(Theme::TEXT_WHITE),
+        ),
         Span::styled("│ ", Style::default().fg(Theme::BORDER)),
-        Span::styled(format!(" {} ", os_str), Style::default().fg(Theme::TEXT_WHITE)),
+        Span::styled(
+            format!(" {} ", os_str),
+            Style::default().fg(Theme::TEXT_WHITE),
+        ),
         Span::styled("│ ", Style::default().fg(Theme::BORDER)),
         Span::styled(" VSS: Ready ", Style::default().fg(Theme::EMERALD)),
         Span::styled("│ ", Style::default().fg(Theme::BORDER)),

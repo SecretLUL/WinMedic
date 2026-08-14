@@ -8,14 +8,18 @@ mod safety;
 mod ui;
 mod utils;
 
+use clap::Parser;
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind,
+};
+use crossterm::execute;
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
+use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 use std::io::stdout;
 use std::time::{Duration, Instant};
-use clap::Parser;
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind};
-use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
-use ratatui::backend::CrosstermBackend;
-use ratatui::Terminal;
 use tokio::sync::mpsc::channel;
 
 use app::App;
@@ -76,9 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Starte WinMedic Diagnose-Engine...\n");
         }
 
-        let engine_handle = tokio::spawn(async move {
-            engine.run_scan(tx).await
-        });
+        let engine_handle = tokio::spawn(async move { engine.run_scan(tx).await });
 
         while let Some(evt) = rx.recv().await {
             if !args.json {
@@ -90,7 +92,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     ScanEvent::ModuleFinished { module_id, issues } => {
-                        println!("✔ Modul '{}' fertig ({} Probleme gefunden)", module_id, issues.len());
+                        println!(
+                            "✔ Modul '{}' fertig ({} Probleme gefunden)",
+                            module_id,
+                            issues.len()
+                        );
                     }
                     ScanEvent::ModuleFailed { module_id, error } => {
                         println!("✖ Modul '{}' fehlgeschlagen: {}", module_id, error);
@@ -117,18 +123,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (fix_tx, mut fix_rx) = channel(100);
             let create_vss = !args.no_vss;
 
-            let fix_handle = tokio::spawn(async move {
-                engine.run_repairs(&mut issues, create_vss, fix_tx).await
-            });
+            let fix_handle =
+                tokio::spawn(
+                    async move { engine.run_repairs(&mut issues, create_vss, fix_tx).await },
+                );
 
             while let Some(evt) = fix_rx.recv().await {
                 if !args.json {
                     match evt {
-                        engine::runner::RepairEvent::VssStarted => println!("🛡 Erstelle Windows Systemwiederherstellungspunkt..."),
-                        engine::runner::RepairEvent::VssCompleted { success, message } => println!("   └─ VSS Status: {} ({})", if success { "Erstellt" } else { "Hinweis" }, message),
-                        engine::runner::RepairEvent::FixStarted { title, .. } => println!("🔧 Behebe: {}", title),
-                        engine::runner::RepairEvent::FixOutput { line, .. } => println!("   [LOG] {}", line),
-                        engine::runner::RepairEvent::FixFinished { success, message, .. } => {
+                        engine::runner::RepairEvent::VssStarted => {
+                            println!("🛡 Erstelle Windows Systemwiederherstellungspunkt...")
+                        }
+                        engine::runner::RepairEvent::VssCompleted { success, message } => println!(
+                            "   └─ VSS Status: {} ({})",
+                            if success { "Erstellt" } else { "Hinweis" },
+                            message
+                        ),
+                        engine::runner::RepairEvent::FixStarted { title, .. } => {
+                            println!("🔧 Behebe: {}", title)
+                        }
+                        engine::runner::RepairEvent::FixOutput { line, .. } => {
+                            println!("   [LOG] {}", line)
+                        }
+                        engine::runner::RepairEvent::FixFinished {
+                            success, message, ..
+                        } => {
                             if success {
                                 println!("   ✔ Behoben: {}", message);
                             } else {
@@ -142,7 +161,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let (fixed, failed) = fix_handle.await?;
             if !args.json {
-                println!("\n🎉 Reparatur abgeschlossen: {} behoben, {} fehlgeschlagen.\n", fixed, failed);
+                println!(
+                    "\n🎉 Reparatur abgeschlossen: {} behoben, {} fehlgeschlagen.\n",
+                    fixed, failed
+                );
             }
         }
 
@@ -171,7 +193,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if key.kind == KeyEventKind::Press {
                     if app.show_help {
                         match key.code {
-                            KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                            KeyCode::Char('?')
+                            | KeyCode::Esc
+                            | KeyCode::Char('q')
+                            | KeyCode::Char('Q') => {
                                 app.show_help = false;
                             }
                             _ => {}

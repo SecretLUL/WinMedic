@@ -1,12 +1,12 @@
+use crate::engine::issue::{Issue, RiskScore, Severity};
+use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
+use crate::utils::cmd::run_cmd;
 use std::path::Path;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 use tokio::time::sleep;
-use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ};
 use winreg::RegKey;
-use crate::engine::issue::{Issue, RiskScore, Severity};
-use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
-use crate::utils::cmd::run_cmd;
+use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ};
 
 pub struct WindowsUpdatesModule;
 
@@ -52,11 +52,20 @@ impl DiagnosticModule for WindowsUpdatesModule {
         "🔄"
     }
 
-    async fn scan(&self, progress_tx: Option<Sender<ModuleProgress>>) -> Result<Vec<Issue>, String> {
+    async fn scan(
+        &self,
+        progress_tx: Option<Sender<ModuleProgress>>,
+    ) -> Result<Vec<Issue>, String> {
         let mut issues = Vec::new();
 
         // 1. Service Status
-        Self::send_progress(&progress_tx, 15, "Prüfe Windows Update Dienste (wuauserv, bits, cryptsvc)...", Some("Dienststatus abfragen...")).await;
+        Self::send_progress(
+            &progress_tx,
+            15,
+            "Prüfe Windows Update Dienste (wuauserv, bits, cryptsvc)...",
+            Some("Dienststatus abfragen..."),
+        )
+        .await;
         sleep(Duration::from_millis(150)).await;
 
         let services = [
@@ -86,13 +95,28 @@ impl DiagnosticModule for WindowsUpdatesModule {
                         ],
                     ));
                 } else {
-                    Self::send_progress(&progress_tx, 35, &format!("Dienst '{}' aktiv", svc), Some(&format!("✔ Dienst '{}' ({}) ist funktionsfähig.", svc_name, svc))).await;
+                    Self::send_progress(
+                        &progress_tx,
+                        35,
+                        &format!("Dienst '{}' aktiv", svc),
+                        Some(&format!(
+                            "✔ Dienst '{}' ({}) ist funktionsfähig.",
+                            svc_name, svc
+                        )),
+                    )
+                    .await;
                 }
             }
         }
 
         // 2. SoftwareDistribution Cache
-        Self::send_progress(&progress_tx, 55, "Prüfe SoftwareDistribution Cache-Integrität...", Some("Prüfe C:\\Windows\\SoftwareDistribution\\Download...")).await;
+        Self::send_progress(
+            &progress_tx,
+            55,
+            "Prüfe SoftwareDistribution Cache-Integrität...",
+            Some("Prüfe C:\\Windows\\SoftwareDistribution\\Download..."),
+        )
+        .await;
         sleep(Duration::from_millis(150)).await;
 
         let soft_dist = Path::new(r"C:\Windows\SoftwareDistribution\Download");
@@ -128,12 +152,27 @@ impl DiagnosticModule for WindowsUpdatesModule {
                     ],
                 ));
             } else {
-                Self::send_progress(&progress_tx, 75, "Update-Cache unauffällig", Some(&format!("✔ SoftwareDistribution Cache: {} MB ({} Pakete).", total_size_mb, file_count))).await;
+                Self::send_progress(
+                    &progress_tx,
+                    75,
+                    "Update-Cache unauffällig",
+                    Some(&format!(
+                        "✔ SoftwareDistribution Cache: {} MB ({} Pakete).",
+                        total_size_mb, file_count
+                    )),
+                )
+                .await;
             }
         }
 
         // 3. Pending Reboot Keys
-        Self::send_progress(&progress_tx, 85, "Prüfe auf ausstehende System-Neustarts (Pending Reboot)...", Some("Registry RebootPending prüfen...")).await;
+        Self::send_progress(
+            &progress_tx,
+            85,
+            "Prüfe auf ausstehende System-Neustarts (Pending Reboot)...",
+            Some("Registry RebootPending prüfen..."),
+        )
+        .await;
         sleep(Duration::from_millis(150)).await;
 
         let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
@@ -163,15 +202,31 @@ impl DiagnosticModule for WindowsUpdatesModule {
         }
 
         if !reboot_found {
-            Self::send_progress(&progress_tx, 95, "Keine ausstehenden Update-Neustarts", Some("✔ Keine blockierenden Reboot-Pending-Schlüssel gefunden.")).await;
+            Self::send_progress(
+                &progress_tx,
+                95,
+                "Keine ausstehenden Update-Neustarts",
+                Some("✔ Keine blockierenden Reboot-Pending-Schlüssel gefunden."),
+            )
+            .await;
         }
 
-        Self::send_progress(&progress_tx, 100, "Windows Update Diagnose abgeschlossen", None).await;
+        Self::send_progress(
+            &progress_tx,
+            100,
+            "Windows Update Diagnose abgeschlossen",
+            None,
+        )
+        .await;
 
         Ok(issues)
     }
 
-    async fn fix(&self, issue_id: &str, progress_tx: Option<Sender<FixProgress>>) -> Result<String, String> {
+    async fn fix(
+        &self,
+        issue_id: &str,
+        progress_tx: Option<Sender<FixProgress>>,
+    ) -> Result<String, String> {
         let log_tx = if let Some(ref tx) = progress_tx {
             let (str_tx, mut str_rx) = tokio::sync::mpsc::channel::<String>(100);
             let tx_clone = tx.clone();
@@ -196,9 +251,17 @@ impl DiagnosticModule for WindowsUpdatesModule {
 
         if issue_id.starts_with("wu_svc_disabled_") {
             let svc = issue_id.trim_start_matches("wu_svc_disabled_");
-            let _ = run_cmd("sc.exe", &["config", svc, "start=", "demand"], Duration::from_secs(10)).await;
+            let _ = run_cmd(
+                "sc.exe",
+                &["config", svc, "start=", "demand"],
+                Duration::from_secs(10),
+            )
+            .await;
             let _ = run_cmd("net.exe", &["start", svc], Duration::from_secs(10)).await;
-            return Ok(format!("Dienst '{}' wurde auf Starttyp 'Manuell' gesetzt und gestartet.", svc));
+            return Ok(format!(
+                "Dienst '{}' wurde auf Starttyp 'Manuell' gesetzt und gestartet.",
+                svc
+            ));
         }
 
         match issue_id {

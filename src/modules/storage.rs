@@ -1,10 +1,10 @@
+use crate::engine::issue::{Issue, RiskScore, Severity};
+use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
+use crate::utils::cmd::{run_cmd, run_powershell};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 use tokio::time::sleep;
-use crate::engine::issue::{Issue, RiskScore, Severity};
-use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
-use crate::utils::cmd::{run_cmd, run_powershell};
 
 pub struct StorageModule;
 
@@ -66,17 +66,34 @@ impl DiagnosticModule for StorageModule {
         "💾"
     }
 
-    async fn scan(&self, progress_tx: Option<Sender<ModuleProgress>>) -> Result<Vec<Issue>, String> {
+    async fn scan(
+        &self,
+        progress_tx: Option<Sender<ModuleProgress>>,
+    ) -> Result<Vec<Issue>, String> {
         let mut issues = Vec::new();
 
         // 1. Filesystem Dirty Bit
-        Self::send_progress(&progress_tx, 15, "Prüfe Dateisystem-Integrität (Dirty Bit auf Laufwerk C:)...", Some("fsutil dirty query C:...")).await;
+        Self::send_progress(
+            &progress_tx,
+            15,
+            "Prüfe Dateisystem-Integrität (Dirty Bit auf Laufwerk C:)...",
+            Some("fsutil dirty query C:..."),
+        )
+        .await;
         sleep(Duration::from_millis(150)).await;
 
-        let dirty_check = run_cmd("fsutil.exe", &["dirty", "query", "C:"], Duration::from_secs(6)).await;
+        let dirty_check = run_cmd(
+            "fsutil.exe",
+            &["dirty", "query", "C:"],
+            Duration::from_secs(6),
+        )
+        .await;
         if let Ok(out) = dirty_check {
             let stdout = out.stdout.to_lowercase();
-            if stdout.contains("dirty") || stdout.contains("beschädigt") || stdout.contains("fehlerhaft") {
+            if stdout.contains("dirty")
+                || stdout.contains("beschädigt")
+                || stdout.contains("fehlerhaft")
+            {
                 issues.push(Issue::new(
                     "storage_dirty_bit",
                     self.id(),
@@ -90,12 +107,24 @@ impl DiagnosticModule for StorageModule {
                     vec!["chkdsk C: /scan online ausführen".to_string()],
                 ));
             } else {
-                Self::send_progress(&progress_tx, 35, "Dateisystem C: ist sauber", Some("✔ Dateisystem C: Keine Dirty-Bit-Inkonsistenzen.")).await;
+                Self::send_progress(
+                    &progress_tx,
+                    35,
+                    "Dateisystem C: ist sauber",
+                    Some("✔ Dateisystem C: Keine Dirty-Bit-Inkonsistenzen."),
+                )
+                .await;
             }
         }
 
         // 2. Physical Disk SMART Health
-        Self::send_progress(&progress_tx, 45, "Prüfe physische Laufwerke & SMART-Status...", Some("PowerShell Get-PhysicalDisk...")).await;
+        Self::send_progress(
+            &progress_tx,
+            45,
+            "Prüfe physische Laufwerke & SMART-Status...",
+            Some("PowerShell Get-PhysicalDisk..."),
+        )
+        .await;
         sleep(Duration::from_millis(150)).await;
 
         let disk_script = r#"Get-PhysicalDisk | Select-Object -Property DeviceId, FriendlyName, MediaType, HealthStatus, OperationalStatus | ForEach-Object { "$($_.FriendlyName) | Health: $($_.HealthStatus) | Status: $($_.OperationalStatus)" }"#;
@@ -104,8 +133,16 @@ impl DiagnosticModule for StorageModule {
             for line in output_str.lines() {
                 let l = line.trim();
                 if !l.is_empty() {
-                    Self::send_progress(&progress_tx, 60, "SMART Status geprüft", Some(&format!("✔ Laufwerk: {}", l))).await;
-                    if l.to_lowercase().contains("unhealthy") || l.to_lowercase().contains("warning") {
+                    Self::send_progress(
+                        &progress_tx,
+                        60,
+                        "SMART Status geprüft",
+                        Some(&format!("✔ Laufwerk: {}", l)),
+                    )
+                    .await;
+                    if l.to_lowercase().contains("unhealthy")
+                        || l.to_lowercase().contains("warning")
+                    {
                         issues.push(Issue::new(
                             "storage_smart_warning",
                             self.id(),
@@ -124,7 +161,13 @@ impl DiagnosticModule for StorageModule {
         }
 
         // 3. Junk & Temp Files Size
-        Self::send_progress(&progress_tx, 75, "Berechne Größe von Junk- & Temp-Dateien...", Some("Scanne %TEMP% und Windows\\Temp...")).await;
+        Self::send_progress(
+            &progress_tx,
+            75,
+            "Berechne Größe von Junk- & Temp-Dateien...",
+            Some("Scanne %TEMP% und Windows\\Temp..."),
+        )
+        .await;
         sleep(Duration::from_millis(150)).await;
 
         let mut total_temp_mb = 0;
@@ -160,11 +203,26 @@ impl DiagnosticModule for StorageModule {
                 ],
             ));
         } else {
-            Self::send_progress(&progress_tx, 88, "Temporäre Dateien im normalen Bereich", Some(&format!("✔ Temp-Dateien: {} MB ({} Dateien).", total_temp_mb, total_temp_files))).await;
+            Self::send_progress(
+                &progress_tx,
+                88,
+                "Temporäre Dateien im normalen Bereich",
+                Some(&format!(
+                    "✔ Temp-Dateien: {} MB ({} Dateien).",
+                    total_temp_mb, total_temp_files
+                )),
+            )
+            .await;
         }
 
         // 4. Explorer Icon & Thumbnail Cache
-        Self::send_progress(&progress_tx, 92, "Prüfe Explorer Icon- & Thumbnail-Cache...", Some("IconCache.db Integrität...")).await;
+        Self::send_progress(
+            &progress_tx,
+            92,
+            "Prüfe Explorer Icon- & Thumbnail-Cache...",
+            Some("IconCache.db Integrität..."),
+        )
+        .await;
         sleep(Duration::from_millis(150)).await;
 
         if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
@@ -192,17 +250,30 @@ impl DiagnosticModule for StorageModule {
             }
         }
 
-        Self::send_progress(&progress_tx, 100, "Speicher- und Dateisystemdiagnose abgeschlossen", None).await;
+        Self::send_progress(
+            &progress_tx,
+            100,
+            "Speicher- und Dateisystemdiagnose abgeschlossen",
+            None,
+        )
+        .await;
 
         Ok(issues)
     }
 
-    async fn fix(&self, issue_id: &str, _progress_tx: Option<Sender<FixProgress>>) -> Result<String, String> {
+    async fn fix(
+        &self,
+        issue_id: &str,
+        _progress_tx: Option<Sender<FixProgress>>,
+    ) -> Result<String, String> {
         match issue_id {
             "storage_dirty_bit" => {
                 let out = run_cmd("chkdsk.exe", &["C:", "/scan"], Duration::from_secs(120)).await?;
                 if out.success {
-                    Ok("Dateisystemprüfung (chkdsk /scan) erfolgreich ohne Fehler beendet.".to_string())
+                    Ok(
+                        "Dateisystemprüfung (chkdsk /scan) erfolgreich ohne Fehler beendet."
+                            .to_string(),
+                    )
                 } else {
                     Ok(format!("chkdsk ausgeführt: {}", out.stdout))
                 }
@@ -238,7 +309,10 @@ impl DiagnosticModule for StorageModule {
                         }
                     }
                 }
-                Ok(format!("Temporäre Verzeichnisse bereinigt: {} Dateien entfernt (ca. {} MB freigegeben).", deleted_files, freed_mb))
+                Ok(format!(
+                    "Temporäre Verzeichnisse bereinigt: {} Dateien entfernt (ca. {} MB freigegeben).",
+                    deleted_files, freed_mb
+                ))
             }
             "storage_icon_cache_bloated" => {
                 if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
@@ -247,12 +321,24 @@ impl DiagnosticModule for StorageModule {
                         let _ = std::fs::remove_file(icon_cache);
                     }
                 }
-                let _ = run_cmd("powershell.exe", &["-NoProfile", "-Command", "Stop-Process -Name explorer -Force; Start-Process explorer"], Duration::from_secs(8)).await;
-                Ok("Icon- & Thumbnail-Cache erfolgreich zurückgesetzt und Explorer neu gestartet.".to_string())
+                let _ = run_cmd(
+                    "powershell.exe",
+                    &[
+                        "-NoProfile",
+                        "-Command",
+                        "Stop-Process -Name explorer -Force; Start-Process explorer",
+                    ],
+                    Duration::from_secs(8),
+                )
+                .await;
+                Ok(
+                    "Icon- & Thumbnail-Cache erfolgreich zurückgesetzt und Explorer neu gestartet."
+                        .to_string(),
+                )
             }
-            "storage_smart_warning" => {
-                Ok("SMART-Warnung zur Kenntnis genommen und im Audit-Log dokumentiert.".to_string())
-            }
+            "storage_smart_warning" => Ok(
+                "SMART-Warnung zur Kenntnis genommen und im Audit-Log dokumentiert.".to_string(),
+            ),
             _ => Err(format!("Unbekannte Problem-ID: {}", issue_id)),
         }
     }

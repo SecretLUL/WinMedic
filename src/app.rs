@@ -1,5 +1,3 @@
-use std::sync::Arc;
-use tokio::sync::mpsc::{channel, Receiver};
 use crate::config::AppConfig;
 use crate::engine::issue::{Issue, Severity};
 use crate::engine::runner::{DiagnosticEngine, RepairEvent, ScanEvent};
@@ -8,6 +6,8 @@ use crate::safety::audit::{AuditEntry, AuditLogger};
 use crate::safety::reg_backup::{BackupRecord, RegBackupManager};
 use crate::utils::admin::is_admin;
 use crate::utils::hardware::{SystemTelemetry, TelemetryCollector};
+use std::sync::Arc;
+use tokio::sync::mpsc::{Receiver, channel};
 
 pub struct App {
     pub active_tab: usize,
@@ -141,7 +141,8 @@ impl App {
         self.issues.clear();
         self.selected_issue_index = 0;
         self.scan_log_messages.clear();
-        self.scan_log_messages.push("Starte vollständigen System-Health-Scan...".to_string());
+        self.scan_log_messages
+            .push("Starte vollständigen System-Health-Scan...".to_string());
 
         for item in &mut self.module_progress_list {
             item.3 = 0;
@@ -167,9 +168,14 @@ impl App {
             return;
         }
 
-        let selected_count = self.issues.iter().filter(|i| i.is_selected && !i.is_fixed).count();
+        let selected_count = self
+            .issues
+            .iter()
+            .filter(|i| i.is_selected && !i.is_fixed)
+            .count();
         if selected_count == 0 {
-            self.status_message = Some("Keine offenen Probleme zur Reparatur ausgewählt.".to_string());
+            self.status_message =
+                Some("Keine offenen Probleme zur Reparatur ausgewählt.".to_string());
             return;
         }
 
@@ -180,7 +186,10 @@ impl App {
         self.total_to_fix = selected_count;
         self.vss_status = "Initialisiere...".to_string();
         self.repair_console_lines.clear();
-        self.repair_console_lines.push(format!("Starte Reparatur von {} ausgewählten Problemen...", selected_count));
+        self.repair_console_lines.push(format!(
+            "Starte Reparatur von {} ausgewählten Problemen...",
+            selected_count
+        ));
 
         let (tx, rx) = channel::<RepairEvent>(100);
         self.repair_event_rx = Some(rx);
@@ -190,7 +199,9 @@ impl App {
         let create_vss = self.config.create_vss_before_repair;
 
         tokio::spawn(async move {
-            engine_clone.run_repairs(&mut issues_clone, create_vss, tx).await;
+            engine_clone
+                .run_repairs(&mut issues_clone, create_vss, tx)
+                .await;
         });
 
         self.status_message = Some("Reparaturen werden ausgeführt...".to_string());
@@ -205,30 +216,49 @@ impl App {
                     ScanEvent::ModuleStarted(mod_id) => {
                         self.scan_active_module_name = mod_id.clone();
                         self.scan_current_step_text = "Initialisiere Prüfung...".to_string();
-                        if let Some(pos) = self.module_progress_list.iter().position(|m| m.0 == mod_id) {
+                        if let Some(pos) =
+                            self.module_progress_list.iter().position(|m| m.0 == mod_id)
+                        {
                             self.scan_active_module_name = self.module_progress_list[pos].1.clone();
                         }
                     }
                     ScanEvent::ModuleProgressUpdate(prog) => {
                         self.scan_current_step_text = prog.current_step.clone();
-                        if let Some(pos) = self.module_progress_list.iter().position(|m| m.0 == prog.module_id) {
+                        if let Some(pos) = self
+                            .module_progress_list
+                            .iter()
+                            .position(|m| m.0 == prog.module_id)
+                        {
                             self.module_progress_list[pos].3 = prog.progress_percent;
                         }
                         if let Some(msg) = prog.log_message {
                             self.scan_log_messages.push(msg);
                         }
                         let total_mods = self.module_progress_list.len().max(1);
-                        let sum_progress: usize = self.module_progress_list.iter().map(|m| m.3 as usize).sum();
+                        let sum_progress: usize =
+                            self.module_progress_list.iter().map(|m| m.3 as usize).sum();
                         self.scan_overall_progress = (sum_progress / total_mods) as u8;
                     }
                     ScanEvent::ModuleFinished { module_id, issues } => {
-                        if let Some(pos) = self.module_progress_list.iter().position(|m| m.0 == module_id) {
+                        if let Some(pos) = self
+                            .module_progress_list
+                            .iter()
+                            .position(|m| m.0 == module_id)
+                        {
                             self.module_progress_list[pos].3 = 100;
                             self.module_progress_list[pos].4 = true;
                         }
-                        if let Some(pos) = self.module_statuses.iter().position(|m| m.0 == module_id) {
-                            let crit = issues.iter().filter(|i| i.severity == Severity::Critical).count();
-                            let warn = issues.iter().filter(|i| i.severity == Severity::Warning).count();
+                        if let Some(pos) =
+                            self.module_statuses.iter().position(|m| m.0 == module_id)
+                        {
+                            let crit = issues
+                                .iter()
+                                .filter(|i| i.severity == Severity::Critical)
+                                .count();
+                            let warn = issues
+                                .iter()
+                                .filter(|i| i.severity == Severity::Warning)
+                                .count();
                             if crit > 0 {
                                 self.module_statuses[pos].3 = ModuleStatus::Critical(crit);
                             } else if warn > 0 {
@@ -238,20 +268,30 @@ impl App {
                             }
                         }
                         self.issues.extend(issues);
-                        self.scan_log_messages.push(format!("Modul '{}' abgeschlossen.", module_id));
+                        self.scan_log_messages
+                            .push(format!("Modul '{}' abgeschlossen.", module_id));
                     }
                     ScanEvent::ModuleFailed { module_id, error } => {
-                        if let Some(pos) = self.module_statuses.iter().position(|m| m.0 == module_id) {
+                        if let Some(pos) =
+                            self.module_statuses.iter().position(|m| m.0 == module_id)
+                        {
                             self.module_statuses[pos].3 = ModuleStatus::Failed(error.clone());
                         }
-                        self.scan_log_messages.push(format!("Fehler in Modul '{}': {}", module_id, error));
+                        self.scan_log_messages
+                            .push(format!("Fehler in Modul '{}': {}", module_id, error));
                     }
-                    ScanEvent::ScanCompleted { total_issues, health_score } => {
+                    ScanEvent::ScanCompleted {
+                        total_issues,
+                        health_score,
+                    } => {
                         self.health_score = health_score;
                         self.scan_overall_progress = 100;
                         self.is_scanning = false;
                         finished_scan = true;
-                        self.status_message = Some(format!("Scan abgeschlossen: {} Probleme gefunden (Health: {}/100)", total_issues, health_score));
+                        self.status_message = Some(format!(
+                            "Scan abgeschlossen: {} Probleme gefunden (Health: {}/100)",
+                            total_issues, health_score
+                        ));
                     }
                 }
             }
@@ -268,20 +308,31 @@ impl App {
                 match event {
                     RepairEvent::VssStarted => {
                         self.vss_status = "Erstelle Restore Point...".to_string();
-                        self.repair_console_lines.push("Erstelle Windows Systemwiederherstellungspunkt (VSS)...".to_string());
+                        self.repair_console_lines.push(
+                            "Erstelle Windows Systemwiederherstellungspunkt (VSS)...".to_string(),
+                        );
                     }
                     RepairEvent::VssCompleted { success, message } => {
-                        self.vss_status = if success { "Erstellt (OK)".to_string() } else { "Hinweis".to_string() };
+                        self.vss_status = if success {
+                            "Erstellt (OK)".to_string()
+                        } else {
+                            "Hinweis".to_string()
+                        };
                         self.repair_console_lines.push(format!("VSS: {}", message));
                     }
                     RepairEvent::FixStarted { issue_id: _, title } => {
                         self.current_fix_title = title.clone();
-                        self.repair_console_lines.push(format!("Repariere: {}", title));
+                        self.repair_console_lines
+                            .push(format!("Repariere: {}", title));
                     }
                     RepairEvent::FixOutput { issue_id: _, line } => {
                         self.repair_console_lines.push(line);
                     }
-                    RepairEvent::FixFinished { issue_id, success, message } => {
+                    RepairEvent::FixFinished {
+                        issue_id,
+                        success,
+                        message,
+                    } => {
                         if let Some(issue) = self.issues.iter_mut().find(|i| i.id == issue_id) {
                             issue.is_fixed = success;
                             if !success {
@@ -290,19 +341,27 @@ impl App {
                         }
                         if success {
                             self.fixed_count += 1;
-                            self.repair_console_lines.push(format!("✔ Erfolgreich: {}", message));
+                            self.repair_console_lines
+                                .push(format!("✔ Erfolgreich: {}", message));
                         } else {
                             self.failed_count += 1;
-                            self.repair_console_lines.push(format!("✖ Fehler: {}", message));
+                            self.repair_console_lines
+                                .push(format!("✖ Fehler: {}", message));
                         }
                     }
-                    RepairEvent::AllRepairsCompleted { fixed_count, failed_count } => {
+                    RepairEvent::AllRepairsCompleted {
+                        fixed_count,
+                        failed_count,
+                    } => {
                         self.is_fixing = false;
                         finished_repair = true;
                         self.fixed_count = fixed_count;
                         self.failed_count = failed_count;
                         self.health_score = DiagnosticEngine::calculate_health_score(&self.issues);
-                        self.status_message = Some(format!("Reparatur fertig: {} behoben, {} fehlgeschlagen", fixed_count, failed_count));
+                        self.status_message = Some(format!(
+                            "Reparatur fertig: {} behoben, {} fehlgeschlagen",
+                            fixed_count, failed_count
+                        ));
                     }
                 }
             }

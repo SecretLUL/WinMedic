@@ -1,5 +1,5 @@
-use std::time::Duration;
 use crate::utils::cmd::run_powershell;
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct RestorePointResult {

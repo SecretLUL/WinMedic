@@ -1,12 +1,14 @@
-use colored::*;
 use crate::engine::issue::{Issue, Severity};
+use colored::*;
 
 pub struct DiagnosticReporter;
 
 impl DiagnosticReporter {
     /// Print a styled banner in CLI mode
     pub fn print_banner() {
-        println!("{}", r#"
+        println!(
+            "{}",
+            r#"
   ██╗    ██╗██╗███╗   ██╗███╗   ███╗███████╗██████╗ ██╗ ██████╗
   ██║    ██║██║████╗  ██║████╗ ████║██╔════╝██╔══██╗██║██╔════╝
   ██║ █╗ ██║██║██╔██╗ ██║██╔████╔██║█████╗  ██║  ██║██║██║     
@@ -14,7 +16,10 @@ impl DiagnosticReporter {
   ╚███╔███╔╝██║██║ ╚████║██║ ╚═╝ ██║███████╗██████╔╝██║╚██████╗
    ╚══╝╚══╝ ╚═╝╚═╝  ╚═══╝╚═╝     ╚═╝╚══════╝╚═════╝ ╚═╝ ╚═════╝
            ─── ADVANCED PC DIAGNOSTICS & AUTO-REPAIR ───
-"#.cyan().bold());
+"#
+            .cyan()
+            .bold()
+        );
     }
 
     /// Print issues formatted in CLI console
@@ -33,7 +38,12 @@ impl DiagnosticReporter {
         println!("Gefundene Probleme: {}\n", issues.len());
 
         if issues.is_empty() {
-            println!("{}", "✔ Keine Probleme gefunden! Ihr System ist in hervorragendem Zustand.".green().bold());
+            println!(
+                "{}",
+                "✔ Keine Probleme gefunden! Ihr System ist in hervorragendem Zustand."
+                    .green()
+                    .bold()
+            );
             return;
         }
 

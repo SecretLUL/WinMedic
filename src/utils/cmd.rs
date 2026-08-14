@@ -30,7 +30,9 @@ pub async fn run_cmd(
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn command '{}': {}", program, e))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn command '{}': {}", program, e))?;
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -68,7 +70,10 @@ pub async fn run_cmd(
         Ok(Err(e)) => Err(format!("Command execution error: {}", e)),
         Err(_) => {
             let _ = child.kill().await;
-            Err(format!("Command '{}' timed out after {:?}", program, timeout_duration))
+            Err(format!(
+                "Command '{}' timed out after {:?}",
+                program, timeout_duration
+            ))
         }
     }
 }
@@ -91,7 +96,9 @@ pub async fn run_cmd_streaming(
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn command '{}': {}", program, e))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn command '{}': {}", program, e))?;
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -143,7 +150,10 @@ pub async fn run_cmd_streaming(
         Ok(Err(e)) => Err(format!("Command error: {}", e)),
         Err(_) => {
             let _ = child.kill().await;
-            Err(format!("Command '{}' timed out after {:?}", program, timeout_duration))
+            Err(format!(
+                "Command '{}' timed out after {:?}",
+                program, timeout_duration
+            ))
         }
     }
 }

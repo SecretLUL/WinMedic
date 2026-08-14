@@ -1,9 +1,9 @@
+use crate::ui::theme::Theme;
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
-use ratatui::Frame;
-use crate::ui::theme::Theme;
 
 pub fn render_footer(f: &mut Frame, area: Rect, active_tab_index: usize, status_msg: Option<&str>) {
     let key_hints = match active_tab_index {
@@ -51,7 +51,9 @@ pub fn render_footer(f: &mut Frame, area: Rect, active_tab_index: usize, status_
     for (key, desc) in key_hints {
         spans.push(Span::styled(
             format!(" [{}] ", key),
-            Style::default().fg(Theme::CYAN).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Theme::CYAN)
+                .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
             format!("{}  ", desc),
@@ -63,7 +65,9 @@ pub fn render_footer(f: &mut Frame, area: Rect, active_tab_index: usize, status_
         spans.push(Span::styled(" │ ", Style::default().fg(Theme::BORDER)));
         spans.push(Span::styled(
             msg,
-            Style::default().fg(Theme::EMERALD).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Theme::EMERALD)
+                .add_modifier(Modifier::BOLD),
         ));
     }
 

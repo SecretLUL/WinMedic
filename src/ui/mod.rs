@@ -2,8 +2,6 @@ pub mod theme;
 pub mod views;
 pub mod widgets;
 
-use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::Frame;
 use crate::app::App;
 use crate::ui::views::dashboard::render_dashboard;
 use crate::ui::views::fix_progress::render_fix_progress;
@@ -13,6 +11,8 @@ use crate::ui::views::scanner::render_scanner;
 use crate::ui::widgets::footer::render_footer;
 use crate::ui::widgets::header::render_header;
 use crate::ui::widgets::help_popup::render_help_popup;
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Direction, Layout};
 
 pub fn render_app(f: &mut Frame, app: &App) {
     let area = f.area();
@@ -54,7 +54,15 @@ pub fn render_app(f: &mut Frame, app: &App) {
             let mod_tuples: Vec<(&str, &str, &str, u8, bool)> = app
                 .module_progress_list
                 .iter()
-                .map(|(id, name, icon, percent, is_done)| (id.as_str(), name.as_str(), icon.as_str(), *percent, *is_done))
+                .map(|(id, name, icon, percent, is_done)| {
+                    (
+                        id.as_str(),
+                        name.as_str(),
+                        icon.as_str(),
+                        *percent,
+                        *is_done,
+                    )
+                })
                 .collect();
 
             render_scanner(

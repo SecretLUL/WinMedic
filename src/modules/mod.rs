@@ -5,9 +5,9 @@ pub mod storage;
 pub mod system_integrity;
 pub mod windows_updates;
 
+use crate::engine::issue::Issue;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
-use crate::engine::issue::Issue;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModuleStatus {
@@ -44,10 +44,15 @@ pub trait DiagnosticModule: Send + Sync {
     fn icon(&self) -> &'static str;
 
     /// Run diagnostic checks and return any detected issues
-    async fn scan(&self, progress_tx: Option<Sender<ModuleProgress>>) -> Result<Vec<Issue>, String>;
+    async fn scan(&self, progress_tx: Option<Sender<ModuleProgress>>)
+    -> Result<Vec<Issue>, String>;
 
     /// Apply fix for a specific issue id
-    async fn fix(&self, issue_id: &str, progress_tx: Option<Sender<FixProgress>>) -> Result<String, String>;
+    async fn fix(
+        &self,
+        issue_id: &str,
+        progress_tx: Option<Sender<FixProgress>>,
+    ) -> Result<String, String>;
 }
 
 /// Create all 6 diagnostic modules

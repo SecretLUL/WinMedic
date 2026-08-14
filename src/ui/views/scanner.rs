@@ -1,10 +1,10 @@
+use crate::engine::issue::{Issue, Severity};
+use crate::ui::theme::Theme;
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph};
-use ratatui::Frame;
-use crate::engine::issue::{Issue, Severity};
-use crate::ui::theme::Theme;
 
 pub fn render_scanner(
     f: &mut Frame,
@@ -20,15 +20,18 @@ pub fn render_scanner(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(5),  // Overall Progress Bar & Current Status
-            Constraint::Min(10),    // Split: Modules list & Live Log Terminal
-            Constraint::Length(4),  // Scan Summary / Result counter
+            Constraint::Length(5), // Overall Progress Bar & Current Status
+            Constraint::Min(10),   // Split: Modules list & Live Log Terminal
+            Constraint::Length(4), // Scan Summary / Result counter
         ])
         .split(area);
 
     // Top: Overall Progress Bar
     let gauge_title = if is_scanning {
-        format!(" DIAGNOSE LÄUFT – {} (Schritt: {}) ", active_module_name, current_step_text)
+        format!(
+            " DIAGNOSE LÄUFT – {} (Schritt: {}) ",
+            active_module_name, current_step_text
+        )
     } else {
         " DIAGNOSE ABGESCHLOSSEN – Bereit für Triage & Reparatur ".to_string()
     };
@@ -72,9 +75,22 @@ pub fn render_scanner(
 
             let line = Line::from(vec![
                 Span::styled(format!(" {} ", icon), Style::default().fg(Theme::CYAN)),
-                Span::styled(format!("{:<30}", name), Style::default().fg(Theme::TEXT_WHITE).add_modifier(Modifier::BOLD)),
-                Span::styled(format!(" {:>4}% ", percent), Style::default().fg(Theme::AMBER)),
-                Span::styled(format!(" [{}]", status_symbol), Style::default().fg(status_color).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!("{:<30}", name),
+                    Style::default()
+                        .fg(Theme::TEXT_WHITE)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" {:>4}% ", percent),
+                    Style::default().fg(Theme::AMBER),
+                ),
+                Span::styled(
+                    format!(" [{}]", status_symbol),
+                    Style::default()
+                        .fg(status_color)
+                        .add_modifier(Modifier::BOLD),
+                ),
             ]);
             ListItem::new(line)
         })
@@ -100,20 +116,57 @@ pub fn render_scanner(
     f.render_widget(log_box, center_chunks[1]);
 
     // Bottom: Issue Counters
-    let crit_count = issues.iter().filter(|i| i.severity == Severity::Critical).count();
-    let warn_count = issues.iter().filter(|i| i.severity == Severity::Warning).count();
-    let info_count = issues.iter().filter(|i| i.severity == Severity::Info).count();
+    let crit_count = issues
+        .iter()
+        .filter(|i| i.severity == Severity::Critical)
+        .count();
+    let warn_count = issues
+        .iter()
+        .filter(|i| i.severity == Severity::Warning)
+        .count();
+    let info_count = issues
+        .iter()
+        .filter(|i| i.severity == Severity::Info)
+        .count();
 
     let summary_line = Line::from(vec![
-        Span::styled(" Scan-Ergebnis: ", Style::default().fg(Theme::CYAN).add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" {} Probleme insgesamt ", issues.len()), Style::default().fg(Theme::TEXT_WHITE).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " Scan-Ergebnis: ",
+            Style::default()
+                .fg(Theme::CYAN)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" {} Probleme insgesamt ", issues.len()),
+            Style::default()
+                .fg(Theme::TEXT_WHITE)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled("│ ", Style::default().fg(Theme::BORDER)),
-        Span::styled(format!(" 🔴 {} Kritisch ", crit_count), Style::default().fg(Theme::CORAL).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!(" 🔴 {} Kritisch ", crit_count),
+            Style::default()
+                .fg(Theme::CORAL)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled("│ ", Style::default().fg(Theme::BORDER)),
-        Span::styled(format!(" ▲ {} Warnungen ", warn_count), Style::default().fg(Theme::AMBER).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!(" ▲ {} Warnungen ", warn_count),
+            Style::default()
+                .fg(Theme::AMBER)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled("│ ", Style::default().fg(Theme::BORDER)),
-        Span::styled(format!(" ℹ {} Hinweise ", info_count), Style::default().fg(Theme::CYAN)),
-        Span::styled("   👉 Drücken Sie [3] für die Problem-Triage & Auswahl ", Style::default().fg(Theme::EMERALD).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!(" ℹ {} Hinweise ", info_count),
+            Style::default().fg(Theme::CYAN),
+        ),
+        Span::styled(
+            "   👉 Drücken Sie [3] für die Problem-Triage & Auswahl ",
+            Style::default()
+                .fg(Theme::EMERALD)
+                .add_modifier(Modifier::BOLD),
+        ),
     ]);
 
     let summary_bar = Paragraph::new(summary_line).block(

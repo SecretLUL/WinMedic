@@ -48,7 +48,10 @@ impl TelemetryCollector {
         let host_name = System::host_name().unwrap_or_else(|| "PC".to_string());
 
         let cpus = self.sys.cpus();
-        let cpu_name = cpus.first().map(|c| c.brand().to_string()).unwrap_or_else(|| "CPU".to_string());
+        let cpu_name = cpus
+            .first()
+            .map(|c| c.brand().to_string())
+            .unwrap_or_else(|| "CPU".to_string());
         let cpu_count = cpus.len();
         let cpu_usage = self.sys.global_cpu_usage();
 

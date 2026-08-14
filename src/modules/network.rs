@@ -1,11 +1,11 @@
-use std::time::Duration;
-use tokio::sync::mpsc::Sender;
-use tokio::time::sleep;
-use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
-use winreg::RegKey;
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
 use crate::utils::cmd::run_cmd;
+use std::time::Duration;
+use tokio::sync::mpsc::Sender;
+use tokio::time::sleep;
+use winreg::RegKey;
+use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
 
 pub struct NetworkModule;
 
@@ -51,14 +51,28 @@ impl DiagnosticModule for NetworkModule {
         "🌐"
     }
 
-    async fn scan(&self, progress_tx: Option<Sender<ModuleProgress>>) -> Result<Vec<Issue>, String> {
+    async fn scan(
+        &self,
+        progress_tx: Option<Sender<ModuleProgress>>,
+    ) -> Result<Vec<Issue>, String> {
         let mut issues = Vec::new();
 
         // 1. DNS Resolution Check
-        Self::send_progress(&progress_tx, 20, "Teste DNS-Namensauflösung...", Some("Lookup auf Google & Cloudflare DNS...")).await;
+        Self::send_progress(
+            &progress_tx,
+            20,
+            "Teste DNS-Namensauflösung...",
+            Some("Lookup auf Google & Cloudflare DNS..."),
+        )
+        .await;
         sleep(Duration::from_millis(150)).await;
 
-        let dns_lookup = run_cmd("nslookup.exe", &["dns.google", "8.8.8.8"], Duration::from_secs(6)).await;
+        let dns_lookup = run_cmd(
+            "nslookup.exe",
+            &["dns.google", "8.8.8.8"],
+            Duration::from_secs(6),
+        )
+        .await;
         let mut dns_healthy = false;
         if let Ok(out) = dns_lookup {
             if out.stdout.contains("8.8.8.8") || out.stdout.contains("Address") {
@@ -67,7 +81,12 @@ impl DiagnosticModule for NetworkModule {
         }
 
         if !dns_healthy {
-            let ping_test = run_cmd("ping.exe", &["-n", "1", "-w", "1500", "1.1.1.1"], Duration::from_secs(4)).await;
+            let ping_test = run_cmd(
+                "ping.exe",
+                &["-n", "1", "-w", "1500", "1.1.1.1"],
+                Duration::from_secs(4),
+            )
+            .await;
             let ip_reachable = match ping_test {
                 Ok(out) => out.stdout.contains("TTL="),
                 Err(_) => false,
@@ -107,15 +126,30 @@ impl DiagnosticModule for NetworkModule {
                 ));
             }
         } else {
-            Self::send_progress(&progress_tx, 45, "DNS-Auflösung erfolgreich", Some("✔ DNS-Namensauflösung und IP-Routing sind einwandfrei.")).await;
+            Self::send_progress(
+                &progress_tx,
+                45,
+                "DNS-Auflösung erfolgreich",
+                Some("✔ DNS-Namensauflösung und IP-Routing sind einwandfrei."),
+            )
+            .await;
         }
 
         // 2. Proxy Settings in Registry
-        Self::send_progress(&progress_tx, 65, "Prüfe Proxy-Einstellungen in der Windows-Registry...", Some("Registry Internet Settings...")).await;
+        Self::send_progress(
+            &progress_tx,
+            65,
+            "Prüfe Proxy-Einstellungen in der Windows-Registry...",
+            Some("Registry Internet Settings..."),
+        )
+        .await;
         sleep(Duration::from_millis(150)).await;
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        if let Ok(inet_settings) = hkcu.open_subkey_with_flags(r"Software\Microsoft\Windows\CurrentVersion\Internet Settings", KEY_READ) {
+        if let Ok(inet_settings) = hkcu.open_subkey_with_flags(
+            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+            KEY_READ,
+        ) {
             let proxy_enable: Result<u32, _> = inet_settings.get_value("ProxyEnable");
             let proxy_server: Result<String, _> = inet_settings.get_value("ProxyServer");
 
@@ -135,17 +169,37 @@ impl DiagnosticModule for NetworkModule {
                     ));
                 }
             } else {
-                Self::send_progress(&progress_tx, 80, "Direkte Internetverbindung aktiv", Some("✔ Keine blockierenden manuellen Proxy-Server konfiguriert.")).await;
+                Self::send_progress(
+                    &progress_tx,
+                    80,
+                    "Direkte Internetverbindung aktiv",
+                    Some("✔ Keine blockierenden manuellen Proxy-Server konfiguriert."),
+                )
+                .await;
             }
         }
 
         // 3. Winsock Catalog
-        Self::send_progress(&progress_tx, 85, "Prüfe Winsock-Katalog-Integrität...", Some("netsh winsock audit...")).await;
+        Self::send_progress(
+            &progress_tx,
+            85,
+            "Prüfe Winsock-Katalog-Integrität...",
+            Some("netsh winsock audit..."),
+        )
+        .await;
         sleep(Duration::from_millis(150)).await;
 
-        let winsock_audit = run_cmd("netsh.exe", &["winsock", "show", "catalog"], Duration::from_secs(6)).await;
+        let winsock_audit = run_cmd(
+            "netsh.exe",
+            &["winsock", "show", "catalog"],
+            Duration::from_secs(6),
+        )
+        .await;
         if let Ok(out) = winsock_audit {
-            if out.stdout.is_empty() || out.stdout.contains("Fehler") || out.stdout.contains("Error") {
+            if out.stdout.is_empty()
+                || out.stdout.contains("Fehler")
+                || out.stdout.contains("Error")
+            {
                 issues.push(Issue::new(
                     "net_winsock_corrupt",
                     self.id(),
@@ -159,7 +213,13 @@ impl DiagnosticModule for NetworkModule {
                     vec!["netsh winsock reset ausführen".to_string()],
                 ));
             } else {
-                Self::send_progress(&progress_tx, 95, "Winsock-Katalog intakt", Some("✔ Winsock LSP-Katalog ist konsistent.")).await;
+                Self::send_progress(
+                    &progress_tx,
+                    95,
+                    "Winsock-Katalog intakt",
+                    Some("✔ Winsock LSP-Katalog ist konsistent."),
+                )
+                .await;
             }
         }
 
@@ -168,7 +228,11 @@ impl DiagnosticModule for NetworkModule {
         Ok(issues)
     }
 
-    async fn fix(&self, issue_id: &str, _progress_tx: Option<Sender<FixProgress>>) -> Result<String, String> {
+    async fn fix(
+        &self,
+        issue_id: &str,
+        _progress_tx: Option<Sender<FixProgress>>,
+    ) -> Result<String, String> {
         match issue_id {
             "net_dns_failure" => {
                 let _ = run_cmd("ipconfig.exe", &["/flushdns"], Duration::from_secs(8)).await;
@@ -177,9 +241,17 @@ impl DiagnosticModule for NetworkModule {
             }
             "net_offline_warning" | "net_winsock_corrupt" => {
                 let _ = run_cmd("netsh.exe", &["winsock", "reset"], Duration::from_secs(10)).await;
-                let _ = run_cmd("netsh.exe", &["int", "ip", "reset"], Duration::from_secs(10)).await;
+                let _ = run_cmd(
+                    "netsh.exe",
+                    &["int", "ip", "reset"],
+                    Duration::from_secs(10),
+                )
+                .await;
                 let _ = run_cmd("ipconfig.exe", &["/flushdns"], Duration::from_secs(8)).await;
-                Ok("Winsock & TCP/IP-Stack erfolgreich zurückgesetzt. (Neustart empfohlen)".to_string())
+                Ok(
+                    "Winsock & TCP/IP-Stack erfolgreich zurückgesetzt. (Neustart empfohlen)"
+                        .to_string(),
+                )
             }
             "net_proxy_active" => {
                 let hkcu = RegKey::predef(HKEY_CURRENT_USER);
@@ -188,7 +260,10 @@ impl DiagnosticModule for NetworkModule {
                     KEY_WRITE,
                 ) {
                     let _ = inet_settings.set_value("ProxyEnable", &0u32);
-                    Ok("Proxy-Server erfolgreich deaktiviert. Direkte Internetverbindung aktiv.".to_string())
+                    Ok(
+                        "Proxy-Server erfolgreich deaktiviert. Direkte Internetverbindung aktiv."
+                            .to_string(),
+                    )
                 } else {
                     Err("Konnte Registry-Schlüssel für Internet Settings nicht mit Schreibrechten öffnen.".to_string())
                 }

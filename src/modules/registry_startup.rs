@@ -1,12 +1,12 @@
-use std::path::PathBuf;
-use tokio::sync::mpsc::Sender;
-use tokio::time::sleep;
-use std::time::Duration;
-use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE};
-use winreg::RegKey;
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
 use crate::safety::reg_backup::RegBackupManager;
+use std::path::PathBuf;
+use std::time::Duration;
+use tokio::sync::mpsc::Sender;
+use tokio::time::sleep;
+use winreg::RegKey;
+use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE};
 
 pub struct RegistryStartupModule;
 
@@ -79,15 +79,26 @@ impl DiagnosticModule for RegistryStartupModule {
         "⚡"
     }
 
-    async fn scan(&self, progress_tx: Option<Sender<ModuleProgress>>) -> Result<Vec<Issue>, String> {
+    async fn scan(
+        &self,
+        progress_tx: Option<Sender<ModuleProgress>>,
+    ) -> Result<Vec<Issue>, String> {
         let mut issues = Vec::new();
 
         // 1. User Run Keys
-        Self::send_progress(&progress_tx, 20, "Scanne HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run...", Some("Prüfe Benutzer-Autostart Einträge...")).await;
+        Self::send_progress(
+            &progress_tx,
+            20,
+            "Scanne HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run...",
+            Some("Prüfe Benutzer-Autostart Einträge..."),
+        )
+        .await;
         sleep(Duration::from_millis(150)).await;
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        if let Ok(run_key) = hkcu.open_subkey_with_flags(r"Software\Microsoft\Windows\CurrentVersion\Run", KEY_READ) {
+        if let Ok(run_key) =
+            hkcu.open_subkey_with_flags(r"Software\Microsoft\Windows\CurrentVersion\Run", KEY_READ)
+        {
             let mut valid_count = 0;
             for (name, val) in run_key.enum_values().flatten() {
                 let cmd_str = val.to_string();
@@ -113,15 +124,32 @@ impl DiagnosticModule for RegistryStartupModule {
                     }
                 }
             }
-            Self::send_progress(&progress_tx, 45, "Benutzer-Autostart geprüft", Some(&format!("✔ HKCU\\Run: {} gültige Autostart-Einträge verifiziert.", valid_count))).await;
+            Self::send_progress(
+                &progress_tx,
+                45,
+                "Benutzer-Autostart geprüft",
+                Some(&format!(
+                    "✔ HKCU\\Run: {} gültige Autostart-Einträge verifiziert.",
+                    valid_count
+                )),
+            )
+            .await;
         }
 
         // 2. Machine Run Keys
-        Self::send_progress(&progress_tx, 55, "Scanne HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run...", Some("Prüfe System-Autostart Einträge...")).await;
+        Self::send_progress(
+            &progress_tx,
+            55,
+            "Scanne HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run...",
+            Some("Prüfe System-Autostart Einträge..."),
+        )
+        .await;
         sleep(Duration::from_millis(150)).await;
 
         let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-        if let Ok(run_key) = hklm.open_subkey_with_flags(r"Software\Microsoft\Windows\CurrentVersion\Run", KEY_READ) {
+        if let Ok(run_key) =
+            hklm.open_subkey_with_flags(r"Software\Microsoft\Windows\CurrentVersion\Run", KEY_READ)
+        {
             let mut valid_hklm = 0;
             for (name, val) in run_key.enum_values().flatten() {
                 let cmd_str = val.to_string();
@@ -147,58 +175,109 @@ impl DiagnosticModule for RegistryStartupModule {
                     }
                 }
             }
-            Self::send_progress(&progress_tx, 75, "System-Autostart geprüft", Some(&format!("✔ HKLM\\Run: {} systemweite Autostart-Einträge intakt.", valid_hklm))).await;
+            Self::send_progress(
+                &progress_tx,
+                75,
+                "System-Autostart geprüft",
+                Some(&format!(
+                    "✔ HKLM\\Run: {} systemweite Autostart-Einträge intakt.",
+                    valid_hklm
+                )),
+            )
+            .await;
         }
 
         // 3. Startup Folder Links
-        Self::send_progress(&progress_tx, 85, "Prüfe Benutzer-Startup-Verzeichnis...", Some("Prüfe Startup-Ordner Verknüpfungen...")).await;
+        Self::send_progress(
+            &progress_tx,
+            85,
+            "Prüfe Benutzer-Startup-Verzeichnis...",
+            Some("Prüfe Startup-Ordner Verknüpfungen..."),
+        )
+        .await;
         sleep(Duration::from_millis(150)).await;
 
         if let Ok(appdata) = std::env::var("APPDATA") {
-            let startup_dir = PathBuf::from(appdata).join(r"Microsoft\Windows\Start Menu\Programs\Startup");
+            let startup_dir =
+                PathBuf::from(appdata).join(r"Microsoft\Windows\Start Menu\Programs\Startup");
             if startup_dir.exists() {
                 let mut lnk_count = 0;
                 if let Ok(entries) = std::fs::read_dir(startup_dir) {
                     for entry in entries.flatten() {
                         let p = entry.path();
-                        if p.extension().map(|e| e.to_string_lossy().to_lowercase()) == Some("lnk".to_string()) {
+                        if p.extension().map(|e| e.to_string_lossy().to_lowercase())
+                            == Some("lnk".to_string())
+                        {
                             lnk_count += 1;
                         }
                     }
                 }
-                Self::send_progress(&progress_tx, 95, "Startup-Ordner geprüft", Some(&format!("✔ Startup-Ordner: {} Verknüpfungen geprüft.", lnk_count))).await;
+                Self::send_progress(
+                    &progress_tx,
+                    95,
+                    "Startup-Ordner geprüft",
+                    Some(&format!(
+                        "✔ Startup-Ordner: {} Verknüpfungen geprüft.",
+                        lnk_count
+                    )),
+                )
+                .await;
             }
         }
 
-        Self::send_progress(&progress_tx, 100, "Registry- und Autostartdiagnose abgeschlossen", None).await;
+        Self::send_progress(
+            &progress_tx,
+            100,
+            "Registry- und Autostartdiagnose abgeschlossen",
+            None,
+        )
+        .await;
 
         Ok(issues)
     }
 
-    async fn fix(&self, issue_id: &str, _progress_tx: Option<Sender<FixProgress>>) -> Result<String, String> {
+    async fn fix(
+        &self,
+        issue_id: &str,
+        _progress_tx: Option<Sender<FixProgress>>,
+    ) -> Result<String, String> {
         let backup_mgr = RegBackupManager::new();
 
         if let Some(val_name) = issue_id.strip_prefix("reg_orphaned_hkcu_") {
             let clean_name = val_name.replace('_', " ");
             let key_path = r"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run";
-            let _ = backup_mgr.export_key(key_path, "Vor Löschung von verwaistem HKCU Run Key").await;
+            let _ = backup_mgr
+                .export_key(key_path, "Vor Löschung von verwaistem HKCU Run Key")
+                .await;
 
             let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-            if let Ok(run_key) = hkcu.open_subkey_with_flags(r"Software\Microsoft\Windows\CurrentVersion\Run", KEY_WRITE) {
+            if let Ok(run_key) = hkcu
+                .open_subkey_with_flags(r"Software\Microsoft\Windows\CurrentVersion\Run", KEY_WRITE)
+            {
                 let _ = run_key.delete_value(&clean_name);
-                return Ok(format!("Verwaister Autostart-Eintrag '{}' aus HKCU\\Run entfernt.", clean_name));
+                return Ok(format!(
+                    "Verwaister Autostart-Eintrag '{}' aus HKCU\\Run entfernt.",
+                    clean_name
+                ));
             }
         }
 
         if let Some(val_name) = issue_id.strip_prefix("reg_orphaned_hklm_") {
             let clean_name = val_name.replace('_', " ");
             let key_path = r"HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Run";
-            let _ = backup_mgr.export_key(key_path, "Vor Löschung von verwaistem HKLM Run Key").await;
+            let _ = backup_mgr
+                .export_key(key_path, "Vor Löschung von verwaistem HKLM Run Key")
+                .await;
 
             let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-            if let Ok(run_key) = hklm.open_subkey_with_flags(r"Software\Microsoft\Windows\CurrentVersion\Run", KEY_WRITE) {
+            if let Ok(run_key) = hklm
+                .open_subkey_with_flags(r"Software\Microsoft\Windows\CurrentVersion\Run", KEY_WRITE)
+            {
                 let _ = run_key.delete_value(&clean_name);
-                return Ok(format!("Verwaister Autostart-Eintrag '{}' aus HKLM\\Run entfernt.", clean_name));
+                return Ok(format!(
+                    "Verwaister Autostart-Eintrag '{}' aus HKLM\\Run entfernt.",
+                    clean_name
+                ));
             }
         }
 
