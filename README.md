@@ -5,7 +5,7 @@
 **A high-performance, modular Windows diagnostic and auto-repair utility written in 100% Rust.**
 
 [![Rust](https://img.shields.io/badge/Language-Rust%202024-orange.svg?style=for-the-badge&logo=rust)](https://www.rust-lang.org/)
-[![CI](https://github.com/SecretLUL/WinMedic/actions/workflows/ci.yml/badge.svg)](https://github.com/SecretLUL/WinMedic/actions/workflows/ci.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/SecretLUL/WinMedic/ci.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=white&label=CI)](https://github.com/SecretLUL/WinMedic/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011%20(x64)-0078D6.svg?style=for-the-badge&logo=windows)](https://www.microsoft.com/windows)
 [![Ratatui](https://img.shields.io/badge/TUI-Ratatui%200.29-00D2FF.svg?style=for-the-badge)](https://ratatui.rs/)
