@@ -5,7 +5,7 @@ use crate::modules::ModuleStatus;
 use crate::safety::audit::{AuditEntry, AuditLogger};
 use crate::safety::reg_backup::{BackupRecord, RegBackupManager};
 use crate::safety::restore_point::list_restore_points;
-use crate::utils::admin::is_admin;
+use crate::utils::admin::{is_admin, relaunch_as_admin};
 use crate::utils::hardware::{SystemTelemetry, TelemetryCollector};
 use std::sync::Arc;
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver, UnboundedSender, channel};
@@ -37,12 +37,28 @@ pub enum ConfirmRequest {
         key_path: String,
         file_path: String,
     },
+    Elevate,
 }
 
 impl ConfirmRequest {
     pub fn title(&self) -> &'static str {
         match self {
             ConfirmRequest::Rollback { .. } => "REGISTRY-SICHERUNG WIEDERHERSTELLEN?",
+            ConfirmRequest::Elevate => "ADMINISTRATORRECHTE ERFORDERLICH",
+        }
+    }
+
+    pub fn confirm_label(&self) -> &'static str {
+        match self {
+            ConfirmRequest::Rollback { .. } => "Wiederherstellen",
+            ConfirmRequest::Elevate => "Jetzt als Admin neu starten",
+        }
+    }
+
+    pub fn dismiss_label(&self) -> &'static str {
+        match self {
+            ConfirmRequest::Rollback { .. } => "Abbrechen",
+            ConfirmRequest::Elevate => "Ohne Admin fortfahren",
         }
     }
 
@@ -59,6 +75,15 @@ impl ConfirmRequest {
                 format!("Sicherung:  {}", description),
                 format!("Schlüssel:  {}", key_path),
                 format!("Datei:      {}", file_path),
+            ],
+            ConfirmRequest::Elevate => vec![
+                "WinMedic wurde ohne Administratorrechte ausgeführt.".to_string(),
+                "Vollständige Diagnose- und Reparaturfunktionen (Systemdateien via SFC/DISM,"
+                    .to_string(),
+                "Dienste und Registry) erfordern erhöhte Administratorrechte.".to_string(),
+                String::new(),
+                "Möchten Sie WinMedic jetzt mit Administratorrechten (UAC) neu starten?"
+                    .to_string(),
             ],
         }
     }
@@ -180,7 +205,11 @@ impl App {
             selected_setting_index: 0,
             status_message: Some("Bereit".to_string()),
             show_help: false,
-            pending_confirm: None,
+            pending_confirm: if !admin_flag {
+                Some(ConfirmRequest::Elevate)
+            } else {
+                None
+            },
             should_quit: false,
             scan_event_rx: None,
             repair_event_rx: None,
@@ -264,6 +293,13 @@ impl App {
 
     pub fn start_repairs(&mut self) {
         if self.is_busy() {
+            return;
+        }
+
+        if !self.is_admin && !self.dry_run {
+            self.pending_confirm = Some(ConfirmRequest::Elevate);
+            self.status_message =
+                Some("Administratorrechte erforderlich für Reparaturen.".to_string());
             return;
         }
 
@@ -744,8 +780,19 @@ impl App {
     }
 
     pub fn dismiss_confirm(&mut self) {
-        if self.pending_confirm.take().is_some() {
-            self.status_message = Some("Abgebrochen – es wurde nichts verändert.".to_string());
+        if let Some(request) = self.pending_confirm.take() {
+            match request {
+                ConfirmRequest::Rollback { .. } => {
+                    self.status_message =
+                        Some("Abgebrochen – es wurde nichts verändert.".to_string());
+                }
+                ConfirmRequest::Elevate => {
+                    self.status_message = Some(
+                        "Eingeschränkter Modus: Reparaturen ohne Administratorrechte können fehlschlagen."
+                            .to_string(),
+                    );
+                }
+            }
         }
     }
 
@@ -773,6 +820,13 @@ impl App {
                     };
                     let _ = tx.send(BackgroundEvent::RollbackFinished { success, message });
                 });
+            }
+            ConfirmRequest::Elevate => {
+                if let Err(e) = relaunch_as_admin() {
+                    self.status_message = Some(format!("Elevierung fehlgeschlagen: {}", e));
+                } else {
+                    self.should_quit = true;
+                }
             }
         }
     }
@@ -836,5 +890,32 @@ impl App {
         if self.issues.is_empty() {
             self.module_statuses = statuses;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_confirm_request_elevate() {
+        let req = ConfirmRequest::Elevate;
+        assert_eq!(req.title(), "ADMINISTRATORRECHTE ERFORDERLICH");
+        assert_eq!(req.confirm_label(), "Jetzt als Admin neu starten");
+        assert_eq!(req.dismiss_label(), "Ohne Admin fortfahren");
+        assert!(!req.body().is_empty());
+    }
+
+    #[test]
+    fn test_confirm_request_rollback() {
+        let req = ConfirmRequest::Rollback {
+            description: "Test Backup".to_string(),
+            key_path: "HKCU\\Test".to_string(),
+            file_path: "C:\\test.reg".to_string(),
+        };
+        assert_eq!(req.title(), "REGISTRY-SICHERUNG WIEDERHERSTELLEN?");
+        assert_eq!(req.confirm_label(), "Wiederherstellen");
+        assert_eq!(req.dismiss_label(), "Abbrechen");
+        assert!(!req.body().is_empty());
     }
 }

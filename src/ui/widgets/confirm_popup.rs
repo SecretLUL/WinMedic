@@ -35,7 +35,10 @@ pub fn render_confirm_popup(f: &mut Frame, area: Rect, request: &ConfirmRequest)
                 .bg(Theme::AMBER)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" Ausführen    ", Style::default().fg(Theme::TEXT_WHITE)),
+        Span::styled(
+            format!(" {}    ", request.confirm_label()),
+            Style::default().fg(Theme::TEXT_WHITE),
+        ),
         Span::styled(
             " [N] / [Esc] ",
             Style::default()
@@ -43,7 +46,10 @@ pub fn render_confirm_popup(f: &mut Frame, area: Rect, request: &ConfirmRequest)
                 .bg(Theme::EMERALD)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" Abbrechen", Style::default().fg(Theme::TEXT_WHITE)),
+        Span::styled(
+            format!(" {}", request.dismiss_label()),
+            Style::default().fg(Theme::TEXT_WHITE),
+        ),
     ]));
 
     let block = Block::default()
