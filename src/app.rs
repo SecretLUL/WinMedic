@@ -220,22 +220,6 @@ impl App {
         let backup_records = reg_backup_mgr.list_backups();
         let (bg_tx, bg_rx) = tokio::sync::mpsc::unbounded_channel();
 
-        if config.check_for_updates {
-            let tx = bg_tx.clone();
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                handle.spawn(async move {
-                    let runner = SystemCommandRunner::new();
-                    let update_info = updater::check_for_update(
-                        &runner,
-                        env!("CARGO_PKG_VERSION"),
-                        Duration::from_secs(5),
-                    )
-                    .await;
-                    let _ = tx.send(BackgroundEvent::UpdateChecked(update_info));
-                });
-            }
-        }
-
         let (module_progress_list, module_statuses) = Self::module_lists(&engine);
 
         Self {
@@ -297,6 +281,32 @@ impl App {
             bg_tx,
             bg_rx,
         }
+    }
+
+    /// Kick off the background GitHub release check.
+    ///
+    /// Deliberately *not* part of [`App::new`]: constructing an `App` must stay
+    /// free of network I/O so the test suite — which builds dozens of them
+    /// inside `#[tokio::test]` — never reaches out to api.github.com. The TUI
+    /// entry point calls this once, right after construction.
+    pub fn start_update_check(&mut self) {
+        if !self.config.check_for_updates {
+            return;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let tx = self.bg_tx.clone();
+        handle.spawn(async move {
+            let runner = SystemCommandRunner::new();
+            let update_info = updater::check_for_update(
+                &runner,
+                env!("CARGO_PKG_VERSION"),
+                Duration::from_secs(5),
+            )
+            .await;
+            let _ = tx.send(BackgroundEvent::UpdateChecked(update_info));
+        });
     }
 
     #[allow(clippy::type_complexity)]
@@ -820,20 +830,18 @@ impl App {
                     self.audit_entries = self.audit_logger.get_history();
                 }
                 BackgroundEvent::UpdateChecked(Some(info)) => {
+                    // The check lands at an arbitrary point in the session, so it
+                    // never raises the modal by itself. A confirmation dialog
+                    // swallows every keystroke and maps `j`/Enter — this app's own
+                    // list-navigation keys — onto "open a browser", which would
+                    // fire whatever the user happened to press next. Park the
+                    // notice and let them open it deliberately with [U].
                     self.status_message = Some(format!(
-                        "Update verfügbar: v{} (aktuell: v{})",
+                        "Update verfügbar: v{} (aktuell: v{}) – [U] für Details",
                         info.latest_version.trim_start_matches(['v', 'V']),
                         info.current_version.trim_start_matches(['v', 'V'])
                     ));
-                    if self.pending_confirm.is_none() {
-                        self.pending_confirm = Some(ConfirmRequest::UpdateAvailable {
-                            current_version: info.current_version,
-                            latest_version: info.latest_version,
-                            release_url: info.release_url,
-                        });
-                    } else {
-                        self.available_update = Some(info);
-                    }
+                    self.available_update = Some(info);
                 }
                 BackgroundEvent::UpdateChecked(None) => {}
             }
@@ -1087,19 +1095,31 @@ impl App {
                     );
                 }
                 ConfirmRequest::UpdateAvailable { .. } => {
-                    self.status_message = Some("Update-Hinweis geschlossen.".to_string());
+                    // "Später erinnern" — the notice stays parked in
+                    // `available_update` so [U] can bring it back.
+                    self.status_message =
+                        Some("Update-Hinweis geschlossen – [U] öffnet ihn erneut.".to_string());
                 }
             }
         }
-        if self.pending_confirm.is_none() {
-            if let Some(info) = self.available_update.take() {
-                self.pending_confirm = Some(ConfirmRequest::UpdateAvailable {
-                    current_version: info.current_version,
-                    latest_version: info.latest_version,
-                    release_url: info.release_url,
-                });
-            }
+    }
+
+    /// Open the parked update notice as a confirmation dialog.
+    ///
+    /// This is the only path that raises the update modal, so it can never
+    /// intercept a keystroke the user meant for something else.
+    pub fn show_update_notice(&mut self) {
+        if self.pending_confirm.is_some() {
+            return;
         }
+        let Some(info) = self.available_update.clone() else {
+            return;
+        };
+        self.pending_confirm = Some(ConfirmRequest::UpdateAvailable {
+            current_version: info.current_version,
+            latest_version: info.latest_version,
+            release_url: info.release_url,
+        });
     }
 
     /// Execute whatever action the confirmation dialog was asking about.
@@ -1141,13 +1161,8 @@ impl App {
                     self.status_message =
                         Some("GitHub Release-Seite im Browser geöffnet.".to_string());
                 }
-                if let Some(info) = self.available_update.take() {
-                    self.pending_confirm = Some(ConfirmRequest::UpdateAvailable {
-                        current_version: info.current_version,
-                        latest_version: info.latest_version,
-                        release_url: info.release_url,
-                    });
-                }
+                // The user has acted on it; stop offering it under [U].
+                self.available_update = None;
             }
         }
     }

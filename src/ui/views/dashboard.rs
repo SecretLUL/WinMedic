@@ -6,7 +6,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Gauge, Paragraph};
+use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Wrap};
 
 pub fn render_dashboard(
     f: &mut Frame,
@@ -171,12 +171,16 @@ pub fn render_dashboard(
         ])
         .split(mod_rows[0]);
 
+    // Same four-column grid as row 1 — the trailing cell stays empty. Splitting
+    // row 2 into thirds would render the same kind of card at two different
+    // widths, and clip the longer module names differently in each row.
     let row2 = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(33),
-            Constraint::Percentage(33),
-            Constraint::Percentage(34),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
         ])
         .split(mod_rows[1]);
 
@@ -240,16 +244,22 @@ pub fn render_dashboard(
                 )]),
             ];
 
-            let card = Paragraph::new(card_content).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(if *status != ModuleStatus::Idle {
-                        status_color
-                    } else {
-                        Theme::BORDER
-                    }))
-                    .title(format!(" Modul {} ", idx + 1)),
-            );
+            // Four cards per row leave ~28 usable columns at 120 terminal
+            // columns, which is narrower than several module names. Wrapping
+            // pushes the overflow onto a second line instead of silently
+            // truncating the name mid-word.
+            let card = Paragraph::new(card_content)
+                .wrap(Wrap { trim: false })
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(if *status != ModuleStatus::Idle {
+                            status_color
+                        } else {
+                            Theme::BORDER
+                        }))
+                        .title(format!(" Modul {} ", idx + 1)),
+                );
 
             f.render_widget(card, slot_rect);
         }

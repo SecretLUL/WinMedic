@@ -40,19 +40,8 @@ impl StorageModule {
     }
 
     fn calculate_dir_size_mb(path: &Path) -> (u64, usize) {
-        let mut total_bytes: u64 = 0;
-        let mut file_count = 0;
-        if let Ok(entries) = std::fs::read_dir(path) {
-            for entry in entries.flatten() {
-                if let Ok(meta) = entry.metadata() {
-                    if meta.is_file() {
-                        total_bytes += meta.len();
-                        file_count += 1;
-                    }
-                }
-            }
-        }
-        (total_bytes / (1024 * 1024), file_count)
+        let stats = crate::utils::fs_stats::dir_stats_recursive(path);
+        (stats.bytes / (1024 * 1024), stats.files)
     }
 }
 

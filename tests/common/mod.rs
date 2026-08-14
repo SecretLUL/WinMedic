@@ -12,13 +12,37 @@ use tokio::sync::mpsc::Sender;
 use winmedic::config::AppConfig;
 use winmedic::engine::issue::Issue;
 use winmedic::engine::runner::DiagnosticEngine;
+use winmedic::modules::ModuleConfig;
 use winmedic::modules::system_cleaner::{
-    clean_log_dir_files, clean_path_contents, scan_log_dir_files, scan_path_recursive, CleanStats,
-    DirStats,
+    CleanStats, CleanerPaths, DirStats, SystemCleanerModule, clean_log_dir_files,
+    clean_path_contents, scan_log_dir_files, scan_path_recursive,
 };
 use winmedic::utils::cmd::{CmdOutput, CommandRunner};
 
 static TEST_COUNTER: AtomicUsize = AtomicUsize::new(1);
+
+/// Build a `SystemCleanerModule` whose filesystem roots all live inside a fresh
+/// temporary workspace.
+///
+/// `scan` and `fix` delete for real. A test must never build this module with
+/// the default env-derived paths: that aims it at the *test machine's* own
+/// browser caches, WER archives, `%ProgramData%\Package Cache` and
+/// `C:\Windows\Panther`, and `cargo test` would wipe them.
+///
+/// The returned workspace owns the directory — keep it bound for the duration of
+/// the test (`let (_sandbox, module) = ...`) so cleanup happens on drop.
+pub fn sandboxed_cleaner(
+    prefix: &str,
+    runner: Arc<dyn CommandRunner>,
+) -> (TempWorkspace, SystemCleanerModule) {
+    let ws = TempWorkspace::new(prefix);
+    let module = SystemCleanerModule::with_runner_and_paths(
+        ModuleConfig::default(),
+        runner,
+        CleanerPaths::rooted_at(ws.path()),
+    );
+    (ws, module)
+}
 
 /// An isolated temporary filesystem workspace for simulating Windows directories.
 pub struct TempWorkspace {
@@ -28,12 +52,7 @@ pub struct TempWorkspace {
 impl TempWorkspace {
     pub fn new(prefix: &str) -> Self {
         let count = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir_name = format!(
-            "winmedic_e2e_{}_{}_{}",
-            prefix,
-            std::process::id(),
-            count
-        );
+        let dir_name = format!("winmedic_e2e_{}_{}_{}", prefix, std::process::id(), count);
         let root = std::env::temp_dir().join(dir_name);
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).expect("failed to create temp workspace");
@@ -69,7 +88,8 @@ impl TempWorkspace {
         let wudo_sd = self.create_dir("Windows/SoftwareDistribution/DeliveryOptimization");
         let wudo_sp = self.create_dir("Windows/ServiceProfiles/NetworkService/AppData/Local/Microsoft/Windows/DeliveryOptimization/Cache");
         let sys_temp = self.create_dir("Windows/SystemTemp");
-        let sysprofile_temp = self.create_dir("Windows/System32/config/systemprofile/AppData/Local/Temp");
+        let sysprofile_temp =
+            self.create_dir("Windows/System32/config/systemprofile/AppData/Local/Temp");
 
         let prog_data = self.create_dir("ProgramData");
         let pkg_cache = self.create_dir("ProgramData/Package Cache");
@@ -77,7 +97,8 @@ impl TempWorkspace {
 
         let local_app_data = self.create_dir("AppData/Local");
         let chrome_cache = self.create_dir("AppData/Local/Google/Chrome/User Data/Default/Cache");
-        let chrome_code_cache = self.create_dir("AppData/Local/Google/Chrome/User Data/Default/Code Cache");
+        let chrome_code_cache =
+            self.create_dir("AppData/Local/Google/Chrome/User Data/Default/Code Cache");
         let edge_cache = self.create_dir("AppData/Local/Microsoft/Edge/User Data/Default/Cache");
         let local_wer = self.create_dir("AppData/Local/Microsoft/Windows/WER/ReportArchive");
         let crash_dumps = self.create_dir("AppData/Local/CrashDumps");
@@ -85,11 +106,14 @@ impl TempWorkspace {
         let shader_cache = self.create_dir("AppData/Local/Microsoft/DirectX/ShaderCache");
 
         let app_data = self.create_dir("AppData/Roaming");
-        let ff_cache = self.create_dir("AppData/Roaming/Mozilla/Firefox/Profiles/test.default/cache2");
+        let ff_cache =
+            self.create_dir("AppData/Roaming/Mozilla/Firefox/Profiles/test.default/cache2");
 
         let user_profile = self.create_dir("UserProfile");
-        let crypt_content = self.create_dir("UserProfile/AppData/LocalLow/Microsoft/CryptnetUrlCache/Content");
-        let crypt_meta = self.create_dir("UserProfile/AppData/LocalLow/Microsoft/CryptnetUrlCache/MetaData");
+        let crypt_content =
+            self.create_dir("UserProfile/AppData/LocalLow/Microsoft/CryptnetUrlCache/Content");
+        let crypt_meta =
+            self.create_dir("UserProfile/AppData/LocalLow/Microsoft/CryptnetUrlCache/MetaData");
 
         let recycle_bin = self.create_dir("$Recycle.Bin/S-1-5-21");
 
@@ -159,11 +183,14 @@ pub struct MockWindowsPaths {
     pub recycle_bin: PathBuf,
 }
 
+/// Shared record of every `(program, args)` pair a mock runner was asked to execute.
+pub type ExecutionLog = Arc<Mutex<Vec<(String, Vec<String>)>>>;
+
 /// Flexible programmable command runner for opaque-box testing.
 #[derive(Clone, Default)]
 pub struct ProgrammableMockRunner {
     pub responses: Arc<Mutex<HashMap<String, CmdOutput>>>,
-    pub execution_log: Arc<Mutex<Vec<(String, Vec<String>)>>>,
+    pub execution_log: ExecutionLog,
 }
 
 impl ProgrammableMockRunner {
@@ -206,7 +233,12 @@ impl ProgrammableMockRunner {
 
 #[async_trait::async_trait]
 impl CommandRunner for ProgrammableMockRunner {
-    async fn run(&self, program: &str, args: &[&str], _timeout: Duration) -> Result<CmdOutput, String> {
+    async fn run(
+        &self,
+        program: &str,
+        args: &[&str],
+        _timeout: Duration,
+    ) -> Result<CmdOutput, String> {
         let arg_vec: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         {
             let mut log = self.execution_log.lock().unwrap();
@@ -244,7 +276,12 @@ impl CommandRunner for ProgrammableMockRunner {
     }
 
     async fn run_powershell(&self, script: &str, timeout: Duration) -> Result<CmdOutput, String> {
-        self.run("powershell.exe", &["-NoProfile", "-NonInteractive", "-Command", script], timeout).await
+        self.run(
+            "powershell.exe",
+            &["-NoProfile", "-NonInteractive", "-Command", script],
+            timeout,
+        )
+        .await
     }
 }
 

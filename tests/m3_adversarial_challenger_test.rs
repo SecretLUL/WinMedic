@@ -5,11 +5,11 @@
 //! GitHub API response matrix, AppConfig boundary toggles/persistence, and App modal buffering.
 
 use std::time::Duration;
-use winmedic::app::{App, BackgroundEvent, ConfirmRequest};
+use winmedic::app::{App, ConfirmRequest};
 use winmedic::config::AppConfig;
 use winmedic::utils::cmd::{CmdOutput, MockCommandRunner};
 use winmedic::utils::updater::{
-    check_for_update, is_update_available, launch_browser, SemVer, UpdateInfo,
+    SemVer, UpdateInfo, check_for_update, is_update_available, launch_browser,
 };
 
 // ============================================================================
@@ -19,14 +19,78 @@ use winmedic::utils::updater::{
 #[test]
 fn test_semver_adversarial_standard_and_prefixed() {
     let cases = vec![
-        ("1.2.3", Some(SemVer { major: 1, minor: 2, patch: 3 })),
-        ("v1.2.3", Some(SemVer { major: 1, minor: 2, patch: 3 })),
-        ("V1.2.3", Some(SemVer { major: 1, minor: 2, patch: 3 })),
-        ("V10.20.30", Some(SemVer { major: 10, minor: 20, patch: 30 })),
-        ("v0.0.0", Some(SemVer { major: 0, minor: 0, patch: 0 })),
-        ("0.0.0", Some(SemVer { major: 0, minor: 0, patch: 0 })),
-        ("v0.1.0", Some(SemVer { major: 0, minor: 1, patch: 0 })),
-        ("v100.200.300", Some(SemVer { major: 100, minor: 200, patch: 300 })),
+        (
+            "1.2.3",
+            Some(SemVer {
+                major: 1,
+                minor: 2,
+                patch: 3,
+                pre: None,
+            }),
+        ),
+        (
+            "v1.2.3",
+            Some(SemVer {
+                major: 1,
+                minor: 2,
+                patch: 3,
+                pre: None,
+            }),
+        ),
+        (
+            "V1.2.3",
+            Some(SemVer {
+                major: 1,
+                minor: 2,
+                patch: 3,
+                pre: None,
+            }),
+        ),
+        (
+            "V10.20.30",
+            Some(SemVer {
+                major: 10,
+                minor: 20,
+                patch: 30,
+                pre: None,
+            }),
+        ),
+        (
+            "v0.0.0",
+            Some(SemVer {
+                major: 0,
+                minor: 0,
+                patch: 0,
+                pre: None,
+            }),
+        ),
+        (
+            "0.0.0",
+            Some(SemVer {
+                major: 0,
+                minor: 0,
+                patch: 0,
+                pre: None,
+            }),
+        ),
+        (
+            "v0.1.0",
+            Some(SemVer {
+                major: 0,
+                minor: 1,
+                patch: 0,
+                pre: None,
+            }),
+        ),
+        (
+            "v100.200.300",
+            Some(SemVer {
+                major: 100,
+                minor: 200,
+                patch: 300,
+                pre: None,
+            }),
+        ),
     ];
 
     for (input, expected) in cases {
@@ -38,54 +102,240 @@ fn test_semver_adversarial_standard_and_prefixed() {
 #[test]
 fn test_semver_adversarial_whitespace_handling() {
     let whitespace_cases = vec![
-        ("  1.2.3  ", Some(SemVer { major: 1, minor: 2, patch: 3 })),
-        ("\t\n\r  v2.4.6 \n\t", Some(SemVer { major: 2, minor: 4, patch: 6 })),
-        ("   V0.9.1   ", Some(SemVer { major: 0, minor: 9, patch: 1 })),
-        (" \r\n v0.0.1-rc1 \t", Some(SemVer { major: 0, minor: 0, patch: 1 })),
+        (
+            "  1.2.3  ",
+            Some(SemVer {
+                major: 1,
+                minor: 2,
+                patch: 3,
+                pre: None,
+            }),
+        ),
+        (
+            "\t\n\r  v2.4.6 \n\t",
+            Some(SemVer {
+                major: 2,
+                minor: 4,
+                patch: 6,
+                pre: None,
+            }),
+        ),
+        (
+            "   V0.9.1   ",
+            Some(SemVer {
+                major: 0,
+                minor: 9,
+                patch: 1,
+                pre: None,
+            }),
+        ),
+        (
+            " \r\n v0.0.1-rc1 \t",
+            Some(SemVer {
+                major: 0,
+                minor: 0,
+                patch: 1,
+                pre: Some("rc1".to_string()),
+            }),
+        ),
     ];
 
     for (input, expected) in whitespace_cases {
-        assert_eq!(SemVer::parse(input), expected, "Failed whitespace trim for: '{}'", input);
+        assert_eq!(
+            SemVer::parse(input),
+            expected,
+            "Failed whitespace trim for: '{}'",
+            input
+        );
     }
 }
 
 #[test]
 fn test_semver_adversarial_prerelease_and_build_metadata() {
     let cases = vec![
-        ("1.0.0-alpha.1", Some(SemVer { major: 1, minor: 0, patch: 0 })),
-        ("2.0.0+build.184", Some(SemVer { major: 2, minor: 0, patch: 0 })),
-        ("v1.2.3-beta.2+20260814", Some(SemVer { major: 1, minor: 2, patch: 3 })),
-        ("V0.3.0-nightly-2026-08-14", Some(SemVer { major: 0, minor: 3, patch: 0 })),
-        ("1.0.0-rc.1+sha.5114f85", Some(SemVer { major: 1, minor: 0, patch: 0 })),
-        ("0.1.0-SNAPSHOT", Some(SemVer { major: 0, minor: 1, patch: 0 })),
+        (
+            "1.0.0-alpha.1",
+            Some(SemVer {
+                major: 1,
+                minor: 0,
+                patch: 0,
+                pre: Some("alpha.1".to_string()),
+            }),
+        ),
+        (
+            "2.0.0+build.184",
+            Some(SemVer {
+                major: 2,
+                minor: 0,
+                patch: 0,
+                pre: None,
+            }),
+        ),
+        (
+            "v1.2.3-beta.2+20260814",
+            Some(SemVer {
+                major: 1,
+                minor: 2,
+                patch: 3,
+                pre: Some("beta.2".to_string()),
+            }),
+        ),
+        (
+            "V0.3.0-nightly-2026-08-14",
+            Some(SemVer {
+                major: 0,
+                minor: 3,
+                patch: 0,
+                pre: Some("nightly-2026-08-14".to_string()),
+            }),
+        ),
+        (
+            "1.0.0-rc.1+sha.5114f85",
+            Some(SemVer {
+                major: 1,
+                minor: 0,
+                patch: 0,
+                pre: Some("rc.1".to_string()),
+            }),
+        ),
+        (
+            "0.1.0-SNAPSHOT",
+            Some(SemVer {
+                major: 0,
+                minor: 1,
+                patch: 0,
+                pre: Some("SNAPSHOT".to_string()),
+            }),
+        ),
     ];
 
     for (input, expected) in cases {
-        assert_eq!(SemVer::parse(input), expected, "Failed prerelease/build parse for: '{}'", input);
+        assert_eq!(
+            SemVer::parse(input),
+            expected,
+            "Failed prerelease/build parse for: '{}'",
+            input
+        );
     }
 }
 
 #[test]
 fn test_semver_adversarial_partial_versions() {
     // 2-segment and 1-segment versions should parse with remaining fields defaulted to 0
-    assert_eq!(SemVer::parse("1.2"), Some(SemVer { major: 1, minor: 2, patch: 0 }));
-    assert_eq!(SemVer::parse("v3"), Some(SemVer { major: 3, minor: 0, patch: 0 }));
-    assert_eq!(SemVer::parse("0"), Some(SemVer { major: 0, minor: 0, patch: 0 }));
-    assert_eq!(SemVer::parse("0.1"), Some(SemVer { major: 0, minor: 1, patch: 0 }));
+    assert_eq!(
+        SemVer::parse("1.2"),
+        Some(SemVer {
+            major: 1,
+            minor: 2,
+            patch: 0,
+            pre: None
+        })
+    );
+    assert_eq!(
+        SemVer::parse("v3"),
+        Some(SemVer {
+            major: 3,
+            minor: 0,
+            patch: 0,
+            pre: None
+        })
+    );
+    assert_eq!(
+        SemVer::parse("0"),
+        Some(SemVer {
+            major: 0,
+            minor: 0,
+            patch: 0,
+            pre: None
+        })
+    );
+    assert_eq!(
+        SemVer::parse("0.1"),
+        Some(SemVer {
+            major: 0,
+            minor: 1,
+            patch: 0,
+            pre: None
+        })
+    );
     // 4-segment inputs parse the first 3 segments
-    assert_eq!(SemVer::parse("1.2.3.4"), Some(SemVer { major: 1, minor: 2, patch: 3 }));
+    assert_eq!(
+        SemVer::parse("1.2.3.4"),
+        Some(SemVer {
+            major: 1,
+            minor: 2,
+            patch: 3,
+            pre: None
+        })
+    );
 }
 
 #[test]
 fn test_semver_adversarial_lenient_parsing() {
     // Lenient recovery for multi-v prefixes, trailing dots, and skipped components
-    assert_eq!(SemVer::parse("vv1.0.0"), Some(SemVer { major: 1, minor: 0, patch: 0 }));
-    assert_eq!(SemVer::parse("VVV2.1.0"), Some(SemVer { major: 2, minor: 1, patch: 0 }));
-    assert_eq!(SemVer::parse("1..2"), Some(SemVer { major: 1, minor: 0, patch: 2 }));
-    assert_eq!(SemVer::parse("1."), Some(SemVer { major: 1, minor: 0, patch: 0 }));
-    assert_eq!(SemVer::parse("1.2."), Some(SemVer { major: 1, minor: 2, patch: 0 }));
-    assert_eq!(SemVer::parse("1.2.x"), Some(SemVer { major: 1, minor: 2, patch: 0 }));
-    assert_eq!(SemVer::parse("1.-2.3"), Some(SemVer { major: 1, minor: 0, patch: 0 }));
+    assert_eq!(
+        SemVer::parse("vv1.0.0"),
+        Some(SemVer {
+            major: 1,
+            minor: 0,
+            patch: 0,
+            pre: None
+        })
+    );
+    assert_eq!(
+        SemVer::parse("VVV2.1.0"),
+        Some(SemVer {
+            major: 2,
+            minor: 1,
+            patch: 0,
+            pre: None
+        })
+    );
+    assert_eq!(
+        SemVer::parse("1..2"),
+        Some(SemVer {
+            major: 1,
+            minor: 0,
+            patch: 2,
+            pre: None
+        })
+    );
+    assert_eq!(
+        SemVer::parse("1."),
+        Some(SemVer {
+            major: 1,
+            minor: 0,
+            patch: 0,
+            pre: None
+        })
+    );
+    assert_eq!(
+        SemVer::parse("1.2."),
+        Some(SemVer {
+            major: 1,
+            minor: 2,
+            patch: 0,
+            pre: None
+        })
+    );
+    assert_eq!(
+        SemVer::parse("1.2.x"),
+        Some(SemVer {
+            major: 1,
+            minor: 2,
+            patch: 0,
+            pre: None
+        })
+    );
+    assert_eq!(
+        SemVer::parse("1.-2.3"),
+        Some(SemVer {
+            major: 1,
+            minor: 0,
+            patch: 0,
+            pre: Some("2.3".to_string())
+        })
+    );
 }
 
 #[test]
@@ -115,7 +365,12 @@ fn test_semver_adversarial_malformed_inputs_rejected() {
     ];
 
     for input in malformed_inputs {
-        assert_eq!(SemVer::parse(input), None, "Expected None for malformed input: '{}'", input);
+        assert_eq!(
+            SemVer::parse(input),
+            None,
+            "Expected None for malformed input: '{}'",
+            input
+        );
     }
 }
 
@@ -133,51 +388,163 @@ fn test_semver_comparison_truth_table() {
 
     let truth_table = vec![
         // Newer patch
-        Case { current: "1.0.0", latest: "1.0.1", update_available: true },
-        Case { current: "1.0.0", latest: "v1.0.1", update_available: true },
-        Case { current: "v1.0.0", latest: "1.0.1", update_available: true },
+        Case {
+            current: "1.0.0",
+            latest: "1.0.1",
+            update_available: true,
+        },
+        Case {
+            current: "1.0.0",
+            latest: "v1.0.1",
+            update_available: true,
+        },
+        Case {
+            current: "v1.0.0",
+            latest: "1.0.1",
+            update_available: true,
+        },
         // Newer minor
-        Case { current: "1.0.0", latest: "1.1.0", update_available: true },
-        Case { current: "1.2.3", latest: "1.3.0", update_available: true },
+        Case {
+            current: "1.0.0",
+            latest: "1.1.0",
+            update_available: true,
+        },
+        Case {
+            current: "1.2.3",
+            latest: "1.3.0",
+            update_available: true,
+        },
         // Newer major
-        Case { current: "1.9.9", latest: "2.0.0", update_available: true },
-        Case { current: "0.9.9", latest: "1.0.0", update_available: true },
+        Case {
+            current: "1.9.9",
+            latest: "2.0.0",
+            update_available: true,
+        },
+        Case {
+            current: "0.9.9",
+            latest: "1.0.0",
+            update_available: true,
+        },
         // Equal versions
-        Case { current: "1.2.3", latest: "1.2.3", update_available: false },
-        Case { current: "v1.2.3", latest: "1.2.3", update_available: false },
-        Case { current: "1.2.3", latest: "v1.2.3", update_available: false },
-        Case { current: "V1.2.3", latest: "v1.2.3", update_available: false },
-        Case { current: "0.0.0", latest: "0.0.0", update_available: false },
-        // Pre-release versions with same core (parsed identically)
-        Case { current: "1.0.0", latest: "1.0.0-rc1", update_available: false },
-        Case { current: "1.0.0-beta", latest: "1.0.0", update_available: false },
+        Case {
+            current: "1.2.3",
+            latest: "1.2.3",
+            update_available: false,
+        },
+        Case {
+            current: "v1.2.3",
+            latest: "1.2.3",
+            update_available: false,
+        },
+        Case {
+            current: "1.2.3",
+            latest: "v1.2.3",
+            update_available: false,
+        },
+        Case {
+            current: "V1.2.3",
+            latest: "v1.2.3",
+            update_available: false,
+        },
+        Case {
+            current: "0.0.0",
+            latest: "0.0.0",
+            update_available: false,
+        },
+        // Pre-release versions: SemVer precedence puts `1.0.0-x` below `1.0.0`,
+        // so a stable build is never downgraded to an RC, and someone running an
+        // RC is still told about the final release.
+        Case {
+            current: "1.0.0",
+            latest: "1.0.0-rc1",
+            update_available: false,
+        },
+        Case {
+            current: "1.0.0-beta",
+            latest: "1.0.0",
+            update_available: true,
+        },
         // Older versions (downgrades / stale releases)
-        Case { current: "2.0.0", latest: "1.9.9", update_available: false },
-        Case { current: "1.0.1", latest: "1.0.0", update_available: false },
-        Case { current: "1.1.0", latest: "1.0.9", update_available: false },
-        Case { current: "1.2.3", latest: "1.2.2", update_available: false },
-        Case { current: "0.0.1", latest: "0.0.0", update_available: false },
+        Case {
+            current: "2.0.0",
+            latest: "1.9.9",
+            update_available: false,
+        },
+        Case {
+            current: "1.0.1",
+            latest: "1.0.0",
+            update_available: false,
+        },
+        Case {
+            current: "1.1.0",
+            latest: "1.0.9",
+            update_available: false,
+        },
+        Case {
+            current: "1.2.3",
+            latest: "1.2.2",
+            update_available: false,
+        },
+        Case {
+            current: "0.0.1",
+            latest: "0.0.0",
+            update_available: false,
+        },
         // Boundary versions
-        Case { current: "0.0.0", latest: "0.0.1", update_available: true },
-        Case { current: "0.0.0", latest: "1.0.0", update_available: true },
+        Case {
+            current: "0.0.0",
+            latest: "0.0.1",
+            update_available: true,
+        },
+        Case {
+            current: "0.0.0",
+            latest: "1.0.0",
+            update_available: true,
+        },
         // Malformed / Unparseable
-        Case { current: "malformed", latest: "1.0.0", update_available: false },
-        Case { current: "1.0.0", latest: "malformed", update_available: false },
-        Case { current: "", latest: "", update_available: false },
-        Case { current: "1.0.0", latest: "", update_available: false },
-        Case { current: "", latest: "1.0.0", update_available: false },
-        Case { current: "abc", latest: "def", update_available: false },
+        Case {
+            current: "malformed",
+            latest: "1.0.0",
+            update_available: false,
+        },
+        Case {
+            current: "1.0.0",
+            latest: "malformed",
+            update_available: false,
+        },
+        Case {
+            current: "",
+            latest: "",
+            update_available: false,
+        },
+        Case {
+            current: "1.0.0",
+            latest: "",
+            update_available: false,
+        },
+        Case {
+            current: "",
+            latest: "1.0.0",
+            update_available: false,
+        },
+        Case {
+            current: "abc",
+            latest: "def",
+            update_available: false,
+        },
     ];
 
-    for Case { current, latest, update_available } in truth_table {
+    for Case {
+        current,
+        latest,
+        update_available,
+    } in truth_table
+    {
         let result = is_update_available(current, latest);
         assert_eq!(
-            result,
-            update_available,
+            result, update_available,
             "Truth table failure: is_update_available('{}', '{}') was expected to be {}",
-            current,
-            latest,
-            update_available
+            current, latest, update_available
         );
     }
 }
@@ -196,7 +563,8 @@ async fn test_github_api_valid_newer_release_full_payload() {
         "body": "### Änderungen\n- WinSxS Component Store Deep Clean\n- WUDO Bereinigung",
         "draft": false,
         "prerelease": false
-    }).to_string();
+    })
+    .to_string();
     mock.add_response("curl.exe", CmdOutput::ok(payload));
 
     let info = check_for_update(&mock, "0.1.0", Duration::from_secs(5))
@@ -205,8 +573,14 @@ async fn test_github_api_valid_newer_release_full_payload() {
 
     assert_eq!(info.current_version, "0.1.0");
     assert_eq!(info.latest_version, "v0.3.5");
-    assert_eq!(info.release_url, "https://github.com/SecretLUL/WinMedic/releases/tag/v0.3.5");
-    assert_eq!(info.release_name, Some("WinMedic v0.3.5 – System Cleaner & Auto-Updater".to_string()));
+    assert_eq!(
+        info.release_url,
+        "https://github.com/SecretLUL/WinMedic/releases/tag/v0.3.5"
+    );
+    assert_eq!(
+        info.release_name,
+        Some("WinMedic v0.3.5 – System Cleaner & Auto-Updater".to_string())
+    );
     assert!(info.release_body.as_ref().unwrap().contains("WinSxS"));
 }
 
@@ -242,7 +616,10 @@ async fn test_github_api_equal_version_payload_returns_none() {
     mock.add_response("curl.exe", CmdOutput::ok(payload));
 
     let info = check_for_update(&mock, "0.1.0", Duration::from_secs(5)).await;
-    assert_eq!(info, None, "Expected None when release tag matches current version");
+    assert_eq!(
+        info, None,
+        "Expected None when release tag matches current version"
+    );
 }
 
 #[tokio::test]
@@ -257,7 +634,10 @@ async fn test_github_api_older_version_payload_returns_none() {
     mock.add_response("curl.exe", CmdOutput::ok(payload));
 
     let info = check_for_update(&mock, "0.1.0", Duration::from_secs(5)).await;
-    assert_eq!(info, None, "Expected None when release tag is older than current version");
+    assert_eq!(
+        info, None,
+        "Expected None when release tag is older than current version"
+    );
 }
 
 #[tokio::test]
@@ -272,22 +652,34 @@ async fn test_github_api_draft_release_ignored() {
     mock.add_response("curl.exe", CmdOutput::ok(payload));
 
     let info = check_for_update(&mock, "0.1.0", Duration::from_secs(5)).await;
-    assert_eq!(info, None, "Draft release must never trigger an update prompt");
+    assert_eq!(
+        info, None,
+        "Draft release must never trigger an update prompt"
+    );
 }
 
 #[tokio::test]
 async fn test_github_api_network_timeout_exit_code_28() {
     let mock = MockCommandRunner::new();
-    mock.add_response("curl.exe", CmdOutput::failed(28, "curl: (28) Operation timed out after 5001 milliseconds"));
+    mock.add_response(
+        "curl.exe",
+        CmdOutput::failed(28, "curl: (28) Operation timed out after 5001 milliseconds"),
+    );
 
     let info = check_for_update(&mock, "0.1.0", Duration::from_secs(5)).await;
-    assert_eq!(info, None, "Timeout error must gracefully yield None without panic");
+    assert_eq!(
+        info, None,
+        "Timeout error must gracefully yield None without panic"
+    );
 }
 
 #[tokio::test]
 async fn test_github_api_dns_resolution_failure_exit_code_6() {
     let mock = MockCommandRunner::new();
-    mock.add_response("curl.exe", CmdOutput::failed(6, "curl: (6) Could not resolve host: api.github.com"));
+    mock.add_response(
+        "curl.exe",
+        CmdOutput::failed(6, "curl: (6) Could not resolve host: api.github.com"),
+    );
 
     let info = check_for_update(&mock, "0.1.0", Duration::from_secs(5)).await;
     assert_eq!(info, None, "DNS resolution failure must yield None");
@@ -303,7 +695,10 @@ async fn test_github_api_404_not_found_json_response() {
     mock.add_response("curl.exe", CmdOutput::ok(not_found_payload));
 
     let info = check_for_update(&mock, "0.1.0", Duration::from_secs(5)).await;
-    assert_eq!(info, None, "404 Not Found JSON without tag_name must safely yield None");
+    assert_eq!(
+        info, None,
+        "404 Not Found JSON without tag_name must safely yield None"
+    );
 }
 
 #[tokio::test]
@@ -336,7 +731,10 @@ async fn test_github_api_500_html_error_response() {
 #[tokio::test]
 async fn test_github_api_malformed_json_and_empty_payload() {
     let mock = MockCommandRunner::new();
-    mock.add_response("curl.exe", CmdOutput::ok("{ invalid json tag_name: v0.2.0 }"));
+    mock.add_response(
+        "curl.exe",
+        CmdOutput::ok("{ invalid json tag_name: v0.2.0 }"),
+    );
 
     let info1 = check_for_update(&mock, "0.1.0", Duration::from_secs(5)).await;
     assert_eq!(info1, None);
@@ -360,7 +758,8 @@ async fn test_github_api_large_payload_stress() {
         "body": big_body,
         "draft": false,
         "prerelease": false
-    }).to_string();
+    })
+    .to_string();
 
     mock.add_response("curl.exe", CmdOutput::ok(payload));
 
@@ -447,7 +846,8 @@ fn test_appconfig_serde_backward_and_forward_compatibility() {
 
     // 3. Explicit check_for_updates: false
     let explicit_json = r#"{"check_for_updates": false}"#;
-    let cfg3: AppConfig = serde_json::from_str(explicit_json).expect("Failed explicit deserialization");
+    let cfg3: AppConfig =
+        serde_json::from_str(explicit_json).expect("Failed explicit deserialization");
     assert!(!cfg3.check_for_updates);
     assert!(cfg3.create_vss_before_repair);
 
@@ -457,7 +857,8 @@ fn test_appconfig_serde_backward_and_forward_compatibility() {
         "future_ai_engine_enabled": true,
         "cloud_sync": "enterprise"
     }"#;
-    let cfg4: AppConfig = serde_json::from_str(future_json).expect("Failed future field deserialization");
+    let cfg4: AppConfig =
+        serde_json::from_str(future_json).expect("Failed future field deserialization");
     assert!(!cfg4.check_for_updates);
 
     // 5. Full roundtrip serialization
@@ -511,38 +912,65 @@ async fn test_app_update_buffering_when_elevate_dialog_is_active() {
         release_body: Some("Changelog".to_string()),
     };
 
-    // Inject BackgroundEvent::UpdateChecked into App's bg_rx channel via bg_tx
-    // We can simulate calling process_background_events by manually pushing to background events
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    tx.send(BackgroundEvent::UpdateChecked(Some(update_info.clone()))).unwrap();
+    // The update check lands while the Elevate dialog is up.
+    app.available_update = Some(update_info.clone());
 
-    if let Ok(BackgroundEvent::UpdateChecked(Some(info))) = rx.try_recv() {
-        if app.pending_confirm.is_none() {
-            app.pending_confirm = Some(ConfirmRequest::UpdateAvailable {
-                current_version: info.current_version,
-                latest_version: info.latest_version,
-                release_url: info.release_url,
-            });
-        } else {
-            app.available_update = Some(info);
-        }
-    }
-
-    // Elevate dialog is still active, update is buffered in available_update
+    // A background update never raises its own modal: a confirmation dialog
+    // swallows every key and maps `j`/Enter (this app's list-navigation keys)
+    // onto "open a browser", so it must not appear unasked-for.
     assert!(matches!(app.pending_confirm, Some(ConfirmRequest::Elevate)));
-    assert!(app.available_update.is_some());
 
-    // Dismiss the Elevate dialog
+    // Dismissing Elevate does not hand the user a second dialog either.
     app.dismiss_confirm();
+    assert!(app.pending_confirm.is_none());
+    assert!(
+        app.available_update.is_some(),
+        "the notice must survive so it is not silently lost"
+    );
 
-    // Now the buffered UpdateAvailable dialog is presented to the user!
+    // The user opens it deliberately with [U].
+    app.show_update_notice();
     assert!(matches!(
         app.pending_confirm,
         Some(ConfirmRequest::UpdateAvailable { .. })
     ));
-    assert!(app.available_update.is_none());
 
-    // Dismiss the update dialog
+    // "Später erinnern" closes it but keeps it reachable under [U].
     app.dismiss_confirm();
     assert!(app.pending_confirm.is_none());
+    assert!(app.available_update.is_some());
+
+    // Acting on it retires the notice.
+    app.show_update_notice();
+    app.confirm_pending_action();
+    assert!(app.pending_confirm.is_none());
+    assert!(app.available_update.is_none());
+}
+
+/// Accepting an unrelated dialog must not discard a queued update notice.
+#[tokio::test]
+async fn test_app_update_survives_accepting_another_dialog() {
+    let mut app = App::new();
+    app.pending_confirm = Some(ConfirmRequest::Elevate);
+    app.available_update = Some(UpdateInfo {
+        current_version: "0.1.0".to_string(),
+        latest_version: "v0.2.0".to_string(),
+        release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0".to_string(),
+        release_name: None,
+        release_body: None,
+    });
+
+    // Confirming Elevate when UAC is declined leaves the app running; the
+    // buffered notice has to still be there afterwards.
+    app.confirm_pending_action();
+    assert!(
+        app.available_update.is_some(),
+        "the update notice must not be dropped when another dialog is accepted"
+    );
+
+    app.show_update_notice();
+    assert!(matches!(
+        app.pending_confirm,
+        Some(ConfirmRequest::UpdateAvailable { .. })
+    ));
 }

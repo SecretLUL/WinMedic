@@ -9,21 +9,24 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{
-    MockWindowsPaths, ProgrammableMockRunner, TempWorkspace, DISM_ANALYZE_CLEAN,
-    DISM_ANALYZE_ENGLISH_RECLAIMABLE,
+    DISM_ANALYZE_CLEAN, DISM_ANALYZE_ENGLISH_RECLAIMABLE, MockWindowsPaths, ProgrammableMockRunner,
+    TempWorkspace, sandboxed_cleaner,
 };
 use winmedic::app::{App, ConfirmRequest, TAB_TRIAGE};
 use winmedic::config::AppConfig;
 use winmedic::engine::issue::{Issue, RiskScore, Severity};
 use winmedic::engine::runner::DiagnosticEngine;
 use winmedic::modules::system_cleaner::{
-    clean_log_dir_files, clean_path_contents, format_bytes, parse_winsxs_analysis,
-    scan_log_dir_files, scan_path_recursive, SystemCleanerModule,
+    SystemCleanerModule, clean_log_dir_files, clean_path_contents, format_bytes,
+    parse_winsxs_analysis, scan_log_dir_files, scan_path_recursive,
 };
-use winmedic::modules::{get_all_modules_with_runner, DiagnosticModule, ModuleConfig, ModuleStatus};
+use winmedic::modules::{
+    DiagnosticModule, ModuleConfig, ModuleStatus, get_all_modules_with_runner,
+};
 use winmedic::utils::cmd::{CmdOutput, CommandRunner};
 use winmedic::utils::updater::{
-    check_for_update, is_update_available, launch_browser, GitHubRelease, SemVer, UpdateInfo,
+    GitHubRelease, SemVer, UpdateInfo, check_for_update, is_safe_release_url, is_update_available,
+    launch_browser,
 };
 
 // ============================================================================
@@ -132,7 +135,10 @@ fn test_tier2_f01_git_empty_commit_history_simulation() {
     let runner = ProgrammableMockRunner::new();
     runner.set_response(
         "git.exe",
-        CmdOutput::failed(128, "fatal: your current branch 'main' does not have any commits yet"),
+        CmdOutput::failed(
+            128,
+            "fatal: your current branch 'main' does not have any commits yet",
+        ),
     );
 
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -168,7 +174,7 @@ async fn test_tier2_f02_winsxs_dism_exit_code_87_invalid_param() {
         CmdOutput::failed(87, "Error: 87 The parameter is incorrect."),
     );
 
-    let module = SystemCleanerModule::with_runner(ModuleConfig::default(), runner);
+    let (_sandbox, module) = sandboxed_cleaner("tier2_boundaries_171", runner);
     let res = module.fix("sys_clean_winsxs", None).await;
 
     assert!(res.is_err());
@@ -180,10 +186,13 @@ async fn test_tier2_f02_winsxs_dism_exit_code_5_access_denied() {
     let runner = Arc::new(ProgrammableMockRunner::new());
     runner.set_response(
         "dism.exe",
-        CmdOutput::failed(5, "Error: 5 Access is denied. Elevated permissions are required."),
+        CmdOutput::failed(
+            5,
+            "Error: 5 Access is denied. Elevated permissions are required.",
+        ),
     );
 
-    let module = SystemCleanerModule::with_runner(ModuleConfig::default(), runner);
+    let (_sandbox, module) = sandboxed_cleaner("tier2_boundaries_186", runner);
     let res = module.fix("sys_clean_winsxs", None).await;
 
     assert!(res.is_err());
@@ -200,7 +209,8 @@ fn test_tier2_f02_winsxs_zero_reclaimable_packages_numeric_parse() {
 
 #[test]
 fn test_tier2_f02_winsxs_extreme_package_count_parse() {
-    let output = "Component Store Cleanup Recommended : Yes\nNumber of Reclaimable Packages : 999999\n";
+    let output =
+        "Component Store Cleanup Recommended : Yes\nNumber of Reclaimable Packages : 999999\n";
     let analysis = parse_winsxs_analysis(output);
     assert!(analysis.cleanup_recommended);
     assert_eq!(analysis.reclaimable_packages, 999999);
@@ -245,14 +255,20 @@ async fn test_tier2_f03_delivery_opt_powershell_failure_does_not_panic() {
     let runner = Arc::new(ProgrammableMockRunner::new());
     runner.set_response(
         "powershell.exe",
-        CmdOutput::failed(1, "The term 'Delete-DeliveryOptimizationCache' is not recognized."),
+        CmdOutput::failed(
+            1,
+            "The term 'Delete-DeliveryOptimizationCache' is not recognized.",
+        ),
     );
 
-    let module = SystemCleanerModule::with_runner(ModuleConfig::default(), runner);
+    let (_sandbox, module) = sandboxed_cleaner("tier2_boundaries_251", runner);
     let res = module.fix("sys_clean_delivery_optimization", None).await;
 
     assert!(res.is_ok());
-    assert!(res.unwrap().contains("Delivery Optimization (WUDO) Cache bereinigt"));
+    assert!(
+        res.unwrap()
+            .contains("Delivery Optimization (WUDO) Cache bereinigt")
+    );
 }
 
 #[test]
@@ -350,7 +366,7 @@ fn test_tier2_f04_package_cache_large_file_size_aggregation() {
 #[tokio::test]
 async fn test_tier2_f04_package_cache_unknown_issue_id_returns_error() {
     let runner = Arc::new(ProgrammableMockRunner::new());
-    let module = SystemCleanerModule::with_runner(ModuleConfig::default(), runner);
+    let (_sandbox, module) = sandboxed_cleaner("tier2_boundaries_353", runner);
     let res = module.fix("sys_clean_invalid_id", None).await;
     assert!(res.is_err());
     assert!(res.unwrap_err().contains("Unbekannte Problem-ID"));
@@ -668,7 +684,7 @@ async fn test_tier2_f09_recycle_bin_powershell_access_denied() {
         CmdOutput::failed(1, "Clear-RecycleBin : Access to the path is denied."),
     );
 
-    let module = SystemCleanerModule::with_runner(ModuleConfig::default(), runner);
+    let (_sandbox, module) = sandboxed_cleaner("tier2_boundaries_671", runner);
     let res = module.fix("sys_clean_recycle_bin", None).await;
 
     assert!(res.is_err());
@@ -680,10 +696,13 @@ async fn test_tier2_f09_recycle_bin_powershell_no_recycle_bin_present() {
     let runner = Arc::new(ProgrammableMockRunner::new());
     runner.set_response(
         "powershell.exe",
-        CmdOutput::failed(1, "Cannot find path 'C:\\$Recycle.Bin' because it does not exist."),
+        CmdOutput::failed(
+            1,
+            "Cannot find path 'C:\\$Recycle.Bin' because it does not exist.",
+        ),
     );
 
-    let module = SystemCleanerModule::with_runner(ModuleConfig::default(), runner);
+    let (_sandbox, module) = sandboxed_cleaner("tier2_boundaries_686", runner);
     let res = module.fix("sys_clean_recycle_bin", None).await;
 
     assert!(res.is_err());
@@ -721,7 +740,9 @@ fn test_tier2_f09_recycle_bin_only_metadata_index_files() {
 #[test]
 fn test_tier2_f10_systemprofile_temp_non_existent() {
     let ws = TempWorkspace::new("temp_missing");
-    let missing = ws.path().join("System32/config/systemprofile/AppData/Local/Temp");
+    let missing = ws
+        .path()
+        .join("System32/config/systemprofile/AppData/Local/Temp");
     let stats = scan_path_recursive(&missing);
     assert_eq!(stats.files, 0);
     assert_eq!(stats.bytes, 0);
@@ -805,10 +826,28 @@ fn test_tier2_f11_format_bytes_boundary_exact_values() {
 async fn test_tier2_f11_triage_empty_search_query_matches_all() {
     let mut app = App::new();
     app.issues.push(Issue::new(
-        "i1", "mod1", "Title 1", "Cat", Severity::Info, RiskScore::Low, "Desc", "Tech", "Fix", vec![],
+        "i1",
+        "mod1",
+        "Title 1",
+        "Cat",
+        Severity::Info,
+        RiskScore::Low,
+        "Desc",
+        "Tech",
+        "Fix",
+        vec![],
     ));
     app.issues.push(Issue::new(
-        "i2", "mod1", "Title 2", "Cat", Severity::Warning, RiskScore::Low, "Desc", "Tech", "Fix", vec![],
+        "i2",
+        "mod1",
+        "Title 2",
+        "Cat",
+        Severity::Warning,
+        RiskScore::Low,
+        "Desc",
+        "Tech",
+        "Fix",
+        vec![],
     ));
 
     app.search_query = String::new();
@@ -820,7 +859,16 @@ async fn test_tier2_f11_triage_empty_search_query_matches_all() {
 async fn test_tier2_f11_triage_search_query_no_match_clamps_to_zero() {
     let mut app = App::new();
     app.issues.push(Issue::new(
-        "i1", "mod1", "Title 1", "Cat", Severity::Info, RiskScore::Low, "Desc", "Tech", "Fix", vec![],
+        "i1",
+        "mod1",
+        "Title 1",
+        "Cat",
+        Severity::Info,
+        RiskScore::Low,
+        "Desc",
+        "Tech",
+        "Fix",
+        vec![],
     ));
 
     app.search_query = "completely_unmatched_query_xyz".to_string();
@@ -834,9 +882,42 @@ async fn test_tier2_f11_triage_search_query_no_match_clamps_to_zero() {
 #[tokio::test]
 async fn test_tier2_f11_triage_filter_all_severities_combinations() {
     let mut app = App::new();
-    app.issues.push(Issue::new("i1", "m", "C", "Cat", Severity::Critical, RiskScore::High, "D", "T", "F", vec![]));
-    app.issues.push(Issue::new("i2", "m", "W", "Cat", Severity::Warning, RiskScore::Medium, "D", "T", "F", vec![]));
-    app.issues.push(Issue::new("i3", "m", "I", "Cat", Severity::Info, RiskScore::Low, "D", "T", "F", vec![]));
+    app.issues.push(Issue::new(
+        "i1",
+        "m",
+        "C",
+        "Cat",
+        Severity::Critical,
+        RiskScore::High,
+        "D",
+        "T",
+        "F",
+        vec![],
+    ));
+    app.issues.push(Issue::new(
+        "i2",
+        "m",
+        "W",
+        "Cat",
+        Severity::Warning,
+        RiskScore::Medium,
+        "D",
+        "T",
+        "F",
+        vec![],
+    ));
+    app.issues.push(Issue::new(
+        "i3",
+        "m",
+        "I",
+        "Cat",
+        Severity::Info,
+        RiskScore::Low,
+        "D",
+        "T",
+        "F",
+        vec![],
+    ));
 
     app.toggle_severity_filter(Severity::Critical);
     assert_eq!(app.filtered_issue_indices(), vec![0]);
@@ -851,8 +932,30 @@ async fn test_tier2_f11_triage_filter_all_severities_combinations() {
 #[tokio::test]
 async fn test_tier2_f11_triage_clear_filters_restores_view() {
     let mut app = App::new();
-    app.issues.push(Issue::new("i1", "m", "C", "Cat", Severity::Critical, RiskScore::High, "D", "T", "F", vec![]));
-    app.issues.push(Issue::new("i2", "m", "W", "Cat", Severity::Warning, RiskScore::Medium, "D", "T", "F", vec![]));
+    app.issues.push(Issue::new(
+        "i1",
+        "m",
+        "C",
+        "Cat",
+        Severity::Critical,
+        RiskScore::High,
+        "D",
+        "T",
+        "F",
+        vec![],
+    ));
+    app.issues.push(Issue::new(
+        "i2",
+        "m",
+        "W",
+        "Cat",
+        Severity::Warning,
+        RiskScore::Medium,
+        "D",
+        "T",
+        "F",
+        vec![],
+    ));
 
     app.severity_filter = Some(Severity::Critical);
     app.search_query = "non_existent".to_string();
@@ -963,7 +1066,8 @@ async fn test_tier2_f13_github_api_403_rate_limited() {
 
 #[tokio::test]
 async fn test_tier2_f13_github_api_malformed_truncated_json() {
-    let runner = ProgrammableMockRunner::with_success("curl.exe", "{\"tag_name\": \"v0.2.0\", \"html_");
+    let runner =
+        ProgrammableMockRunner::with_success("curl.exe", "{\"tag_name\": \"v0.2.0\", \"html_");
     let res = check_for_update(&runner, "0.1.0", Duration::from_secs(5)).await;
     assert!(res.is_none());
 }
@@ -980,7 +1084,10 @@ async fn test_tier2_f13_github_api_timeout_expired() {
     let runner = ProgrammableMockRunner::new();
     runner.set_response(
         "curl.exe",
-        CmdOutput::failed(28, "curl: (28) Operation timed out after 5000 milliseconds with 0 bytes received"),
+        CmdOutput::failed(
+            28,
+            "curl: (28) Operation timed out after 5000 milliseconds with 0 bytes received",
+        ),
     );
 
     let res = check_for_update(&runner, "0.1.0", Duration::from_secs(5)).await;
@@ -994,7 +1101,15 @@ async fn test_tier2_f13_github_api_timeout_expired() {
 #[test]
 fn test_tier2_f14_semver_parse_single_number() {
     let v = SemVer::parse("1").unwrap();
-    assert_eq!(v, SemVer { major: 1, minor: 0, patch: 0 });
+    assert_eq!(
+        v,
+        SemVer {
+            major: 1,
+            minor: 0,
+            patch: 0,
+            pre: None
+        }
+    );
 }
 
 #[test]
@@ -1047,7 +1162,10 @@ fn test_tier2_f15_modal_with_empty_strings() {
 
 #[test]
 fn test_tier2_f15_modal_with_extremely_long_url() {
-    let long_url = format!("https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0?token={}", "a".repeat(2000));
+    let long_url = format!(
+        "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0?token={}",
+        "a".repeat(2000)
+    );
     let modal = ConfirmRequest::UpdateAvailable {
         current_version: "0.1.0".to_string(),
         latest_version: "v0.2.0".to_string(),
@@ -1100,22 +1218,23 @@ fn test_tier2_f15_confirm_request_elevate_labels() {
 #[test]
 fn test_tier2_f16_browser_launch_spaces_in_url() {
     let url = "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0 with spaces";
-    assert!(!url.is_empty());
+    assert!(!is_safe_release_url(url));
 }
 
 #[test]
 fn test_tier2_f16_browser_launch_shell_metacharacters() {
     let url = "https://github.com/SecretLUL/WinMedic/releases?a=1&b=2|dir^echo";
-    assert!(!url.is_empty());
     assert!(url.contains('&'));
     assert!(url.contains('|'));
+    assert!(!is_safe_release_url(url));
 }
 
 #[test]
 fn test_tier2_f16_browser_launch_file_uri() {
     let url = "file:///C:/Users/AMMAR-PC/AppData/Local/Temp/report.html";
-    assert!(!url.is_empty());
     assert!(url.starts_with("file:///"));
+    // Only https://github.com/ URLs may be handed to the browser launcher.
+    assert!(!is_safe_release_url(url));
 }
 
 #[test]
@@ -1162,8 +1281,10 @@ fn test_tier2_f17_adjust_setting_on_boolean_delegates_to_toggle() {
 
 #[test]
 fn test_tier2_f17_adjust_numeric_settings_cannot_go_below_floor() {
-    let mut config = AppConfig::default();
-    config.temp_clean_threshold_mb = 100;
+    let mut config = AppConfig {
+        temp_clean_threshold_mb: 100,
+        ..Default::default()
+    };
     config.adjust_setting(4, false); // floor is 100 MB
     assert_eq!(config.temp_clean_threshold_mb, 100);
 

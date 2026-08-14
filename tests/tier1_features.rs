@@ -9,23 +9,27 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{
-    MockWindowsPaths, ProgrammableMockRunner, TempWorkspace, DISM_ANALYZE_CLEAN,
-    DISM_ANALYZE_ENGLISH_RECLAIMABLE, DISM_ANALYZE_GERMAN_RECLAIMABLE,
+    DISM_ANALYZE_CLEAN, DISM_ANALYZE_ENGLISH_RECLAIMABLE, DISM_ANALYZE_GERMAN_RECLAIMABLE,
     GITHUB_RELEASE_CURRENT_JSON, GITHUB_RELEASE_DRAFT_JSON, GITHUB_RELEASE_NEWER_JSON,
+    MockWindowsPaths, ProgrammableMockRunner, TempWorkspace, sandboxed_cleaner,
 };
-use winmedic::app::{App, BackgroundEvent, ConfirmRequest, TAB_DASHBOARD, TAB_SETTINGS, TAB_TRIAGE};
+use winmedic::app::{
+    App, BackgroundEvent, ConfirmRequest, TAB_DASHBOARD, TAB_SETTINGS, TAB_TRIAGE,
+};
 use winmedic::config::AppConfig;
 use winmedic::engine::issue::{RiskScore, Severity};
 use winmedic::engine::runner::DiagnosticEngine;
 use winmedic::modules::system_cleaner::{
-    clean_log_dir_files, clean_path_contents, format_bytes, parse_winsxs_analysis,
-    scan_log_dir_files, scan_path_recursive, SystemCleanerModule,
+    SystemCleanerModule, clean_log_dir_files, clean_path_contents, format_bytes,
+    parse_winsxs_analysis, scan_log_dir_files, scan_path_recursive,
 };
-use winmedic::modules::{get_all_modules, get_all_modules_with_runner, DiagnosticModule, ModuleConfig};
+use winmedic::modules::{
+    DiagnosticModule, ModuleConfig, get_all_modules, get_all_modules_with_runner,
+};
 use winmedic::utils::cmd::{CmdOutput, CommandRunner, MockCommandRunner};
 use winmedic::utils::updater::{
-    check_for_update, is_update_available, launch_browser, GitHubRelease, SemVer,
-    UpdateInfo, GITHUB_LATEST_RELEASE_URL, GITHUB_USER_AGENT,
+    GITHUB_LATEST_RELEASE_URL, GITHUB_USER_AGENT, GitHubRelease, SemVer, UpdateInfo,
+    check_for_update, is_safe_release_url, is_update_available, launch_browser,
 };
 
 // ============================================================================
@@ -42,11 +46,22 @@ fn test_tier1_f01_git_branch_naming_convention() {
 #[test]
 fn test_tier1_f01_git_mock_fast_forward_merge_simulation() {
     let runner = ProgrammableMockRunner::new();
-    runner.set_response("git.exe", CmdOutput::ok("Updating a1b2c3d..e4f5g6h\nFast-forward\n 5 files changed, 250 insertions(+)"));
+    runner.set_response(
+        "git.exe",
+        CmdOutput::ok(
+            "Updating a1b2c3d..e4f5g6h\nFast-forward\n 5 files changed, 250 insertions(+)",
+        ),
+    );
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     let res = rt.block_on(async {
-        runner.run("git.exe", &["merge", "--ff-only", "main"], Duration::from_secs(5)).await
+        runner
+            .run(
+                "git.exe",
+                &["merge", "--ff-only", "main"],
+                Duration::from_secs(5),
+            )
+            .await
     });
 
     assert!(res.is_ok());
@@ -62,7 +77,9 @@ fn test_tier1_f01_git_mock_branch_verification() {
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     let res = rt.block_on(async {
-        runner.run("git.exe", &["branch", "--list"], Duration::from_secs(5)).await
+        runner
+            .run("git.exe", &["branch", "--list"], Duration::from_secs(5))
+            .await
     });
 
     assert!(res.is_ok());
@@ -73,11 +90,20 @@ fn test_tier1_f01_git_mock_branch_verification() {
 #[test]
 fn test_tier1_f01_git_mock_status_clean() {
     let runner = ProgrammableMockRunner::new();
-    runner.set_response("git.exe", CmdOutput::ok("nothing to commit, working tree clean"));
+    runner.set_response(
+        "git.exe",
+        CmdOutput::ok("nothing to commit, working tree clean"),
+    );
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     let res = rt.block_on(async {
-        runner.run("git.exe", &["status", "--porcelain"], Duration::from_secs(5)).await
+        runner
+            .run(
+                "git.exe",
+                &["status", "--porcelain"],
+                Duration::from_secs(5),
+            )
+            .await
     });
 
     assert!(res.is_ok());
@@ -88,11 +114,20 @@ fn test_tier1_f01_git_mock_status_clean() {
 #[test]
 fn test_tier1_f01_git_mock_log_continuity() {
     let runner = ProgrammableMockRunner::new();
-    runner.set_response("git.exe", CmdOutput::ok("commit e4f5g6h (HEAD -> feature/enhancements, main)\nAuthor: WinMedic\n"));
+    runner.set_response(
+        "git.exe",
+        CmdOutput::ok("commit e4f5g6h (HEAD -> feature/enhancements, main)\nAuthor: WinMedic\n"),
+    );
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     let res = rt.block_on(async {
-        runner.run("git.exe", &["log", "-n", "1", "--oneline"], Duration::from_secs(5)).await
+        runner
+            .run(
+                "git.exe",
+                &["log", "-n", "1", "--oneline"],
+                Duration::from_secs(5),
+            )
+            .await
     });
 
     assert!(res.is_ok());
@@ -132,7 +167,7 @@ async fn test_tier1_f02_winsxs_scan_creates_issue_when_recommended() {
         CmdOutput::ok(DISM_ANALYZE_ENGLISH_RECLAIMABLE),
     );
 
-    let module = SystemCleanerModule::with_runner(ModuleConfig::default(), runner);
+    let (_sandbox, module) = sandboxed_cleaner("tier1_features_135", runner);
     let issues = module.scan(None).await.expect("scan failed");
 
     let winsxs_issue = issues.iter().find(|i| i.id == "sys_clean_winsxs");
@@ -152,7 +187,7 @@ async fn test_tier1_f02_winsxs_scan_clean_when_not_recommended() {
         CmdOutput::ok(DISM_ANALYZE_CLEAN),
     );
 
-    let module = SystemCleanerModule::with_runner(ModuleConfig::default(), runner);
+    let (_sandbox, module) = sandboxed_cleaner("tier1_features_155", runner);
     let issues = module.scan(None).await.expect("scan failed");
 
     let winsxs_issue = issues.iter().find(|i| i.id == "sys_clean_winsxs");
@@ -167,7 +202,7 @@ async fn test_tier1_f02_winsxs_fix_executes_start_component_cleanup() {
         CmdOutput::ok("The operation completed successfully."),
     );
 
-    let module = SystemCleanerModule::with_runner(ModuleConfig::default(), runner.clone());
+    let (_sandbox, module) = sandboxed_cleaner("tier1_features_170", runner.clone());
     let res = module.fix("sys_clean_winsxs", None).await;
 
     assert!(res.is_ok());
@@ -186,7 +221,10 @@ async fn test_tier1_f02_winsxs_fix_executes_start_component_cleanup() {
 #[test]
 fn test_tier1_f03_delivery_optimization_scan_non_empty_dirs() {
     let ws = TempWorkspace::new("wudo_scan");
-    let file1 = ws.create_file("SoftwareDistribution/DeliveryOptimization/chunk1.bin", &[0u8; 1024 * 50]);
+    let file1 = ws.create_file(
+        "SoftwareDistribution/DeliveryOptimization/chunk1.bin",
+        &[0u8; 1024 * 50],
+    );
     let file2 = ws.create_file("Cache/chunk2.bin", &[0u8; 1024 * 100]);
 
     let stats1 = scan_path_recursive(file1.parent().unwrap());
@@ -218,7 +256,7 @@ fn test_tier1_f03_delivery_optimization_clean_files() {
 #[tokio::test]
 async fn test_tier1_f03_delivery_optimization_fix_runs_powershell() {
     let runner = Arc::new(ProgrammableMockRunner::new());
-    let module = SystemCleanerModule::with_runner(ModuleConfig::default(), runner.clone());
+    let (_sandbox, module) = sandboxed_cleaner("tier1_features_221", runner.clone());
 
     let res = module.fix("sys_clean_delivery_optimization", None).await;
     assert!(res.is_ok());
@@ -227,7 +265,11 @@ async fn test_tier1_f03_delivery_optimization_fix_runs_powershell() {
 
     let ps_calls = runner.calls_for("powershell.exe");
     assert!(!ps_calls.is_empty());
-    assert!(ps_calls[0].iter().any(|arg| arg.contains("Delete-DeliveryOptimizationCache")));
+    assert!(
+        ps_calls[0]
+            .iter()
+            .any(|arg| arg.contains("Delete-DeliveryOptimizationCache"))
+    );
 }
 
 #[test]
@@ -290,7 +332,7 @@ fn test_tier1_f04_package_cache_clean_action() {
 #[tokio::test]
 async fn test_tier1_f04_package_cache_fix_returns_formatted_summary() {
     let runner = Arc::new(ProgrammableMockRunner::new());
-    let module = SystemCleanerModule::with_runner(ModuleConfig::default(), runner);
+    let (_sandbox, module) = sandboxed_cleaner("tier1_features_293", runner);
 
     let res = module.fix("sys_clean_package_cache", None).await;
     assert!(res.is_ok());
@@ -333,9 +375,18 @@ fn test_tier1_f04_package_cache_issue_severity_warning() {
 fn test_tier1_f05_browser_cache_chrome_profile_scan() {
     let ws = TempWorkspace::new("chrome_scan");
     let cache_dir = ws.create_dir("Google/Chrome/User Data/Default/Cache");
-    ws.create_file("Google/Chrome/User Data/Default/Cache/data_0", &[0u8; 10000]);
-    ws.create_file("Google/Chrome/User Data/Default/Cache/data_1", &[0u8; 20000]);
-    ws.create_file("Google/Chrome/User Data/Default/Code Cache/js/01", &[0u8; 5000]);
+    ws.create_file(
+        "Google/Chrome/User Data/Default/Cache/data_0",
+        &[0u8; 10000],
+    );
+    ws.create_file(
+        "Google/Chrome/User Data/Default/Cache/data_1",
+        &[0u8; 20000],
+    );
+    ws.create_file(
+        "Google/Chrome/User Data/Default/Code Cache/js/01",
+        &[0u8; 5000],
+    );
 
     let stats = scan_path_recursive(&cache_dir);
     assert_eq!(stats.files, 2);
@@ -346,7 +397,10 @@ fn test_tier1_f05_browser_cache_chrome_profile_scan() {
 fn test_tier1_f05_browser_cache_edge_profile_scan() {
     let ws = TempWorkspace::new("edge_scan");
     let cache_dir = ws.create_dir("Microsoft/Edge/User Data/Profile 1/Cache");
-    ws.create_file("Microsoft/Edge/User Data/Profile 1/Cache/f_0001", &[0u8; 8192]);
+    ws.create_file(
+        "Microsoft/Edge/User Data/Profile 1/Cache/f_0001",
+        &[0u8; 8192],
+    );
 
     let stats = scan_path_recursive(&cache_dir);
     assert_eq!(stats.files, 1);
@@ -357,7 +411,10 @@ fn test_tier1_f05_browser_cache_edge_profile_scan() {
 fn test_tier1_f05_browser_cache_firefox_cache2_scan() {
     let ws = TempWorkspace::new("ff_scan");
     let cache_dir = ws.create_dir("Mozilla/Firefox/Profiles/abc.default/cache2");
-    ws.create_file("Mozilla/Firefox/Profiles/abc.default/cache2/entries/entry1", &[0u8; 4096]);
+    ws.create_file(
+        "Mozilla/Firefox/Profiles/abc.default/cache2/entries/entry1",
+        &[0u8; 4096],
+    );
 
     let stats = scan_path_recursive(&cache_dir);
     assert_eq!(stats.files, 1);
@@ -379,14 +436,20 @@ fn test_tier1_f05_browser_cache_clean_multi_browser() {
     let e_clean = clean_path_contents(&edge);
     let f_clean = clean_path_contents(&ff);
 
-    assert_eq!(c_clean.deleted_files + e_clean.deleted_files + f_clean.deleted_files, 3);
-    assert_eq!(c_clean.freed_bytes + e_clean.freed_bytes + f_clean.freed_bytes, 6000);
+    assert_eq!(
+        c_clean.deleted_files + e_clean.deleted_files + f_clean.deleted_files,
+        3
+    );
+    assert_eq!(
+        c_clean.freed_bytes + e_clean.freed_bytes + f_clean.freed_bytes,
+        6000
+    );
 }
 
 #[tokio::test]
 async fn test_tier1_f05_browser_cache_fix_returns_success() {
     let runner = Arc::new(ProgrammableMockRunner::new());
-    let module = SystemCleanerModule::with_runner(ModuleConfig::default(), runner);
+    let (_sandbox, module) = sandboxed_cleaner("tier1_features_389", runner);
 
     let res = module.fix("sys_clean_browser_cache", None).await;
     assert!(res.is_ok());
@@ -449,11 +512,14 @@ fn test_tier1_f06_setup_logs_cbs_dism_mosetup_discovery() {
 #[tokio::test]
 async fn test_tier1_f06_setup_logs_fix_summary() {
     let runner = Arc::new(ProgrammableMockRunner::new());
-    let module = SystemCleanerModule::with_runner(ModuleConfig::default(), runner);
+    let (_sandbox, module) = sandboxed_cleaner("tier1_features_452", runner);
 
     let res = module.fix("sys_clean_setup_logs", None).await;
     assert!(res.is_ok());
-    assert!(res.unwrap().contains("Windows Setup- & System-Logs bereinigt"));
+    assert!(
+        res.unwrap()
+            .contains("Windows Setup- & System-Logs bereinigt")
+    );
 }
 
 #[test]
@@ -473,8 +539,14 @@ fn test_tier1_f06_setup_logs_empty_directory_scan() {
 fn test_tier1_f07_wer_report_archive_scan() {
     let ws = TempWorkspace::new("wer_scan");
     let dir = ws.create_dir("WER/ReportArchive");
-    ws.create_file("WER/ReportArchive/AppCrash_app.exe_1/Report.wer", &[0; 3000]);
-    ws.create_file("WER/ReportArchive/AppCrash_app.exe_2/Report.wer", &[0; 4000]);
+    ws.create_file(
+        "WER/ReportArchive/AppCrash_app.exe_1/Report.wer",
+        &[0; 3000],
+    );
+    ws.create_file(
+        "WER/ReportArchive/AppCrash_app.exe_2/Report.wer",
+        &[0; 4000],
+    );
 
     let stats = scan_path_recursive(&dir);
     assert_eq!(stats.files, 2);
@@ -510,11 +582,14 @@ fn test_tier1_f07_wer_and_dumps_clean() {
 #[tokio::test]
 async fn test_tier1_f07_error_reporting_fix_summary() {
     let runner = Arc::new(ProgrammableMockRunner::new());
-    let module = SystemCleanerModule::with_runner(ModuleConfig::default(), runner);
+    let (_sandbox, module) = sandboxed_cleaner("tier1_features_513", runner);
 
     let res = module.fix("sys_clean_error_reporting", None).await;
     assert!(res.is_ok());
-    assert!(res.unwrap().contains("Windows-Fehlerberichte & Crash-Dumps bereinigt"));
+    assert!(
+        res.unwrap()
+            .contains("Windows-Fehlerberichte & Crash-Dumps bereinigt")
+    );
 }
 
 #[test]
@@ -580,11 +655,14 @@ fn test_tier1_f08_shader_and_cert_clean() {
 #[tokio::test]
 async fn test_tier1_f08_shader_certs_fix_summary() {
     let runner = Arc::new(ProgrammableMockRunner::new());
-    let module = SystemCleanerModule::with_runner(ModuleConfig::default(), runner);
+    let (_sandbox, module) = sandboxed_cleaner("tier1_features_583", runner);
 
     let res = module.fix("sys_clean_shader_certs", None).await;
     assert!(res.is_ok());
-    assert!(res.unwrap().contains("DirectX Shader & Zertifikats-Caches bereinigt"));
+    assert!(
+        res.unwrap()
+            .contains("DirectX Shader & Zertifikats-Caches bereinigt")
+    );
 }
 
 #[test]
@@ -626,23 +704,33 @@ async fn test_tier1_f09_recycle_bin_fix_runs_powershell_clear() {
     let runner = Arc::new(ProgrammableMockRunner::new());
     runner.set_response("powershell.exe", CmdOutput::ok(""));
 
-    let module = SystemCleanerModule::with_runner(ModuleConfig::default(), runner.clone());
+    let (_sandbox, module) = sandboxed_cleaner("tier1_features_629", runner.clone());
     let res = module.fix("sys_clean_recycle_bin", None).await;
 
     assert!(res.is_ok());
-    assert!(res.unwrap().contains("Windows Papierkorb auf allen Laufwerken erfolgreich geleert"));
+    assert!(
+        res.unwrap()
+            .contains("Windows Papierkorb auf allen Laufwerken erfolgreich geleert")
+    );
 
     let ps_calls = runner.calls_for("powershell.exe");
     assert!(!ps_calls.is_empty());
-    assert!(ps_calls[0].iter().any(|arg| arg.contains("Clear-RecycleBin")));
+    assert!(
+        ps_calls[0]
+            .iter()
+            .any(|arg| arg.contains("Clear-RecycleBin"))
+    );
 }
 
 #[tokio::test]
 async fn test_tier1_f09_recycle_bin_fix_failure_reporting() {
     let runner = Arc::new(ProgrammableMockRunner::new());
-    runner.set_response("powershell.exe", CmdOutput::failed(1, "Access denied to Recycle Bin"));
+    runner.set_response(
+        "powershell.exe",
+        CmdOutput::failed(1, "Access denied to Recycle Bin"),
+    );
 
-    let module = SystemCleanerModule::with_runner(ModuleConfig::default(), runner);
+    let (_sandbox, module) = sandboxed_cleaner("tier1_features_645", runner);
     let res = module.fix("sys_clean_recycle_bin", None).await;
 
     assert!(res.is_err());
@@ -718,11 +806,14 @@ fn test_tier1_f10_temp_clean_action() {
 #[tokio::test]
 async fn test_tier1_f10_system_temp_fix_summary() {
     let runner = Arc::new(ProgrammableMockRunner::new());
-    let module = SystemCleanerModule::with_runner(ModuleConfig::default(), runner);
+    let (_sandbox, module) = sandboxed_cleaner("tier1_features_721", runner);
 
     let res = module.fix("sys_clean_system_temp", None).await;
     assert!(res.is_ok());
-    assert!(res.unwrap().contains("Erweiterte System-Temp Verzeichnisse bereinigt"));
+    assert!(
+        res.unwrap()
+            .contains("Erweiterte System-Temp Verzeichnisse bereinigt")
+    );
 }
 
 #[test]
@@ -890,7 +981,11 @@ fn test_tier1_f12_diagnostic_engine_contains_all_seven_modules() {
 async fn test_tier1_f12_app_initializes_with_seven_module_statuses() {
     let app = App::new();
     assert_eq!(app.module_statuses.len(), 7);
-    assert!(app.module_statuses.iter().any(|(id, ..)| id == "system_cleaner"));
+    assert!(
+        app.module_statuses
+            .iter()
+            .any(|(id, ..)| id == "system_cleaner")
+    );
 }
 
 #[test]
@@ -916,7 +1011,10 @@ async fn test_tier1_f13_github_check_newer_release_detected() {
     let info = res.unwrap();
     assert_eq!(info.current_version, "0.1.0");
     assert_eq!(info.latest_version, "v0.2.0");
-    assert_eq!(info.release_url, "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0");
+    assert_eq!(
+        info.release_url,
+        "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0"
+    );
 }
 
 #[tokio::test]
@@ -973,19 +1071,51 @@ fn test_tier1_f14_semver_parse_standard() {
 #[test]
 fn test_tier1_f14_semver_parse_v_prefix() {
     let v1 = SemVer::parse("v0.2.0").unwrap();
-    assert_eq!(v1, SemVer { major: 0, minor: 2, patch: 0 });
+    assert_eq!(
+        v1,
+        SemVer {
+            major: 0,
+            minor: 2,
+            patch: 0,
+            pre: None
+        }
+    );
 
     let v2 = SemVer::parse("V1.0.5").unwrap();
-    assert_eq!(v2, SemVer { major: 1, minor: 0, patch: 5 });
+    assert_eq!(
+        v2,
+        SemVer {
+            major: 1,
+            minor: 0,
+            patch: 5,
+            pre: None
+        }
+    );
 }
 
 #[test]
 fn test_tier1_f14_semver_parse_prerelease_and_metadata() {
     let v1 = SemVer::parse("v0.2.0-rc1").unwrap();
-    assert_eq!(v1, SemVer { major: 0, minor: 2, patch: 0 });
+    assert_eq!(
+        v1,
+        SemVer {
+            major: 0,
+            minor: 2,
+            patch: 0,
+            pre: Some("rc1".to_string())
+        }
+    );
 
     let v2 = SemVer::parse("1.0.0+build2026").unwrap();
-    assert_eq!(v2, SemVer { major: 1, minor: 0, patch: 0 });
+    assert_eq!(
+        v2,
+        SemVer {
+            major: 1,
+            minor: 0,
+            patch: 0,
+            pre: None
+        }
+    );
 }
 
 #[test]
@@ -1044,20 +1174,19 @@ async fn test_tier1_f15_app_update_checked_event_sets_pending_confirm() {
     };
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    tx.send(BackgroundEvent::UpdateChecked(Some(update))).unwrap();
+    tx.send(BackgroundEvent::UpdateChecked(Some(update)))
+        .unwrap();
 
     // Emulate background event handling
-    if let Ok(evt) = rx.try_recv() {
-        if let BackgroundEvent::UpdateChecked(Some(info)) = evt {
-            if app.config.check_for_updates {
-                app.pending_confirm = Some(ConfirmRequest::UpdateAvailable {
-                    current_version: info.current_version.clone(),
-                    latest_version: info.latest_version.clone(),
-                    release_url: info.release_url.clone(),
-                });
-                app.available_update = Some(info);
-            }
-        }
+    if let Ok(BackgroundEvent::UpdateChecked(Some(info))) = rx.try_recv()
+        && app.config.check_for_updates
+    {
+        app.pending_confirm = Some(ConfirmRequest::UpdateAvailable {
+            current_version: info.current_version.clone(),
+            latest_version: info.latest_version.clone(),
+            release_url: info.release_url.clone(),
+        });
+        app.available_update = Some(info);
     }
 
     assert!(app.pending_confirm.is_some());
@@ -1129,7 +1258,7 @@ fn test_tier1_f16_browser_launch_empty_url_rejected() {
 #[test]
 fn test_tier1_f16_browser_launch_valid_url_accepted() {
     let valid_url = "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0";
-    assert!(!valid_url.is_empty());
+    assert!(is_safe_release_url(valid_url));
 }
 
 #[test]
@@ -1139,7 +1268,12 @@ fn test_tier1_f16_browser_launch_mock_command_execution() {
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     let res = rt.block_on(async {
-        runner.run_cmd("start \"\" https://github.com/SecretLUL/WinMedic", Duration::from_secs(5)).await
+        runner
+            .run_cmd(
+                "start \"\" https://github.com/SecretLUL/WinMedic",
+                Duration::from_secs(5),
+            )
+            .await
     });
 
     assert!(res.is_ok());
@@ -1151,15 +1285,16 @@ fn test_tier1_f16_browser_launch_mock_command_execution() {
 #[test]
 fn test_tier1_f16_browser_launch_url_with_query_params() {
     let url = "https://github.com/SecretLUL/WinMedic/releases?query=v0.2.0&arch=x64";
-    assert!(!url.is_empty());
     assert!(url.contains("query="));
+    // Ampersands are shell metacharacters, so a query string is never a safe release URL.
+    assert!(!is_safe_release_url(url));
 }
 
 #[test]
 fn test_tier1_f16_browser_launch_url_with_fragment() {
     let url = "https://github.com/SecretLUL/WinMedic/releases#changelog";
-    assert!(!url.is_empty());
     assert!(url.contains("#changelog"));
+    assert!(is_safe_release_url(url));
 }
 
 // ============================================================================
@@ -1202,8 +1337,10 @@ fn test_tier1_f17_toggle_setting_three_flips_boolean() {
 
 #[test]
 fn test_tier1_f17_config_serialization_roundtrip_includes_check_for_updates() {
-    let mut config = AppConfig::default();
-    config.check_for_updates = false;
+    let config = AppConfig {
+        check_for_updates: false,
+        ..Default::default()
+    };
 
     let json = serde_json::to_string(&config).expect("failed to serialize");
     assert!(json.contains("\"check_for_updates\":false"));

@@ -3,8 +3,8 @@ use winmedic::app::{App, BackgroundEvent, ConfirmRequest};
 use winmedic::config::AppConfig;
 use winmedic::utils::cmd::{CmdOutput, MockCommandRunner};
 use winmedic::utils::updater::{
-    check_for_update, is_update_available, launch_browser, SemVer, UpdateInfo,
-    GITHUB_LATEST_RELEASE_URL,
+    GITHUB_LATEST_RELEASE_URL, SemVer, UpdateInfo, check_for_update, is_update_available,
+    launch_browser,
 };
 
 // ============================================================================
@@ -15,34 +15,106 @@ use winmedic::utils::updater::{
 fn test_semver_parse_comprehensive() {
     // Standard formats
     let v1 = SemVer::parse("1.2.3").expect("1.2.3 should parse");
-    assert_eq!(v1, SemVer { major: 1, minor: 2, patch: 3 });
+    assert_eq!(
+        v1,
+        SemVer {
+            major: 1,
+            minor: 2,
+            patch: 3,
+            pre: None
+        }
+    );
 
     let v2 = SemVer::parse("v0.1.0").expect("v0.1.0 should parse");
-    assert_eq!(v2, SemVer { major: 0, minor: 1, patch: 0 });
+    assert_eq!(
+        v2,
+        SemVer {
+            major: 0,
+            minor: 1,
+            patch: 0,
+            pre: None
+        }
+    );
 
     let v3 = SemVer::parse("V2.10.5").expect("V2.10.5 should parse");
-    assert_eq!(v3, SemVer { major: 2, minor: 10, patch: 5 });
+    assert_eq!(
+        v3,
+        SemVer {
+            major: 2,
+            minor: 10,
+            patch: 5,
+            pre: None
+        }
+    );
 
     // Truncated formats
     let v_short = SemVer::parse("1.0").expect("1.0 should parse");
-    assert_eq!(v_short, SemVer { major: 1, minor: 0, patch: 0 });
+    assert_eq!(
+        v_short,
+        SemVer {
+            major: 1,
+            minor: 0,
+            patch: 0,
+            pre: None
+        }
+    );
 
     let v_single = SemVer::parse("2").expect("2 should parse");
-    assert_eq!(v_single, SemVer { major: 2, minor: 0, patch: 0 });
+    assert_eq!(
+        v_single,
+        SemVer {
+            major: 2,
+            minor: 0,
+            patch: 0,
+            pre: None
+        }
+    );
 
     // Pre-release and build metadata
     let v_rc = SemVer::parse("v0.2.0-rc1").expect("v0.2.0-rc1 should parse");
-    assert_eq!(v_rc, SemVer { major: 0, minor: 2, patch: 0 });
+    assert_eq!(
+        v_rc,
+        SemVer {
+            major: 0,
+            minor: 2,
+            patch: 0,
+            pre: Some("rc1".to_string())
+        }
+    );
 
     let v_beta = SemVer::parse("1.5.0-beta.2+20260814").expect("beta+build should parse");
-    assert_eq!(v_beta, SemVer { major: 1, minor: 5, patch: 0 });
+    assert_eq!(
+        v_beta,
+        SemVer {
+            major: 1,
+            minor: 5,
+            patch: 0,
+            pre: Some("beta.2".to_string())
+        }
+    );
 
     let v_build = SemVer::parse("1.0.0+sha.412a8f").expect("build metadata should parse");
-    assert_eq!(v_build, SemVer { major: 1, minor: 0, patch: 0 });
+    assert_eq!(
+        v_build,
+        SemVer {
+            major: 1,
+            minor: 0,
+            patch: 0,
+            pre: None
+        }
+    );
 
     // Whitespace trimming
     let v_ws = SemVer::parse("   v3.4.5 \n\t").expect("whitespace trimmed should parse");
-    assert_eq!(v_ws, SemVer { major: 3, minor: 4, patch: 5 });
+    assert_eq!(
+        v_ws,
+        SemVer {
+            major: 3,
+            minor: 4,
+            patch: 5,
+            pre: None
+        }
+    );
 }
 
 #[test]
@@ -223,7 +295,9 @@ fn test_launch_browser_valid_urls() {
     // Valid HTTPS URL
     assert!(launch_browser("https://github.com/SecretLUL/WinMedic/releases/latest").is_ok());
     // Valid URL with query params and anchors
-    assert!(launch_browser("https://github.com/SecretLUL/WinMedic/releases?tab=tags#v0.2.0").is_ok());
+    assert!(
+        launch_browser("https://github.com/SecretLUL/WinMedic/releases?tab=tags#v0.2.0").is_ok()
+    );
 }
 
 // ============================================================================
@@ -315,7 +389,7 @@ async fn test_app_event_channel_update_checked_when_no_modal_active() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     // Replace internal bg channel for controlled testing
     let _ = tx.send(BackgroundEvent::UpdateChecked(Some(update_info.clone())));
-    
+
     // We can simulate app processing bg events directly
     if let Ok(BackgroundEvent::UpdateChecked(Some(info))) = rx.try_recv() {
         app.status_message = Some(format!(
@@ -336,10 +410,17 @@ async fn test_app_event_channel_update_checked_when_no_modal_active() {
 
     // Verify pending_confirm is set to UpdateAvailable
     match &app.pending_confirm {
-        Some(ConfirmRequest::UpdateAvailable { current_version, latest_version, release_url }) => {
+        Some(ConfirmRequest::UpdateAvailable {
+            current_version,
+            latest_version,
+            release_url,
+        }) => {
             assert_eq!(current_version, "0.1.0");
             assert_eq!(latest_version, "v0.2.0");
-            assert_eq!(release_url, "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0");
+            assert_eq!(
+                release_url,
+                "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0"
+            );
         }
         other => panic!("Expected ConfirmRequest::UpdateAvailable, got {:?}", other),
     }
@@ -362,38 +443,46 @@ async fn test_app_event_channel_update_buffering_when_elevate_modal_active() {
         release_body: Some("Release notes".to_string()),
     };
 
-    // Receive UpdateChecked while Elevate modal is open
-    if app.pending_confirm.is_none() {
-        app.pending_confirm = Some(ConfirmRequest::UpdateAvailable {
-            current_version: update_info.current_version.clone(),
-            latest_version: update_info.latest_version.clone(),
-            release_url: update_info.release_url.clone(),
-        });
-    } else {
-        app.available_update = Some(update_info.clone());
-    }
+    // UpdateChecked arrives while the Elevate modal is open. It is always
+    // buffered, never raised on its own.
+    app.available_update = Some(update_info.clone());
 
     // Confirm Elevate modal is NOT overwritten
     match &app.pending_confirm {
         Some(ConfirmRequest::Elevate) => {}
-        other => panic!("Expected ConfirmRequest::Elevate to remain active, got {:?}", other),
+        other => panic!(
+            "Expected ConfirmRequest::Elevate to remain active, got {:?}",
+            other
+        ),
     }
     // Update is buffered
     assert!(app.available_update.is_some());
 
-    // User dismisses Elevate modal
+    // User dismisses Elevate modal — no second modal is pushed at them.
     app.dismiss_confirm();
+    assert!(app.pending_confirm.is_none());
+    assert!(app.available_update.is_some());
 
-    // Now UpdateAvailable modal must be presented automatically from available_update!
+    // [U] opens the buffered notice on request.
+    app.show_update_notice();
     match &app.pending_confirm {
-        Some(ConfirmRequest::UpdateAvailable { current_version, latest_version, release_url }) => {
+        Some(ConfirmRequest::UpdateAvailable {
+            current_version,
+            latest_version,
+            release_url,
+        }) => {
             assert_eq!(current_version, "0.1.0");
             assert_eq!(latest_version, "v0.2.0");
-            assert_eq!(release_url, "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0");
+            assert_eq!(
+                release_url,
+                "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0"
+            );
         }
-        other => panic!("Expected ConfirmRequest::UpdateAvailable after dismissing Elevate, got {:?}", other),
+        other => panic!(
+            "Expected ConfirmRequest::UpdateAvailable after [U], got {:?}",
+            other
+        ),
     }
-    assert!(app.available_update.is_none());
 }
 
 #[test]
@@ -409,10 +498,22 @@ fn test_confirm_request_update_available_formatting() {
     assert_eq!(req.dismiss_label(), "Später erinnern");
 
     let body = req.body();
-    assert!(body.iter().any(|line| line.contains("Installierte Version:  v0.1.0")));
-    assert!(body.iter().any(|line| line.contains("Neueste Version:       v0.2.0")));
-    assert!(body.iter().any(|line| line.contains("https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0")));
-    assert!(body.iter().any(|line| line.contains("GitHub Release-Seite im Standardbrowser öffnen")));
+    assert!(
+        body.iter()
+            .any(|line| line.contains("Installierte Version:  v0.1.0"))
+    );
+    assert!(
+        body.iter()
+            .any(|line| line.contains("Neueste Version:       v0.2.0"))
+    );
+    assert!(
+        body.iter()
+            .any(|line| line.contains("https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0"))
+    );
+    assert!(
+        body.iter()
+            .any(|line| line.contains("GitHub Release-Seite im Standardbrowser öffnen"))
+    );
 }
 
 #[tokio::test]
@@ -430,7 +531,7 @@ async fn test_app_update_modal_confirm_and_dismiss_actions() {
     assert!(app.pending_confirm.is_none());
     assert_eq!(
         app.status_message,
-        Some("Update-Hinweis geschlossen.".to_string())
+        Some("Update-Hinweis geschlossen – [U] öffnet ihn erneut.".to_string())
     );
 
     // Test Confirm

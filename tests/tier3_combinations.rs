@@ -11,8 +11,8 @@ use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;
 
 use common::{
-    MockWindowsPaths, ProgrammableMockRunner, TempWorkspace, DISM_ANALYZE_CLEAN,
-    DISM_ANALYZE_ENGLISH_RECLAIMABLE, GITHUB_RELEASE_NEWER_JSON,
+    DISM_ANALYZE_CLEAN, DISM_ANALYZE_ENGLISH_RECLAIMABLE, GITHUB_RELEASE_NEWER_JSON,
+    MockWindowsPaths, ProgrammableMockRunner, TempWorkspace,
 };
 use winmedic::app::{App, BackgroundEvent, ConfirmRequest, TAB_SETTINGS, TAB_TRIAGE};
 use winmedic::config::AppConfig;
@@ -21,12 +21,12 @@ use winmedic::engine::issue::{Issue, RiskScore, Severity};
 use winmedic::engine::reporter::DiagnosticReporter;
 use winmedic::engine::runner::{DiagnosticEngine, RepairEvent, RepairOptions, ScanEvent};
 use winmedic::modules::system_cleaner::{
-    clean_path_contents, scan_path_recursive, SystemCleanerModule,
+    CleanerPaths, SystemCleanerModule, clean_path_contents, scan_path_recursive,
 };
-use winmedic::modules::{get_all_modules_with_runner, DiagnosticModule, ModuleConfig};
+use winmedic::modules::{DiagnosticModule, ModuleConfig, get_all_modules_with_runner};
 use winmedic::safety::audit::{AuditEntry, AuditLogger, MAX_LOG_FILE_BYTES};
 use winmedic::utils::cmd::{CmdOutput, CommandRunner};
-use winmedic::utils::updater::{check_for_update, UpdateInfo};
+use winmedic::utils::updater::{UpdateInfo, check_for_update};
 
 // ============================================================================
 // TIER 3: Cross-Feature Combination Tests
@@ -147,26 +147,34 @@ async fn test_tier3_triage_selection_logs_temp_with_real_fix() {
     let ws = TempWorkspace::new("tier3_real_fix");
     let _dir = ws.create_dir("Logs");
     let log_file = ws.create_file("Logs/setup.log", &[0xBB; 2000]);
+    // The payload the repair is expected to remove, inside the sandbox.
+    let pkg_payload = ws.create_file("ProgramData/Package Cache/vs/setup.msi", &[0xAA; 1500]);
 
-    let mut issues = vec![
-        Issue::new(
-            "sys_clean_package_cache",
-            "system_cleaner",
-            "Package Cache",
-            "System & Cache Cleaner",
-            Severity::Info,
-            RiskScore::Low,
-            "Desc",
-            "Details",
-            "Fix",
-            vec![],
-        ),
-    ];
+    let mut issues = vec![Issue::new(
+        "sys_clean_package_cache",
+        "system_cleaner",
+        "Package Cache",
+        "System & Cache Cleaner",
+        Severity::Info,
+        RiskScore::Low,
+        "Desc",
+        "Details",
+        "Fix",
+        vec![],
+    )];
     issues[0].is_selected = true;
 
-    let config = AppConfig::default();
+    // This is a *real* (non-dry-run) repair, and the package-cache fix deletes
+    // files. The engine therefore gets a cleaner rooted in the sandbox — built
+    // from `DiagnosticEngine::with_runner` it would empty the test machine's own
+    // %ProgramData%\Package Cache.
     let runner = Arc::new(ProgrammableMockRunner::new());
-    let engine = DiagnosticEngine::with_runner(&config, runner);
+    let cleaner = SystemCleanerModule::with_runner_and_paths(
+        ModuleConfig::default(),
+        runner,
+        CleanerPaths::rooted_at(ws.path()),
+    );
+    let engine = DiagnosticEngine::with_modules(vec![Arc::new(cleaner)]);
     let (tx, mut rx) = channel(50);
     let cancel = CancellationToken::new();
     let options = RepairOptions {
@@ -184,6 +192,8 @@ async fn test_tier3_triage_selection_logs_temp_with_real_fix() {
     let (repaired_issues, (fixed, _failed)) = fix_handle.await.unwrap();
     assert_eq!(fixed, 1);
     assert!(repaired_issues[0].is_fixed);
+    // Only the package cache was swept; the unrelated log file survives.
+    assert!(!pkg_payload.exists());
     assert!(log_file.exists());
 }
 
@@ -218,20 +228,18 @@ async fn test_tier3_system_cleaner_vss_enabled_repair() {
     let runner = Arc::new(ProgrammableMockRunner::new());
     runner.set_response("powershell.exe", CmdOutput::ok(""));
 
-    let mut issues = vec![
-        Issue::new(
-            "sys_clean_recycle_bin",
-            "system_cleaner",
-            "Recycle Bin",
-            "System & Cache Cleaner",
-            Severity::Info,
-            RiskScore::Low,
-            "Desc",
-            "Details",
-            "Fix",
-            vec![],
-        ),
-    ];
+    let mut issues = vec![Issue::new(
+        "sys_clean_recycle_bin",
+        "system_cleaner",
+        "Recycle Bin",
+        "System & Cache Cleaner",
+        Severity::Info,
+        RiskScore::Low,
+        "Desc",
+        "Details",
+        "Fix",
+        vec![],
+    )];
     issues[0].is_selected = true;
 
     let config = AppConfig::default();
@@ -267,20 +275,18 @@ async fn test_tier3_system_cleaner_vss_enabled_repair() {
 #[tokio::test]
 async fn test_tier3_system_cleaner_vss_disabled_repair() {
     let runner = Arc::new(ProgrammableMockRunner::new());
-    let mut issues = vec![
-        Issue::new(
-            "sys_clean_recycle_bin",
-            "system_cleaner",
-            "Recycle Bin",
-            "System & Cache Cleaner",
-            Severity::Info,
-            RiskScore::Low,
-            "Desc",
-            "Details",
-            "Fix",
-            vec![],
-        ),
-    ];
+    let mut issues = vec![Issue::new(
+        "sys_clean_recycle_bin",
+        "system_cleaner",
+        "Recycle Bin",
+        "System & Cache Cleaner",
+        Severity::Info,
+        RiskScore::Low,
+        "Desc",
+        "Details",
+        "Fix",
+        vec![],
+    )];
     issues[0].is_selected = true;
 
     let config = AppConfig::default();
@@ -311,8 +317,30 @@ async fn test_tier3_system_cleaner_vss_disabled_repair() {
 #[test]
 fn test_tier3_exit_code_after_system_cleaner_fixes() {
     let mut issues = vec![
-        Issue::new("i1", "system_cleaner", "T1", "C", Severity::Warning, RiskScore::Low, "D", "T", "F", vec![]),
-        Issue::new("i2", "system_cleaner", "T2", "C", Severity::Info, RiskScore::Low, "D", "T", "F", vec![]),
+        Issue::new(
+            "i1",
+            "system_cleaner",
+            "T1",
+            "C",
+            Severity::Warning,
+            RiskScore::Low,
+            "D",
+            "T",
+            "F",
+            vec![],
+        ),
+        Issue::new(
+            "i2",
+            "system_cleaner",
+            "T2",
+            "C",
+            Severity::Info,
+            RiskScore::Low,
+            "D",
+            "T",
+            "F",
+            vec![],
+        ),
     ];
 
     // Pre-fix: warnings present -> exit code 1
@@ -326,9 +354,18 @@ fn test_tier3_exit_code_after_system_cleaner_fixes() {
 
 #[test]
 fn test_tier3_exit_code_on_failed_winsxs_repair() {
-    let issues = vec![
-        Issue::new("i1", "system_cleaner", "T1", "C", Severity::Warning, RiskScore::Medium, "D", "T", "F", vec![]),
-    ];
+    let issues = vec![Issue::new(
+        "i1",
+        "system_cleaner",
+        "T1",
+        "C",
+        Severity::Warning,
+        RiskScore::Medium,
+        "D",
+        "T",
+        "F",
+        vec![],
+    )];
 
     // 1 failed fix outranks severity -> exit code 3
     assert_eq!(exit_code::from_issues(&issues, 1), exit_code::FIX_FAILED);
@@ -336,20 +373,18 @@ fn test_tier3_exit_code_on_failed_winsxs_repair() {
 
 #[test]
 fn test_tier3_reporter_json_with_system_cleaner_issues() {
-    let issues = vec![
-        Issue::new(
-            "sys_clean_winsxs",
-            "system_cleaner",
-            "WinSxS Component Store",
-            "System & Cache Cleaner",
-            Severity::Warning,
-            RiskScore::Medium,
-            "Description of WinSxS",
-            "8.12 GB reclaimable",
-            "DISM StartComponentCleanup",
-            vec!["Step 1".to_string()],
-        ),
-    ];
+    let issues = vec![Issue::new(
+        "sys_clean_winsxs",
+        "system_cleaner",
+        "WinSxS Component Store",
+        "System & Cache Cleaner",
+        Severity::Warning,
+        RiskScore::Medium,
+        "Description of WinSxS",
+        "8.12 GB reclaimable",
+        "DISM StartComponentCleanup",
+        vec!["Step 1".to_string()],
+    )];
     let health = DiagnosticEngine::calculate_health_score(&issues);
     let audit_entries = vec![];
 
@@ -361,20 +396,18 @@ fn test_tier3_reporter_json_with_system_cleaner_issues() {
 
 #[test]
 fn test_tier3_reporter_html_with_system_cleaner_issues() {
-    let issues = vec![
-        Issue::new(
-            "sys_clean_browser_cache",
-            "system_cleaner",
-            "Browser-Caches (150 MB, 500 Dateien)",
-            "System & Cache Cleaner",
-            Severity::Info,
-            RiskScore::Low,
-            "Description",
-            "Details",
-            "Fix",
-            vec![],
-        ),
-    ];
+    let issues = vec![Issue::new(
+        "sys_clean_browser_cache",
+        "system_cleaner",
+        "Browser-Caches (150 MB, 500 Dateien)",
+        "System & Cache Cleaner",
+        Severity::Info,
+        RiskScore::Low,
+        "Description",
+        "Details",
+        "Fix",
+        vec![],
+    )];
     let health = DiagnosticEngine::calculate_health_score(&issues);
     let audit_entries = vec![];
 
@@ -385,20 +418,18 @@ fn test_tier3_reporter_html_with_system_cleaner_issues() {
 
 #[test]
 fn test_tier3_reporter_markdown_with_system_cleaner_issues() {
-    let issues = vec![
-        Issue::new(
-            "sys_clean_package_cache",
-            "system_cleaner",
-            "Installer Package Cache (1.20 GB, 50 Dateien)",
-            "System & Cache Cleaner",
-            Severity::Warning,
-            RiskScore::Low,
-            "Description",
-            "Details",
-            "Fix",
-            vec![],
-        ),
-    ];
+    let issues = vec![Issue::new(
+        "sys_clean_package_cache",
+        "system_cleaner",
+        "Installer Package Cache (1.20 GB, 50 Dateien)",
+        "System & Cache Cleaner",
+        Severity::Warning,
+        RiskScore::Low,
+        "Description",
+        "Details",
+        "Fix",
+        vec![],
+    )];
     let health = DiagnosticEngine::calculate_health_score(&issues);
     let audit_entries = vec![];
 
@@ -538,8 +569,30 @@ async fn test_tier3_scan_cancellation_during_system_cleaner() {
 #[tokio::test]
 async fn test_tier3_repair_cancellation_between_cleaner_fixes() {
     let mut issues = vec![
-        Issue::new("i1", "system_cleaner", "T1", "C", Severity::Info, RiskScore::Low, "D", "T", "F", vec![]),
-        Issue::new("i2", "system_cleaner", "T2", "C", Severity::Info, RiskScore::Low, "D", "T", "F", vec![]),
+        Issue::new(
+            "i1",
+            "system_cleaner",
+            "T1",
+            "C",
+            Severity::Info,
+            RiskScore::Low,
+            "D",
+            "T",
+            "F",
+            vec![],
+        ),
+        Issue::new(
+            "i2",
+            "system_cleaner",
+            "T2",
+            "C",
+            Severity::Info,
+            RiskScore::Low,
+            "D",
+            "T",
+            "F",
+            vec![],
+        ),
     ];
     issues[0].is_selected = true;
     issues[1].is_selected = true;
@@ -656,8 +709,30 @@ async fn test_tier3_update_check_with_subsequent_triage_cleanup() {
 #[tokio::test]
 async fn test_tier3_mixed_cleaner_and_integrity_repairs() {
     let mut issues = vec![
-        Issue::new("integrity_dism", "system_integrity", "DISM corrupt", "System", Severity::Critical, RiskScore::Medium, "D", "T", "F", vec![]),
-        Issue::new("sys_clean_shader_certs", "system_cleaner", "Shader Caches", "System & Cache Cleaner", Severity::Info, RiskScore::Low, "D", "T", "F", vec![]),
+        Issue::new(
+            "integrity_dism",
+            "system_integrity",
+            "DISM corrupt",
+            "System",
+            Severity::Critical,
+            RiskScore::Medium,
+            "D",
+            "T",
+            "F",
+            vec![],
+        ),
+        Issue::new(
+            "sys_clean_shader_certs",
+            "system_cleaner",
+            "Shader Caches",
+            "System & Cache Cleaner",
+            Severity::Info,
+            RiskScore::Low,
+            "D",
+            "T",
+            "F",
+            vec![],
+        ),
     ];
     issues[0].is_selected = true;
     issues[1].is_selected = true;

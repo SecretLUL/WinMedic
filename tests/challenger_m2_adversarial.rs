@@ -4,14 +4,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use winmedic::modules::system_cleaner::{
-    clean_log_dir_files, discover_browser_cache_dirs,
-    discover_delivery_optimization_dirs,
-    discover_shader_and_cert_dirs, discover_system_temp_dirs, discover_wer_and_dump_dirs,
-    format_bytes, parse_winsxs_analysis, scan_log_dir_files, scan_path_recursive,
-    SystemCleanerModule,
+    CleanerPaths, SystemCleanerModule, clean_log_dir_files, discover_browser_cache_dirs,
+    discover_delivery_optimization_dirs, discover_shader_and_cert_dirs, discover_system_temp_dirs,
+    discover_wer_and_dump_dirs, format_bytes, parse_winsxs_analysis, scan_log_dir_files,
+    scan_path_recursive,
 };
 use winmedic::modules::{DiagnosticModule, ModuleConfig, ModuleProgress};
-use winmedic::utils::cmd::{CmdOutput, MockCommandRunner};
+use winmedic::utils::cmd::{CmdOutput, CommandRunner, MockCommandRunner};
 
 struct TempDirFixture {
     path: PathBuf,
@@ -44,6 +43,24 @@ impl Drop for TempDirFixture {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
     }
+}
+
+/// Build a cleaner whose filesystem roots all live inside a fresh fixture dir.
+///
+/// `scan` and `fix` delete for real, so no test may construct the module with
+/// the default env-derived paths — that aims it at the test machine's own
+/// browser caches, WER archives and `C:\Windows\Panther`.
+fn sandboxed_cleaner(
+    suffix: &str,
+    runner: Arc<dyn CommandRunner>,
+) -> (TempDirFixture, SystemCleanerModule) {
+    let fixture = TempDirFixture::new(suffix);
+    let module = SystemCleanerModule::with_runner_and_paths(
+        ModuleConfig::default(),
+        runner,
+        CleanerPaths::rooted_at(&fixture.path),
+    );
+    (fixture, module)
 }
 
 #[test]
@@ -128,9 +145,11 @@ async fn adv_test_winsxs_scan_error_handling() {
         CmdOutput::failed(1, "Error: 0x80004005 Unspecified error"),
     );
 
-    let module =
-        SystemCleanerModule::with_runner(ModuleConfig::default(), Arc::new(mock.clone()));
-    let issues = module.scan(None).await.expect("Scan should not fail even if DISM fails");
+    let (_sandbox, module) = sandboxed_cleaner("winsxs_scan_err", Arc::new(mock.clone()));
+    let issues = module
+        .scan(None)
+        .await
+        .expect("Scan should not fail even if DISM fails");
     assert!(
         issues.iter().all(|i| i.id != "sys_clean_winsxs"),
         "Should not emit winsxs issue when DISM fails"
@@ -146,8 +165,7 @@ async fn adv_test_winsxs_fix_failure_reporting() {
         CmdOutput::failed(1, "Error: 0x800f0806 The component store is corrupted."),
     );
 
-    let module =
-        SystemCleanerModule::with_runner(ModuleConfig::default(), Arc::new(mock.clone()));
+    let (_sandbox, module) = sandboxed_cleaner("winsxs_fix_fail", Arc::new(mock.clone()));
     let res = module.fix("sys_clean_winsxs", None).await;
     assert!(res.is_err());
     let err_msg = res.unwrap_err();
@@ -198,22 +216,52 @@ fn adv_test_browser_profile_discovery_all_variations() {
     let roaming = fix.path.join("Roaming");
 
     // Chrome: Default + multiple Profiles
-    fix.create_file("Local/Google/Chrome/User Data/Default/Cache/f_001", b"data1");
-    fix.create_file("Local/Google/Chrome/User Data/Default/Code Cache/js/f_002", b"data2");
-    fix.create_file("Local/Google/Chrome/User Data/Default/GPUCache/data_0", b"data3");
-    fix.create_file("Local/Google/Chrome/User Data/Profile 1/Cache/f_003", b"data4");
-    fix.create_file("Local/Google/Chrome/User Data/Profile Work/Code Cache/wasm/f_004", b"data5");
+    fix.create_file(
+        "Local/Google/Chrome/User Data/Default/Cache/f_001",
+        b"data1",
+    );
+    fix.create_file(
+        "Local/Google/Chrome/User Data/Default/Code Cache/js/f_002",
+        b"data2",
+    );
+    fix.create_file(
+        "Local/Google/Chrome/User Data/Default/GPUCache/data_0",
+        b"data3",
+    );
+    fix.create_file(
+        "Local/Google/Chrome/User Data/Profile 1/Cache/f_003",
+        b"data4",
+    );
+    fix.create_file(
+        "Local/Google/Chrome/User Data/Profile Work/Code Cache/wasm/f_004",
+        b"data5",
+    );
     // Non-profile Chrome dirs should NOT be recognized as profiles
-    fix.create_file("Local/Google/Chrome/User Data/Crashpad/reports/c1", b"crash");
+    fix.create_file(
+        "Local/Google/Chrome/User Data/Crashpad/reports/c1",
+        b"crash",
+    );
     fix.create_file("Local/Google/Chrome/User Data/GrShaderCache/c2", b"shader");
 
     // Edge: Default + Profile 2
-    fix.create_file("Local/Microsoft/Edge/User Data/Default/Cache/f_005", b"data6");
-    fix.create_file("Local/Microsoft/Edge/User Data/Profile 2/Cache/f_006", b"data7");
+    fix.create_file(
+        "Local/Microsoft/Edge/User Data/Default/Cache/f_005",
+        b"data6",
+    );
+    fix.create_file(
+        "Local/Microsoft/Edge/User Data/Profile 2/Cache/f_006",
+        b"data7",
+    );
 
     // Firefox: Multiple profiles in LocalAppData and Roaming
-    fix.create_file("Local/Mozilla/Firefox/Profiles/abcd.default-release/cache2/entries/1", b"data8");
-    fix.create_file("Roaming/Mozilla/Firefox/Profiles/efgh.dev-edition/cache2/entries/2", b"data9");
+    fix.create_file(
+        "Local/Mozilla/Firefox/Profiles/abcd.default-release/cache2/entries/1",
+        b"data8",
+    );
+    fix.create_file(
+        "Roaming/Mozilla/Firefox/Profiles/efgh.dev-edition/cache2/entries/2",
+        b"data9",
+    );
 
     let dirs = discover_browser_cache_dirs(&local, &roaming);
     // Chrome: 3 dirs for Default + 3 dirs for Profile 1 + 3 dirs for Profile Work = 9
@@ -237,11 +285,20 @@ fn adv_test_wer_and_crash_dumps_discovery() {
     let local = fix.path.join("Local");
     let prog = fix.path.join("ProgramData");
 
-    fix.create_file("Local/Microsoft/Windows/WER/ReportArchive/AppCrash_1.wer", b"wer1");
-    fix.create_file("Local/Microsoft/Windows/WER/ReportQueue/AppCrash_2.wer", b"wer2");
+    fix.create_file(
+        "Local/Microsoft/Windows/WER/ReportArchive/AppCrash_1.wer",
+        b"wer1",
+    );
+    fix.create_file(
+        "Local/Microsoft/Windows/WER/ReportQueue/AppCrash_2.wer",
+        b"wer2",
+    );
     fix.create_file("Local/Microsoft/Windows/WER/Temp/tmp1.tmp", b"wer3");
     fix.create_file("Local/Microsoft/Windows/WER/ERC/erc1.dat", b"wer4");
-    fix.create_file("ProgramData/Microsoft/Windows/WER/ReportArchive/AppCrash_3.wer", b"wer5");
+    fix.create_file(
+        "ProgramData/Microsoft/Windows/WER/ReportArchive/AppCrash_3.wer",
+        b"wer5",
+    );
     fix.create_file("Local/CrashDumps/app.exe.1234.dmp", b"dump1");
 
     let dirs = discover_wer_and_dump_dirs(&local, &prog);
@@ -264,8 +321,14 @@ fn adv_test_shader_and_cert_cache_discovery() {
 
     fix.create_file("Local/D3DSCache/a1b2/shader.bin", b"shader1");
     fix.create_file("Local/Microsoft/DirectX/ShaderCache/dx.bin", b"shader2");
-    fix.create_file("User/AppData/LocalLow/Microsoft/CryptnetUrlCache/Content/crl1", b"cert content");
-    fix.create_file("User/AppData/LocalLow/Microsoft/CryptnetUrlCache/MetaData/meta1", b"cert meta");
+    fix.create_file(
+        "User/AppData/LocalLow/Microsoft/CryptnetUrlCache/Content/crl1",
+        b"cert content",
+    );
+    fix.create_file(
+        "User/AppData/LocalLow/Microsoft/CryptnetUrlCache/MetaData/meta1",
+        b"cert meta",
+    );
 
     let dirs = discover_shader_and_cert_dirs(&local, &user);
     assert_eq!(dirs.len(), 4);
@@ -284,7 +347,10 @@ fn adv_test_system_temp_discovery() {
     let fix = TempDirFixture::new("system_temp");
     let sys_root = fix.path.join("Windows");
 
-    fix.create_file("Windows/System32/config/systemprofile/AppData/Local/Temp/svc.tmp", b"svc temp");
+    fix.create_file(
+        "Windows/System32/config/systemprofile/AppData/Local/Temp/svc.tmp",
+        b"svc temp",
+    );
     fix.create_file("Windows/SystemTemp/win.tmp", b"system temp");
 
     let dirs = discover_system_temp_dirs(&sys_root);
@@ -304,7 +370,10 @@ fn adv_test_delivery_optimization_discovery() {
     let fix = TempDirFixture::new("delivery_opt");
     let sys_root = fix.path.join("Windows");
 
-    fix.create_file("Windows/SoftwareDistribution/DeliveryOptimization/chunk1.bin", b"chunk1");
+    fix.create_file(
+        "Windows/SoftwareDistribution/DeliveryOptimization/chunk1.bin",
+        b"chunk1",
+    );
     fix.create_file("Windows/ServiceProfiles/NetworkService/AppData/Local/Microsoft/Windows/DeliveryOptimization/Cache/chunk2.bin", b"chunk2");
 
     let dirs = discover_delivery_optimization_dirs(&sys_root);
@@ -324,10 +393,12 @@ async fn adv_test_progress_reporting_all_steps() {
     let mock = MockCommandRunner::new();
     mock.add_response(
         "AnalyzeComponentStore",
-        CmdOutput::ok("Component Store Cleanup Recommended : No\nNumber of Reclaimable Packages : 0\n"),
+        CmdOutput::ok(
+            "Component Store Cleanup Recommended : No\nNumber of Reclaimable Packages : 0\n",
+        ),
     );
 
-    let module = SystemCleanerModule::with_runner(ModuleConfig::default(), Arc::new(mock));
+    let (_sandbox, module) = sandboxed_cleaner("progress_steps", Arc::new(mock));
     let (tx, mut rx) = mpsc::channel::<ModuleProgress>(20);
 
     let handle = tokio::spawn(async move {
@@ -356,7 +427,7 @@ async fn adv_test_progress_reporting_all_steps() {
 #[tokio::test]
 async fn adv_test_module_metadata_and_trait_conformance() {
     let mock = MockCommandRunner::new();
-    let module = SystemCleanerModule::with_runner(ModuleConfig::default(), Arc::new(mock));
+    let (_sandbox, module) = sandboxed_cleaner("module_metadata", Arc::new(mock));
 
     assert_eq!(module.id(), "system_cleaner");
     assert_eq!(module.name(), "System & Cache Cleaner");
@@ -373,7 +444,7 @@ async fn adv_test_all_9_fix_issue_ids_respond() {
     mock.add_response("Delete-DeliveryOptimizationCache", CmdOutput::ok(""));
     mock.add_response("Clear-RecycleBin", CmdOutput::ok(""));
 
-    let module = SystemCleanerModule::with_runner(ModuleConfig::default(), Arc::new(mock));
+    let (_sandbox, module) = sandboxed_cleaner("all_fix_ids", Arc::new(mock));
 
     let ids = [
         "sys_clean_winsxs",
@@ -389,7 +460,12 @@ async fn adv_test_all_9_fix_issue_ids_respond() {
 
     for id in &ids {
         let res = module.fix(id, None).await;
-        assert!(res.is_ok(), "Fix for {} returned unexpected error: {:?}", id, res.err());
+        assert!(
+            res.is_ok(),
+            "Fix for {} returned unexpected error: {:?}",
+            id,
+            res.err()
+        );
     }
 
     let invalid = module.fix("sys_clean_invalid_random", None).await;
@@ -420,7 +496,7 @@ fn adv_test_clean_locked_file_tolerance() {
     std::thread::sleep(std::time::Duration::from_millis(800));
 
     let clean_res = winmedic::modules::system_cleaner::clean_path_contents(&fix.path);
-    
+
     let _ = child.kill();
     let _ = child.wait();
 
@@ -446,20 +522,23 @@ async fn adv_test_winsxs_reclaimable_packages_without_cleanup_recommended() {
         ),
     );
 
-    let module = SystemCleanerModule::with_runner(ModuleConfig::default(), Arc::new(mock));
+    let (_sandbox, module) = sandboxed_cleaner("reclaimable_no_rec", Arc::new(mock));
     let issues = module.scan(None).await.unwrap();
 
     let winsxs = issues.iter().find(|i| i.id == "sys_clean_winsxs");
-    assert!(winsxs.is_some(), "Should trigger when reclaimable packages > 0 even if recommended is No");
+    assert!(
+        winsxs.is_some(),
+        "Should trigger when reclaimable packages > 0 even if recommended is No"
+    );
     let issue = winsxs.unwrap();
     assert!(issue.title.contains("4 wiederverwendbare Pakete"));
 }
 
 #[tokio::test]
 async fn adv_test_diagnostic_engine_full_integration_with_system_cleaner() {
+    use tokio_util::sync::CancellationToken;
     use winmedic::config::AppConfig;
     use winmedic::engine::runner::{DiagnosticEngine, RepairEvent, RepairOptions, ScanEvent};
-    use tokio_util::sync::CancellationToken;
 
     let mock = MockCommandRunner::new();
     mock.add_response(
@@ -473,11 +552,18 @@ async fn adv_test_diagnostic_engine_full_integration_with_system_cleaner() {
     mock.add_response("StartComponentCleanup", CmdOutput::ok("Success"));
     mock.add_response("vssadmin.exe", CmdOutput::ok("Shadow copies found"));
     mock.add_response("dism.exe", CmdOutput::ok("No corruption detected"));
-    mock.add_response("sfc.exe", CmdOutput::ok("Windows Resource Protection did not find any integrity violations."));
+    mock.add_response(
+        "sfc.exe",
+        CmdOutput::ok("Windows Resource Protection did not find any integrity violations."),
+    );
 
     let config = AppConfig::default();
     let engine = DiagnosticEngine::with_runner(&config, Arc::new(mock.clone()));
-    assert_eq!(engine.modules().len(), 7, "DiagnosticEngine must register exactly 7 modules");
+    assert_eq!(
+        engine.modules().len(),
+        7,
+        "DiagnosticEngine must register exactly 7 modules"
+    );
 
     let (tx, mut rx) = mpsc::channel::<ScanEvent>(100);
     let cancel = CancellationToken::new();
@@ -494,7 +580,11 @@ async fn adv_test_diagnostic_engine_full_integration_with_system_cleaner() {
     let events = event_collector.await.unwrap();
 
     // Verify system_cleaner started and finished
-    assert!(events.iter().any(|e| matches!(e, ScanEvent::ModuleStarted(id) if id == "system_cleaner")));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, ScanEvent::ModuleStarted(id) if id == "system_cleaner"))
+    );
     assert!(events.iter().any(|e| matches!(e, ScanEvent::ModuleFinished { module_id, .. } if module_id == "system_cleaner")));
 
     // Verify winsxs issue was detected by the engine
@@ -515,19 +605,34 @@ async fn adv_test_diagnostic_engine_full_integration_with_system_cleaner() {
         evts
     });
 
-    let (succeeded, failed) = engine.run_repairs(
-        &mut detected_issues,
-        RepairOptions { dry_run: true, create_vss: false },
-        dry_tx,
-        cancel.clone(),
-    ).await;
+    let (succeeded, failed) = engine
+        .run_repairs(
+            &mut detected_issues,
+            RepairOptions {
+                dry_run: true,
+                create_vss: false,
+            },
+            dry_tx,
+            cancel.clone(),
+        )
+        .await;
 
     let dry_evts = dry_events_h.await.unwrap();
-    assert!(dry_evts.iter().any(|e| matches!(e, RepairEvent::DryRunStarted { .. })));
+    assert!(
+        dry_evts
+            .iter()
+            .any(|e| matches!(e, RepairEvent::DryRunStarted { .. }))
+    );
     assert_eq!(succeeded, 1); // 1 simulated repair
     assert_eq!(failed, 0);
     // Crucial invariant: dry run must NOT mark the issue as fixed
-    assert!(!detected_issues.iter().find(|i| i.id == "sys_clean_winsxs").unwrap().is_fixed);
+    assert!(
+        !detected_issues
+            .iter()
+            .find(|i| i.id == "sys_clean_winsxs")
+            .unwrap()
+            .is_fixed
+    );
 
     // 2. Real repair execution
     let (rep_tx, mut rep_rx) = mpsc::channel::<RepairEvent>(20);
@@ -539,18 +644,28 @@ async fn adv_test_diagnostic_engine_full_integration_with_system_cleaner() {
         evts
     });
 
-    let (succeeded, failed) = engine.run_repairs(
-        &mut detected_issues,
-        RepairOptions { dry_run: false, create_vss: false },
-        rep_tx,
-        cancel,
-    ).await;
+    let (succeeded, failed) = engine
+        .run_repairs(
+            &mut detected_issues,
+            RepairOptions {
+                dry_run: false,
+                create_vss: false,
+            },
+            rep_tx,
+            cancel,
+        )
+        .await;
 
     let rep_evts = rep_events_h.await.unwrap();
     assert!(rep_evts.iter().any(|e| matches!(e, RepairEvent::FixFinished { issue_id, success: true, .. } if issue_id == "sys_clean_winsxs")));
     assert_eq!(succeeded, 1);
     assert_eq!(failed, 0);
     // Real repair MUST mark the issue as fixed
-    assert!(detected_issues.iter().find(|i| i.id == "sys_clean_winsxs").unwrap().is_fixed);
+    assert!(
+        detected_issues
+            .iter()
+            .find(|i| i.id == "sys_clean_winsxs")
+            .unwrap()
+            .is_fixed
+    );
 }
-

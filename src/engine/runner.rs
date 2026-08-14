@@ -116,6 +116,18 @@ impl DiagnosticEngine {
         }
     }
 
+    /// Build an engine over an explicit module list.
+    ///
+    /// Lets a caller substitute modules that are pointed somewhere other than
+    /// the live system — which is how tests exercise `run_repairs` end to end
+    /// without the file-deleting fixes reaching the real machine.
+    pub fn with_modules(modules: Vec<Arc<dyn DiagnosticModule>>) -> Self {
+        Self {
+            modules,
+            audit_logger: AuditLogger::new(),
+        }
+    }
+
     pub fn modules(&self) -> &[Arc<dyn DiagnosticModule>] {
         &self.modules
     }

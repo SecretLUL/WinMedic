@@ -1,21 +1,8 @@
-#![allow(
-    dead_code,
-    clippy::too_many_arguments,
-    clippy::collapsible_if,
-    clippy::new_without_default,
-    clippy::collapsible_str_replace,
-    clippy::manual_let_else,
-    clippy::iter_kv_map,
-    clippy::single_match
-)]
-
-mod app;
-mod config;
-mod engine;
-mod modules;
-mod safety;
-mod ui;
-mod utils;
+// Everything lives in the `winmedic` library target (see `src/lib.rs`), which is
+// also what the integration tests link against. The binary is a thin front end
+// over it — declaring `mod app; mod config; …` here again would compile every
+// module a second time into a separate, untested set of types.
+use winmedic::{app, config, engine, safety, ui, utils};
 
 use clap::Parser;
 use crossterm::cursor::Show;
@@ -158,6 +145,9 @@ fn install_panic_hook() {
 
 // ---------------------------------------------------------------- headless
 
+// Scoped rather than a crate-level allow list: the library crate root carries
+// its own, and duplicating it here is what this file just stopped doing.
+#[allow(clippy::single_match)]
 async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     // Real repairs without elevation just produce a wall of access-denied
     // errors, so refuse up front with a code a script can branch on.
@@ -235,7 +225,7 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
 
     let mut issues = engine_handle.await?;
 
-    let audit_logger = crate::safety::audit::AuditLogger::new();
+    let audit_logger = safety::audit::AuditLogger::new();
 
     // With repairs to follow, the JSON document is emitted at the very end so it
     // reflects the post-repair state instead of a snapshot that is already stale.
@@ -394,6 +384,7 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
 
 // --------------------------------------------------------------------- TUI
 
+#[allow(clippy::collapsible_if)]
 async fn run_tui() -> Result<u8, Box<dyn std::error::Error>> {
     install_panic_hook();
 
@@ -404,6 +395,7 @@ async fn run_tui() -> Result<u8, Box<dyn std::error::Error>> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
+    app.start_update_check();
     let mut last_telemetry_tick = Instant::now();
 
     let loop_result = (|| -> Result<(), Box<dyn std::error::Error>> {
@@ -544,6 +536,9 @@ fn handle_key(app: &mut App, code: KeyCode) {
         KeyCode::Char('u') | KeyCode::Char('U') => {
             if app.active_tab == TAB_HISTORY {
                 app.request_rollback();
+            } else {
+                // Opens the parked "update available" notice, if there is one.
+                app.show_update_notice();
             }
         }
 

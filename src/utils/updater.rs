@@ -1,5 +1,6 @@
 use crate::utils::cmd::CommandRunner;
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::time::Duration;
 
 /// GitHub API endpoint for the latest published release.
@@ -9,49 +10,92 @@ pub const GITHUB_LATEST_RELEASE_URL: &str =
 /// User-Agent header required by the GitHub API.
 pub const GITHUB_USER_AGENT: &str = "WinMedic";
 
+/// Only release pages on this host are ever handed to the shell — see
+/// [`launch_browser`].
+pub const GITHUB_RELEASE_URL_PREFIX: &str = "https://github.com/";
+
 /// Minimal SemVer parser supporting standard `major.minor.patch` version strings,
 /// optional `v` or `V` prefixes, and pre-release or build metadata suffixes (e.g. `v0.2.0-rc1`).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemVer {
     pub major: u32,
     pub minor: u32,
     pub patch: u32,
+    /// Pre-release tag without the leading `-` (`rc1` for `v1.0.0-rc1`).
+    ///
+    /// Build metadata (`+2026814`) is dropped, but the pre-release tag has to be
+    /// kept: SemVer precedence puts `1.0.0-rc1` *below* `1.0.0`, so a user
+    /// running a release candidate must still be offered the final build.
+    pub pre: Option<String>,
 }
 
 impl SemVer {
     /// Parse a semantic version string.
     ///
     /// Examples:
-    /// - `"v1.2.3"` -> `SemVer { major: 1, minor: 2, patch: 3 }`
-    /// - `"V0.2.0-rc1"` -> `SemVer { major: 0, minor: 2, patch: 0 }`
-    /// - `"1.0"` -> `SemVer { major: 1, minor: 0, patch: 0 }`
+    /// - `"v1.2.3"` -> `1.2.3`
+    /// - `"V0.2.0-rc1"` -> `0.2.0` with pre-release `rc1`
+    /// - `"1.0"` -> `1.0.0`
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.trim().trim_start_matches(['v', 'V']);
         if s.is_empty() {
             return None;
         }
 
-        // Separate core version from pre-release or build metadata (e.g. "0.2.0-rc1" or "1.0.0+build")
-        let core = s.split(['-', '+']).next()?;
+        // Build metadata never affects precedence, so it goes first.
+        let without_build = s.split('+').next()?;
+        // Separate the core version from the pre-release tag ("0.2.0-rc1").
+        let (core, pre) = match without_build.split_once('-') {
+            Some((core, pre)) if !pre.is_empty() => (core, Some(pre.to_string())),
+            _ => (without_build, None),
+        };
         let parts: Vec<&str> = core.split('.').collect();
         if parts.is_empty() {
             return None;
         }
 
         let major = parts.first()?.parse::<u32>().ok()?;
-        let minor = parts.get(1).and_then(|p| p.parse::<u32>().ok()).unwrap_or(0);
-        let patch = parts.get(2).and_then(|p| p.parse::<u32>().ok()).unwrap_or(0);
+        let minor = parts
+            .get(1)
+            .and_then(|p| p.parse::<u32>().ok())
+            .unwrap_or(0);
+        let patch = parts
+            .get(2)
+            .and_then(|p| p.parse::<u32>().ok())
+            .unwrap_or(0);
 
         Some(Self {
             major,
             minor,
             patch,
+            pre,
         })
     }
 
     /// Check whether this version is strictly newer than `other`.
     pub fn is_newer_than(&self, other: &Self) -> bool {
         self > other
+    }
+}
+
+impl Ord for SemVer {
+    /// SemVer precedence: compare the core triple, then let a version *without*
+    /// a pre-release tag outrank the same core version *with* one.
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.major, self.minor, self.patch)
+            .cmp(&(other.major, other.minor, other.patch))
+            .then_with(|| match (&self.pre, &other.pre) {
+                (None, None) => Ordering::Equal,
+                (None, Some(_)) => Ordering::Greater,
+                (Some(_), None) => Ordering::Less,
+                (Some(a), Some(b)) => a.cmp(b),
+            })
+    }
+}
+
+impl PartialOrd for SemVer {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -97,12 +141,13 @@ pub async fn check_for_update(
     timeout_dur: Duration,
 ) -> Option<UpdateInfo> {
     let max_time_str = timeout_dur.as_secs().max(1).to_string();
+    let user_agent_header = format!("User-Agent: {}", GITHUB_USER_AGENT);
     let args = [
         "-s",
         "--max-time",
         &max_time_str,
         "-H",
-        "User-Agent: WinMedic",
+        &user_agent_header,
         "-H",
         "Accept: application/vnd.github.v3+json",
         GITHUB_LATEST_RELEASE_URL,
@@ -114,7 +159,15 @@ pub async fn check_for_update(
     }
 
     let release: GitHubRelease = serde_json::from_str(&output.stdout).ok()?;
-    if release.draft {
+    // Never nudge anyone onto an unfinished build. `/releases/latest` already
+    // excludes both, but the endpoint is not the only way this struct is filled.
+    if release.draft || release.prerelease {
+        return None;
+    }
+
+    // The URL is about to reach the shell, so anything that is not a plain
+    // github.com release page is dropped rather than launched.
+    if !is_safe_release_url(&release.html_url) {
         return None;
     }
 
@@ -131,12 +184,36 @@ pub async fn check_for_update(
     }
 }
 
+/// Whether `url` is a plain GitHub release page that is safe to hand to the OS.
+///
+/// The URL arrives from a network response, so it is treated as untrusted input:
+/// only `https://github.com/` targets are accepted, and any whitespace, control
+/// character or shell metacharacter disqualifies it outright.
+pub fn is_safe_release_url(url: &str) -> bool {
+    if !url.starts_with(GITHUB_RELEASE_URL_PREFIX) || url.len() > 2048 {
+        return false;
+    }
+    !url.chars().any(|c| {
+        c.is_whitespace() || c.is_control() || matches!(c, '&' | '|' | '^' | '<' | '>' | '"' | '%')
+    })
+}
+
 /// Launch the user's default browser targeting the given URL.
 ///
-/// On Windows, executes `cmd /c start "" <url>` with `CREATE_NO_WINDOW` flag.
+/// The URL is validated by [`is_safe_release_url`] first and then handed to
+/// `explorer.exe`, which resolves the default handler *without* going through a
+/// command interpreter. The previous `cmd /c start "" <url>` form was unsafe:
+/// Rust only quotes arguments containing whitespace, so a `&` in the URL would
+/// have been parsed by cmd.exe as a command separator.
 pub fn launch_browser(url: &str) -> Result<(), String> {
     if url.is_empty() {
         return Err("URL darf nicht leer sein".to_string());
+    }
+    if !is_safe_release_url(url) {
+        return Err(format!(
+            "URL wurde abgelehnt (nur {}... erlaubt): {}",
+            GITHUB_RELEASE_URL_PREFIX, url
+        ));
     }
 
     #[cfg(windows)]
@@ -145,8 +222,8 @@ pub fn launch_browser(url: &str) -> Result<(), String> {
         use std::process::Command;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-        let mut cmd = Command::new("cmd");
-        cmd.args(["/c", "start", "", url]);
+        let mut cmd = Command::new("explorer.exe");
+        cmd.arg(url);
         cmd.creation_flags(CREATE_NO_WINDOW);
 
         cmd.spawn()
@@ -155,7 +232,6 @@ pub fn launch_browser(url: &str) -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
-        let _ = url;
         Ok(())
     }
 }
@@ -173,7 +249,8 @@ mod tests {
             SemVer {
                 major: 1,
                 minor: 2,
-                patch: 3
+                patch: 3,
+                pre: None
             }
         );
 
@@ -183,7 +260,8 @@ mod tests {
             SemVer {
                 major: 0,
                 minor: 1,
-                patch: 0
+                patch: 0,
+                pre: None
             }
         );
 
@@ -193,7 +271,8 @@ mod tests {
             SemVer {
                 major: 2,
                 minor: 10,
-                patch: 5
+                patch: 5,
+                pre: None
             }
         );
     }
@@ -206,7 +285,8 @@ mod tests {
             SemVer {
                 major: 1,
                 minor: 0,
-                patch: 0
+                patch: 0,
+                pre: None
             }
         );
 
@@ -216,7 +296,8 @@ mod tests {
             SemVer {
                 major: 2,
                 minor: 0,
-                patch: 0
+                patch: 0,
+                pre: None
             }
         );
 
@@ -226,19 +307,34 @@ mod tests {
             SemVer {
                 major: 0,
                 minor: 2,
-                patch: 0
+                patch: 0,
+                pre: Some("rc1".to_string())
             }
         );
 
+        // Build metadata is dropped entirely; it never affects precedence.
         let v_build = SemVer::parse("1.0.0+20260814").unwrap();
         assert_eq!(
             v_build,
             SemVer {
                 major: 1,
                 minor: 0,
-                patch: 0
+                patch: 0,
+                pre: None
             }
         );
+    }
+
+    #[test]
+    fn test_semver_prerelease_sorts_below_final() {
+        let rc = SemVer::parse("1.0.0-rc1").unwrap();
+        let final_release = SemVer::parse("1.0.0").unwrap();
+
+        assert!(final_release.is_newer_than(&rc));
+        assert!(!rc.is_newer_than(&final_release));
+        // A user on a release candidate must still be offered the final build.
+        assert!(is_update_available("1.0.0-rc1", "v1.0.0"));
+        assert!(!is_update_available("1.0.0", "v1.0.0-rc1"));
     }
 
     #[test]
@@ -366,9 +462,72 @@ mod tests {
         assert_eq!(info, None);
     }
 
+    #[tokio::test]
+    async fn test_check_for_update_prerelease_ignored() {
+        let mock = MockCommandRunner::new();
+        let payload = r#"{
+            "tag_name": "v0.9.0",
+            "html_url": "https://github.com/SecretLUL/WinMedic/releases/tag/v0.9.0",
+            "name": "Release Candidate",
+            "body": "RC",
+            "draft": false,
+            "prerelease": true
+        }"#;
+        mock.add_response("curl.exe", CmdOutput::ok(payload));
+
+        let info = check_for_update(&mock, "0.1.0", Duration::from_secs(5)).await;
+        assert_eq!(
+            info, None,
+            "prereleases must not be offered to stable users"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_check_for_update_rejects_offsite_release_url() {
+        let mock = MockCommandRunner::new();
+        let payload = r#"{
+            "tag_name": "v0.2.0",
+            "html_url": "https://evil.example/pwn?a=1&calc",
+            "name": "Tampered",
+            "body": "Tampered",
+            "draft": false,
+            "prerelease": false
+        }"#;
+        mock.add_response("curl.exe", CmdOutput::ok(payload));
+
+        let info = check_for_update(&mock, "0.1.0", Duration::from_secs(5)).await;
+        assert_eq!(info, None);
+    }
+
+    #[test]
+    fn test_is_safe_release_url() {
+        assert!(is_safe_release_url(
+            "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0"
+        ));
+
+        // Wrong host / scheme.
+        assert!(!is_safe_release_url("https://evil.example/releases"));
+        assert!(!is_safe_release_url("http://github.com/a/b"));
+        assert!(!is_safe_release_url("file://github.com/a/b"));
+        assert!(!is_safe_release_url(r"\\server\share"));
+
+        // cmd.exe metacharacters must never reach a shell.
+        assert!(!is_safe_release_url("https://github.com/a?x=1&calc"));
+        assert!(!is_safe_release_url("https://github.com/a|calc"));
+        assert!(!is_safe_release_url("https://github.com/a^calc"));
+        assert!(!is_safe_release_url("https://github.com/a>out.txt"));
+        assert!(!is_safe_release_url("https://github.com/a b"));
+    }
+
     #[test]
     fn test_launch_browser_empty_url() {
         let res = launch_browser("");
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_launch_browser_rejects_unsafe_url() {
+        assert!(launch_browser("https://github.com/a&calc").is_err());
+        assert!(launch_browser("https://evil.example/x").is_err());
     }
 }

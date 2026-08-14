@@ -11,9 +11,9 @@ use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;
 
 use common::{
-    MockWindowsPaths, ProgrammableMockRunner, TempWorkspace, DISM_ANALYZE_CLEAN,
-    DISM_ANALYZE_ENGLISH_RECLAIMABLE, DISM_ANALYZE_GERMAN_RECLAIMABLE,
-    GITHUB_RELEASE_NEWER_JSON,
+    DISM_ANALYZE_CLEAN, DISM_ANALYZE_ENGLISH_RECLAIMABLE, DISM_ANALYZE_GERMAN_RECLAIMABLE,
+    GITHUB_RELEASE_NEWER_JSON, MockWindowsPaths, ProgrammableMockRunner, TempWorkspace,
+    sandboxed_cleaner,
 };
 use winmedic::app::{
     App, BackgroundEvent, ConfirmRequest, TAB_DASHBOARD, TAB_HISTORY, TAB_REPAIR, TAB_SCANNER,
@@ -24,13 +24,13 @@ use winmedic::engine::exit_code;
 use winmedic::engine::issue::{Issue, RiskScore, Severity};
 use winmedic::engine::runner::{DiagnosticEngine, RepairEvent, RepairOptions, ScanEvent};
 use winmedic::modules::system_cleaner::{
-    clean_log_dir_files, clean_path_contents, scan_log_dir_files, scan_path_recursive,
-    SystemCleanerModule,
+    SystemCleanerModule, clean_log_dir_files, clean_path_contents, scan_log_dir_files,
+    scan_path_recursive,
 };
-use winmedic::modules::{get_all_modules_with_runner, DiagnosticModule, ModuleConfig};
+use winmedic::modules::{DiagnosticModule, ModuleConfig, get_all_modules_with_runner};
 use winmedic::safety::audit::{AuditEntry, AuditLogger, MAX_LOG_FILE_BYTES};
 use winmedic::utils::cmd::{CmdOutput, CommandRunner};
-use winmedic::utils::updater::{check_for_update, launch_browser, UpdateInfo};
+use winmedic::utils::updater::{UpdateInfo, check_for_update, launch_browser};
 
 // ============================================================================
 // SCENARIO 1: Full System Scan & Dry-Run Triage across all 7 modules (F2–F12)
@@ -39,11 +39,17 @@ use winmedic::utils::updater::{check_for_update, launch_browser, UpdateInfo};
 #[tokio::test]
 async fn test_scenario_1_full_system_scan_and_dry_run_triage() {
     let ws = TempWorkspace::new("scenario1_full_scan");
-    let paths = ws.populate_mock_windows_tree();
+    ws.populate_mock_windows_tree();
 
     // Populate mock files
-    let f_wudo = ws.create_file("Windows/SoftwareDistribution/DeliveryOptimization/chunk.dat", &[0x11; 50000]);
-    let f_chrome = ws.create_file("AppData/Local/Google/Chrome/User Data/Default/Cache/c1", &[0x22; 30000]);
+    let f_wudo = ws.create_file(
+        "Windows/SoftwareDistribution/DeliveryOptimization/chunk.dat",
+        &[0x11; 50000],
+    );
+    let f_chrome = ws.create_file(
+        "AppData/Local/Google/Chrome/User Data/Default/Cache/c1",
+        &[0x22; 30000],
+    );
     let f_panther = ws.create_file("Windows/Panther/setupact.log", &[0x33; 20000]);
     let f_d3d = ws.create_file("AppData/Local/D3DSCache/shader.bin", &[0x44; 15000]);
     let f_temp = ws.create_file("Windows/SystemTemp/temp1.tmp", &[0x55; 10000]);
@@ -92,7 +98,9 @@ async fn test_scenario_1_full_system_scan_and_dry_run_triage() {
 
     let engine2 = DiagnosticEngine::new(&config);
     let dry_run_handle = tokio::spawn(async move {
-        let res = engine2.run_repairs(&mut issues, options, rep_tx, rep_cancel).await;
+        let res = engine2
+            .run_repairs(&mut issues, options, rep_tx, rep_cancel)
+            .await;
         (issues, res)
     });
 
@@ -128,17 +136,50 @@ async fn test_scenario_2_selective_cleanup_browser_and_logs() {
     let ws = TempWorkspace::new("scenario2_selective");
     let chrome_dir = ws.create_dir("ChromeCache");
     let logs_dir = ws.create_dir("Logs");
-    let temp_dir = ws.create_dir("Temp");
+    ws.create_dir("Temp");
 
     let f_chrome = ws.create_file("ChromeCache/data_0", &[0xAA; 10000]);
     let f_log = ws.create_file("Logs/setup.log", &[0xBB; 20000]);
     let f_temp = ws.create_file("Temp/preserve.tmp", &[0xCC; 50000]);
 
     // Setup issues representing the 3 categories
-    let mut issues = vec![
-        Issue::new("sys_clean_browser_cache", "system_cleaner", "Browser Caches", "System & Cache Cleaner", Severity::Info, RiskScore::Low, "Desc", "Tech", "Fix", vec![]),
-        Issue::new("sys_clean_setup_logs", "system_cleaner", "Setup Logs", "System & Cache Cleaner", Severity::Info, RiskScore::Low, "Desc", "Tech", "Fix", vec![]),
-        Issue::new("sys_clean_system_temp", "system_cleaner", "System Temp", "System & Cache Cleaner", Severity::Info, RiskScore::Low, "Desc", "Tech", "Fix", vec![]),
+    let mut issues = [
+        Issue::new(
+            "sys_clean_browser_cache",
+            "system_cleaner",
+            "Browser Caches",
+            "System & Cache Cleaner",
+            Severity::Info,
+            RiskScore::Low,
+            "Desc",
+            "Tech",
+            "Fix",
+            vec![],
+        ),
+        Issue::new(
+            "sys_clean_setup_logs",
+            "system_cleaner",
+            "Setup Logs",
+            "System & Cache Cleaner",
+            Severity::Info,
+            RiskScore::Low,
+            "Desc",
+            "Tech",
+            "Fix",
+            vec![],
+        ),
+        Issue::new(
+            "sys_clean_system_temp",
+            "system_cleaner",
+            "System Temp",
+            "System & Cache Cleaner",
+            Severity::Info,
+            RiskScore::Low,
+            "Desc",
+            "Tech",
+            "Fix",
+            vec![],
+        ),
     ];
 
     // Granular selection in Triage: select Browser & Logs, deselect Temp
@@ -275,7 +316,7 @@ async fn test_scenario_6_dism_german_locale_pipeline() {
         CmdOutput::ok("Der Vorgang wurde erfolgreich beendet."),
     );
 
-    let module = SystemCleanerModule::with_runner(ModuleConfig::default(), runner.clone());
+    let (_sandbox, module) = sandboxed_cleaner("tier4_scenarios_278", runner.clone());
 
     // 1. Scan detects WinSxS issue with German details
     let issues = module.scan(None).await.expect("scan failed");
@@ -288,7 +329,11 @@ async fn test_scenario_6_dism_german_locale_pipeline() {
     // 2. Fix executes StartComponentCleanup successfully
     let fix_res = module.fix("sys_clean_winsxs", None).await;
     assert!(fix_res.is_ok());
-    assert!(fix_res.unwrap().contains("StartComponentCleanup abgeschlossen"));
+    assert!(
+        fix_res
+            .unwrap()
+            .contains("StartComponentCleanup abgeschlossen")
+    );
 
     // 3. Post-repair exit code calculation
     let mut fixed_issues = issues.clone();
@@ -315,7 +360,10 @@ fn test_scenario_7_non_admin_elevation_safety_check() {
     };
 
     assert_eq!(code, exit_code::NEEDS_ADMIN);
-    assert_eq!(exit_code::describe(code), "Administratorrechte erforderlich");
+    assert_eq!(
+        exit_code::describe(code),
+        "Administratorrechte erforderlich."
+    );
 
     // When elevate flag is used, elevation request is initiated
     let elevate = true;
