@@ -395,6 +395,7 @@ impl App {
                             .position(|m| m.0 == prog.module_id)
                         {
                             self.module_progress_list[pos].3 = prog.progress_percent;
+                            self.scan_active_module_name = self.module_progress_list[pos].1.clone();
                         }
                         if let Some(msg) = prog.log_message {
                             self.scan_log_messages.push(msg);

@@ -7,6 +7,7 @@ use crate::safety::audit::AuditLogger;
 use crate::safety::restore_point::create_system_restore_point;
 use std::sync::Arc;
 use tokio::sync::mpsc::{Sender, channel};
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
@@ -125,12 +126,13 @@ impl DiagnosticEngine {
         score.clamp(0, 100) as u8
     }
 
-    /// Run full diagnostic scan across all modules.
+    /// Run full diagnostic scan across all modules concurrently.
     ///
-    /// Cancelling `cancel` drops the running module future, which in turn drops
-    /// its child process handle — `kill_on_drop` then terminates long-running
-    /// tools such as DISM. Issues collected by already finished modules are kept
-    /// and returned.
+    /// Modules are executed in parallel via a Tokio `JoinSet`. Cancelling
+    /// `cancel` aborts the running tasks and drops the active module futures,
+    /// which in turn drops child process handles — `kill_on_drop` then
+    /// terminates long-running tools such as DISM or SFC. Issues collected by
+    /// already finished modules are kept and returned.
     pub async fn run_scan(
         &self,
         event_tx: Sender<ScanEvent>,
@@ -139,87 +141,115 @@ impl DiagnosticEngine {
         let mut all_issues = Vec::new();
         let total_modules = self.modules.len();
 
-        for (completed, module) in self.modules.iter().enumerate() {
-            if cancel.is_cancelled() {
-                self.finish_cancelled_scan(&event_tx, completed, total_modules)
-                    .await;
-                return all_issues;
-            }
+        if cancel.is_cancelled() {
+            self.finish_cancelled_scan(&event_tx, 0, total_modules)
+                .await;
+            return all_issues;
+        }
 
+        let (prog_tx, mut prog_rx) = channel::<ModuleProgress>(100);
+        let evt_tx_clone = event_tx.clone();
+
+        let forward_handle = tokio::spawn(async move {
+            while let Some(prog) = prog_rx.recv().await {
+                let _ = evt_tx_clone
+                    .send(ScanEvent::ModuleProgressUpdate(prog))
+                    .await;
+            }
+        });
+
+        let mut set = JoinSet::new();
+        for module in &self.modules {
             let mod_id = module.id().to_string();
+            let mod_name = module.name().to_string();
+            let module = Arc::clone(module);
+            let p_tx = prog_tx.clone();
+
             let _ = event_tx
                 .send(ScanEvent::ModuleStarted(mod_id.clone()))
                 .await;
 
-            let (prog_tx, mut prog_rx) = channel::<ModuleProgress>(50);
-            let evt_tx_clone = event_tx.clone();
-
-            let forward_handle = tokio::spawn(async move {
-                while let Some(prog) = prog_rx.recv().await {
-                    let _ = evt_tx_clone
-                        .send(ScanEvent::ModuleProgressUpdate(prog))
-                        .await;
-                }
+            set.spawn(async move {
+                let result = module.scan(Some(p_tx)).await;
+                (mod_id, mod_name, result)
             });
+        }
+        // Drop the extra sender reference so prog_rx closes once all module tasks complete
+        drop(prog_tx);
 
-            let outcome = tokio::select! {
+        let mut completed_modules = 0;
+
+        while !set.is_empty() {
+            tokio::select! {
                 biased;
-                _ = cancel.cancelled() => None,
-                result = module.scan(Some(prog_tx)) => Some(result),
-            };
-
-            let _ = forward_handle.await;
-
-            let Some(result) = outcome else {
-                self.audit_logger.log(
-                    "SCAN",
-                    &mod_id,
-                    module.name(),
-                    "WARNING",
-                    "Scan durch Benutzer abgebrochen.",
-                );
-                self.finish_cancelled_scan(&event_tx, completed, total_modules)
-                    .await;
-                return all_issues;
-            };
-
-            match result {
-                Ok(issues) => {
-                    let _ = event_tx
-                        .send(ScanEvent::ModuleFinished {
-                            module_id: mod_id.clone(),
-                            issues: issues.clone(),
-                        })
-                        .await;
-
+                _ = cancel.cancelled() => {
+                    set.shutdown().await;
+                    let _ = forward_handle.await;
                     self.audit_logger.log(
                         "SCAN",
-                        &mod_id,
-                        module.name(),
-                        "SUCCESS",
-                        &format!("Scan completed with {} issues detected.", issues.len()),
+                        "all",
+                        "System-Diagnose",
+                        "WARNING",
+                        &format!(
+                            "Scan durch Benutzer abgebrochen nach {}/{} Modulen.",
+                            completed_modules, total_modules
+                        ),
                     );
-
-                    all_issues.extend(issues);
+                    self.finish_cancelled_scan(&event_tx, completed_modules, total_modules)
+                        .await;
+                    return all_issues;
                 }
-                Err(err) => {
-                    let _ = event_tx
-                        .send(ScanEvent::ModuleFailed {
-                            module_id: mod_id.clone(),
-                            error: err.clone(),
-                        })
-                        .await;
+                res = set.join_next() => {
+                    let Some(join_result) = res else { break };
+                    completed_modules += 1;
+                    match join_result {
+                        Ok((mod_id, mod_name, scan_result)) => {
+                            match scan_result {
+                                Ok(issues) => {
+                                    let _ = event_tx
+                                        .send(ScanEvent::ModuleFinished {
+                                            module_id: mod_id.clone(),
+                                            issues: issues.clone(),
+                                        })
+                                        .await;
 
-                    self.audit_logger.log(
-                        "SCAN",
-                        &mod_id,
-                        module.name(),
-                        "FAILED",
-                        &format!("Scan error: {}", err),
-                    );
+                                    self.audit_logger.log(
+                                        "SCAN",
+                                        &mod_id,
+                                        &mod_name,
+                                        "SUCCESS",
+                                        &format!("Scan completed with {} issues detected.", issues.len()),
+                                    );
+
+                                    all_issues.extend(issues);
+                                }
+                                Err(err) => {
+                                    let _ = event_tx
+                                        .send(ScanEvent::ModuleFailed {
+                                            module_id: mod_id.clone(),
+                                            error: err.clone(),
+                                        })
+                                        .await;
+
+                                    self.audit_logger.log(
+                                        "SCAN",
+                                        &mod_id,
+                                        &mod_name,
+                                        "FAILED",
+                                        &format!("Scan error: {}", err),
+                                    );
+                                }
+                            }
+                        }
+                        Err(join_err) => {
+                            eprintln!("Scan-Task abgebrochen oder fehlgeschlagen: {}", join_err);
+                        }
+                    }
                 }
             }
         }
+
+        let _ = forward_handle.await;
 
         let total = all_issues.len();
         let health = Self::calculate_health_score(&all_issues);
@@ -635,5 +665,32 @@ mod tests {
             }
         }
         assert_eq!(cancelled, Some((0, 6)));
+    }
+
+    #[tokio::test]
+    async fn test_run_scan_emits_events_and_completes() {
+        let engine = DiagnosticEngine::new(&AppConfig::default());
+        let (tx, mut rx) = channel::<ScanEvent>(200);
+
+        let _issues = engine.run_scan(tx, CancellationToken::new()).await;
+
+        let mut started_modules = Vec::new();
+        let mut finished_or_failed = 0;
+        let mut saw_completed = false;
+
+        while let Ok(evt) = rx.try_recv() {
+            match evt {
+                ScanEvent::ModuleStarted(id) => started_modules.push(id),
+                ScanEvent::ModuleFinished { .. } | ScanEvent::ModuleFailed { .. } => {
+                    finished_or_failed += 1;
+                }
+                ScanEvent::ScanCompleted { .. } => saw_completed = true,
+                _ => {}
+            }
+        }
+
+        assert_eq!(started_modules.len(), 6, "all 6 modules should start");
+        assert_eq!(finished_or_failed, 6, "all 6 modules should finish or fail");
+        assert!(saw_completed, "scan should emit ScanCompleted");
     }
 }
