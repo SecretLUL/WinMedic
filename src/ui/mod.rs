@@ -80,6 +80,7 @@ pub fn render_app(f: &mut Frame, app: &App) {
                 &mod_tuples,
                 &app.scan_log_messages,
                 &app.issues,
+                app.scan_log_scroll,
             );
         }
         TAB_TRIAGE => {
@@ -107,6 +108,7 @@ pub fn render_app(f: &mut Frame, app: &App) {
                 &app.vss_status,
                 &app.repair_console_lines,
                 app.dry_run,
+                app.repair_log_scroll,
             );
         }
         TAB_HISTORY => {

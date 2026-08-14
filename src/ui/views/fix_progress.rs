@@ -4,6 +4,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Wrap};
+use std::collections::VecDeque;
 
 pub fn render_fix_progress(
     f: &mut Frame,
@@ -14,8 +15,9 @@ pub fn render_fix_progress(
     failed_count: usize,
     total_to_fix: usize,
     vss_status: &str,
-    console_lines: &[String],
+    console_lines: &VecDeque<String>,
     dry_run: bool,
+    scroll_offset: usize,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -80,11 +82,15 @@ pub fn render_fix_progress(
 
     f.render_widget(top_gauge, chunks[0]);
 
-    // Center: Live Repair Console
-    let lines: Vec<Line> = console_lines
-        .iter()
-        .rev()
-        .take(18)
+    // Center: Live Repair Console with scroll offset
+    let viewport_height = chunks[1].height.saturating_sub(2) as usize;
+    let total_logs = console_lines.len();
+
+    let end_idx = total_logs.saturating_sub(scroll_offset);
+    let start_idx = end_idx.saturating_sub(viewport_height);
+
+    let lines: Vec<Line> = (start_idx..end_idx)
+        .filter_map(|idx| console_lines.get(idx))
         .map(|line| {
             if line.starts_with("[STDERR]")
                 || line.to_lowercase().contains("error")
@@ -121,10 +127,31 @@ pub fn render_fix_progress(
         })
         .collect();
 
+    let console_title = if scroll_offset > 0 {
+        format!(
+            " LIVE-REPARATUR KONSOLE [Zeilen {}-{} von {} | End = Live] ",
+            start_idx + 1,
+            end_idx,
+            total_logs
+        )
+    } else {
+        format!(
+            " LIVE-REPARATUR KONSOLE & BEFEHLSAUSGABE [{}] [PgUp/PgDn zum Scrollen] ",
+            total_logs
+        )
+    };
+
     let console_box = Paragraph::new(lines)
-        .block(Theme::focused_block(
-            "LIVE-REPARATUR KONSOLE & BEFEHLSAUSGABE",
-        ))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(if scroll_offset > 0 {
+                    Theme::AMBER
+                } else {
+                    Theme::CYAN
+                }))
+                .title(console_title),
+        )
         .wrap(Wrap { trim: false });
 
     f.render_widget(console_box, chunks[1]);
@@ -159,60 +186,38 @@ pub fn render_fix_progress(
                     .fg(if failed_count > 0 {
                         Theme::CORAL
                     } else {
-                        Theme::MUTED
+                        Theme::TEXT_WHITE
                     })
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(" │ ", Style::default().fg(Theme::BORDER)),
             Span::styled(
-                format!(
-                    "Ausstehend: {}",
-                    total_to_fix.saturating_sub(fixed_count + failed_count)
-                ),
-                Style::default().fg(Theme::MUTED),
+                if dry_run {
+                    " 💡 [D] drücken für echte Reparatur "
+                } else if progress_percent >= 100 && failed_count == 0 {
+                    " 🎉 Alle Reparaturen erfolgreich durchgeführt! "
+                } else if progress_percent >= 100 {
+                    " ⚠ Einige Reparaturen erfordern einen System-Neustart. "
+                } else if is_fixing {
+                    " ⚙ Reparatur-Skripte werden abgearbeitet... "
+                } else {
+                    " 👉 Drücken Sie [F] um Reparatur zu starten, [D] für Simulation "
+                },
+                Style::default()
+                    .fg(Theme::TEXT_WHITE)
+                    .add_modifier(Modifier::ITALIC),
             ),
         ]),
         Line::from(vec![
+            Span::styled(" Tastatur: ", Style::default().fg(Theme::MUTED)),
             Span::styled(
-                " Nächste Schritte: ",
-                Style::default()
-                    .fg(Theme::AMBER)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                " [F] ",
-                Style::default()
-                    .fg(Theme::CYAN)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "Reparatur starten/wiederholen   ",
-                Style::default().fg(Theme::TEXT_WHITE),
-            ),
-            Span::styled(
-                " [R] ",
-                Style::default()
-                    .fg(Theme::CYAN)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "Erneuten System-Scan durchführen   ",
-                Style::default().fg(Theme::TEXT_WHITE),
-            ),
-            Span::styled(
-                " [5] ",
-                Style::default()
-                    .fg(Theme::CYAN)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "Audit-Logs & Backups einsehen",
-                Style::default().fg(Theme::TEXT_WHITE),
+                "[PgUp/PgDn] Log scrollen  [Home/End] Oben/Live  [F] Start  [D] Simulation  [E] Bericht",
+                Style::default().fg(Theme::CYAN),
             ),
         ]),
     ];
 
     let summary_box =
-        Paragraph::new(summary_lines).block(Theme::card_block("REPARATUR-ZUSAMMENFASSUNG"));
+        Paragraph::new(summary_lines).block(Theme::card_block("ABSCHLUSS & HINWEISE"));
     f.render_widget(summary_box, chunks[2]);
 }

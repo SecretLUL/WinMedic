@@ -88,8 +88,10 @@ Settings live in the **`[6]` Einstellungen** tab and are persisted to `%APPDATA%
 | **`[D]`** | Toggle dry-run mode — repairs are shown, not executed |
 | **`[E]`** | Export diagnostic & repair report as self-contained HTML |
 | **`[U]`** | Restore the selected registry snapshot (Backups & Logs tab) |
+| **`[PgUp]` / `[PgDn]`** | Scroll live log console (Scan and Repair tabs) |
+| **`[Home]` / `[End]`** | Jump to earliest log line / return to live tail follow mode |
 | **`[←]` / `[→]`** | Adjust the highlighted numeric setting (Settings tab) |
-| **`[↑]` / `[↓]` or `[j]` / `[k]`** | Navigate list items and logs |
+| **`[↑]` / `[↓]` or `[j]` / `[k]`** | Navigate list items and scroll logs |
 | **`[?]`** | Open interactive Help Modal overlay |
 | **`[Esc]`** | Clear filters / abort a running operation / close modal / return to Dashboard |
 | **`[Q]`** | Exit WinMedic safely |

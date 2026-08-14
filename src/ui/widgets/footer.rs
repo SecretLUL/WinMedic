@@ -32,8 +32,8 @@ pub fn render_footer(
                 ("Q", "Beenden"),
             ],
             TAB_SCANNER => vec![
-                ("1-6", "Tabs"),
-                ("R", "Erneut scannen"),
+                ("PgUp/Dn", "Scroll"),
+                ("R", "Scan"),
                 ("?", "Hilfe"),
                 ("Q", "Beenden"),
             ],
@@ -48,10 +48,10 @@ pub fn render_footer(
                 ("Q", "Beenden"),
             ],
             TAB_REPAIR => vec![
-                ("F", "Reparaturen ausführen"),
+                ("F", "Start"),
+                ("PgUp/Dn", "Scroll"),
                 ("D", "Simulation"),
                 ("E", "Bericht"),
-                ("R", "Erneut scannen"),
                 ("?", "Hilfe"),
                 ("Q", "Beenden"),
             ],

@@ -34,7 +34,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;
 
-use app::{App, TAB_COUNT, TAB_DASHBOARD, TAB_HISTORY, TAB_REPAIR, TAB_SETTINGS, TAB_TRIAGE};
+use app::{
+    App, TAB_COUNT, TAB_DASHBOARD, TAB_HISTORY, TAB_REPAIR, TAB_SCANNER, TAB_SETTINGS, TAB_TRIAGE,
+};
 use config::AppConfig;
 use engine::exit_code;
 use engine::reporter::DiagnosticReporter;
@@ -564,12 +566,30 @@ fn handle_key(app: &mut App, code: KeyCode) {
             TAB_TRIAGE => app.prev_issue(),
             TAB_HISTORY => app.prev_backup(),
             TAB_SETTINGS => app.prev_setting(),
+            TAB_SCANNER | TAB_REPAIR => app.scroll_log_up(1),
             _ => {}
         },
         KeyCode::Down | KeyCode::Char('j') => match app.active_tab {
             TAB_TRIAGE => app.next_issue(),
             TAB_HISTORY => app.next_backup(),
             TAB_SETTINGS => app.next_setting(),
+            TAB_SCANNER | TAB_REPAIR => app.scroll_log_down(1),
+            _ => {}
+        },
+        KeyCode::PageUp => match app.active_tab {
+            TAB_SCANNER | TAB_REPAIR => app.scroll_log_up(10),
+            _ => {}
+        },
+        KeyCode::PageDown => match app.active_tab {
+            TAB_SCANNER | TAB_REPAIR => app.scroll_log_down(10),
+            _ => {}
+        },
+        KeyCode::Home => match app.active_tab {
+            TAB_SCANNER | TAB_REPAIR => app.scroll_log_top(),
+            _ => {}
+        },
+        KeyCode::End => match app.active_tab {
+            TAB_SCANNER | TAB_REPAIR => app.scroll_log_bottom(),
             _ => {}
         },
 

@@ -8,9 +8,13 @@ use crate::safety::reg_backup::{BackupRecord, RegBackupManager};
 use crate::safety::restore_point::list_restore_points;
 use crate::utils::admin::{is_admin, relaunch_as_admin};
 use crate::utils::hardware::{SystemTelemetry, TelemetryCollector};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver, UnboundedSender, channel};
 use tokio_util::sync::CancellationToken;
+
+/// Maximum number of log lines kept in memory for scan and repair terminal buffers.
+pub const MAX_LOG_LINES: usize = 2000;
 
 /// Number of tabs in the main navigation.
 pub const TAB_COUNT: usize = 6;
@@ -119,7 +123,8 @@ pub struct App {
     pub scan_current_step_text: String,
     pub module_progress_list: Vec<(String, String, String, u8, bool)>, // (id, name, icon, percent, is_done)
     pub module_statuses: Vec<(String, String, String, ModuleStatus)>,
-    pub scan_log_messages: Vec<String>,
+    pub scan_log_messages: VecDeque<String>,
+    pub scan_log_scroll: usize,
 
     // Live Repair State
     pub is_fixing: bool,
@@ -130,7 +135,8 @@ pub struct App {
     pub failed_count: usize,
     pub total_to_fix: usize,
     pub vss_status: String,
-    pub repair_console_lines: Vec<String>,
+    pub repair_console_lines: VecDeque<String>,
+    pub repair_log_scroll: usize,
 
     // Backups & History
     pub audit_logger: AuditLogger,
@@ -159,6 +165,13 @@ pub struct App {
     cancel_token: Option<CancellationToken>,
     bg_tx: UnboundedSender<BackgroundEvent>,
     bg_rx: UnboundedReceiver<BackgroundEvent>,
+}
+
+fn push_bounded_log(buffer: &mut VecDeque<String>, line: impl Into<String>) {
+    if buffer.len() >= MAX_LOG_LINES {
+        buffer.pop_front();
+    }
+    buffer.push_back(line.into());
 }
 
 impl App {
@@ -197,7 +210,10 @@ impl App {
             scan_current_step_text: "Kein Scan aktiv".to_string(),
             module_progress_list,
             module_statuses,
-            scan_log_messages: vec!["WinMedic initialisiert. Bereit für Diagnose.".to_string()],
+            scan_log_messages: VecDeque::from([String::from(
+                "WinMedic initialisiert. Bereit für Diagnose.",
+            )]),
+            scan_log_scroll: 0,
             is_fixing: false,
             dry_run: false,
             current_fix_title: String::new(),
@@ -205,7 +221,8 @@ impl App {
             failed_count: 0,
             total_to_fix: 0,
             vss_status: "Bereit".to_string(),
-            repair_console_lines: vec!["Reparatur-Center bereit.".to_string()],
+            repair_console_lines: VecDeque::from([String::from("Reparatur-Center bereit.")]),
+            repair_log_scroll: 0,
             audit_logger,
             reg_backup_mgr,
             audit_entries,
@@ -268,6 +285,64 @@ impl App {
         self.is_scanning || self.is_fixing
     }
 
+    pub fn push_scan_log(&mut self, msg: impl Into<String>) {
+        push_bounded_log(&mut self.scan_log_messages, msg);
+    }
+
+    pub fn push_repair_log(&mut self, line: impl Into<String>) {
+        push_bounded_log(&mut self.repair_console_lines, line);
+    }
+
+    pub fn scroll_log_up(&mut self, amount: usize) {
+        match self.active_tab {
+            TAB_SCANNER => {
+                let max_scroll = self.scan_log_messages.len().saturating_sub(1);
+                self.scan_log_scroll = (self.scan_log_scroll + amount).min(max_scroll);
+            }
+            TAB_REPAIR => {
+                let max_scroll = self.repair_console_lines.len().saturating_sub(1);
+                self.repair_log_scroll = (self.repair_log_scroll + amount).min(max_scroll);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn scroll_log_down(&mut self, amount: usize) {
+        match self.active_tab {
+            TAB_SCANNER => {
+                self.scan_log_scroll = self.scan_log_scroll.saturating_sub(amount);
+            }
+            TAB_REPAIR => {
+                self.repair_log_scroll = self.repair_log_scroll.saturating_sub(amount);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn scroll_log_top(&mut self) {
+        match self.active_tab {
+            TAB_SCANNER => {
+                self.scan_log_scroll = self.scan_log_messages.len().saturating_sub(1);
+            }
+            TAB_REPAIR => {
+                self.repair_log_scroll = self.repair_console_lines.len().saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn scroll_log_bottom(&mut self) {
+        match self.active_tab {
+            TAB_SCANNER => {
+                self.scan_log_scroll = 0;
+            }
+            TAB_REPAIR => {
+                self.repair_log_scroll = 0;
+            }
+            _ => {}
+        }
+    }
+
     pub fn start_scan(&mut self) {
         if self.is_busy() {
             return;
@@ -278,9 +353,10 @@ impl App {
         self.active_tab = TAB_SCANNER;
         self.issues.clear();
         self.selected_issue_index = 0;
+        self.selected_filtered_index = 0;
+        self.scan_log_scroll = 0;
         self.scan_log_messages.clear();
-        self.scan_log_messages
-            .push("Starte vollständigen System-Health-Scan...".to_string());
+        self.push_scan_log("Starte vollständigen System-Health-Scan...");
 
         for item in &mut self.module_progress_list {
             item.3 = 0;
@@ -332,13 +408,14 @@ impl App {
         self.fixed_count = 0;
         self.failed_count = 0;
         self.total_to_fix = selected_count;
+        self.repair_log_scroll = 0;
         self.vss_status = if self.dry_run {
             "Simulation".to_string()
         } else {
             "Initialisiere...".to_string()
         };
         self.repair_console_lines.clear();
-        self.repair_console_lines.push(if self.dry_run {
+        self.push_repair_log(if self.dry_run {
             format!(
                 "SIMULATION: Zeige geplante Schritte für {} Probleme. Es wird nichts verändert.",
                 selected_count
@@ -393,9 +470,9 @@ impl App {
         self.status_message = Some(format!("{} wird abgebrochen...", target));
         let line = format!("⏹ Abbruch angefordert – laufender {} wird beendet.", target);
         if self.is_scanning {
-            self.scan_log_messages.push(line);
+            self.push_scan_log(line);
         } else {
-            self.repair_console_lines.push(line);
+            self.push_repair_log(line);
         }
         true
     }
@@ -447,7 +524,7 @@ impl App {
                             self.scan_active_module_name = self.module_progress_list[pos].1.clone();
                         }
                         if let Some(msg) = prog.log_message {
-                            self.scan_log_messages.push(msg);
+                            push_bounded_log(&mut self.scan_log_messages, msg);
                         }
                         let total_mods = self.module_progress_list.len().max(1);
                         let sum_progress: usize =
@@ -483,8 +560,10 @@ impl App {
                             }
                         }
                         self.issues.extend(issues);
-                        self.scan_log_messages
-                            .push(format!("Modul '{}' abgeschlossen.", module_id));
+                        push_bounded_log(
+                            &mut self.scan_log_messages,
+                            format!("Modul '{}' abgeschlossen.", module_id),
+                        );
                     }
                     ScanEvent::ModuleFailed { module_id, error } => {
                         if let Some(pos) =
@@ -492,8 +571,10 @@ impl App {
                         {
                             self.module_statuses[pos].3 = ModuleStatus::Failed(error.clone());
                         }
-                        self.scan_log_messages
-                            .push(format!("Fehler in Modul '{}': {}", module_id, error));
+                        push_bounded_log(
+                            &mut self.scan_log_messages,
+                            format!("Fehler in Modul '{}': {}", module_id, error),
+                        );
                     }
                     ScanEvent::ScanCancelled {
                         completed_modules,
@@ -513,7 +594,7 @@ impl App {
                             total_modules,
                             self.issues.len()
                         );
-                        self.scan_log_messages.push(format!("⏹ {}", msg));
+                        push_bounded_log(&mut self.scan_log_messages, format!("⏹ {}", msg));
                         self.status_message = Some(msg);
                     }
                     ScanEvent::ScanCompleted {
@@ -546,15 +627,19 @@ impl App {
                 match event {
                     RepairEvent::DryRunStarted { issue_count } => {
                         self.vss_status = "Simulation (kein VSS)".to_string();
-                        self.repair_console_lines.push(format!(
-                            "Simuliere {} Reparatur(en) – kein Wiederherstellungspunkt nötig.",
-                            issue_count
-                        ));
+                        push_bounded_log(
+                            &mut self.repair_console_lines,
+                            format!(
+                                "Simuliere {} Reparatur(en) – kein Wiederherstellungspunkt nötig.",
+                                issue_count
+                            ),
+                        );
                     }
                     RepairEvent::VssStarted => {
                         self.vss_status = "Erstelle Restore Point...".to_string();
-                        self.repair_console_lines.push(
-                            "Erstelle Windows Systemwiederherstellungspunkt (VSS)...".to_string(),
+                        push_bounded_log(
+                            &mut self.repair_console_lines,
+                            "Erstelle Windows Systemwiederherstellungspunkt (VSS)...",
                         );
                     }
                     RepairEvent::VssCompleted { success, message } => {
@@ -563,18 +648,24 @@ impl App {
                         } else {
                             "Hinweis".to_string()
                         };
-                        self.repair_console_lines.push(format!("VSS: {}", message));
+                        push_bounded_log(
+                            &mut self.repair_console_lines,
+                            format!("VSS: {}", message),
+                        );
                     }
                     RepairEvent::FixStarted { issue_id: _, title } => {
                         self.current_fix_title = title.clone();
-                        self.repair_console_lines.push(if self.dry_run {
-                            format!("Simuliere: {}", title)
-                        } else {
-                            format!("Repariere: {}", title)
-                        });
+                        push_bounded_log(
+                            &mut self.repair_console_lines,
+                            if self.dry_run {
+                                format!("Simuliere: {}", title)
+                            } else {
+                                format!("Repariere: {}", title)
+                            },
+                        );
                     }
                     RepairEvent::FixOutput { issue_id: _, line } => {
-                        self.repair_console_lines.push(line);
+                        push_bounded_log(&mut self.repair_console_lines, line);
                     }
                     RepairEvent::FixFinished {
                         issue_id,
@@ -592,11 +683,16 @@ impl App {
                         }
                         if success {
                             self.fixed_count += 1;
-                            self.repair_console_lines.push(format!("✔ {}", message));
+                            push_bounded_log(
+                                &mut self.repair_console_lines,
+                                format!("✔ {}", message),
+                            );
                         } else {
                             self.failed_count += 1;
-                            self.repair_console_lines
-                                .push(format!("✖ Fehler: {}", message));
+                            push_bounded_log(
+                                &mut self.repair_console_lines,
+                                format!("✖ Fehler: {}", message),
+                            );
                         }
                     }
                     RepairEvent::RepairsCancelled {
@@ -613,7 +709,7 @@ impl App {
                             "Reparatur abgebrochen: {} erledigt, {} fehlgeschlagen, {} nicht mehr ausgeführt.",
                             fixed_count, failed_count, remaining
                         );
-                        self.repair_console_lines.push(format!("⏹ {}", msg));
+                        push_bounded_log(&mut self.repair_console_lines, format!("⏹ {}", msg));
                         self.status_message = Some(msg);
                     }
                     RepairEvent::AllRepairsCompleted {
@@ -1142,5 +1238,43 @@ mod tests {
 
         app.clear_filters();
         assert_eq!(app.filtered_issue_indices(), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn test_app_log_ring_buffer_and_scrolling() {
+        let mut app = App::new();
+        app.scan_log_messages.clear();
+
+        // Push 2100 messages (exceeding MAX_LOG_LINES = 2000)
+        for i in 0..2100 {
+            app.push_scan_log(format!("Log line {}", i));
+        }
+
+        assert_eq!(app.scan_log_messages.len(), MAX_LOG_LINES);
+        // The first 100 messages should have been evicted; line 100 should be the oldest
+        assert_eq!(
+            app.scan_log_messages.front(),
+            Some(&"Log line 100".to_string())
+        );
+        assert_eq!(
+            app.scan_log_messages.back(),
+            Some(&"Log line 2099".to_string())
+        );
+
+        // Test scrolling
+        app.active_tab = TAB_SCANNER;
+        assert_eq!(app.scan_log_scroll, 0);
+
+        app.scroll_log_up(15);
+        assert_eq!(app.scan_log_scroll, 15);
+
+        app.scroll_log_down(5);
+        assert_eq!(app.scan_log_scroll, 10);
+
+        app.scroll_log_top();
+        assert_eq!(app.scan_log_scroll, MAX_LOG_LINES - 1);
+
+        app.scroll_log_bottom();
+        assert_eq!(app.scan_log_scroll, 0);
     }
 }

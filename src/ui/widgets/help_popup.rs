@@ -27,6 +27,14 @@ const SECTIONS: &[Section] = &[
             ("[S] / [R]", "System-Health-Scan starten bzw. wiederholen"),
             ("[F]", "Ausgewählte Reparaturen ausführen"),
             ("[D]", "Simulationsmodus – zeigt Schritte, ändert nichts"),
+            (
+                "[PgUp] / [PgDn]",
+                "Live-Log/Terminal nach oben/unten scrollen",
+            ),
+            (
+                "[Home] / [End]",
+                "Zum Log-Anfang / zurück zum Live-Tail springen",
+            ),
             ("[E]", "Diagnosebericht als HTML exportieren"),
             ("[Esc]", "Laufenden Scan oder Reparaturlauf abbrechen"),
         ],
