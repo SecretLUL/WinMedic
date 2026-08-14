@@ -155,7 +155,7 @@ pub fn render_dashboard(
     let sys_card = Paragraph::new(sys_lines).block(Theme::card_block("SYSTEM-SPEZIFIKATION"));
     f.render_widget(sys_card, top_chunks[2]);
 
-    // Middle Section: 6 Diagnostic Modules (2 Rows of 3 Columns)
+    // Middle Section: 7 Diagnostic Modules (Row 1: 4 Cards, Row 2: 3 Cards)
     let mod_rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
@@ -164,9 +164,10 @@ pub fn render_dashboard(
     let row1 = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(33),
-            Constraint::Percentage(33),
-            Constraint::Percentage(34),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
         ])
         .split(mod_rows[0]);
 
@@ -183,9 +184,10 @@ pub fn render_dashboard(
         (0, row1[0]),
         (1, row1[1]),
         (2, row1[2]),
-        (3, row2[0]),
-        (4, row2[1]),
-        (5, row2[2]),
+        (3, row1[3]),
+        (4, row2[0]),
+        (5, row2[1]),
+        (6, row2[2]),
     ];
 
     for (idx, slot_rect) in card_slots {

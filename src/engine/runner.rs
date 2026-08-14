@@ -673,7 +673,7 @@ mod tests {
                 cancelled = Some((completed_modules, total_modules));
             }
         }
-        assert_eq!(cancelled, Some((0, 6)));
+        assert_eq!(cancelled, Some((0, 7)));
     }
 
     #[tokio::test]
@@ -698,8 +698,8 @@ mod tests {
             }
         }
 
-        assert_eq!(started_modules.len(), 6, "all 6 modules should start");
-        assert_eq!(finished_or_failed, 6, "all 6 modules should finish or fail");
+        assert_eq!(started_modules.len(), 7, "all 7 modules should start");
+        assert_eq!(finished_or_failed, 7, "all 7 modules should finish or fail");
         assert!(saw_completed, "scan should emit ScanCompleted");
     }
 
