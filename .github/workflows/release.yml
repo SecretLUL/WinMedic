@@ -1,6 +1,9 @@
 name: Release
 
 on:
+  push:
+    tags:
+      - 'v*'
   release:
     types: [published]
 
@@ -22,9 +25,19 @@ jobs:
       - name: Build Optimized Release Binary
         run: cargo build --release
 
+      - name: Prepare Versioned Binaries
+        shell: pwsh
+        run: |
+          $tag = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "v0.1.0" }
+          Copy-Item target/release/winmedic.exe "target/release/winmedic-${tag}.exe"
+          Copy-Item target/release/winmedic.exe "target/release/winmedic-${tag}-windows-x86_64.exe"
+
       - name: Upload Binary to Release Assets
         uses: softprops/action-gh-release@v2
         with:
-          files: target/release/winmedic.exe
+          prerelease: ${{ !startsWith(github.ref_name, 'v1.') }}
+          files: |
+            target/release/winmedic-*.exe
+            target/release/winmedic.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
