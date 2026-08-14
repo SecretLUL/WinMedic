@@ -5,6 +5,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph};
+use std::collections::VecDeque;
 
 pub fn render_scanner(
     f: &mut Frame,
@@ -14,8 +15,9 @@ pub fn render_scanner(
     active_module_name: &str,
     current_step_text: &str,
     module_progresses: &[(&str, &str, &str, u8, bool)],
-    log_messages: &[String],
+    log_messages: &VecDeque<String>,
     issues: &[Issue],
+    scroll_offset: usize,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -99,11 +101,15 @@ pub fn render_scanner(
     let module_list = List::new(items).block(Theme::card_block("DIAGNOSE-MODULE"));
     f.render_widget(module_list, center_chunks[0]);
 
-    // Right: Live Log Output
-    let log_lines: Vec<Line> = log_messages
-        .iter()
-        .rev()
-        .take(15)
+    // Right: Live Log Output with scroll offset
+    let viewport_height = center_chunks[1].height.saturating_sub(2) as usize;
+    let total_logs = log_messages.len();
+
+    let end_idx = total_logs.saturating_sub(scroll_offset);
+    let start_idx = end_idx.saturating_sub(viewport_height);
+
+    let log_lines: Vec<Line> = (start_idx..end_idx)
+        .filter_map(|idx| log_messages.get(idx))
         .map(|msg| {
             Line::from(vec![
                 Span::styled(" ❯ ", Style::default().fg(Theme::CYAN)),
@@ -112,7 +118,30 @@ pub fn render_scanner(
         })
         .collect();
 
-    let log_box = Paragraph::new(log_lines).block(Theme::card_block("LIVE-DIAGNOSE PROTOKOLL"));
+    let log_title = if scroll_offset > 0 {
+        format!(
+            " LIVE-DIAGNOSE PROTOKOLL [Zeilen {}-{} von {} | End = Live] ",
+            start_idx + 1,
+            end_idx,
+            total_logs
+        )
+    } else {
+        format!(
+            " LIVE-DIAGNOSE PROTOKOLL [{}] [PgUp/PgDn zum Scrollen] ",
+            total_logs
+        )
+    };
+
+    let log_box = Paragraph::new(log_lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(if scroll_offset > 0 {
+                Theme::AMBER
+            } else {
+                Theme::BORDER
+            }))
+            .title(log_title),
+    );
     f.render_widget(log_box, center_chunks[1]);
 
     // Bottom: Issue Counters

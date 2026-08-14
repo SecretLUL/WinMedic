@@ -1,15 +1,22 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
-use crate::utils::cmd::{run_cmd, run_cmd_streaming};
+use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 use tokio::time::sleep;
 
-pub struct SystemIntegrityModule;
+pub struct SystemIntegrityModule {
+    runner: Arc<dyn CommandRunner>,
+}
 
 impl SystemIntegrityModule {
     pub fn new() -> Self {
-        Self
+        Self::with_runner(Arc::new(SystemCommandRunner::new()))
+    }
+
+    pub fn with_runner(runner: Arc<dyn CommandRunner>) -> Self {
+        Self { runner }
     }
 
     async fn send_progress(
@@ -65,12 +72,14 @@ impl DiagnosticModule for SystemIntegrityModule {
         .await;
         sleep(Duration::from_millis(150)).await;
 
-        let dism_check = run_cmd(
-            "dism.exe",
-            &["/Online", "/Cleanup-Image", "/CheckHealth"],
-            Duration::from_secs(45),
-        )
-        .await;
+        let dism_check = self
+            .runner
+            .run(
+                "dism.exe",
+                &["/Online", "/Cleanup-Image", "/CheckHealth"],
+                Duration::from_secs(45),
+            )
+            .await;
 
         match dism_check {
             Ok(output) => {
@@ -120,7 +129,10 @@ impl DiagnosticModule for SystemIntegrityModule {
         .await;
         sleep(Duration::from_millis(150)).await;
 
-        let vss_query = run_cmd("sc.exe", &["query", "vss"], Duration::from_secs(10)).await;
+        let vss_query = self
+            .runner
+            .run("sc.exe", &["query", "vss"], Duration::from_secs(10))
+            .await;
         if let Ok(vss_out) = vss_query {
             let stdout = vss_out.stdout.to_lowercase();
             if stdout.contains("disabled") || stdout.contains("deaktiviert") {
@@ -231,13 +243,15 @@ impl DiagnosticModule for SystemIntegrityModule {
 
         match issue_id {
             "sys_dism_corrupt" => {
-                let out = run_cmd_streaming(
-                    "dism.exe",
-                    &["/Online", "/Cleanup-Image", "/RestoreHealth"],
-                    log_tx,
-                    Duration::from_secs(600),
-                )
-                .await?;
+                let out = self
+                    .runner
+                    .run_streaming(
+                        "dism.exe",
+                        &["/Online", "/Cleanup-Image", "/RestoreHealth"],
+                        log_tx,
+                        Duration::from_secs(600),
+                    )
+                    .await?;
                 if out.success {
                     Ok(
                         "DISM /RestoreHealth erfolgreich abgeschlossen. Component Store repariert."
@@ -248,22 +262,28 @@ impl DiagnosticModule for SystemIntegrityModule {
                 }
             }
             "sys_vss_disabled" => {
-                let _ = run_cmd(
-                    "sc.exe",
-                    &["config", "vss", "start=", "demand"],
-                    Duration::from_secs(10),
-                )
-                .await;
-                let _ = run_cmd("net.exe", &["start", "vss"], Duration::from_secs(10)).await;
+                let _ = self
+                    .runner
+                    .run(
+                        "sc.exe",
+                        &["config", "vss", "start=", "demand"],
+                        Duration::from_secs(10),
+                    )
+                    .await;
+                let _ = self
+                    .runner
+                    .run("net.exe", &["start", "vss"], Duration::from_secs(10))
+                    .await;
                 Ok(
                     "Volume Shadow Copy (VSS) Dienst wurde erfolgreich konfiguriert und gestartet."
                         .to_string(),
                 )
             }
             "sys_sfc_corrupt" => {
-                let out =
-                    run_cmd_streaming("sfc.exe", &["/scannow"], log_tx, Duration::from_secs(600))
-                        .await?;
+                let out = self
+                    .runner
+                    .run_streaming("sfc.exe", &["/scannow"], log_tx, Duration::from_secs(600))
+                    .await?;
                 if out.success {
                     Ok(
                         "SFC /scannow erfolgreich abgeschlossen. Systemdateien repariert."
@@ -275,5 +295,47 @@ impl DiagnosticModule for SystemIntegrityModule {
             }
             _ => Err(format!("Unbekannte Problem-ID: {}", issue_id)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::cmd::{CmdOutput, MockCommandRunner};
+
+    #[tokio::test]
+    async fn test_system_integrity_detects_dism_corruption() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "dism.exe",
+            CmdOutput::ok(
+                "The component store is repairable. The operation completed successfully.",
+            ),
+        );
+        mock.add_response("sc.exe", CmdOutput::ok("STATE: 4 RUNNING"));
+
+        let module = SystemIntegrityModule::with_runner(Arc::new(mock));
+        let issues = module.scan(None).await.unwrap();
+
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].id, "sys_dism_corrupt");
+        assert_eq!(issues[0].severity, Severity::Critical);
+    }
+
+    #[tokio::test]
+    async fn test_system_integrity_detects_vss_disabled() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "dism.exe",
+            CmdOutput::ok("No component store corruption detected."),
+        );
+        mock.add_response("sc.exe", CmdOutput::ok("START_TYPE: DISABLED"));
+
+        let module = SystemIntegrityModule::with_runner(Arc::new(mock));
+        let issues = module.scan(None).await.unwrap();
+
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].id, "sys_vss_disabled");
+        assert_eq!(issues[0].severity, Severity::Warning);
     }
 }

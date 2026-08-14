@@ -1,17 +1,24 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
-use crate::utils::cmd::run_cmd;
+use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 use tokio::time::sleep;
 use winreg::RegKey;
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
 
-pub struct NetworkModule;
+pub struct NetworkModule {
+    runner: Arc<dyn CommandRunner>,
+}
 
 impl NetworkModule {
     pub fn new() -> Self {
-        Self
+        Self::with_runner(Arc::new(SystemCommandRunner::new()))
+    }
+
+    pub fn with_runner(runner: Arc<dyn CommandRunner>) -> Self {
+        Self { runner }
     }
 
     async fn send_progress(
@@ -67,12 +74,14 @@ impl DiagnosticModule for NetworkModule {
         .await;
         sleep(Duration::from_millis(150)).await;
 
-        let dns_lookup = run_cmd(
-            "nslookup.exe",
-            &["dns.google", "8.8.8.8"],
-            Duration::from_secs(6),
-        )
-        .await;
+        let dns_lookup = self
+            .runner
+            .run(
+                "nslookup.exe",
+                &["dns.google", "8.8.8.8"],
+                Duration::from_secs(6),
+            )
+            .await;
         let mut dns_healthy = false;
         if let Ok(out) = dns_lookup {
             if out.stdout.contains("8.8.8.8") || out.stdout.contains("Address") {
@@ -81,12 +90,14 @@ impl DiagnosticModule for NetworkModule {
         }
 
         if !dns_healthy {
-            let ping_test = run_cmd(
-                "ping.exe",
-                &["-n", "1", "-w", "1500", "1.1.1.1"],
-                Duration::from_secs(4),
-            )
-            .await;
+            let ping_test = self
+                .runner
+                .run(
+                    "ping.exe",
+                    &["-n", "1", "-w", "1500", "1.1.1.1"],
+                    Duration::from_secs(4),
+                )
+                .await;
             let ip_reachable = match ping_test {
                 Ok(out) => out.stdout.contains("TTL="),
                 Err(_) => false,
@@ -189,12 +200,14 @@ impl DiagnosticModule for NetworkModule {
         .await;
         sleep(Duration::from_millis(150)).await;
 
-        let winsock_audit = run_cmd(
-            "netsh.exe",
-            &["winsock", "show", "catalog"],
-            Duration::from_secs(6),
-        )
-        .await;
+        let winsock_audit = self
+            .runner
+            .run(
+                "netsh.exe",
+                &["winsock", "show", "catalog"],
+                Duration::from_secs(6),
+            )
+            .await;
         if let Ok(out) = winsock_audit {
             if out.stdout.is_empty()
                 || out.stdout.contains("Fehler")
@@ -235,19 +248,33 @@ impl DiagnosticModule for NetworkModule {
     ) -> Result<String, String> {
         match issue_id {
             "net_dns_failure" => {
-                let _ = run_cmd("ipconfig.exe", &["/flushdns"], Duration::from_secs(8)).await;
-                let _ = run_cmd("ipconfig.exe", &["/registerdns"], Duration::from_secs(8)).await;
+                let _ = self
+                    .runner
+                    .run("ipconfig.exe", &["/flushdns"], Duration::from_secs(8))
+                    .await;
+                let _ = self
+                    .runner
+                    .run("ipconfig.exe", &["/registerdns"], Duration::from_secs(8))
+                    .await;
                 Ok("DNS-Cache erfolgreich geleert und DNS-Resolver neu registriert.".to_string())
             }
             "net_offline_warning" | "net_winsock_corrupt" => {
-                let _ = run_cmd("netsh.exe", &["winsock", "reset"], Duration::from_secs(10)).await;
-                let _ = run_cmd(
-                    "netsh.exe",
-                    &["int", "ip", "reset"],
-                    Duration::from_secs(10),
-                )
-                .await;
-                let _ = run_cmd("ipconfig.exe", &["/flushdns"], Duration::from_secs(8)).await;
+                let _ = self
+                    .runner
+                    .run("netsh.exe", &["winsock", "reset"], Duration::from_secs(10))
+                    .await;
+                let _ = self
+                    .runner
+                    .run(
+                        "netsh.exe",
+                        &["int", "ip", "reset"],
+                        Duration::from_secs(10),
+                    )
+                    .await;
+                let _ = self
+                    .runner
+                    .run("ipconfig.exe", &["/flushdns"], Duration::from_secs(8))
+                    .await;
                 Ok(
                     "Winsock & TCP/IP-Stack erfolgreich zurückgesetzt. (Neustart empfohlen)"
                         .to_string(),
@@ -270,5 +297,37 @@ impl DiagnosticModule for NetworkModule {
             }
             _ => Err(format!("Unbekannte Problem-ID: {}", issue_id)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::cmd::{CmdOutput, MockCommandRunner};
+
+    #[tokio::test]
+    async fn test_network_detects_dns_failure() {
+        let mock = MockCommandRunner::new();
+        // nslookup fails
+        mock.add_response(
+            "nslookup.exe",
+            CmdOutput::failed(1, "DNS request timed out."),
+        );
+        // ping succeeds (IP reachable)
+        mock.add_response(
+            "ping.exe",
+            CmdOutput::ok("Reply from 1.1.1.1: bytes=32 time=12ms TTL=58"),
+        );
+        mock.add_response(
+            "netsh.exe",
+            CmdOutput::ok("Winsock Catalog Provider: MSAFD Tcpip"),
+        );
+
+        let module = NetworkModule::with_runner(Arc::new(mock));
+        let issues = module.scan(None).await.unwrap();
+
+        let dns_issue = issues.iter().find(|i| i.id == "net_dns_failure");
+        assert!(dns_issue.is_some());
+        assert_eq!(dns_issue.unwrap().severity, Severity::Critical);
     }
 }

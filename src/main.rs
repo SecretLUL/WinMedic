@@ -34,7 +34,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;
 
-use app::{App, TAB_COUNT, TAB_DASHBOARD, TAB_HISTORY, TAB_REPAIR, TAB_SETTINGS, TAB_TRIAGE};
+use app::{
+    App, TAB_COUNT, TAB_DASHBOARD, TAB_HISTORY, TAB_REPAIR, TAB_SCANNER, TAB_SETTINGS, TAB_TRIAGE,
+};
 use config::AppConfig;
 use engine::exit_code;
 use engine::reporter::DiagnosticReporter;
@@ -74,6 +76,10 @@ struct CliArgs {
     #[arg(short, long)]
     json: bool,
 
+    /// Save report to file (.html, .md, or .json based on extension)
+    #[arg(short, long, value_name = "FILE")]
+    output: Option<std::path::PathBuf>,
+
     /// Skip creating a Windows System Restore point before repairs
     #[arg(long)]
     no_vss: bool,
@@ -86,7 +92,7 @@ struct CliArgs {
 impl CliArgs {
     /// Anything that runs without the interactive TUI.
     fn is_headless(&self) -> bool {
-        self.scan || self.auto_fix || self.json || self.dry_run
+        self.scan || self.auto_fix || self.json || self.dry_run || self.output.is_some()
     }
 
     /// Whether a repair pass (real or simulated) should follow the scan.
@@ -229,6 +235,8 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
 
     let mut issues = engine_handle.await?;
 
+    let audit_logger = crate::safety::audit::AuditLogger::new();
+
     // With repairs to follow, the JSON document is emitted at the very end so it
     // reflects the post-repair state instead of a snapshot that is already stale.
     let defer_json = args.json && args.runs_repairs() && !scan_cancelled;
@@ -240,7 +248,11 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     } else if !defer_json {
         println!(
             "{}",
-            DiagnosticReporter::to_json(&issues, DiagnosticEngine::calculate_health_score(&issues))
+            DiagnosticReporter::to_json(
+                &issues,
+                DiagnosticEngine::calculate_health_score(&issues),
+                &audit_logger.get_history()
+            )
         );
     }
 
@@ -340,8 +352,31 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     if defer_json {
         println!(
             "{}",
-            DiagnosticReporter::to_json(&issues, DiagnosticEngine::calculate_health_score(&issues))
+            DiagnosticReporter::to_json(
+                &issues,
+                DiagnosticEngine::calculate_health_score(&issues),
+                &audit_logger.get_history()
+            )
         );
+    }
+
+    if let Some(ref out_path) = args.output {
+        let health = DiagnosticEngine::calculate_health_score(&issues);
+        let audit_entries = audit_logger.get_history();
+        match DiagnosticReporter::save_report(out_path, &issues, health, &audit_entries) {
+            Ok(()) => {
+                if !quiet {
+                    println!("📄 Bericht gespeichert: {}", out_path.display());
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "Fehler beim Speichern des Berichts nach '{}': {}",
+                    out_path.display(),
+                    e
+                );
+            }
+        }
     }
 
     let code = if scan_cancelled || repairs_cancelled {
@@ -428,6 +463,24 @@ fn handle_key(app: &mut App, code: KeyCode) {
         return;
     }
 
+    if app.active_tab == TAB_TRIAGE && app.is_searching {
+        match code {
+            KeyCode::Esc | KeyCode::Enter => {
+                app.is_searching = false;
+            }
+            KeyCode::Backspace => {
+                app.search_query.pop();
+                app.clamp_filtered_selection();
+            }
+            KeyCode::Char(c) => {
+                app.search_query.push(c);
+                app.clamp_filtered_selection();
+            }
+            _ => {}
+        }
+        return;
+    }
+
     match code {
         KeyCode::Char('q') | KeyCode::Char('Q') => app.should_quit = true,
         KeyCode::Char('?') => app.show_help = true,
@@ -494,6 +547,15 @@ fn handle_key(app: &mut App, code: KeyCode) {
             }
         }
 
+        KeyCode::Char('e') | KeyCode::Char('E') => match app.export_report() {
+            Ok(path) => {
+                app.status_message = Some(format!("📄 Bericht exportiert: {}", path.display()));
+            }
+            Err(err) => {
+                app.status_message = Some(err);
+            }
+        },
+
         KeyCode::Char(' ') | KeyCode::Enter => match app.active_tab {
             TAB_TRIAGE => app.toggle_selected_issue(),
             TAB_SETTINGS => app.toggle_current_setting(),
@@ -504,14 +566,49 @@ fn handle_key(app: &mut App, code: KeyCode) {
             TAB_TRIAGE => app.prev_issue(),
             TAB_HISTORY => app.prev_backup(),
             TAB_SETTINGS => app.prev_setting(),
+            TAB_SCANNER | TAB_REPAIR => app.scroll_log_up(1),
             _ => {}
         },
         KeyCode::Down | KeyCode::Char('j') => match app.active_tab {
             TAB_TRIAGE => app.next_issue(),
             TAB_HISTORY => app.next_backup(),
             TAB_SETTINGS => app.next_setting(),
+            TAB_SCANNER | TAB_REPAIR => app.scroll_log_down(1),
             _ => {}
         },
+        KeyCode::PageUp => match app.active_tab {
+            TAB_SCANNER | TAB_REPAIR => app.scroll_log_up(10),
+            _ => {}
+        },
+        KeyCode::PageDown => match app.active_tab {
+            TAB_SCANNER | TAB_REPAIR => app.scroll_log_down(10),
+            _ => {}
+        },
+        KeyCode::Home => match app.active_tab {
+            TAB_SCANNER | TAB_REPAIR => app.scroll_log_top(),
+            _ => {}
+        },
+        KeyCode::End => match app.active_tab {
+            TAB_SCANNER | TAB_REPAIR => app.scroll_log_bottom(),
+            _ => {}
+        },
+
+        KeyCode::Char('/') if app.active_tab == TAB_TRIAGE => app.is_searching = true,
+        KeyCode::Char('c') | KeyCode::Char('C') if app.active_tab == TAB_TRIAGE => {
+            app.toggle_severity_filter(engine::issue::Severity::Critical);
+        }
+        KeyCode::Char('w') | KeyCode::Char('W') if app.active_tab == TAB_TRIAGE => {
+            app.toggle_severity_filter(engine::issue::Severity::Warning);
+        }
+        KeyCode::Char('i') | KeyCode::Char('I') if app.active_tab == TAB_TRIAGE => {
+            app.toggle_severity_filter(engine::issue::Severity::Info);
+        }
+        KeyCode::Char('m') | KeyCode::Char('M') if app.active_tab == TAB_TRIAGE => {
+            app.cycle_module_filter();
+        }
+        KeyCode::Char('x') | KeyCode::Char('X') if app.active_tab == TAB_TRIAGE => {
+            app.clear_filters();
+        }
 
         KeyCode::Left | KeyCode::Char('h') => {
             if app.active_tab == TAB_SETTINGS {
@@ -524,9 +621,13 @@ fn handle_key(app: &mut App, code: KeyCode) {
             }
         }
 
-        // Esc cancels a running operation first, and only then navigates back.
-        KeyCode::Esc if !app.cancel_current_operation() && app.active_tab != TAB_DASHBOARD => {
-            app.active_tab = TAB_DASHBOARD;
+        // Esc clears active filters first, cancels a running operation second, and navigates back to dashboard third.
+        KeyCode::Esc => {
+            if app.active_tab == TAB_TRIAGE && app.has_active_filters() {
+                app.clear_filters();
+            } else if !app.cancel_current_operation() && app.active_tab != TAB_DASHBOARD {
+                app.active_tab = TAB_DASHBOARD;
+            }
         }
 
         _ => {}

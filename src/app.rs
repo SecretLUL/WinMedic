@@ -1,15 +1,20 @@
 use crate::config::AppConfig;
 use crate::engine::issue::{Issue, Severity};
+use crate::engine::reporter::DiagnosticReporter;
 use crate::engine::runner::{DiagnosticEngine, RepairEvent, RepairOptions, ScanEvent};
 use crate::modules::ModuleStatus;
 use crate::safety::audit::{AuditEntry, AuditLogger};
 use crate::safety::reg_backup::{BackupRecord, RegBackupManager};
 use crate::safety::restore_point::list_restore_points;
-use crate::utils::admin::is_admin;
+use crate::utils::admin::{is_admin, relaunch_as_admin};
 use crate::utils::hardware::{SystemTelemetry, TelemetryCollector};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver, UnboundedSender, channel};
 use tokio_util::sync::CancellationToken;
+
+/// Maximum number of log lines kept in memory for scan and repair terminal buffers.
+pub const MAX_LOG_LINES: usize = 2000;
 
 /// Number of tabs in the main navigation.
 pub const TAB_COUNT: usize = 6;
@@ -37,12 +42,28 @@ pub enum ConfirmRequest {
         key_path: String,
         file_path: String,
     },
+    Elevate,
 }
 
 impl ConfirmRequest {
     pub fn title(&self) -> &'static str {
         match self {
             ConfirmRequest::Rollback { .. } => "REGISTRY-SICHERUNG WIEDERHERSTELLEN?",
+            ConfirmRequest::Elevate => "ADMINISTRATORRECHTE ERFORDERLICH",
+        }
+    }
+
+    pub fn confirm_label(&self) -> &'static str {
+        match self {
+            ConfirmRequest::Rollback { .. } => "Wiederherstellen",
+            ConfirmRequest::Elevate => "Jetzt als Admin neu starten",
+        }
+    }
+
+    pub fn dismiss_label(&self) -> &'static str {
+        match self {
+            ConfirmRequest::Rollback { .. } => "Abbrechen",
+            ConfirmRequest::Elevate => "Ohne Admin fortfahren",
         }
     }
 
@@ -59,6 +80,15 @@ impl ConfirmRequest {
                 format!("Sicherung:  {}", description),
                 format!("Schlüssel:  {}", key_path),
                 format!("Datei:      {}", file_path),
+            ],
+            ConfirmRequest::Elevate => vec![
+                "WinMedic wurde ohne Administratorrechte ausgeführt.".to_string(),
+                "Vollständige Diagnose- und Reparaturfunktionen (Systemdateien via SFC/DISM,"
+                    .to_string(),
+                "Dienste und Registry) erfordern erhöhte Administratorrechte.".to_string(),
+                String::new(),
+                "Möchten Sie WinMedic jetzt mit Administratorrechten (UAC) neu starten?"
+                    .to_string(),
             ],
         }
     }
@@ -79,6 +109,13 @@ pub struct App {
     pub selected_issue_index: usize,
     pub health_score: u8,
 
+    // Issue Filtering & Search
+    pub severity_filter: Option<Severity>,
+    pub module_filter: Option<String>,
+    pub search_query: String,
+    pub is_searching: bool,
+    pub selected_filtered_index: usize,
+
     // Live Scanner State
     pub is_scanning: bool,
     pub scan_overall_progress: u8,
@@ -86,7 +123,8 @@ pub struct App {
     pub scan_current_step_text: String,
     pub module_progress_list: Vec<(String, String, String, u8, bool)>, // (id, name, icon, percent, is_done)
     pub module_statuses: Vec<(String, String, String, ModuleStatus)>,
-    pub scan_log_messages: Vec<String>,
+    pub scan_log_messages: VecDeque<String>,
+    pub scan_log_scroll: usize,
 
     // Live Repair State
     pub is_fixing: bool,
@@ -97,7 +135,8 @@ pub struct App {
     pub failed_count: usize,
     pub total_to_fix: usize,
     pub vss_status: String,
-    pub repair_console_lines: Vec<String>,
+    pub repair_console_lines: VecDeque<String>,
+    pub repair_log_scroll: usize,
 
     // Backups & History
     pub audit_logger: AuditLogger,
@@ -128,6 +167,13 @@ pub struct App {
     bg_rx: UnboundedReceiver<BackgroundEvent>,
 }
 
+fn push_bounded_log(buffer: &mut VecDeque<String>, line: impl Into<String>) {
+    if buffer.len() >= MAX_LOG_LINES {
+        buffer.pop_front();
+    }
+    buffer.push_back(line.into());
+}
+
 impl App {
     pub fn new() -> Self {
         let mut telemetry_collector = TelemetryCollector::new();
@@ -153,13 +199,21 @@ impl App {
             issues: Vec::new(),
             selected_issue_index: 0,
             health_score: 100,
+            severity_filter: None,
+            module_filter: None,
+            search_query: String::new(),
+            is_searching: false,
+            selected_filtered_index: 0,
             is_scanning: false,
             scan_overall_progress: 0,
             scan_active_module_name: "Bereit".to_string(),
             scan_current_step_text: "Kein Scan aktiv".to_string(),
             module_progress_list,
             module_statuses,
-            scan_log_messages: vec!["WinMedic initialisiert. Bereit für Diagnose.".to_string()],
+            scan_log_messages: VecDeque::from([String::from(
+                "WinMedic initialisiert. Bereit für Diagnose.",
+            )]),
+            scan_log_scroll: 0,
             is_fixing: false,
             dry_run: false,
             current_fix_title: String::new(),
@@ -167,7 +221,8 @@ impl App {
             failed_count: 0,
             total_to_fix: 0,
             vss_status: "Bereit".to_string(),
-            repair_console_lines: vec!["Reparatur-Center bereit.".to_string()],
+            repair_console_lines: VecDeque::from([String::from("Reparatur-Center bereit.")]),
+            repair_log_scroll: 0,
             audit_logger,
             reg_backup_mgr,
             audit_entries,
@@ -180,7 +235,11 @@ impl App {
             selected_setting_index: 0,
             status_message: Some("Bereit".to_string()),
             show_help: false,
-            pending_confirm: None,
+            pending_confirm: if !admin_flag {
+                Some(ConfirmRequest::Elevate)
+            } else {
+                None
+            },
             should_quit: false,
             scan_event_rx: None,
             repair_event_rx: None,
@@ -226,6 +285,64 @@ impl App {
         self.is_scanning || self.is_fixing
     }
 
+    pub fn push_scan_log(&mut self, msg: impl Into<String>) {
+        push_bounded_log(&mut self.scan_log_messages, msg);
+    }
+
+    pub fn push_repair_log(&mut self, line: impl Into<String>) {
+        push_bounded_log(&mut self.repair_console_lines, line);
+    }
+
+    pub fn scroll_log_up(&mut self, amount: usize) {
+        match self.active_tab {
+            TAB_SCANNER => {
+                let max_scroll = self.scan_log_messages.len().saturating_sub(1);
+                self.scan_log_scroll = (self.scan_log_scroll + amount).min(max_scroll);
+            }
+            TAB_REPAIR => {
+                let max_scroll = self.repair_console_lines.len().saturating_sub(1);
+                self.repair_log_scroll = (self.repair_log_scroll + amount).min(max_scroll);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn scroll_log_down(&mut self, amount: usize) {
+        match self.active_tab {
+            TAB_SCANNER => {
+                self.scan_log_scroll = self.scan_log_scroll.saturating_sub(amount);
+            }
+            TAB_REPAIR => {
+                self.repair_log_scroll = self.repair_log_scroll.saturating_sub(amount);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn scroll_log_top(&mut self) {
+        match self.active_tab {
+            TAB_SCANNER => {
+                self.scan_log_scroll = self.scan_log_messages.len().saturating_sub(1);
+            }
+            TAB_REPAIR => {
+                self.repair_log_scroll = self.repair_console_lines.len().saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn scroll_log_bottom(&mut self) {
+        match self.active_tab {
+            TAB_SCANNER => {
+                self.scan_log_scroll = 0;
+            }
+            TAB_REPAIR => {
+                self.repair_log_scroll = 0;
+            }
+            _ => {}
+        }
+    }
+
     pub fn start_scan(&mut self) {
         if self.is_busy() {
             return;
@@ -236,9 +353,10 @@ impl App {
         self.active_tab = TAB_SCANNER;
         self.issues.clear();
         self.selected_issue_index = 0;
+        self.selected_filtered_index = 0;
+        self.scan_log_scroll = 0;
         self.scan_log_messages.clear();
-        self.scan_log_messages
-            .push("Starte vollständigen System-Health-Scan...".to_string());
+        self.push_scan_log("Starte vollständigen System-Health-Scan...");
 
         for item in &mut self.module_progress_list {
             item.3 = 0;
@@ -267,6 +385,13 @@ impl App {
             return;
         }
 
+        if !self.is_admin && !self.dry_run {
+            self.pending_confirm = Some(ConfirmRequest::Elevate);
+            self.status_message =
+                Some("Administratorrechte erforderlich für Reparaturen.".to_string());
+            return;
+        }
+
         let selected_count = self
             .issues
             .iter()
@@ -283,13 +408,14 @@ impl App {
         self.fixed_count = 0;
         self.failed_count = 0;
         self.total_to_fix = selected_count;
+        self.repair_log_scroll = 0;
         self.vss_status = if self.dry_run {
             "Simulation".to_string()
         } else {
             "Initialisiere...".to_string()
         };
         self.repair_console_lines.clear();
-        self.repair_console_lines.push(if self.dry_run {
+        self.push_repair_log(if self.dry_run {
             format!(
                 "SIMULATION: Zeige geplante Schritte für {} Probleme. Es wird nichts verändert.",
                 selected_count
@@ -344,9 +470,9 @@ impl App {
         self.status_message = Some(format!("{} wird abgebrochen...", target));
         let line = format!("⏹ Abbruch angefordert – laufender {} wird beendet.", target);
         if self.is_scanning {
-            self.scan_log_messages.push(line);
+            self.push_scan_log(line);
         } else {
-            self.repair_console_lines.push(line);
+            self.push_repair_log(line);
         }
         true
     }
@@ -395,9 +521,10 @@ impl App {
                             .position(|m| m.0 == prog.module_id)
                         {
                             self.module_progress_list[pos].3 = prog.progress_percent;
+                            self.scan_active_module_name = self.module_progress_list[pos].1.clone();
                         }
                         if let Some(msg) = prog.log_message {
-                            self.scan_log_messages.push(msg);
+                            push_bounded_log(&mut self.scan_log_messages, msg);
                         }
                         let total_mods = self.module_progress_list.len().max(1);
                         let sum_progress: usize =
@@ -433,8 +560,10 @@ impl App {
                             }
                         }
                         self.issues.extend(issues);
-                        self.scan_log_messages
-                            .push(format!("Modul '{}' abgeschlossen.", module_id));
+                        push_bounded_log(
+                            &mut self.scan_log_messages,
+                            format!("Modul '{}' abgeschlossen.", module_id),
+                        );
                     }
                     ScanEvent::ModuleFailed { module_id, error } => {
                         if let Some(pos) =
@@ -442,8 +571,10 @@ impl App {
                         {
                             self.module_statuses[pos].3 = ModuleStatus::Failed(error.clone());
                         }
-                        self.scan_log_messages
-                            .push(format!("Fehler in Modul '{}': {}", module_id, error));
+                        push_bounded_log(
+                            &mut self.scan_log_messages,
+                            format!("Fehler in Modul '{}': {}", module_id, error),
+                        );
                     }
                     ScanEvent::ScanCancelled {
                         completed_modules,
@@ -463,7 +594,7 @@ impl App {
                             total_modules,
                             self.issues.len()
                         );
-                        self.scan_log_messages.push(format!("⏹ {}", msg));
+                        push_bounded_log(&mut self.scan_log_messages, format!("⏹ {}", msg));
                         self.status_message = Some(msg);
                     }
                     ScanEvent::ScanCompleted {
@@ -496,15 +627,19 @@ impl App {
                 match event {
                     RepairEvent::DryRunStarted { issue_count } => {
                         self.vss_status = "Simulation (kein VSS)".to_string();
-                        self.repair_console_lines.push(format!(
-                            "Simuliere {} Reparatur(en) – kein Wiederherstellungspunkt nötig.",
-                            issue_count
-                        ));
+                        push_bounded_log(
+                            &mut self.repair_console_lines,
+                            format!(
+                                "Simuliere {} Reparatur(en) – kein Wiederherstellungspunkt nötig.",
+                                issue_count
+                            ),
+                        );
                     }
                     RepairEvent::VssStarted => {
                         self.vss_status = "Erstelle Restore Point...".to_string();
-                        self.repair_console_lines.push(
-                            "Erstelle Windows Systemwiederherstellungspunkt (VSS)...".to_string(),
+                        push_bounded_log(
+                            &mut self.repair_console_lines,
+                            "Erstelle Windows Systemwiederherstellungspunkt (VSS)...",
                         );
                     }
                     RepairEvent::VssCompleted { success, message } => {
@@ -513,18 +648,24 @@ impl App {
                         } else {
                             "Hinweis".to_string()
                         };
-                        self.repair_console_lines.push(format!("VSS: {}", message));
+                        push_bounded_log(
+                            &mut self.repair_console_lines,
+                            format!("VSS: {}", message),
+                        );
                     }
                     RepairEvent::FixStarted { issue_id: _, title } => {
                         self.current_fix_title = title.clone();
-                        self.repair_console_lines.push(if self.dry_run {
-                            format!("Simuliere: {}", title)
-                        } else {
-                            format!("Repariere: {}", title)
-                        });
+                        push_bounded_log(
+                            &mut self.repair_console_lines,
+                            if self.dry_run {
+                                format!("Simuliere: {}", title)
+                            } else {
+                                format!("Repariere: {}", title)
+                            },
+                        );
                     }
                     RepairEvent::FixOutput { issue_id: _, line } => {
-                        self.repair_console_lines.push(line);
+                        push_bounded_log(&mut self.repair_console_lines, line);
                     }
                     RepairEvent::FixFinished {
                         issue_id,
@@ -542,11 +683,16 @@ impl App {
                         }
                         if success {
                             self.fixed_count += 1;
-                            self.repair_console_lines.push(format!("✔ {}", message));
+                            push_bounded_log(
+                                &mut self.repair_console_lines,
+                                format!("✔ {}", message),
+                            );
                         } else {
                             self.failed_count += 1;
-                            self.repair_console_lines
-                                .push(format!("✖ Fehler: {}", message));
+                            push_bounded_log(
+                                &mut self.repair_console_lines,
+                                format!("✖ Fehler: {}", message),
+                            );
                         }
                     }
                     RepairEvent::RepairsCancelled {
@@ -563,7 +709,7 @@ impl App {
                             "Reparatur abgebrochen: {} erledigt, {} fehlgeschlagen, {} nicht mehr ausgeführt.",
                             fixed_count, failed_count, remaining
                         );
-                        self.repair_console_lines.push(format!("⏹ {}", msg));
+                        push_bounded_log(&mut self.repair_console_lines, format!("⏹ {}", msg));
                         self.status_message = Some(msg);
                     }
                     RepairEvent::AllRepairsCompleted {
@@ -627,38 +773,156 @@ impl App {
         }
     }
 
+    pub fn filtered_issue_indices(&self) -> Vec<usize> {
+        self.issues
+            .iter()
+            .enumerate()
+            .filter(|(_idx, issue)| {
+                // Severity filter
+                if let Some(sev) = self.severity_filter {
+                    if issue.severity != sev {
+                        return false;
+                    }
+                }
+                // Module filter
+                if let Some(ref mod_id) = self.module_filter {
+                    if &issue.module_id != mod_id {
+                        return false;
+                    }
+                }
+                // Search query
+                if !self.search_query.is_empty() {
+                    let q = self.search_query.to_lowercase();
+                    let matches_title = issue.title.to_lowercase().contains(&q);
+                    let matches_desc = issue.description.to_lowercase().contains(&q);
+                    let matches_cat = issue.category.to_lowercase().contains(&q);
+                    let matches_mod = issue.module_id.to_lowercase().contains(&q);
+                    let matches_tech = issue.technical_details.to_lowercase().contains(&q);
+                    if !matches_title
+                        && !matches_desc
+                        && !matches_cat
+                        && !matches_mod
+                        && !matches_tech
+                    {
+                        return false;
+                    }
+                }
+                true
+            })
+            .map(|(idx, _)| idx)
+            .collect()
+    }
+
+    pub fn clamp_filtered_selection(&mut self) {
+        let count = self.filtered_issue_indices().len();
+        if count == 0 {
+            self.selected_filtered_index = 0;
+        } else if self.selected_filtered_index >= count {
+            self.selected_filtered_index = count - 1;
+        }
+    }
+
     pub fn toggle_selected_issue(&mut self) {
-        if let Some(issue) = self.issues.get_mut(self.selected_issue_index) {
-            issue.is_selected = !issue.is_selected;
+        let indices = self.filtered_issue_indices();
+        if let Some(&orig_idx) = indices.get(self.selected_filtered_index) {
+            if let Some(issue) = self.issues.get_mut(orig_idx) {
+                if !issue.is_fixed {
+                    issue.is_selected = !issue.is_selected;
+                }
+            }
         }
     }
 
     pub fn select_all_issues(&mut self) {
-        for issue in &mut self.issues {
-            issue.is_selected = true;
+        let indices = self.filtered_issue_indices();
+        for &orig_idx in &indices {
+            if let Some(issue) = self.issues.get_mut(orig_idx) {
+                if !issue.is_fixed {
+                    issue.is_selected = true;
+                }
+            }
         }
     }
 
     pub fn deselect_all_issues(&mut self) {
-        for issue in &mut self.issues {
-            issue.is_selected = false;
+        let indices = self.filtered_issue_indices();
+        for &orig_idx in &indices {
+            if let Some(issue) = self.issues.get_mut(orig_idx) {
+                issue.is_selected = false;
+            }
         }
     }
 
     pub fn next_issue(&mut self) {
-        if !self.issues.is_empty() {
-            self.selected_issue_index = (self.selected_issue_index + 1) % self.issues.len();
+        let indices = self.filtered_issue_indices();
+        if !indices.is_empty() {
+            self.selected_filtered_index = (self.selected_filtered_index + 1) % indices.len();
         }
     }
 
     pub fn prev_issue(&mut self) {
-        if !self.issues.is_empty() {
-            if self.selected_issue_index == 0 {
-                self.selected_issue_index = self.issues.len() - 1;
+        let indices = self.filtered_issue_indices();
+        if !indices.is_empty() {
+            if self.selected_filtered_index == 0 {
+                self.selected_filtered_index = indices.len() - 1;
             } else {
-                self.selected_issue_index -= 1;
+                self.selected_filtered_index -= 1;
             }
         }
+    }
+
+    pub fn toggle_severity_filter(&mut self, sev: Severity) {
+        if self.severity_filter == Some(sev) {
+            self.severity_filter = None;
+        } else {
+            self.severity_filter = Some(sev);
+        }
+        self.clamp_filtered_selection();
+    }
+
+    pub fn cycle_module_filter(&mut self) {
+        let mut module_ids: Vec<String> = self
+            .engine
+            .modules()
+            .iter()
+            .map(|m| m.id().to_string())
+            .collect();
+        module_ids.dedup();
+
+        if module_ids.is_empty() {
+            self.module_filter = None;
+            return;
+        }
+
+        self.module_filter = match &self.module_filter {
+            None => Some(module_ids[0].clone()),
+            Some(current) => {
+                if let Some(pos) = module_ids.iter().position(|m| m == current) {
+                    if pos + 1 < module_ids.len() {
+                        Some(module_ids[pos + 1].clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+        };
+        self.clamp_filtered_selection();
+    }
+
+    pub fn clear_filters(&mut self) {
+        self.severity_filter = None;
+        self.module_filter = None;
+        self.search_query.clear();
+        self.is_searching = false;
+        self.clamp_filtered_selection();
+    }
+
+    pub fn has_active_filters(&self) -> bool {
+        self.severity_filter.is_some()
+            || self.module_filter.is_some()
+            || !self.search_query.is_empty()
     }
 
     // ---------------------------------------------------------------- history
@@ -743,8 +1007,19 @@ impl App {
     }
 
     pub fn dismiss_confirm(&mut self) {
-        if self.pending_confirm.take().is_some() {
-            self.status_message = Some("Abgebrochen – es wurde nichts verändert.".to_string());
+        if let Some(request) = self.pending_confirm.take() {
+            match request {
+                ConfirmRequest::Rollback { .. } => {
+                    self.status_message =
+                        Some("Abgebrochen – es wurde nichts verändert.".to_string());
+                }
+                ConfirmRequest::Elevate => {
+                    self.status_message = Some(
+                        "Eingeschränkter Modus: Reparaturen ohne Administratorrechte können fehlschlagen."
+                            .to_string(),
+                    );
+                }
+            }
         }
     }
 
@@ -772,6 +1047,13 @@ impl App {
                     };
                     let _ = tx.send(BackgroundEvent::RollbackFinished { success, message });
                 });
+            }
+            ConfirmRequest::Elevate => {
+                if let Err(e) = relaunch_as_admin() {
+                    self.status_message = Some(format!("Elevierung fehlgeschlagen: {}", e));
+                } else {
+                    self.should_quit = true;
+                }
             }
         }
     }
@@ -835,5 +1117,164 @@ impl App {
         if self.issues.is_empty() {
             self.module_statuses = statuses;
         }
+    }
+
+    /// Export the current scan/repair report as an HTML file in the reports directory.
+    pub fn export_report(&mut self) -> Result<std::path::PathBuf, String> {
+        let base = dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        let report_dir = base.join("WinMedic").join("reports");
+        let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+        let filename = format!("winmedic_report_{}.html", timestamp);
+        let path = report_dir.join(filename);
+
+        let health = DiagnosticEngine::calculate_health_score(&self.issues);
+        self.audit_entries = self.audit_logger.get_history();
+
+        DiagnosticReporter::save_report(&path, &self.issues, health, &self.audit_entries)
+            .map(|_| path)
+            .map_err(|e| format!("Export fehlgeschlagen: {}", e))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_confirm_request_elevate() {
+        let req = ConfirmRequest::Elevate;
+        assert_eq!(req.title(), "ADMINISTRATORRECHTE ERFORDERLICH");
+        assert_eq!(req.confirm_label(), "Jetzt als Admin neu starten");
+        assert_eq!(req.dismiss_label(), "Ohne Admin fortfahren");
+        assert!(!req.body().is_empty());
+    }
+
+    #[test]
+    fn test_confirm_request_rollback() {
+        let req = ConfirmRequest::Rollback {
+            description: "Test Backup".to_string(),
+            key_path: "HKCU\\Test".to_string(),
+            file_path: "C:\\test.reg".to_string(),
+        };
+        assert_eq!(req.title(), "REGISTRY-SICHERUNG WIEDERHERSTELLEN?");
+        assert_eq!(req.confirm_label(), "Wiederherstellen");
+        assert_eq!(req.dismiss_label(), "Abbrechen");
+        assert!(!req.body().is_empty());
+    }
+
+    #[test]
+    fn test_app_export_report() {
+        let mut app = App::new();
+        let res = app.export_report();
+        assert!(res.is_ok());
+        let path = res.unwrap();
+        assert!(path.exists());
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("WinMedic Diagnosebericht"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_app_filter_and_search() {
+        let mut app = App::new();
+        app.issues = vec![
+            Issue::new(
+                "sfc_1",
+                "system_integrity",
+                "CBS log corrupt",
+                "System",
+                Severity::Critical,
+                crate::engine::issue::RiskScore::Low,
+                "SFC corrupt",
+                "details",
+                "fix",
+                vec![],
+            ),
+            Issue::new(
+                "temp_1",
+                "storage",
+                "Temp bloat files",
+                "Storage",
+                Severity::Warning,
+                crate::engine::issue::RiskScore::Low,
+                "Temp bloat",
+                "details",
+                "fix",
+                vec![],
+            ),
+            Issue::new(
+                "net_1",
+                "network",
+                "DNS cache full",
+                "Network",
+                Severity::Info,
+                crate::engine::issue::RiskScore::Low,
+                "DNS flush",
+                "details",
+                "fix",
+                vec![],
+            ),
+        ];
+
+        // Initially all 3 are returned
+        assert_eq!(app.filtered_issue_indices(), vec![0, 1, 2]);
+
+        // Filter by Critical
+        app.toggle_severity_filter(Severity::Critical);
+        assert_eq!(app.filtered_issue_indices(), vec![0]);
+
+        // Toggle again to reset severity filter
+        app.toggle_severity_filter(Severity::Critical);
+        assert_eq!(app.filtered_issue_indices(), vec![0, 1, 2]);
+
+        // Filter by module
+        app.module_filter = Some("storage".to_string());
+        assert_eq!(app.filtered_issue_indices(), vec![1]);
+
+        // Search text
+        app.clear_filters();
+        app.search_query = "DNS".to_string();
+        assert_eq!(app.filtered_issue_indices(), vec![2]);
+
+        app.clear_filters();
+        assert_eq!(app.filtered_issue_indices(), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn test_app_log_ring_buffer_and_scrolling() {
+        let mut app = App::new();
+        app.scan_log_messages.clear();
+
+        // Push 2100 messages (exceeding MAX_LOG_LINES = 2000)
+        for i in 0..2100 {
+            app.push_scan_log(format!("Log line {}", i));
+        }
+
+        assert_eq!(app.scan_log_messages.len(), MAX_LOG_LINES);
+        // The first 100 messages should have been evicted; line 100 should be the oldest
+        assert_eq!(
+            app.scan_log_messages.front(),
+            Some(&"Log line 100".to_string())
+        );
+        assert_eq!(
+            app.scan_log_messages.back(),
+            Some(&"Log line 2099".to_string())
+        );
+
+        // Test scrolling
+        app.active_tab = TAB_SCANNER;
+        assert_eq!(app.scan_log_scroll, 0);
+
+        app.scroll_log_up(15);
+        assert_eq!(app.scan_log_scroll, 15);
+
+        app.scroll_log_down(5);
+        assert_eq!(app.scan_log_scroll, 10);
+
+        app.scroll_log_top();
+        assert_eq!(app.scan_log_scroll, MAX_LOG_LINES - 1);
+
+        app.scroll_log_bottom();
+        assert_eq!(app.scan_log_scroll, 0);
     }
 }

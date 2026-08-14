@@ -1426,6 +1426,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+ "windows-sys 0.59.0",
  "winreg",
  "winres",
 ]

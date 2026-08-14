@@ -25,11 +25,32 @@ const SECTIONS: &[Section] = &[
         "Scan & Reparatur",
         &[
             ("[S] / [R]", "System-Health-Scan starten bzw. wiederholen"),
-            ("[Space]", "Problem für Reparatur an-/abwählen"),
-            ("[A] / [N]", "Alle Probleme aus-/abwählen"),
             ("[F]", "Ausgewählte Reparaturen ausführen"),
             ("[D]", "Simulationsmodus – zeigt Schritte, ändert nichts"),
+            (
+                "[PgUp] / [PgDn]",
+                "Live-Log/Terminal nach oben/unten scrollen",
+            ),
+            (
+                "[Home] / [End]",
+                "Zum Log-Anfang / zurück zum Live-Tail springen",
+            ),
+            ("[E]", "Diagnosebericht als HTML exportieren"),
             ("[Esc]", "Laufenden Scan oder Reparaturlauf abbrechen"),
+        ],
+    ),
+    (
+        "Problem-Triage & Filter (Tab 3)",
+        &[
+            (
+                "[c] / [w] / [i]",
+                "Nach Schweregrad filtern (Kritisch / Warnung / Info)",
+            ),
+            ("[m]", "Nach Diagnose-Modul filtern (durchschalten)"),
+            ("[/]", "Volltextsuche in Befunden & Details starten"),
+            ("[x]", "Alle aktiven Filter & Suche zurücksetzen"),
+            ("[Space]", "Problem für Reparatur an-/abwählen"),
+            ("[A] / [N]", "Alle sichtbaren Probleme aus-/abwählen"),
         ],
     ),
     (

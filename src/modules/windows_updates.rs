@@ -1,7 +1,8 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
-use crate::utils::cmd::run_cmd;
+use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 use tokio::time::sleep;
@@ -10,11 +11,16 @@ use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ};
 
 pub struct WindowsUpdatesModule {
     config: ModuleConfig,
+    runner: Arc<dyn CommandRunner>,
 }
 
 impl WindowsUpdatesModule {
     pub fn new(config: ModuleConfig) -> Self {
-        Self { config }
+        Self::with_runner(config, Arc::new(SystemCommandRunner::new()))
+    }
+
+    pub fn with_runner(config: ModuleConfig, runner: Arc<dyn CommandRunner>) -> Self {
+        Self { config, runner }
     }
 
     async fn send_progress(
@@ -77,7 +83,10 @@ impl DiagnosticModule for WindowsUpdatesModule {
         ];
 
         for (svc, svc_name) in services {
-            let out = run_cmd("sc.exe", &["query", svc], Duration::from_secs(8)).await;
+            let out = self
+                .runner
+                .run("sc.exe", &["query", svc], Duration::from_secs(8))
+                .await;
             if let Ok(res) = out {
                 let stdout = res.stdout.to_lowercase();
                 if stdout.contains("disabled") || stdout.contains("deaktiviert") {
@@ -253,12 +262,14 @@ impl DiagnosticModule for WindowsUpdatesModule {
 
         if issue_id.starts_with("wu_svc_disabled_") {
             let svc = issue_id.trim_start_matches("wu_svc_disabled_");
-            let _ = run_cmd(
-                "sc.exe",
-                &["config", svc, "start=", "demand"],
-                Duration::from_secs(10),
-            )
-            .await;
+            let _ = self
+                .runner
+                .run(
+                    "sc.exe",
+                    &["config", svc, "start=", "demand"],
+                    Duration::from_secs(10),
+                )
+                .await;
 
             if !self.config.auto_restart_services {
                 return Ok(format!(
@@ -267,7 +278,10 @@ impl DiagnosticModule for WindowsUpdatesModule {
                 ));
             }
 
-            let _ = run_cmd("net.exe", &["start", svc], Duration::from_secs(10)).await;
+            let _ = self
+                .runner
+                .run("net.exe", &["start", svc], Duration::from_secs(10))
+                .await;
             return Ok(format!(
                 "Dienst '{}' wurde auf Starttyp 'Manuell' gesetzt und gestartet.",
                 svc
@@ -289,9 +303,9 @@ impl DiagnosticModule for WindowsUpdatesModule {
                 if let Some(ref tx) = log_tx {
                     let _ = tx.send("Stoppe Windows Update Dienste...".to_string()).await;
                 }
-                let _ = run_cmd("net.exe", &["stop", "wuauserv"], Duration::from_secs(15)).await;
-                let _ = run_cmd("net.exe", &["stop", "bits"], Duration::from_secs(15)).await;
-                let _ = run_cmd("net.exe", &["stop", "cryptsvc"], Duration::from_secs(15)).await;
+                let _ = self.runner.run("net.exe", &["stop", "wuauserv"], Duration::from_secs(15)).await;
+                let _ = self.runner.run("net.exe", &["stop", "bits"], Duration::from_secs(15)).await;
+                let _ = self.runner.run("net.exe", &["stop", "cryptsvc"], Duration::from_secs(15)).await;
 
                 if let Some(ref tx) = log_tx {
                     let _ = tx.send("Bereinige SoftwareDistribution\\Download Cache...".to_string()).await;
@@ -313,9 +327,9 @@ impl DiagnosticModule for WindowsUpdatesModule {
                 if let Some(ref tx) = log_tx {
                     let _ = tx.send("Starte Windows Update Dienste wieder...".to_string()).await;
                 }
-                let _ = run_cmd("net.exe", &["start", "wuauserv"], Duration::from_secs(15)).await;
-                let _ = run_cmd("net.exe", &["start", "bits"], Duration::from_secs(15)).await;
-                let _ = run_cmd("net.exe", &["start", "cryptsvc"], Duration::from_secs(15)).await;
+                let _ = self.runner.run("net.exe", &["start", "wuauserv"], Duration::from_secs(15)).await;
+                let _ = self.runner.run("net.exe", &["start", "bits"], Duration::from_secs(15)).await;
+                let _ = self.runner.run("net.exe", &["start", "cryptsvc"], Duration::from_secs(15)).await;
 
                 Ok("SoftwareDistribution Download-Cache erfolgreich bereinigt und Dienste neu gestartet.".to_string())
             }
@@ -324,5 +338,29 @@ impl DiagnosticModule for WindowsUpdatesModule {
             }
             _ => Err(format!("Unbekannte Problem-ID: {}", issue_id)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::cmd::{CmdOutput, MockCommandRunner};
+
+    #[tokio::test]
+    async fn test_windows_updates_detects_disabled_service() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "query wuauserv",
+            CmdOutput::ok("STATE: 1 STOPPED \n START_TYPE: DISABLED"),
+        );
+        mock.add_response("query bits", CmdOutput::ok("STATE: 4 RUNNING"));
+        mock.add_response("query cryptsvc", CmdOutput::ok("STATE: 4 RUNNING"));
+
+        let module = WindowsUpdatesModule::with_runner(ModuleConfig::default(), Arc::new(mock));
+        let issues = module.scan(None).await.unwrap();
+
+        let disabled_wu = issues.iter().find(|i| i.id == "wu_svc_disabled_wuauserv");
+        assert!(disabled_wu.is_some());
+        assert_eq!(disabled_wu.unwrap().severity, Severity::Critical);
     }
 }
