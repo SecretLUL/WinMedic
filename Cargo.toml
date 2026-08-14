@@ -26,6 +26,9 @@ colored = "3.0"
 regex = "1.11"
 dirs = "6.0"
 
+[build-dependencies]
+winres = "0.1"
+
 [profile.release]
 opt-level = 3
 lto = true
