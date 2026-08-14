@@ -1,4 +1,13 @@
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    clippy::too_many_arguments,
+    clippy::collapsible_if,
+    clippy::new_without_default,
+    clippy::collapsible_str_replace,
+    clippy::manual_let_else,
+    clippy::iter_kv_map,
+    clippy::single_match
+)]
 
 mod app;
 mod config;
@@ -268,10 +277,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     app.next_issue();
                                 }
                             }
-                            KeyCode::Esc => {
-                                if app.active_tab != 0 {
-                                    app.active_tab = 0;
-                                }
+                            KeyCode::Esc if app.active_tab != 0 => {
+                                app.active_tab = 0;
                             }
                             _ => {}
                         }
