@@ -218,7 +218,7 @@ impl App {
         let mut telemetry_collector = TelemetryCollector::new();
         let telemetry = Some(telemetry_collector.refresh());
         let admin_flag = is_admin();
-        let config = AppConfig::load();
+        let (config, config_status) = AppConfig::load_reporting();
         let engine = Arc::new(DiagnosticEngine::new(&config));
         let audit_logger = AuditLogger::new();
         let reg_backup_mgr = RegBackupManager::new();
@@ -272,7 +272,15 @@ impl App {
             restore_points_requested: false,
             is_restoring: false,
             selected_setting_index: 0,
-            status_message: Some("Bereit".to_string()),
+            // A corrupt config file is the one startup condition worth
+            // interrupting the user's first glance for: their saved settings
+            // are not in effect and the defaults silently re-enable things
+            // they may have deliberately switched off.
+            status_message: Some(
+                config_status
+                    .warning()
+                    .unwrap_or_else(|| "Bereit".to_string()),
+            ),
             show_help: false,
             pending_confirm: if !admin_flag {
                 Some(ConfirmRequest::Elevate)

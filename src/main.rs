@@ -158,7 +158,13 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         return Ok(exit_code::NEEDS_ADMIN);
     }
 
-    let config = AppConfig::load();
+    let (config, config_status) = AppConfig::load_reporting();
+    // Goes to stderr so it cannot corrupt `--json` output being piped into
+    // something. A run using default settings the user did not choose is worth
+    // knowing about even in a scripted context.
+    if let Some(warning) = config_status.warning() {
+        eprintln!("WinMedic: {}", warning);
+    }
     let quiet = args.json;
 
     // Ctrl+C cancels the run instead of leaving orphaned DISM/chkdsk children.
