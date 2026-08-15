@@ -10,6 +10,12 @@ pub struct SystemIntegrityModule {
     runner: Arc<dyn CommandRunner>,
 }
 
+impl Default for SystemIntegrityModule {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SystemIntegrityModule {
     pub fn new() -> Self {
         Self::with_runner(Arc::new(SystemCommandRunner::new()))

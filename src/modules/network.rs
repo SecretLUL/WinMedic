@@ -12,6 +12,12 @@ pub struct NetworkModule {
     runner: Arc<dyn CommandRunner>,
 }
 
+impl Default for NetworkModule {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NetworkModule {
     pub fn new() -> Self {
         Self::with_runner(Arc::new(SystemCommandRunner::new()))
@@ -83,10 +89,10 @@ impl DiagnosticModule for NetworkModule {
             )
             .await;
         let mut dns_healthy = false;
-        if let Ok(out) = dns_lookup {
-            if out.stdout.contains("8.8.8.8") || out.stdout.contains("Address") {
-                dns_healthy = true;
-            }
+        if let Ok(out) = dns_lookup
+            && (out.stdout.contains("8.8.8.8") || out.stdout.contains("Address"))
+        {
+            dns_healthy = true;
         }
 
         if !dns_healthy {

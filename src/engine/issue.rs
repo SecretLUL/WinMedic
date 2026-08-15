@@ -62,6 +62,11 @@ pub struct Issue {
 }
 
 impl Issue {
+    // Every parameter maps to one required field of a fully-described finding.
+    // Bundling them into a builder is worthwhile, but it touches every module's
+    // scan path, so it is tracked separately rather than hidden behind a
+    // crate-wide lint allow.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: impl Into<String>,
         module_id: impl Into<String>,

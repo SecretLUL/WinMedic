@@ -24,6 +24,12 @@ pub struct AuditLogger {
     max_file_size: u64,
 }
 
+impl Default for AuditLogger {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AuditLogger {
     pub fn new() -> Self {
         Self::with_dir_and_size(
@@ -57,29 +63,29 @@ impl AuditLogger {
     /// history.jsonl -> history.1.jsonl
     fn rotate_if_needed(&self, filename: &str, ext: &str) {
         let base_path = self.log_dir.join(format!("{}.{}", filename, ext));
-        if let Ok(metadata) = std::fs::metadata(&base_path) {
-            if metadata.len() >= self.max_file_size {
-                // Delete the oldest rotated file if it exceeds the max backup count
-                let oldest = self
-                    .log_dir
-                    .join(format!("{}.{}.{}", filename, MAX_ROTATED_FILES, ext));
-                if oldest.exists() {
-                    let _ = std::fs::remove_file(oldest);
-                }
-
-                // Shift existing rotated files downwards
-                for i in (1..MAX_ROTATED_FILES).rev() {
-                    let src = self.log_dir.join(format!("{}.{}.{}", filename, i, ext));
-                    let dst = self.log_dir.join(format!("{}.{}.{}", filename, i + 1, ext));
-                    if src.exists() {
-                        let _ = std::fs::rename(src, dst);
-                    }
-                }
-
-                // Rename current active log file to .1
-                let first_backup = self.log_dir.join(format!("{}.1.{}", filename, ext));
-                let _ = std::fs::rename(&base_path, first_backup);
+        if let Ok(metadata) = std::fs::metadata(&base_path)
+            && metadata.len() >= self.max_file_size
+        {
+            // Delete the oldest rotated file if it exceeds the max backup count
+            let oldest = self
+                .log_dir
+                .join(format!("{}.{}.{}", filename, MAX_ROTATED_FILES, ext));
+            if oldest.exists() {
+                let _ = std::fs::remove_file(oldest);
             }
+
+            // Shift existing rotated files downwards
+            for i in (1..MAX_ROTATED_FILES).rev() {
+                let src = self.log_dir.join(format!("{}.{}.{}", filename, i, ext));
+                let dst = self.log_dir.join(format!("{}.{}.{}", filename, i + 1, ext));
+                if src.exists() {
+                    let _ = std::fs::rename(src, dst);
+                }
+            }
+
+            // Rename current active log file to .1
+            let first_backup = self.log_dir.join(format!("{}.1.{}", filename, ext));
+            let _ = std::fs::rename(&base_path, first_backup);
         }
     }
 
@@ -121,14 +127,13 @@ impl AuditLogger {
         // 2. Append-only JSONL log (history.jsonl)
         self.rotate_if_needed("history", "jsonl");
         let history_file = self.log_dir.join("history.jsonl");
-        if let Ok(json_line) = serde_json::to_string(&entry) {
-            if let Ok(mut f) = OpenOptions::new()
+        if let Ok(json_line) = serde_json::to_string(&entry)
+            && let Ok(mut f) = OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(history_file)
-            {
-                let _ = writeln!(f, "{}", json_line);
-            }
+        {
+            let _ = writeln!(f, "{}", json_line);
         }
     }
 
@@ -141,10 +146,10 @@ impl AuditLogger {
             let reader = BufReader::new(file);
             for line in reader.lines().map_while(Result::ok) {
                 let trimmed = line.trim();
-                if !trimmed.is_empty() {
-                    if let Ok(entry) = serde_json::from_str::<AuditEntry>(trimmed) {
-                        entries.push(entry);
-                    }
+                if !trimmed.is_empty()
+                    && let Ok(entry) = serde_json::from_str::<AuditEntry>(trimmed)
+                {
+                    entries.push(entry);
                 }
             }
         }
@@ -158,18 +163,16 @@ impl AuditLogger {
         let jsonl_file = self.log_dir.join("history.jsonl");
 
         if legacy_file.exists() && !jsonl_file.exists() {
-            if let Ok(content) = std::fs::read_to_string(&legacy_file) {
-                if let Ok(legacy_entries) = serde_json::from_str::<Vec<AuditEntry>>(&content) {
-                    if let Ok(mut f) = OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&jsonl_file)
-                    {
-                        for entry in legacy_entries {
-                            if let Ok(line) = serde_json::to_string(&entry) {
-                                let _ = writeln!(f, "{}", line);
-                            }
-                        }
+            if let Ok(content) = std::fs::read_to_string(&legacy_file)
+                && let Ok(legacy_entries) = serde_json::from_str::<Vec<AuditEntry>>(&content)
+                && let Ok(mut f) = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&jsonl_file)
+            {
+                for entry in legacy_entries {
+                    if let Ok(line) = serde_json::to_string(&entry) {
+                        let _ = writeln!(f, "{}", line);
                     }
                 }
             }

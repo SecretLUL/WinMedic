@@ -202,12 +202,11 @@ pub fn parse_winsxs_analysis(output: &str) -> WinSxSAnalysis {
             if let Some((_, val)) = line.split_once(':') {
                 analysis.backups_size = Some(val.trim().to_string());
             }
-        } else if trimmed.contains("cache and temporary data")
-            || trimmed.contains("cache und temporäre daten")
+        } else if (trimmed.contains("cache and temporary data")
+            || trimmed.contains("cache und temporäre daten"))
+            && let Some((_, val)) = line.split_once(':')
         {
-            if let Some((_, val)) = line.split_once(':') {
-                analysis.cache_size = Some(val.trim().to_string());
-            }
+            analysis.cache_size = Some(val.trim().to_string());
         }
     }
 
@@ -271,18 +270,18 @@ pub fn discover_browser_cache_dirs(local_app_data: &Path, app_data: &Path) -> Ve
         .join("Google")
         .join("Chrome")
         .join("User Data");
-    if chrome_user_data.exists() {
-        if let Ok(entries) = std::fs::read_dir(&chrome_user_data) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if p.is_dir() {
-                    let file_name = entry.file_name();
-                    let name = file_name.to_string_lossy();
-                    if name == "Default" || name.starts_with("Profile ") {
-                        dirs.push(p.join("Cache"));
-                        dirs.push(p.join("Code Cache"));
-                        dirs.push(p.join("GPUCache"));
-                    }
+    if chrome_user_data.exists()
+        && let Ok(entries) = std::fs::read_dir(&chrome_user_data)
+    {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                let file_name = entry.file_name();
+                let name = file_name.to_string_lossy();
+                if name == "Default" || name.starts_with("Profile ") {
+                    dirs.push(p.join("Cache"));
+                    dirs.push(p.join("Code Cache"));
+                    dirs.push(p.join("GPUCache"));
                 }
             }
         }
@@ -293,18 +292,18 @@ pub fn discover_browser_cache_dirs(local_app_data: &Path, app_data: &Path) -> Ve
         .join("Microsoft")
         .join("Edge")
         .join("User Data");
-    if edge_user_data.exists() {
-        if let Ok(entries) = std::fs::read_dir(&edge_user_data) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if p.is_dir() {
-                    let file_name = entry.file_name();
-                    let name = file_name.to_string_lossy();
-                    if name == "Default" || name.starts_with("Profile ") {
-                        dirs.push(p.join("Cache"));
-                        dirs.push(p.join("Code Cache"));
-                        dirs.push(p.join("GPUCache"));
-                    }
+    if edge_user_data.exists()
+        && let Ok(entries) = std::fs::read_dir(&edge_user_data)
+    {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                let file_name = entry.file_name();
+                let name = file_name.to_string_lossy();
+                if name == "Default" || name.starts_with("Profile ") {
+                    dirs.push(p.join("Cache"));
+                    dirs.push(p.join("Code Cache"));
+                    dirs.push(p.join("GPUCache"));
                 }
             }
         }
@@ -319,13 +318,13 @@ pub fn discover_browser_cache_dirs(local_app_data: &Path, app_data: &Path) -> Ve
         app_data.join("Mozilla").join("Firefox").join("Profiles"),
     ];
     for ff_root in &ff_roots {
-        if ff_root.exists() {
-            if let Ok(entries) = std::fs::read_dir(ff_root) {
-                for entry in entries.flatten() {
-                    let p = entry.path();
-                    if p.is_dir() {
-                        dirs.push(p.join("cache2"));
-                    }
+        if ff_root.exists()
+            && let Ok(entries) = std::fs::read_dir(ff_root)
+        {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    dirs.push(p.join("cache2"));
                 }
             }
         }

@@ -7,6 +7,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph};
 use std::collections::VecDeque;
 
+// See `ui::widgets::header` — render functions take explicit state slices
+// rather than borrowing the whole `App`.
+#[allow(clippy::too_many_arguments)]
 pub fn render_scanner(
     f: &mut Frame,
     area: Rect,

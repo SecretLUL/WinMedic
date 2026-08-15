@@ -307,8 +307,8 @@ impl DiagnosticModule for WindowsUpdatesModule {
                     let _ = tx.send("Bereinige SoftwareDistribution\\Download Cache...".to_string()).await;
                 }
                 let download_path = Path::new(r"C:\Windows\SoftwareDistribution\Download");
-                if download_path.exists() {
-                    if let Ok(entries) = std::fs::read_dir(download_path) {
+                if download_path.exists()
+                    && let Ok(entries) = std::fs::read_dir(download_path) {
                         for entry in entries.flatten() {
                             let path = entry.path();
                             if path.is_file() {
@@ -318,7 +318,6 @@ impl DiagnosticModule for WindowsUpdatesModule {
                             }
                         }
                     }
-                }
 
                 if let Some(ref tx) = log_tx {
                     let _ = tx.send("Starte Windows Update Dienste wieder...".to_string()).await;

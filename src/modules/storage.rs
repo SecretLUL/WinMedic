@@ -230,10 +230,11 @@ impl DiagnosticModule for StorageModule {
 
         if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
             let icon_cache = PathBuf::from(&local_app_data).join("IconCache.db");
-            if icon_cache.exists() {
-                if let Ok(meta) = icon_cache.metadata() {
-                    if meta.len() > 25 * 1024 * 1024 {
-                        issues.push(Issue::new(
+            if icon_cache.exists()
+                && let Ok(meta) = icon_cache.metadata()
+                && meta.len() > 25 * 1024 * 1024
+            {
+                issues.push(Issue::new(
                             "storage_icon_cache_bloated",
                             self.id(),
                             "Icon- & Thumbnail-Cache ist überdimensioniert / korrupt",
@@ -248,8 +249,6 @@ impl DiagnosticModule for StorageModule {
                                 "IconCache.db zurücksetzen".to_string(),
                             ],
                         ));
-                    }
-                }
             }
         }
 

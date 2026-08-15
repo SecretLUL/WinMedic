@@ -207,6 +207,12 @@ fn push_bounded_log(buffer: &mut VecDeque<String>, line: impl Into<String>) {
     buffer.push_back(line.into());
 }
 
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl App {
     pub fn new() -> Self {
         let mut telemetry_collector = TelemetryCollector::new();
@@ -733,12 +739,12 @@ impl App {
                         message,
                     } => {
                         // A simulation must never flip an issue to "fixed".
-                        if !self.dry_run {
-                            if let Some(issue) = self.issues.iter_mut().find(|i| i.id == issue_id) {
-                                issue.is_fixed = success;
-                                if !success {
-                                    issue.fix_error = Some(message.clone());
-                                }
+                        if !self.dry_run
+                            && let Some(issue) = self.issues.iter_mut().find(|i| i.id == issue_id)
+                        {
+                            issue.is_fixed = success;
+                            if !success {
+                                issue.fix_error = Some(message.clone());
                             }
                         }
                         if success {
@@ -854,16 +860,16 @@ impl App {
             .enumerate()
             .filter(|(_idx, issue)| {
                 // Severity filter
-                if let Some(sev) = self.severity_filter {
-                    if issue.severity != sev {
-                        return false;
-                    }
+                if let Some(sev) = self.severity_filter
+                    && issue.severity != sev
+                {
+                    return false;
                 }
                 // Module filter
-                if let Some(ref mod_id) = self.module_filter {
-                    if &issue.module_id != mod_id {
-                        return false;
-                    }
+                if let Some(ref mod_id) = self.module_filter
+                    && &issue.module_id != mod_id
+                {
+                    return false;
                 }
                 // Search query
                 if !self.search_query.is_empty() {
@@ -899,22 +905,21 @@ impl App {
 
     pub fn toggle_selected_issue(&mut self) {
         let indices = self.filtered_issue_indices();
-        if let Some(&orig_idx) = indices.get(self.selected_filtered_index) {
-            if let Some(issue) = self.issues.get_mut(orig_idx) {
-                if !issue.is_fixed {
-                    issue.is_selected = !issue.is_selected;
-                }
-            }
+        if let Some(&orig_idx) = indices.get(self.selected_filtered_index)
+            && let Some(issue) = self.issues.get_mut(orig_idx)
+            && !issue.is_fixed
+        {
+            issue.is_selected = !issue.is_selected;
         }
     }
 
     pub fn select_all_issues(&mut self) {
         let indices = self.filtered_issue_indices();
         for &orig_idx in &indices {
-            if let Some(issue) = self.issues.get_mut(orig_idx) {
-                if !issue.is_fixed {
-                    issue.is_selected = true;
-                }
+            if let Some(issue) = self.issues.get_mut(orig_idx)
+                && !issue.is_fixed
+            {
+                issue.is_selected = true;
             }
         }
     }

@@ -88,15 +88,14 @@ impl DiagnosticModule for EventLogModule {
                     let path = entry.path();
                     if path.extension().map(|e| e.to_string_lossy().to_lowercase())
                         == Some("dmp".to_string())
+                        && let Ok(meta) = entry.metadata()
                     {
-                        if let Ok(meta) = entry.metadata() {
-                            let size_kb = meta.len() / 1024;
-                            dmp_files.push(format!(
-                                "{} ({} KB)",
-                                path.file_name().unwrap_or_default().to_string_lossy(),
-                                size_kb
-                            ));
-                        }
+                        let size_kb = meta.len() / 1024;
+                        dmp_files.push(format!(
+                            "{} ({} KB)",
+                            path.file_name().unwrap_or_default().to_string_lossy(),
+                            size_kb
+                        ));
                     }
                 }
             }
@@ -261,18 +260,16 @@ impl DiagnosticModule for EventLogModule {
             "evt_bsod_dumps_found" => {
                 let minidump_dir = Path::new(r"C:\Windows\Minidump");
                 let mut removed = 0;
-                if minidump_dir.exists() {
-                    if let Ok(entries) = std::fs::read_dir(minidump_dir) {
+                if minidump_dir.exists()
+                    && let Ok(entries) = std::fs::read_dir(minidump_dir) {
                         for entry in entries.flatten() {
                             let path = entry.path();
-                            if path.extension().map(|e| e.to_string_lossy().to_lowercase()) == Some("dmp".to_string()) {
-                                if std::fs::remove_file(path).is_ok() {
+                            if path.extension().map(|e| e.to_string_lossy().to_lowercase()) == Some("dmp".to_string())
+                                && std::fs::remove_file(path).is_ok() {
                                     removed += 1;
                                 }
-                            }
                         }
                     }
-                }
                 Ok(format!("{} veraltete Minidump-Dateien sicher bereinigt.", removed))
             }
             "evt_system_critical_events" => {

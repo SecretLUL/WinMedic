@@ -74,10 +74,10 @@ impl RegistryStartupModule {
         }
 
         // 1. Quoted path
-        if let Some(rest) = trimmed.strip_prefix('"') {
-            if let Some(end_quote) = rest.find('"') {
-                return Some(PathBuf::from(&rest[..end_quote]));
-            }
+        if let Some(rest) = trimmed.strip_prefix('"')
+            && let Some(end_quote) = rest.find('"')
+        {
+            return Some(PathBuf::from(&rest[..end_quote]));
         }
 
         // 2. Look for case-insensitive .exe / .cmd / .bat in the command string

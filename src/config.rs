@@ -46,10 +46,10 @@ impl AppConfig {
 
     pub fn load() -> Self {
         let path = Self::config_path();
-        if let Ok(data) = std::fs::read_to_string(path) {
-            if let Ok(cfg) = serde_json::from_str(&data) {
-                return cfg;
-            }
+        if let Ok(data) = std::fs::read_to_string(path)
+            && let Ok(cfg) = serde_json::from_str(&data)
+        {
+            return cfg;
         }
         Self::default()
     }
