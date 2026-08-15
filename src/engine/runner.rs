@@ -116,6 +116,18 @@ impl DiagnosticEngine {
         }
     }
 
+    /// Build an engine over an explicit module list.
+    ///
+    /// Lets a caller substitute modules that are pointed somewhere other than
+    /// the live system — which is how tests exercise `run_repairs` end to end
+    /// without the file-deleting fixes reaching the real machine.
+    pub fn with_modules(modules: Vec<Arc<dyn DiagnosticModule>>) -> Self {
+        Self {
+            modules,
+            audit_logger: AuditLogger::new(),
+        }
+    }
+
     pub fn modules(&self) -> &[Arc<dyn DiagnosticModule>] {
         &self.modules
     }
@@ -673,7 +685,7 @@ mod tests {
                 cancelled = Some((completed_modules, total_modules));
             }
         }
-        assert_eq!(cancelled, Some((0, 6)));
+        assert_eq!(cancelled, Some((0, 7)));
     }
 
     #[tokio::test]
@@ -698,8 +710,8 @@ mod tests {
             }
         }
 
-        assert_eq!(started_modules.len(), 6, "all 6 modules should start");
-        assert_eq!(finished_or_failed, 6, "all 6 modules should finish or fail");
+        assert_eq!(started_modules.len(), 7, "all 7 modules should start");
+        assert_eq!(finished_or_failed, 7, "all 7 modules should finish or fail");
         assert!(saw_completed, "scan should emit ScanCompleted");
     }
 

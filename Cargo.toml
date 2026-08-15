@@ -10,6 +10,10 @@ license = "MIT"
 keywords = ["windows", "diagnostics", "repair", "tui", "ratatui"]
 categories = ["command-line-utilities", "system-administration"]
 
+[lib]
+name = "winmedic"
+path = "src/lib.rs"
+
 [[bin]]
 name = "winmedic"
 path = "src/main.rs"

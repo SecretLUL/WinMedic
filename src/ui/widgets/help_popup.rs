@@ -18,6 +18,7 @@ const SECTIONS: &[Section] = &[
             ),
             ("[Tab] / [Shift+Tab]", "Vorwärts / rückwärts durch die Tabs"),
             ("[↑]/[↓] oder [j]/[k]", "In Listen navigieren"),
+            ("[U]", "Verfügbares Update anzeigen (außerhalb Tab 5)"),
             ("[Esc]", "Zurück zum Dashboard"),
         ],
     ),

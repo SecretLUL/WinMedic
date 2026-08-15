@@ -132,18 +132,14 @@ impl DiagnosticModule for WindowsUpdatesModule {
 
         let soft_dist = Path::new(r"C:\Windows\SoftwareDistribution\Download");
         if soft_dist.exists() {
-            let mut total_size_mb: u64 = 0;
-            let mut file_count = 0;
-            if let Ok(entries) = std::fs::read_dir(soft_dist) {
-                for entry in entries.flatten() {
-                    if let Ok(meta) = entry.metadata() {
-                        if meta.is_file() {
-                            total_size_mb += meta.len() / (1024 * 1024);
-                            file_count += 1;
-                        }
-                    }
-                }
-            }
+            // Shared walker: recursive (the fix below deletes subdirectories too,
+            // so measuring only the top level under-reported what it removes) and
+            // rounding to megabytes once at the end. Dividing per file discarded
+            // every file below 1 MB, and this cache is mostly small files — the
+            // 5000 MB threshold could barely be reached.
+            let stats = crate::utils::fs_stats::dir_stats_recursive(soft_dist);
+            let total_size_mb = stats.bytes / (1024 * 1024);
+            let file_count = stats.files;
 
             if total_size_mb > 5000 {
                 issues.push(Issue::new(

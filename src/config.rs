@@ -21,6 +21,8 @@ pub struct AppConfig {
     pub temp_clean_threshold_mb: u64,
     /// How far back the event log module looks for critical events.
     pub max_event_log_hours: u32,
+    /// Check for newer WinMedic releases on GitHub upon startup.
+    pub check_for_updates: bool,
 }
 
 impl Default for AppConfig {
@@ -31,6 +33,7 @@ impl Default for AppConfig {
             auto_backup_registry: true,
             temp_clean_threshold_mb: 500,
             max_event_log_hours: 24,
+            check_for_updates: true,
         }
     }
 }
@@ -61,7 +64,7 @@ impl AppConfig {
     }
 
     /// Number of editable settings exposed in the settings tab.
-    pub const SETTING_COUNT: usize = 5;
+    pub const SETTING_COUNT: usize = 6;
 
     /// Human readable label, current value and explanation for setting `index`.
     pub fn setting_row(&self, index: usize) -> Option<(&'static str, String, &'static str)> {
@@ -89,11 +92,16 @@ impl AppConfig {
                 "Erlaubt Fixes, Windows-Dienste anzuhalten und neu zu starten. Ist dies AUS, werden solche Fixes übersprungen.",
             )),
             3 => Some((
+                "Automatisch nach Updates suchen",
+                on_off(self.check_for_updates),
+                "Prüft beim Programmstart im Hintergrund auf neue WinMedic-Releases auf GitHub.",
+            )),
+            4 => Some((
                 "Schwelle für Temp-Dateien",
                 format!("{} MB", self.temp_clean_threshold_mb),
                 "Ab dieser Gesamtgröße werden temporäre Dateien als Problem gemeldet. [←/→] ±100 MB.",
             )),
-            4 => Some((
+            5 => Some((
                 "Zeitfenster für Event-Log-Analyse",
                 format!("{} h", self.max_event_log_hours),
                 "Wie weit das Ereignisprotokoll nach kritischen Events durchsucht wird. [←/→] ±6 h.",
@@ -108,6 +116,7 @@ impl AppConfig {
             0 => self.create_vss_before_repair = !self.create_vss_before_repair,
             1 => self.auto_backup_registry = !self.auto_backup_registry,
             2 => self.auto_restart_services = !self.auto_restart_services,
+            3 => self.check_for_updates = !self.check_for_updates,
             _ => return false,
         }
         true
@@ -117,7 +126,7 @@ impl AppConfig {
     /// Returns true if anything changed.
     pub fn adjust_setting(&mut self, index: usize, increase: bool) -> bool {
         match index {
-            3 => {
+            4 => {
                 let new = if increase {
                     (self.temp_clean_threshold_mb + 100).min(100_000)
                 } else {
@@ -127,7 +136,7 @@ impl AppConfig {
                 self.temp_clean_threshold_mb = new;
                 changed
             }
-            4 => {
+            5 => {
                 let new = if increase {
                     (self.max_event_log_hours + 6).min(720)
                 } else {
@@ -152,6 +161,7 @@ mod tests {
         assert!(cfg.create_vss_before_repair);
         assert!(cfg.auto_restart_services);
         assert!(cfg.auto_backup_registry);
+        assert!(cfg.check_for_updates);
         assert_eq!(cfg.max_event_log_hours, 24);
         assert_eq!(cfg.temp_clean_threshold_mb, 500);
     }
@@ -163,17 +173,20 @@ mod tests {
         assert_eq!(cfg.temp_clean_threshold_mb, 1234);
         assert_eq!(cfg.max_event_log_hours, 24);
         assert!(cfg.create_vss_before_repair);
+        assert!(cfg.check_for_updates);
     }
 
     #[test]
     fn test_config_roundtrip() {
         let mut cfg = AppConfig::default();
         cfg.toggle_setting(0);
-        cfg.adjust_setting(3, true);
+        cfg.toggle_setting(3);
+        cfg.adjust_setting(4, true);
         let json = serde_json::to_string(&cfg).unwrap();
         let restored: AppConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(cfg, restored);
         assert!(!restored.create_vss_before_repair);
+        assert!(!restored.check_for_updates);
         assert_eq!(restored.temp_clean_threshold_mb, 600);
     }
 
@@ -190,10 +203,21 @@ mod tests {
     fn test_numeric_settings_have_floors() {
         let mut cfg = AppConfig::default();
         for _ in 0..50 {
-            cfg.adjust_setting(3, false);
             cfg.adjust_setting(4, false);
+            cfg.adjust_setting(5, false);
         }
         assert_eq!(cfg.temp_clean_threshold_mb, 100);
         assert_eq!(cfg.max_event_log_hours, 1);
+    }
+
+    #[test]
+    fn test_toggle_update_setting() {
+        let mut cfg = AppConfig::default();
+        assert!(cfg.check_for_updates);
+        assert!(cfg.toggle_setting(3));
+        assert!(!cfg.check_for_updates);
+        assert!(cfg.toggle_setting(3));
+        assert!(cfg.check_for_updates);
+        assert!(!cfg.toggle_setting(99));
     }
 }

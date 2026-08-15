@@ -7,9 +7,12 @@ use crate::safety::audit::{AuditEntry, AuditLogger};
 use crate::safety::reg_backup::{BackupRecord, RegBackupManager};
 use crate::safety::restore_point::list_restore_points;
 use crate::utils::admin::{is_admin, relaunch_as_admin};
+use crate::utils::cmd::SystemCommandRunner;
 use crate::utils::hardware::{SystemTelemetry, TelemetryCollector};
+use crate::utils::updater::{self, UpdateInfo};
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver, UnboundedSender, channel};
 use tokio_util::sync::CancellationToken;
 
@@ -27,11 +30,12 @@ pub const TAB_HISTORY: usize = 4;
 pub const TAB_SETTINGS: usize = 5;
 
 /// Results of short-lived background tasks that are not part of a scan or a
-/// repair run (restore point lookups, registry rollbacks).
+/// repair run (restore point lookups, registry rollbacks, update checks).
 #[derive(Debug, Clone)]
 pub enum BackgroundEvent {
     RestorePointsLoaded(Vec<String>),
     RollbackFinished { success: bool, message: String },
+    UpdateChecked(Option<UpdateInfo>),
 }
 
 /// An action that needs an explicit yes before it touches the system.
@@ -43,6 +47,11 @@ pub enum ConfirmRequest {
         file_path: String,
     },
     Elevate,
+    UpdateAvailable {
+        current_version: String,
+        latest_version: String,
+        release_url: String,
+    },
 }
 
 impl ConfirmRequest {
@@ -50,6 +59,7 @@ impl ConfirmRequest {
         match self {
             ConfirmRequest::Rollback { .. } => "REGISTRY-SICHERUNG WIEDERHERSTELLEN?",
             ConfirmRequest::Elevate => "ADMINISTRATORRECHTE ERFORDERLICH",
+            ConfirmRequest::UpdateAvailable { .. } => "NEUES WINMEDIC UPDATE VERFÜGBAR",
         }
     }
 
@@ -57,6 +67,7 @@ impl ConfirmRequest {
         match self {
             ConfirmRequest::Rollback { .. } => "Wiederherstellen",
             ConfirmRequest::Elevate => "Jetzt als Admin neu starten",
+            ConfirmRequest::UpdateAvailable { .. } => "Release-Seite im Browser öffnen",
         }
     }
 
@@ -64,6 +75,7 @@ impl ConfirmRequest {
         match self {
             ConfirmRequest::Rollback { .. } => "Abbrechen",
             ConfirmRequest::Elevate => "Ohne Admin fortfahren",
+            ConfirmRequest::UpdateAvailable { .. } => "Später erinnern",
         }
     }
 
@@ -89,6 +101,26 @@ impl ConfirmRequest {
                 String::new(),
                 "Möchten Sie WinMedic jetzt mit Administratorrechten (UAC) neu starten?"
                     .to_string(),
+            ],
+            ConfirmRequest::UpdateAvailable {
+                current_version,
+                latest_version,
+                release_url,
+            } => vec![
+                "Eine neue Version von WinMedic ist auf GitHub verfügbar!".to_string(),
+                String::new(),
+                format!(
+                    "Installierte Version:  v{}",
+                    current_version.trim_start_matches(['v', 'V'])
+                ),
+                format!(
+                    "Neueste Version:       v{}",
+                    latest_version.trim_start_matches(['v', 'V'])
+                ),
+                String::new(),
+                format!("URL: {}", release_url),
+                String::new(),
+                "Möchten Sie die GitHub Release-Seite im Standardbrowser öffnen?".to_string(),
             ],
         }
     }
@@ -156,6 +188,7 @@ pub struct App {
     pub status_message: Option<String>,
     pub show_help: bool,
     pub pending_confirm: Option<ConfirmRequest>,
+    pub available_update: Option<UpdateInfo>,
     pub should_quit: bool,
 
     // Internal async event channels
@@ -240,6 +273,7 @@ impl App {
             } else {
                 None
             },
+            available_update: None,
             should_quit: false,
             scan_event_rx: None,
             repair_event_rx: None,
@@ -247,6 +281,32 @@ impl App {
             bg_tx,
             bg_rx,
         }
+    }
+
+    /// Kick off the background GitHub release check.
+    ///
+    /// Deliberately *not* part of [`App::new`]: constructing an `App` must stay
+    /// free of network I/O so the test suite — which builds dozens of them
+    /// inside `#[tokio::test]` — never reaches out to api.github.com. The TUI
+    /// entry point calls this once, right after construction.
+    pub fn start_update_check(&mut self) {
+        if !self.config.check_for_updates {
+            return;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let tx = self.bg_tx.clone();
+        handle.spawn(async move {
+            let runner = SystemCommandRunner::new();
+            let update_info = updater::check_for_update(
+                &runner,
+                env!("CARGO_PKG_VERSION"),
+                Duration::from_secs(5),
+            )
+            .await;
+            let _ = tx.send(BackgroundEvent::UpdateChecked(update_info));
+        });
     }
 
     #[allow(clippy::type_complexity)]
@@ -769,6 +829,21 @@ impl App {
                     );
                     self.audit_entries = self.audit_logger.get_history();
                 }
+                BackgroundEvent::UpdateChecked(Some(info)) => {
+                    // The check lands at an arbitrary point in the session, so it
+                    // never raises the modal by itself. A confirmation dialog
+                    // swallows every keystroke and maps `j`/Enter — this app's own
+                    // list-navigation keys — onto "open a browser", which would
+                    // fire whatever the user happened to press next. Park the
+                    // notice and let them open it deliberately with [U].
+                    self.status_message = Some(format!(
+                        "Update verfügbar: v{} (aktuell: v{}) – [U] für Details",
+                        info.latest_version.trim_start_matches(['v', 'V']),
+                        info.current_version.trim_start_matches(['v', 'V'])
+                    ));
+                    self.available_update = Some(info);
+                }
+                BackgroundEvent::UpdateChecked(None) => {}
             }
         }
     }
@@ -1019,8 +1094,32 @@ impl App {
                             .to_string(),
                     );
                 }
+                ConfirmRequest::UpdateAvailable { .. } => {
+                    // "Später erinnern" — the notice stays parked in
+                    // `available_update` so [U] can bring it back.
+                    self.status_message =
+                        Some("Update-Hinweis geschlossen – [U] öffnet ihn erneut.".to_string());
+                }
             }
         }
+    }
+
+    /// Open the parked update notice as a confirmation dialog.
+    ///
+    /// This is the only path that raises the update modal, so it can never
+    /// intercept a keystroke the user meant for something else.
+    pub fn show_update_notice(&mut self) {
+        if self.pending_confirm.is_some() {
+            return;
+        }
+        let Some(info) = self.available_update.clone() else {
+            return;
+        };
+        self.pending_confirm = Some(ConfirmRequest::UpdateAvailable {
+            current_version: info.current_version,
+            latest_version: info.latest_version,
+            release_url: info.release_url,
+        });
     }
 
     /// Execute whatever action the confirmation dialog was asking about.
@@ -1054,6 +1153,16 @@ impl App {
                 } else {
                     self.should_quit = true;
                 }
+            }
+            ConfirmRequest::UpdateAvailable { release_url, .. } => {
+                if let Err(e) = updater::launch_browser(&release_url) {
+                    self.status_message = Some(format!("Browser-Start fehlgeschlagen: {}", e));
+                } else {
+                    self.status_message =
+                        Some("GitHub Release-Seite im Browser geöffnet.".to_string());
+                }
+                // The user has acted on it; stop offering it under [U].
+                self.available_update = None;
             }
         }
     }
@@ -1160,6 +1269,22 @@ mod tests {
         assert_eq!(req.confirm_label(), "Wiederherstellen");
         assert_eq!(req.dismiss_label(), "Abbrechen");
         assert!(!req.body().is_empty());
+    }
+
+    #[test]
+    fn test_confirm_request_update_available() {
+        let req = ConfirmRequest::UpdateAvailable {
+            current_version: "0.1.0".to_string(),
+            latest_version: "v0.2.0".to_string(),
+            release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0".to_string(),
+        };
+        assert_eq!(req.title(), "NEUES WINMEDIC UPDATE VERFÜGBAR");
+        assert_eq!(req.confirm_label(), "Release-Seite im Browser öffnen");
+        assert_eq!(req.dismiss_label(), "Später erinnern");
+        let body = req.body().join("\n");
+        assert!(body.contains("v0.1.0"));
+        assert!(body.contains("v0.2.0"));
+        assert!(body.contains("https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0"));
     }
 
     #[test]
