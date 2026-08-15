@@ -26,7 +26,6 @@ pub fn render_footer(
         match active_tab_index {
             TAB_DASHBOARD => vec![
                 ("←/→", "Tabs"),
-                ("S", "Start Scan"),
                 ("D", "Simulate"),
                 ("?", "Help"),
                 ("Q", "Quit"),
