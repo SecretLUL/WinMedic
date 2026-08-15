@@ -6,9 +6,7 @@ use winmedic::{app, config, engine, safety, ui, utils};
 
 use clap::Parser;
 use crossterm::cursor::Show;
-use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind,
-};
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -21,9 +19,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;
 
-use app::{
-    App, TAB_COUNT, TAB_DASHBOARD, TAB_HISTORY, TAB_REPAIR, TAB_SCANNER, TAB_SETTINGS, TAB_TRIAGE,
-};
+use app::{App, handle_key};
 use config::AppConfig;
 use engine::exit_code;
 use engine::reporter::DiagnosticReporter;
@@ -390,7 +386,6 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
 
 // --------------------------------------------------------------------- TUI
 
-#[allow(clippy::collapsible_if)]
 async fn run_tui() -> Result<u8, Box<dyn std::error::Error>> {
     install_panic_hook();
 
@@ -410,12 +405,13 @@ async fn run_tui() -> Result<u8, Box<dyn std::error::Error>> {
                 ui::render_app(f, &app);
             })?;
 
-            if event::poll(Duration::from_millis(40))? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press {
-                        handle_key(&mut app, key.code);
-                    }
-                }
+            // `event::read()` only runs when `poll` said something is waiting,
+            // so short-circuiting keeps it from blocking the draw loop.
+            if event::poll(Duration::from_millis(40))?
+                && let Event::Key(key) = event::read()?
+                && key.kind == KeyEventKind::Press
+            {
+                handle_key(&mut app, key.code);
             }
 
             app.process_background_events();
@@ -435,202 +431,4 @@ async fn run_tui() -> Result<u8, Box<dyn std::error::Error>> {
     loop_result?;
 
     Ok(exit_code::OK)
-}
-
-fn handle_key(app: &mut App, code: KeyCode) {
-    // A pending confirmation swallows every other key.
-    if app.pending_confirm.is_some() {
-        match code {
-            KeyCode::Char('j')
-            | KeyCode::Char('J')
-            | KeyCode::Char('y')
-            | KeyCode::Char('Y')
-            | KeyCode::Enter => app.confirm_pending_action(),
-            _ => app.dismiss_confirm(),
-        }
-        return;
-    }
-
-    if app.show_help {
-        match code {
-            KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
-                app.show_help = false;
-            }
-            _ => {}
-        }
-        return;
-    }
-
-    if app.active_tab == TAB_TRIAGE && app.is_searching {
-        match code {
-            KeyCode::Esc | KeyCode::Enter => {
-                app.is_searching = false;
-            }
-            KeyCode::Backspace => {
-                app.search_query.pop();
-                app.clamp_filtered_selection();
-            }
-            KeyCode::Char(c) => {
-                app.search_query.push(c);
-                app.clamp_filtered_selection();
-            }
-            _ => {}
-        }
-        return;
-    }
-
-    match code {
-        KeyCode::Char('q') | KeyCode::Char('Q') => app.should_quit = true,
-        KeyCode::Char('?') => app.show_help = true,
-
-        KeyCode::Char('1') => app.active_tab = 0,
-        KeyCode::Char('2') => app.active_tab = 1,
-        KeyCode::Char('3') => app.active_tab = 2,
-        KeyCode::Char('4') => app.active_tab = 3,
-        KeyCode::Char('5') => {
-            app.active_tab = TAB_HISTORY;
-            app.load_history_data();
-        }
-        KeyCode::Char('6') => app.active_tab = TAB_SETTINGS,
-
-        KeyCode::Tab => {
-            app.active_tab = (app.active_tab + 1) % TAB_COUNT;
-            if app.active_tab == TAB_HISTORY {
-                app.load_history_data();
-            }
-        }
-        KeyCode::BackTab => {
-            app.active_tab = if app.active_tab == 0 {
-                TAB_COUNT - 1
-            } else {
-                app.active_tab - 1
-            };
-            if app.active_tab == TAB_HISTORY {
-                app.load_history_data();
-            }
-        }
-
-        KeyCode::Char('s') | KeyCode::Char('S') => app.start_scan(),
-        KeyCode::Char('r') | KeyCode::Char('R') => {
-            if app.active_tab == TAB_HISTORY {
-                app.load_history_data();
-                app.refresh_restore_points();
-            } else {
-                app.start_scan();
-            }
-        }
-
-        KeyCode::Char('d') | KeyCode::Char('D') => app.toggle_dry_run(),
-
-        KeyCode::Char('f') | KeyCode::Char('F') => {
-            if app.active_tab == TAB_TRIAGE || app.active_tab == TAB_REPAIR {
-                app.start_repairs();
-            } else {
-                app.active_tab = TAB_TRIAGE;
-            }
-        }
-
-        KeyCode::Char('a') | KeyCode::Char('A') => {
-            if app.active_tab == TAB_DASHBOARD {
-                app.start_scan();
-            } else {
-                app.select_all_issues();
-            }
-        }
-        KeyCode::Char('n') | KeyCode::Char('N') => app.deselect_all_issues(),
-
-        KeyCode::Char('u') | KeyCode::Char('U') => {
-            if app.active_tab == TAB_HISTORY {
-                app.request_rollback();
-            } else {
-                // Opens the parked "update available" notice, if there is one.
-                app.show_update_notice();
-            }
-        }
-
-        KeyCode::Char('e') | KeyCode::Char('E') => match app.export_report() {
-            Ok(path) => {
-                app.status_message = Some(format!("📄 Bericht exportiert: {}", path.display()));
-            }
-            Err(err) => {
-                app.status_message = Some(err);
-            }
-        },
-
-        KeyCode::Char(' ') | KeyCode::Enter => match app.active_tab {
-            TAB_TRIAGE => app.toggle_selected_issue(),
-            TAB_SETTINGS => app.toggle_current_setting(),
-            _ => {}
-        },
-
-        KeyCode::Up | KeyCode::Char('k') => match app.active_tab {
-            TAB_TRIAGE => app.prev_issue(),
-            TAB_HISTORY => app.prev_backup(),
-            TAB_SETTINGS => app.prev_setting(),
-            TAB_SCANNER | TAB_REPAIR => app.scroll_log_up(1),
-            _ => {}
-        },
-        KeyCode::Down | KeyCode::Char('j') => match app.active_tab {
-            TAB_TRIAGE => app.next_issue(),
-            TAB_HISTORY => app.next_backup(),
-            TAB_SETTINGS => app.next_setting(),
-            TAB_SCANNER | TAB_REPAIR => app.scroll_log_down(1),
-            _ => {}
-        },
-        KeyCode::PageUp => match app.active_tab {
-            TAB_SCANNER | TAB_REPAIR => app.scroll_log_up(10),
-            _ => {}
-        },
-        KeyCode::PageDown => match app.active_tab {
-            TAB_SCANNER | TAB_REPAIR => app.scroll_log_down(10),
-            _ => {}
-        },
-        KeyCode::Home => match app.active_tab {
-            TAB_SCANNER | TAB_REPAIR => app.scroll_log_top(),
-            _ => {}
-        },
-        KeyCode::End => match app.active_tab {
-            TAB_SCANNER | TAB_REPAIR => app.scroll_log_bottom(),
-            _ => {}
-        },
-
-        KeyCode::Char('/') if app.active_tab == TAB_TRIAGE => app.is_searching = true,
-        KeyCode::Char('c') | KeyCode::Char('C') if app.active_tab == TAB_TRIAGE => {
-            app.toggle_severity_filter(engine::issue::Severity::Critical);
-        }
-        KeyCode::Char('w') | KeyCode::Char('W') if app.active_tab == TAB_TRIAGE => {
-            app.toggle_severity_filter(engine::issue::Severity::Warning);
-        }
-        KeyCode::Char('i') | KeyCode::Char('I') if app.active_tab == TAB_TRIAGE => {
-            app.toggle_severity_filter(engine::issue::Severity::Info);
-        }
-        KeyCode::Char('m') | KeyCode::Char('M') if app.active_tab == TAB_TRIAGE => {
-            app.cycle_module_filter();
-        }
-        KeyCode::Char('x') | KeyCode::Char('X') if app.active_tab == TAB_TRIAGE => {
-            app.clear_filters();
-        }
-
-        KeyCode::Left | KeyCode::Char('h') => {
-            if app.active_tab == TAB_SETTINGS {
-                app.adjust_current_setting(false);
-            }
-        }
-        KeyCode::Right | KeyCode::Char('l') => {
-            if app.active_tab == TAB_SETTINGS {
-                app.adjust_current_setting(true);
-            }
-        }
-
-        // Esc clears active filters first, cancels a running operation second, and navigates back to dashboard third.
-        KeyCode::Esc => {
-            if app.active_tab == TAB_TRIAGE && app.has_active_filters() {
-                app.clear_filters();
-            } else if !app.cancel_current_operation() && app.active_tab != TAB_DASHBOARD {
-                app.active_tab = TAB_DASHBOARD;
-            }
-        }
-
-        _ => {}
-    }
 }
