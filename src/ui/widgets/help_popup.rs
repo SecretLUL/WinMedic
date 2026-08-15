@@ -66,9 +66,13 @@ const SECTIONS: &[Section] = &[
     (
         "Settings (tab 6)",
         &[
-            ("[Space] / [Enter]", "Flip a switch or step value"),
             (
-                "[+] / [-] or [[] / []]",
+                "[Enter]",
+                "Open custom value input dialog (or toggle switch)",
+            ),
+            ("[Space]", "Toggle a switch or step numeric value (+Step)"),
+            (
+                "[+] / [-] or [[]/[]]",
                 "Increase / decrease a numeric value",
             ),
         ],
@@ -90,16 +94,19 @@ pub fn render_help_popup(f: &mut Frame, area: Rect) {
     ];
 
     for (heading, entries) in SECTIONS {
-        text.push(Line::from(vec![Span::styled(
-            format!("  {}:", heading),
-            Style::default()
-                .fg(Theme::CYAN)
-                .add_modifier(Modifier::UNDERLINED),
-        )]));
+        text.push(Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(
+                format!("{}:", heading),
+                Style::default()
+                    .fg(Theme::CYAN)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
         for (key, desc) in *entries {
             text.push(Line::from(vec![
                 Span::styled(
-                    format!("    {:<22}", key),
+                    format!("    {:<26} ", key),
                     Style::default()
                         .fg(Theme::AMBER)
                         .add_modifier(Modifier::BOLD),
@@ -111,11 +118,12 @@ pub fn render_help_popup(f: &mut Frame, area: Rect) {
     }
 
     text.push(Line::from(vec![
+        Span::styled("  ", Style::default()),
         Span::styled(
-            "  Safety:",
+            "Safety:",
             Style::default()
                 .fg(Theme::EMERALD)
-                .add_modifier(Modifier::UNDERLINED),
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             " The VSS restore point and registry backup are configurable in tab [6].",
@@ -130,7 +138,7 @@ pub fn render_help_popup(f: &mut Frame, area: Rect) {
             .add_modifier(Modifier::ITALIC),
     )]));
 
-    let popup_width = 86.min(area.width.saturating_sub(4));
+    let popup_width = 88.min(area.width.saturating_sub(4));
     let popup_height = (text.len() as u16 + 2).min(area.height.saturating_sub(2));
     let x = (area.width.saturating_sub(popup_width)) / 2;
     let y = (area.height.saturating_sub(popup_height)) / 2;
