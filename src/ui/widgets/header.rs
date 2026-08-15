@@ -138,6 +138,13 @@ pub fn render_header(
     let tabs = Tabs::new(tab_titles)
         .block(
             Block::default()
+                .title(" ◄ [←/→] Tabs ► ")
+                .title_alignment(Alignment::Right)
+                .title_style(
+                    Style::default()
+                        .fg(Theme::CYAN)
+                        .add_modifier(Modifier::BOLD),
+                )
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Theme::CYAN)),
         )

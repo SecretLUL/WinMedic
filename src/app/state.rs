@@ -2,7 +2,10 @@
 //! export. Behaviour that belongs to a specific feature lives in the sibling
 //! modules listed in [`crate::app`].
 
-use super::{BackgroundEvent, TAB_DASHBOARD, TAB_REPAIR, TAB_SCANNER, push_bounded_log};
+use super::{
+    BackgroundEvent, TAB_COUNT, TAB_DASHBOARD, TAB_HISTORY, TAB_REPAIR, TAB_SCANNER,
+    push_bounded_log,
+};
 use crate::config::AppConfig;
 use crate::engine::issue::{Issue, Severity};
 use crate::engine::reporter::DiagnosticReporter;
@@ -248,6 +251,26 @@ impl App {
         self.is_scanning || self.is_fixing
     }
 
+    /// Advance to the next tab in cyclic order (BIOS-style right navigation).
+    pub fn next_tab(&mut self) {
+        self.active_tab = (self.active_tab + 1) % TAB_COUNT;
+        if self.active_tab == TAB_HISTORY {
+            self.load_history_data();
+        }
+    }
+
+    /// Go back to the previous tab in cyclic order (BIOS-style left navigation).
+    pub fn prev_tab(&mut self) {
+        self.active_tab = if self.active_tab == 0 {
+            TAB_COUNT - 1
+        } else {
+            self.active_tab - 1
+        };
+        if self.active_tab == TAB_HISTORY {
+            self.load_history_data();
+        }
+    }
+
     // ------------------------------------------------------------ log buffers
 
     pub fn push_scan_log(&mut self, msg: impl Into<String>) {
@@ -378,5 +401,20 @@ mod tests {
 
         app.scroll_log_bottom();
         assert_eq!(app.scan_log_scroll, 0);
+    }
+
+    #[test]
+    fn test_tab_navigation_wrapping() {
+        let mut app = App::new();
+        app.active_tab = 0;
+
+        app.prev_tab();
+        assert_eq!(app.active_tab, TAB_COUNT - 1);
+
+        app.next_tab();
+        assert_eq!(app.active_tab, 0);
+
+        app.next_tab();
+        assert_eq!(app.active_tab, 1);
     }
 }

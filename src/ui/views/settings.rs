@@ -61,7 +61,7 @@ pub fn render_settings(
     }
 
     let list = List::new(items).block(Theme::card_block(
-        "SETTINGS - [↑/↓] Select  [Space/Enter] Toggle  [←/→] Change Value",
+        "SETTINGS - [←/→] Tabs  [↑/↓] Select  [Space/Enter] Toggle  [+/-] Value",
     ));
     f.render_widget(list, chunks[0]);
 

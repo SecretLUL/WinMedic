@@ -19,7 +19,13 @@ impl App {
     }
 
     pub fn toggle_current_setting(&mut self) {
-        if self.config.toggle_setting(self.selected_setting_index) {
+        let changed = if self.selected_setting_index >= 4 {
+            self.config
+                .adjust_setting(self.selected_setting_index, true)
+        } else {
+            self.config.toggle_setting(self.selected_setting_index)
+        };
+        if changed {
             self.apply_config_change();
         }
     }

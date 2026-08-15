@@ -12,15 +12,16 @@ const SECTIONS: &[Section] = &[
     (
         "Navigation",
         &[
+            ("[←]/[→] or [h]/[l]", "Switch tab (BIOS-style navigation)"),
             (
                 "[1] - [6]",
-                "Switch tab (Dashboard, Scan, Triage, Fix, Logs, Settings)",
+                "Jump directly to tab (Dashboard, Scan, Triage, Fix, Logs, Settings)",
             ),
             (
                 "[Tab] / [Shift+Tab]",
                 "Cycle forwards / backwards through tabs",
             ),
-            ("[↑]/[↓] or [j]/[k]", "Navigate lists"),
+            ("[↑]/[↓] or [j]/[k]", "Navigate lists / items"),
             ("[U]", "Show available update (outside tab 5)"),
             ("[Esc]", "Back to dashboard"),
         ],
@@ -65,8 +66,11 @@ const SECTIONS: &[Section] = &[
     (
         "Settings (tab 6)",
         &[
-            ("[Space] / [Enter]", "Flip a switch"),
-            ("[←] / [→]", "Decrease / increase a numeric value"),
+            ("[Space] / [Enter]", "Flip a switch or step value"),
+            (
+                "[+] / [-] or [[] / []]",
+                "Increase / decrease a numeric value",
+            ),
         ],
     ),
 ];

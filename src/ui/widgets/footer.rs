@@ -18,26 +18,28 @@ pub fn render_footer(
     let key_hints: Vec<(&str, &str)> = if is_busy {
         vec![
             ("Esc", "Cancel"),
-            ("1-6", "Tabs"),
+            ("←/→", "Tabs"),
             ("?", "Help"),
             ("Q", "Quit"),
         ]
     } else {
         match active_tab_index {
             TAB_DASHBOARD => vec![
-                ("1-6", "Tabs"),
+                ("←/→", "Tabs"),
                 ("S", "Start Scan"),
                 ("D", "Simulate"),
                 ("?", "Help"),
                 ("Q", "Quit"),
             ],
             TAB_SCANNER => vec![
+                ("←/→", "Tabs"),
                 ("PgUp/Dn", "Scroll"),
                 ("R", "Scan"),
                 ("?", "Help"),
                 ("Q", "Quit"),
             ],
             TAB_TRIAGE => vec![
+                ("←/→", "Tabs"),
                 ("↑/↓", "Select"),
                 ("Space", "On/Off"),
                 ("C/W/I", "Filter"),
@@ -48,6 +50,7 @@ pub fn render_footer(
                 ("Q", "Quit"),
             ],
             TAB_REPAIR => vec![
+                ("←/→", "Tabs"),
                 ("F", "Start"),
                 ("PgUp/Dn", "Scroll"),
                 ("D", "Simulate"),
@@ -56,6 +59,7 @@ pub fn render_footer(
                 ("Q", "Quit"),
             ],
             TAB_HISTORY => vec![
+                ("←/→", "Tabs"),
                 ("↑/↓", "Select Backup"),
                 ("U", "Rollback"),
                 ("E", "Report"),
@@ -64,13 +68,14 @@ pub fn render_footer(
                 ("Q", "Quit"),
             ],
             TAB_SETTINGS => vec![
+                ("←/→", "Tabs"),
                 ("↑/↓", "Select"),
                 ("Space", "Toggle"),
-                ("←/→", "Change Value"),
+                ("+/-", "Value"),
                 ("?", "Help"),
                 ("Q", "Quit"),
             ],
-            _ => vec![("1-6", "Tabs"), ("?", "Help"), ("Q", "Quit")],
+            _ => vec![("←/→", "Tabs"), ("?", "Help"), ("Q", "Quit")],
         }
     };
 

@@ -10,9 +10,7 @@
 //! the normal bindings.
 
 use super::state::App;
-use super::{
-    TAB_COUNT, TAB_DASHBOARD, TAB_HISTORY, TAB_REPAIR, TAB_SCANNER, TAB_SETTINGS, TAB_TRIAGE,
-};
+use super::{TAB_DASHBOARD, TAB_HISTORY, TAB_REPAIR, TAB_SCANNER, TAB_SETTINGS, TAB_TRIAGE};
 use crate::engine::issue::Severity;
 use crossterm::event::KeyCode;
 
@@ -72,22 +70,8 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
         }
         KeyCode::Char('6') => app.active_tab = TAB_SETTINGS,
 
-        KeyCode::Tab => {
-            app.active_tab = (app.active_tab + 1) % TAB_COUNT;
-            if app.active_tab == TAB_HISTORY {
-                app.load_history_data();
-            }
-        }
-        KeyCode::BackTab => {
-            app.active_tab = if app.active_tab == 0 {
-                TAB_COUNT - 1
-            } else {
-                app.active_tab - 1
-            };
-            if app.active_tab == TAB_HISTORY {
-                app.load_history_data();
-            }
-        }
+        KeyCode::Tab => app.next_tab(),
+        KeyCode::BackTab => app.prev_tab(),
 
         KeyCode::Char('s') | KeyCode::Char('S') => app.start_scan(),
         KeyCode::Char('r') | KeyCode::Char('R') => {
@@ -190,15 +174,18 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
             app.clear_filters();
         }
 
-        KeyCode::Left | KeyCode::Char('h') => {
-            if app.active_tab == TAB_SETTINGS {
-                app.adjust_current_setting(false);
-            }
+        KeyCode::Left | KeyCode::Char('h') => app.prev_tab(),
+        KeyCode::Right | KeyCode::Char('l') => app.next_tab(),
+
+        KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char(']')
+            if app.active_tab == TAB_SETTINGS =>
+        {
+            app.adjust_current_setting(true);
         }
-        KeyCode::Right | KeyCode::Char('l') => {
-            if app.active_tab == TAB_SETTINGS {
-                app.adjust_current_setting(true);
-            }
+        KeyCode::Char('-') | KeyCode::Char('_') | KeyCode::Char('[')
+            if app.active_tab == TAB_SETTINGS =>
+        {
+            app.adjust_current_setting(false);
         }
 
         // Esc clears active filters first, cancels a running operation second, and navigates back to dashboard third.
@@ -217,7 +204,7 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::ConfirmRequest;
+    use crate::app::{ConfirmRequest, TAB_COUNT};
     use crate::engine::issue::{Issue, RiskScore};
 
     /// An `App` with no modal in the way.
@@ -320,6 +307,56 @@ mod tests {
 
         handle_key(&mut app, KeyCode::BackTab);
         assert_eq!(app.active_tab, TAB_COUNT - 1);
+    }
+
+    #[test]
+    fn arrow_keys_and_hl_navigate_tabs_bios_style() {
+        let mut app = app();
+        app.active_tab = 0;
+
+        // Right arrow advances tab
+        handle_key(&mut app, KeyCode::Right);
+        assert_eq!(app.active_tab, 1);
+
+        // 'l' advances tab
+        handle_key(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.active_tab, 2);
+
+        // Left arrow goes back
+        handle_key(&mut app, KeyCode::Left);
+        assert_eq!(app.active_tab, 1);
+
+        // 'h' goes back
+        handle_key(&mut app, KeyCode::Char('h'));
+        assert_eq!(app.active_tab, 0);
+
+        // Left arrow wraps to last tab
+        handle_key(&mut app, KeyCode::Left);
+        assert_eq!(app.active_tab, TAB_COUNT - 1);
+
+        // Right arrow wraps back to first tab
+        handle_key(&mut app, KeyCode::Right);
+        assert_eq!(app.active_tab, 0);
+    }
+
+    #[test]
+    fn plus_and_minus_adjust_settings_on_settings_tab() {
+        let mut app = app();
+        app.active_tab = TAB_SETTINGS;
+        app.selected_setting_index = 4; // temp_clean_threshold_mb (default 500)
+        let initial = app.config.temp_clean_threshold_mb;
+
+        handle_key(&mut app, KeyCode::Char('+'));
+        assert_eq!(app.config.temp_clean_threshold_mb, initial + 100);
+
+        handle_key(&mut app, KeyCode::Char('-'));
+        assert_eq!(app.config.temp_clean_threshold_mb, initial);
+
+        handle_key(&mut app, KeyCode::Char(']'));
+        assert_eq!(app.config.temp_clean_threshold_mb, initial + 100);
+
+        handle_key(&mut app, KeyCode::Char('['));
+        assert_eq!(app.config.temp_clean_threshold_mb, initial);
     }
 
     #[test]

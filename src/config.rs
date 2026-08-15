@@ -236,12 +236,12 @@ impl AppConfig {
             4 => Some((
                 "Temp file threshold",
                 format!("{} MB", self.temp_clean_threshold_mb),
-                "Temp files are reported as an issue past this total size. [←/→] ±100 MB.",
+                "Temp files are reported as an issue past this total size. [+/-] ±100 MB.",
             )),
             5 => Some((
                 "Event log analysis window",
                 format!("{} h", self.max_event_log_hours),
-                "How far back the event log is searched for critical events. [←/→] ±6 h.",
+                "How far back the event log is searched for critical events. [+/-] ±6 h.",
             )),
             _ => None,
         }
