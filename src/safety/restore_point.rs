@@ -1,4 +1,4 @@
-use crate::utils::cmd::run_powershell;
+use crate::utils::cmd::{ps_single_quoted, run_powershell};
 use std::time::Duration;
 
 /// Marker prefix the checkpoint script prints so the Rust side never has to
@@ -65,13 +65,6 @@ impl RestorePointResult {
     }
 }
 
-/// Escape a value for embedding in a PowerShell single-quoted string, where the
-/// only metacharacter is `'` itself. Single-quoted strings do not interpolate,
-/// so `$(...)`, backticks and `$vars` are inert inside them.
-fn escape_ps_single_quoted(value: &str) -> String {
-    value.replace('\'', "''")
-}
-
 /// Map the script's marker line onto an outcome.
 pub fn parse_checkpoint_output(output: &str) -> RestorePointOutcome {
     let marker = output
@@ -124,7 +117,7 @@ fn checkpoint_script(description: &str) -> String {
             # Windows reports the 24h rate limit as a *warning*, not an error, so
             # -ErrorAction cannot catch it and the call still "succeeds". The only
             # reliable check is whether a new sequence number actually appeared.
-            Checkpoint-Computer -Description '{}' -RestorePointType 'MODIFY_SETTINGS' -WarningAction SilentlyContinue
+            Checkpoint-Computer -Description {} -RestorePointType 'MODIFY_SETTINGS' -WarningAction SilentlyContinue
             $after = Get-MaxSeq
             if ($after -gt $before) {{
                 "{}CREATED"
@@ -137,7 +130,7 @@ fn checkpoint_script(description: &str) -> String {
             "{}ERROR:" + $_.Exception.Message
         }}
         "#,
-        escape_ps_single_quoted(description),
+        ps_single_quoted(description),
         RESULT_MARKER,
         RESULT_MARKER,
         RESULT_MARKER,

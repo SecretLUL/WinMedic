@@ -364,6 +364,38 @@ pub async fn run_powershell(command_str: &str, timeout_dur: Duration) -> Result<
     .await
 }
 
+/// Quote a runtime value for embedding in a PowerShell script.
+///
+/// This is the **one supported way** to put a value WinMedic did not write
+/// itself — a path, a service name, a device id, a restore point description,
+/// anything read back from the system, a config file or the network — into a
+/// script handed to [`run_powershell`]. Interpolating such a value directly
+/// lets it end the surrounding string and continue as code, in a process that
+/// is very often running as Administrator.
+///
+/// The returned string *includes* its quotes, so a caller cannot forget them:
+///
+/// ```
+/// use winmedic::utils::cmd::ps_single_quoted;
+///
+/// let name = "My Service";
+/// let script = format!("Get-Service -Name {}", ps_single_quoted(name));
+/// assert_eq!(script, "Get-Service -Name 'My Service'");
+/// ```
+///
+/// PowerShell performs no interpolation inside single-quoted strings, so
+/// `$var`, `$(...)`, `@(...)` and backtick escapes are all inert there. That
+/// leaves `'` as the only metacharacter, and it is escaped by doubling it —
+/// which is why this needs no allow-list and cannot be defeated by an encoding
+/// the caller did not anticipate.
+///
+/// This protects a *value*. It does not make an arbitrary script safe: command
+/// names, parameter names and script structure must always be literals in the
+/// source, never assembled from external input.
+pub fn ps_single_quoted(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,5 +431,74 @@ mod tests {
         assert_eq!(executed.len(), 2);
         assert!(executed[0].contains("dism.exe"));
         assert!(executed[1].contains("sfc.exe"));
+    }
+
+    #[test]
+    fn ps_quoting_wraps_a_plain_value() {
+        assert_eq!(ps_single_quoted("Spooler"), "'Spooler'");
+        assert_eq!(ps_single_quoted(""), "''");
+        assert_eq!(
+            ps_single_quoted(r"C:\Program Files\App"),
+            r"'C:\Program Files\App'"
+        );
+    }
+
+    #[test]
+    fn ps_quoting_neutralises_a_quote_break_out() {
+        // The classic escape: close the string, run something, reopen it.
+        let hostile = "x'; Remove-Item -Recurse -Force C:\\Windows; '";
+        let quoted = ps_single_quoted(hostile);
+
+        // Every embedded quote is doubled, so the literal never terminates
+        // early and the payload stays data.
+        assert_eq!(quoted, "'x''; Remove-Item -Recurse -Force C:\\Windows; '''");
+        // A well-formed single-quoted literal has an even number of quote
+        // characters; an early termination would make it odd.
+        assert_eq!(quoted.matches('\'').count() % 2, 0);
+    }
+
+    #[test]
+    fn ps_quoting_leaves_interpolation_syntax_inert() {
+        // `'` is the only metacharacter inside a single-quoted string, so
+        // everything below must survive byte for byte rather than being
+        // mangled — and, once quoted, is data rather than code to PowerShell.
+        for payload in [
+            "$(whoami)",
+            "$env:USERNAME",
+            "`n`r`t",
+            "@(Get-Process)",
+            "; shutdown /r /t 0",
+            "| Out-File C:\\pwned.txt",
+            "&{Get-Content C:\\secret}",
+            "%TEMP%",
+            "\u{202e}gnp.exe",
+        ] {
+            let quoted = ps_single_quoted(payload);
+            assert_eq!(quoted, format!("'{}'", payload), "mangled: {}", payload);
+            assert_eq!(quoted.matches('\'').count(), 2, "unbalanced: {}", payload);
+        }
+    }
+
+    #[test]
+    fn ps_quoting_handles_interpolation_that_also_contains_quotes() {
+        // The interesting case: a payload combining both a subexpression and
+        // the one character that could end the literal early.
+        let quoted = ps_single_quoted("$(Invoke-Expression 'calc')");
+        assert_eq!(quoted, "'$(Invoke-Expression ''calc'')'");
+        // The subexpression is preserved as text...
+        assert!(quoted.contains("$(Invoke-Expression"));
+        // ...and no lone quote survives to terminate the literal.
+        assert_eq!(quoted.matches('\'').count() % 2, 0);
+    }
+
+    #[test]
+    fn ps_quoting_survives_a_round_trip_through_the_helper() {
+        // Quoting an already-quoted value must stay balanced rather than
+        // producing a literal that ends in the middle.
+        let once = ps_single_quoted("O'Brien");
+        let twice = ps_single_quoted(&once);
+        assert_eq!(once, "'O''Brien'");
+        assert_eq!(twice, "'''O''''Brien'''");
+        assert_eq!(twice.matches('\'').count() % 2, 0);
     }
 }
