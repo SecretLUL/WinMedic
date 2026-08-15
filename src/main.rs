@@ -268,6 +268,7 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         let options = RepairOptions {
             create_vss: !args.no_vss && config.create_vss_before_repair,
             dry_run: args.dry_run,
+            verbose_logging: config.verbose_logging,
         };
 
         let fix_cancel = cancel.clone();

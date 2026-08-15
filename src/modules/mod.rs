@@ -21,6 +21,7 @@ pub struct ModuleConfig {
     pub max_event_log_hours: u32,
     pub auto_backup_registry: bool,
     pub auto_restart_services: bool,
+    pub verbose_logging: bool,
 }
 
 impl Default for ModuleConfig {
@@ -36,6 +37,7 @@ impl From<&AppConfig> for ModuleConfig {
             max_event_log_hours: cfg.max_event_log_hours,
             auto_backup_registry: cfg.auto_backup_registry,
             auto_restart_services: cfg.auto_restart_services,
+            verbose_logging: cfg.verbose_logging,
         }
     }
 }
