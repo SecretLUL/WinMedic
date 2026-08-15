@@ -9,7 +9,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011%20(x64)-0078D6.svg?style=for-the-badge&logo=windows)](https://www.microsoft.com/windows)
 [![Ratatui](https://img.shields.io/badge/TUI-Ratatui%200.29-00D2FF.svg?style=for-the-badge)](https://ratatui.rs/)
-[![Release](https://img.shields.io/badge/Version-v0.1.0-10B981.svg?style=for-the-badge)](https://github.com/SecretLUL/WinMedic/releases)
+[![Release](https://img.shields.io/github/v/release/SecretLUL/WinMedic?style=for-the-badge&label=Version&color=10B981)](https://github.com/SecretLUL/WinMedic/releases/latest)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-B7410E.svg?style=for-the-badge&logo=rust)](https://www.rust-lang.org/)
 
 <br/>
 
@@ -42,14 +43,17 @@ Unlike opaque one-click cleanup tools, **WinMedic** is built on five fundamental
 | **📋 Event Log & Crash Analysis** | Critical/Error event bursts in last 24h, WHEA hardware error architecture logs, `%SystemRoot%\Minidump` BSOD crash dumps | Corrupted log channel cleanup, crash dump analysis, hardware diagnostic recommendations |
 | **💾 Storage & Filesystem** | Dirty Bit detection (`fsutil dirty query C:`), SMART drive health, `%TEMP%` & `C:\Windows\Temp` junk accumulation, bloated `IconCache.db` | Triggers online `chkdsk C: /scan`, cleans temp files, resets icon/thumbnail cache & restarts Explorer |
 | **⚡ Registry & Autostart** | Orphaned `Run`/`RunOnce` startup keys, broken User Startup folder shortcuts, broken COM/Shell extension keys | Backs up target registry keys to `.reg` and safely removes invalid startup entries |
+| **🧹 System & Cache Cleaner** | WinSxS component store bloat (`DISM /AnalyzeComponentStore`), Delivery Optimization cache, Installer package cache, browser caches (Chrome, Edge, Firefox, Brave, Opera — all profiles), setup & CBS logs, WER crash archives, D3D shader & certificate caches, Recycle Bin, system temp | Runs `StartComponentCleanup`, purges the caches you select, and skips locked files instead of aborting the sweep |
+
+Package Cache and Recycle Bin are classified `RiskScore::High` and are **deselected by default**, so `--auto-fix` never empties them unattended.
 
 ---
 
 ## 🛡️ Safety & Backup Architecture
 
 Before WinMedic touches your system:
-1. **Windows System Restore Point (VSS)**: A checkpoint named `"WinMedic Auto-Restore Point (Vor Reparatur)"` is automatically triggered via WMI / PowerShell.
-2. **Registry Snapshotting**: Every modified registry key is exported into `%APPDATA%\WinMedic\backups\reg_<timestamp>.reg` prior to modification. If the export fails, the fix is aborted instead of applied.
+1. **Windows System Restore Point (VSS)**: A checkpoint named `"WinMedic Auto-Restore Point (Vor Reparatur)"` is automatically triggered via WMI / PowerShell. WinMedic then **verifies** that a new restore point actually appeared instead of trusting the exit status — Windows silently declines to create one if another was made within the last 24 hours (`SystemRestorePointCreationFrequency`), and reports that refusal as a warning rather than an error. A throttled run is surfaced as a warning, never as success.
+2. **Registry Snapshotting**: Every modified registry key is exported into `%APPDATA%\WinMedic\backups\reg_<timestamp>.reg` prior to modification. If the export fails, the fix is aborted instead of applied. The backup index is written atomically, and an index that cannot be parsed is moved aside as `index.json.corrupt-<timestamp>` rather than overwritten, so previously recorded backups are never lost.
 3. **One-Key Rollback**: Any stored snapshot can be restored directly from the **Backups & Logs** tab with `[U]`, after an explicit confirmation prompt.
 4. **Dry-Run First**: `[D]` in the TUI or `--dry-run` on the CLI lists every command a repair would execute, without executing any of it.
 5. **High-Performance Audit Logging**: Every scan, fix, simulation, rollback, and cancellation is appended in $O(1)$ to `%APPDATA%\WinMedic\logs\history.jsonl` (with automatic 5 MB log rotation) and formatted human-readable `%APPDATA%\WinMedic\logs\audit.log`.
@@ -66,8 +70,17 @@ Settings live in the **`[6]` Einstellungen** tab and are persisted to `%APPDATA%
 | VSS restore point before repair | `on` | Creates a system checkpoint before the first fix of a run |
 | Back up registry before change | `on` | Exports affected keys to `.reg`; when off, registry fixes run unprotected |
 | Restart services automatically | `on` | Allows fixes to stop/start Windows services; when off, those fixes are skipped rather than half-applied |
+| Check for updates automatically | `on` | Queries the latest GitHub release on startup and flags a newer version with `[U]` |
 | Temp file threshold | `500 MB` | Size at which junk files are reported as an issue |
 | Event log window | `24 h` | How far back the event log module searches for critical events |
+
+---
+
+## 🔄 Update Check
+
+On startup WinMedic asks GitHub for the latest release and, if a newer version exists, announces it in the header — press **`[U]`** to open the download page in your browser. Nothing is downloaded or installed automatically.
+
+The check is deliberately conservative: release URLs must start with `https://github.com/` and may not contain shell metacharacters, the browser is launched via `explorer.exe` rather than a shell, and draft and pre-releases are skipped. Version comparison is full SemVer including pre-release ordering, so `1.0.0-beta` correctly sorts below `1.0.0`. Disable it with the *Check for updates automatically* setting.
 
 ---
 
@@ -89,7 +102,7 @@ Settings live in the **`[6]` Einstellungen** tab and are persisted to `%APPDATA%
 | **`[F]`** | Proceed to Repair Center / Execute repairs |
 | **`[D]`** | Toggle dry-run mode — repairs are shown, not executed |
 | **`[E]`** | Export diagnostic & repair report as self-contained HTML |
-| **`[U]`** | Restore the selected registry snapshot (Backups & Logs tab) |
+| **`[U]`** | Backups & Logs tab: restore the selected registry snapshot — elsewhere: open the pending "update available" notice |
 | **`[PgUp]` / `[PgDn]`** | Scroll live log console (Scan and Repair tabs) |
 | **`[Home]` / `[End]`** | Jump to earliest log line / return to live tail follow mode |
 | **`[←]` / `[→]`** | Adjust the highlighted numeric setting (Settings tab) |
@@ -157,11 +170,28 @@ if ($LASTEXITCODE -ge 2) { Write-Host "Kritische Befunde – Ticket eroeffnen" }
 
 ---
 
+## 📥 Download & Verify
+
+Grab `winmedic-<version>.exe` from the [latest release](https://github.com/SecretLUL/WinMedic/releases/latest).
+
+WinMedic is **not code-signed**, so Windows SmartScreen will warn you on first launch ("Windows protected your PC" → *More info* → *Run anyway*). Because of that, every release ships a `.sha256` file next to the binary — verify the download before running it with Administrator rights:
+
+```powershell
+# Compare the published checksum against the file you downloaded
+$expected = (Get-Content .\winmedic-v0.2.0.exe.sha256).Split(' ')[0]
+$actual   = (Get-FileHash .\winmedic-v0.2.0.exe -Algorithm SHA256).Hash.ToLower()
+if ($expected -eq $actual) { "OK - checksum matches" } else { "MISMATCH - do not run this file" }
+```
+
+The checksum is generated by the release workflow from the exact binary it publishes, and release builds run with `--locked` so the published artifact is reproducible from the tagged source tree.
+
+---
+
 ## 🛠️ Building From Source
 
 ### Prerequisites
 * **Windows 10 / 11** (64-bit)
-* **Rust** 1.80+ (`cargo` and `rustc`)
+* **Rust 1.88+** (`cargo` and `rustc`) — the MSRV is declared as `rust-version` in `Cargo.toml` and enforced by CI
 
 ### Build Steps
 
@@ -170,8 +200,8 @@ if ($LASTEXITCODE -ge 2) { Write-Host "Kritische Befunde – Ticket eroeffnen" }
 git clone https://github.com/SecretLUL/WinMedic.git
 cd WinMedic
 
-# 2. Build optimized release binary
-cargo build --release
+# 2. Build optimized release binary (--locked mirrors how releases are built)
+cargo build --locked --release
 
 # 3. The executable is located at:
 .\target\release\winmedic.exe
