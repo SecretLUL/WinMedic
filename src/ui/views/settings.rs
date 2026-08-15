@@ -60,9 +60,7 @@ pub fn render_settings(
         items.push(ListItem::new(line));
     }
 
-    let list = List::new(items).block(Theme::card_block(
-        "SETTINGS - [←/→] Tabs  [↑/↓] Select  [Space/Enter] Toggle  [+/-] Value",
-    ));
+    let list = List::new(items).block(Theme::card_block("SETTINGS"));
     f.render_widget(list, chunks[0]);
 
     // Explanation of the highlighted setting plus the persistence location.
