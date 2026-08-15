@@ -197,18 +197,14 @@ pub fn render_dashboard(
     for (idx, slot_rect) in card_slots {
         if let Some((_id, name, icon, status)) = module_statuses.get(idx) {
             let (status_badge, status_color, status_text) = match status {
-                ModuleStatus::Idle => ("[● READY]", Theme::MUTED, "Ready for a diagnostic scan"),
-                ModuleStatus::Scanning => {
-                    ("[⚡ SCAN...]", Theme::CYAN, "Diagnostics in progress...")
-                }
-                ModuleStatus::Passed => ("[✔ OPTIMAL]", Theme::EMERALD, "No issues detected"),
-                ModuleStatus::Warning(_cnt) => {
-                    ("[▲ WARNING]", Theme::AMBER, "One or more warnings")
-                }
+                ModuleStatus::Idle => ("[READY]", Theme::MUTED, "Ready for a diagnostic scan"),
+                ModuleStatus::Scanning => ("[SCAN...]", Theme::CYAN, "Diagnostics in progress..."),
+                ModuleStatus::Passed => ("[OPTIMAL]", Theme::EMERALD, "No issues detected"),
+                ModuleStatus::Warning(_cnt) => ("[WARNING]", Theme::AMBER, "One or more warnings"),
                 ModuleStatus::Critical(_cnt) => {
-                    ("[✖ CRITICAL]", Theme::CORAL, "Critical faults found")
+                    ("[CRITICAL]", Theme::CORAL, "Critical faults found")
                 }
-                ModuleStatus::Failed(_err) => ("[⚠ ERROR]", Theme::CORAL, "Diagnostics failed"),
+                ModuleStatus::Failed(_err) => ("[ERROR]", Theme::CORAL, "Diagnostics failed"),
             };
 
             let card_content = vec![

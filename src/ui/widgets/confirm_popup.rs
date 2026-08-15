@@ -53,7 +53,7 @@ pub fn render_confirm_popup(f: &mut Frame, area: Rect, request: &ConfirmRequest)
     ]));
 
     let block = Block::default()
-        .title(format!(" ⚠ {} ", request.title()))
+        .title(format!(" [!] {} ", request.title()))
         .title_style(
             Style::default()
                 .fg(Theme::AMBER)

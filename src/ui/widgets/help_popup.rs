@@ -83,7 +83,7 @@ pub fn render_help_popup(f: &mut Frame, area: Rect) {
     let mut text: Vec<Line> = vec![
         Line::from(vec![Span::styled(
             format!(
-                "  🩺 WinMedic v{} - Keyboard Shortcuts",
+                "  WinMedic v{} - Keyboard Shortcuts",
                 env!("CARGO_PKG_VERSION")
             ),
             Style::default()

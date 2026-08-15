@@ -40,12 +40,15 @@ pub fn render_fix_progress(
     };
 
     let title_str = match (dry_run, is_fixing) {
-        (true, true) => format!(" ⚠ SIMULATION RUNNING - current: {} ", current_issue_title),
+        (true, true) => format!(
+            " [!] SIMULATION RUNNING - current: {} ",
+            current_issue_title
+        ),
         (true, false) if total_to_fix > 0 && (fixed_count + failed_count >= total_to_fix) => {
-            " ⚠ SIMULATION COMPLETE - nothing was changed ".to_string()
+            " [!] SIMULATION COMPLETE - nothing was changed ".to_string()
         }
         (true, false) => {
-            " ⚠ SIMULATION MODE - [F] shows the planned steps, [D] switches back ".to_string()
+            " [!] SIMULATION MODE - [F] shows the planned steps, [D] switches back ".to_string()
         }
         (false, true) => format!(" REPAIRS RUNNING - current: {} ", current_issue_title),
         (false, false) if total_to_fix > 0 && (fixed_count + failed_count >= total_to_fix) => {
@@ -99,7 +102,7 @@ pub fn render_fix_progress(
             {
                 Line::from(vec![
                     Span::styled(
-                        " ✖ ",
+                        " [X] ",
                         Style::default()
                             .fg(Theme::CORAL)
                             .add_modifier(Modifier::BOLD),
@@ -112,7 +115,7 @@ pub fn render_fix_progress(
             {
                 Line::from(vec![
                     Span::styled(
-                        " ✔ ",
+                        " [OK] ",
                         Style::default()
                             .fg(Theme::EMERALD)
                             .add_modifier(Modifier::BOLD),
@@ -121,7 +124,7 @@ pub fn render_fix_progress(
                 ])
             } else {
                 Line::from(vec![
-                    Span::styled(" ❯ ", Style::default().fg(Theme::CYAN)),
+                    Span::styled(" > ", Style::default().fg(Theme::CYAN)),
                     Span::styled(line.as_str(), Style::default().fg(Theme::TEXT_WHITE)),
                 ])
             }
@@ -168,9 +171,9 @@ pub fn render_fix_progress(
             ),
             Span::styled(
                 if dry_run {
-                    format!("◻ {} repair(s) planned", fixed_count)
+                    format!("{} repair(s) planned", fixed_count)
                 } else {
-                    format!("✔ {} fixed successfully", fixed_count)
+                    format!("{} fixed successfully", fixed_count)
                 },
                 Style::default()
                     .fg(if dry_run {
@@ -182,7 +185,7 @@ pub fn render_fix_progress(
             ),
             Span::styled(" │ ", Style::default().fg(Theme::BORDER)),
             Span::styled(
-                format!("✖ {} failed", failed_count),
+                format!("{} failed", failed_count),
                 Style::default()
                     .fg(if failed_count > 0 {
                         Theme::CORAL
@@ -194,15 +197,15 @@ pub fn render_fix_progress(
             Span::styled(" │ ", Style::default().fg(Theme::BORDER)),
             Span::styled(
                 if dry_run {
-                    " 💡 Press [D] to run repairs for real "
+                    " Press [D] to run repairs for real "
                 } else if progress_percent >= 100 && failed_count == 0 {
-                    " 🎉 All repairs completed successfully. "
+                    " All repairs completed successfully. "
                 } else if progress_percent >= 100 {
-                    " ⚠ Some repairs need a system restart. "
+                    " Some repairs need a system restart. "
                 } else if is_fixing {
-                    " ⚙ Working through the repair scripts... "
+                    " Working through the repair scripts... "
                 } else {
-                    " 👉 Press [F] to start repairs, [D] to simulate "
+                    " Press [F] to start repairs, [D] to simulate "
                 },
                 Style::default()
                     .fg(Theme::TEXT_WHITE)

@@ -76,7 +76,7 @@ pub fn render_header(
 
     let top_line = Line::from(vec![
         Span::styled(
-            format!(" 🩺 WinMedic v{} ", env!("CARGO_PKG_VERSION")),
+            format!(" WinMedic v{} ", env!("CARGO_PKG_VERSION")),
             Style::default()
                 .fg(Theme::CYAN)
                 .add_modifier(Modifier::BOLD),

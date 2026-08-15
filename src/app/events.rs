@@ -112,7 +112,7 @@ impl App {
                             total_modules,
                             self.issues.len()
                         );
-                        push_bounded_log(&mut self.scan_log_messages, format!("⏹ {}", msg));
+                        push_bounded_log(&mut self.scan_log_messages, format!("[STOP] {}", msg));
                         self.status_message = Some(msg);
                     }
                     ScanEvent::ScanCompleted {
@@ -203,13 +203,13 @@ impl App {
                             self.fixed_count += 1;
                             push_bounded_log(
                                 &mut self.repair_console_lines,
-                                format!("✔ {}", message),
+                                format!("[OK] {}", message),
                             );
                         } else {
                             self.failed_count += 1;
                             push_bounded_log(
                                 &mut self.repair_console_lines,
-                                format!("✖ Error: {}", message),
+                                format!("[X] Error: {}", message),
                             );
                         }
                     }
@@ -227,7 +227,7 @@ impl App {
                             "Repairs cancelled: {} done, {} failed, {} never attempted.",
                             fixed_count, failed_count, remaining
                         );
-                        push_bounded_log(&mut self.repair_console_lines, format!("⏹ {}", msg));
+                        push_bounded_log(&mut self.repair_console_lines, format!("[STOP] {}", msg));
                         self.status_message = Some(msg);
                     }
                     RepairEvent::AllRepairsCompleted {

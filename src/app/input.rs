@@ -137,7 +137,7 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
 
         KeyCode::Char('e') | KeyCode::Char('E') => match app.export_report() {
             Ok(path) => {
-                app.status_message = Some(format!("📄 Report exported: {}", path.display()));
+                app.status_message = Some(format!("Report exported: {}", path.display()));
             }
             Err(err) => {
                 app.status_message = Some(err);

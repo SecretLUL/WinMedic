@@ -60,7 +60,7 @@ impl DiagnosticModule for StorageModule {
     }
 
     fn icon(&self) -> &'static str {
-        "💾"
+        "[DSK]"
     }
 
     async fn scan(
@@ -110,7 +110,7 @@ impl DiagnosticModule for StorageModule {
                     &progress_tx,
                     35,
                     "File system C: is clean",
-                    Some("✔ File system C: no dirty-bit inconsistencies."),
+                    Some("File system C: no dirty-bit inconsistencies."),
                 )
                 .await;
             }
@@ -140,7 +140,7 @@ impl DiagnosticModule for StorageModule {
                         &progress_tx,
                         60,
                         "SMART status checked",
-                        Some(&format!("✔ Drive: {}", l)),
+                        Some(&format!("Drive: {}", l)),
                     )
                     .await;
                     if l.to_lowercase().contains("unhealthy")
@@ -211,7 +211,7 @@ impl DiagnosticModule for StorageModule {
                 88,
                 "Temporary files within the normal range",
                 Some(&format!(
-                    "✔ Temp files: {} MB ({} files), threshold is {} MB.",
+                    "Temp files: {} MB ({} files), threshold is {} MB.",
                     total_temp_mb, total_temp_files, self.config.temp_clean_threshold_mb
                 )),
             )

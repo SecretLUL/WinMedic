@@ -56,7 +56,7 @@ pub fn render_setting_input_popup(f: &mut Frame, area: Rect, input: &SettingInpu
     if let Some(err) = &input.error_msg {
         lines.push(Line::from(vec![
             Span::styled(
-                "  ⚠ ",
+                "  [!] ",
                 Style::default()
                     .fg(Theme::CORAL)
                     .add_modifier(Modifier::BOLD),
@@ -97,7 +97,7 @@ pub fn render_setting_input_popup(f: &mut Frame, area: Rect, input: &SettingInpu
     ]));
 
     let block = Block::default()
-        .title(" ⚙ EDIT SETTING VALUE ")
+        .title(" EDIT SETTING VALUE ")
         .title_style(
             Style::default()
                 .fg(Theme::CYAN)

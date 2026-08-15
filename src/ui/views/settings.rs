@@ -31,7 +31,7 @@ pub fn render_settings(
             _ => Theme::CYAN,
         };
 
-        let marker = if is_current { " ▶ " } else { "   " };
+        let marker = if is_current { " > " } else { "   " };
         let line = Line::from(vec![
             Span::styled(
                 marker,

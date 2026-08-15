@@ -61,7 +61,7 @@ impl DiagnosticModule for NetworkModule {
     }
 
     fn icon(&self) -> &'static str {
-        "🌐"
+        "[NET]"
     }
 
     async fn scan(
@@ -147,7 +147,7 @@ impl DiagnosticModule for NetworkModule {
                 &progress_tx,
                 45,
                 "DNS resolution successful",
-                Some("✔ DNS name resolution and IP routing are working correctly."),
+                Some("DNS name resolution and IP routing are working correctly."),
             )
             .await;
         }
@@ -190,7 +190,7 @@ impl DiagnosticModule for NetworkModule {
                     &progress_tx,
                     80,
                     "Direct internet connection active",
-                    Some("✔ No blocking manual proxy server is configured."),
+                    Some("No blocking manual proxy server is configured."),
                 )
                 .await;
             }
@@ -236,7 +236,7 @@ impl DiagnosticModule for NetworkModule {
                     &progress_tx,
                     95,
                     "Winsock catalog intact",
-                    Some("✔ The Winsock LSP catalog is consistent."),
+                    Some("The Winsock LSP catalog is consistent."),
                 )
                 .await;
             }

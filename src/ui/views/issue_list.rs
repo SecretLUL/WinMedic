@@ -21,7 +21,7 @@ pub fn render_issue_list(f: &mut Frame, area: Rect, state: &IssueListViewState) 
         let empty_msg = vec![
             Line::from(""),
             Line::from(vec![Span::styled(
-                "  ✔ No open issues found. ",
+                "  No open issues found. ",
                 Style::default()
                     .fg(Theme::EMERALD)
                     .add_modifier(Modifier::BOLD),
@@ -115,7 +115,7 @@ pub fn render_issue_list(f: &mut Frame, area: Rect, state: &IssueListViewState) 
                 let issue = &state.issues[orig_idx];
                 let is_current = pos == state.selected_filtered_index;
                 let check_box = if issue.is_fixed {
-                    "[✔ FIXED]"
+                    "[FIXED]"
                 } else if issue.is_selected {
                     "[X]"
                 } else {
@@ -131,9 +131,9 @@ pub fn render_issue_list(f: &mut Frame, area: Rect, state: &IssueListViewState) 
                 };
 
                 let (sev_str, sev_color) = match issue.severity {
-                    Severity::Critical => ("🔴", Theme::CORAL),
-                    Severity::Warning => ("▲", Theme::AMBER),
-                    Severity::Info => ("ℹ", Theme::CYAN),
+                    Severity::Critical => ("[CRIT]", Theme::CORAL),
+                    Severity::Warning => ("[WARN]", Theme::AMBER),
+                    Severity::Info => ("[INFO]", Theme::CYAN),
                 };
 
                 let line = Line::from(vec![
@@ -182,15 +182,15 @@ pub fn render_issue_list(f: &mut Frame, area: Rect, state: &IssueListViewState) 
         let issue = &state.issues[orig_idx];
 
         let (sev_badge, sev_color) = match issue.severity {
-            Severity::Critical => ("🔴 CRITICAL", Theme::CORAL),
-            Severity::Warning => ("▲ WARNING", Theme::AMBER),
-            Severity::Info => ("ℹ INFO", Theme::CYAN),
+            Severity::Critical => ("[!] CRITICAL", Theme::CORAL),
+            Severity::Warning => ("[!] WARNING", Theme::AMBER),
+            Severity::Info => ("[i] INFO", Theme::CYAN),
         };
 
         let (risk_badge, risk_color) = match issue.risk_score {
-            RiskScore::Low => ("🟢 LOW (safe auto-fix)", Theme::EMERALD),
-            RiskScore::Medium => ("🟡 MEDIUM (service restart)", Theme::AMBER),
-            RiskScore::High => ("🟠 HIGH (reboot/system)", Theme::CORAL),
+            RiskScore::Low => ("[OK] LOW (safe auto-fix)", Theme::EMERALD),
+            RiskScore::Medium => ("[~] MEDIUM (service restart)", Theme::AMBER),
+            RiskScore::High => ("[!] HIGH (reboot/system)", Theme::CORAL),
         };
 
         let mut detail_lines = vec![
@@ -254,7 +254,7 @@ pub fn render_issue_list(f: &mut Frame, area: Rect, state: &IssueListViewState) 
                     .add_modifier(Modifier::BOLD),
             )]),
             Line::from(vec![Span::styled(
-                format!("  👉 {}", issue.recommended_fix),
+                format!("  -> {}", issue.recommended_fix),
                 Style::default().fg(Theme::TEXT_WHITE),
             )]),
             Line::from(""),
@@ -280,7 +280,7 @@ pub fn render_issue_list(f: &mut Frame, area: Rect, state: &IssueListViewState) 
             detail_lines.push(Line::from(""));
             detail_lines.push(Line::from(vec![
                 Span::styled(
-                    " ✖ Last repair error: ",
+                    " [X] Last repair error: ",
                     Style::default()
                         .fg(Theme::CORAL)
                         .add_modifier(Modifier::BOLD),
@@ -291,7 +291,7 @@ pub fn render_issue_list(f: &mut Frame, area: Rect, state: &IssueListViewState) 
 
         detail_lines.push(Line::from(""));
         detail_lines.push(Line::from(vec![Span::styled(
-            " 🛡 A VSS restore point is created automatically before repairs.",
+            " A VSS restore point is created automatically before repairs.",
             Style::default()
                 .fg(Theme::EMERALD)
                 .add_modifier(Modifier::ITALIC),
@@ -315,7 +315,7 @@ fn render_filter_bar(f: &mut Frame, area: Rect, state: &IssueListViewState) {
     // Severity pills
     let crit_active = state.severity_filter == Some(Severity::Critical);
     spans.push(Span::styled(
-        " [c] 🔴 Critical ",
+        " [c] [!] Critical ",
         if crit_active {
             Style::default()
                 .fg(Theme::BG_DEEP)
@@ -329,7 +329,7 @@ fn render_filter_bar(f: &mut Frame, area: Rect, state: &IssueListViewState) {
 
     let warn_active = state.severity_filter == Some(Severity::Warning);
     spans.push(Span::styled(
-        " [w] ▲ Warning ",
+        " [w] [!] Warning ",
         if warn_active {
             Style::default()
                 .fg(Theme::BG_DEEP)
@@ -343,7 +343,7 @@ fn render_filter_bar(f: &mut Frame, area: Rect, state: &IssueListViewState) {
 
     let info_active = state.severity_filter == Some(Severity::Info);
     spans.push(Span::styled(
-        " [i] ℹ Info ",
+        " [i] [i] Info ",
         if info_active {
             Style::default()
                 .fg(Theme::BG_DEEP)
@@ -375,11 +375,11 @@ fn render_filter_bar(f: &mut Frame, area: Rect, state: &IssueListViewState) {
 
     // Search query
     let search_text = if state.is_searching {
-        format!(" [/] 🔍 Search: \"{}\"█ ", state.search_query)
+        format!(" [/] Search: \"{}\"█ ", state.search_query)
     } else if !state.search_query.is_empty() {
-        format!(" [/] 🔍 Search: \"{}\" ", state.search_query)
+        format!(" [/] Search: \"{}\" ", state.search_query)
     } else {
-        " [/] 🔍 Search ".to_string()
+        " [/] Search ".to_string()
     };
 
     spans.push(Span::styled(
