@@ -14,62 +14,59 @@ const SECTIONS: &[Section] = &[
         &[
             (
                 "[1] - [6]",
-                "Tab wechseln (Dashboard, Scan, Triage, Fix, Logs, Einstellungen)",
+                "Switch tab (Dashboard, Scan, Triage, Fix, Logs, Settings)",
             ),
-            ("[Tab] / [Shift+Tab]", "Vorwärts / rückwärts durch die Tabs"),
-            ("[↑]/[↓] oder [j]/[k]", "In Listen navigieren"),
-            ("[U]", "Verfügbares Update anzeigen (außerhalb Tab 5)"),
-            ("[Esc]", "Zurück zum Dashboard"),
+            (
+                "[Tab] / [Shift+Tab]",
+                "Cycle forwards / backwards through tabs",
+            ),
+            ("[↑]/[↓] or [j]/[k]", "Navigate lists"),
+            ("[U]", "Show available update (outside tab 5)"),
+            ("[Esc]", "Back to dashboard"),
         ],
     ),
     (
-        "Scan & Reparatur",
+        "Scan & Repair",
         &[
-            ("[S] / [R]", "System-Health-Scan starten bzw. wiederholen"),
-            ("[F]", "Ausgewählte Reparaturen ausführen"),
-            ("[D]", "Simulationsmodus – zeigt Schritte, ändert nichts"),
-            (
-                "[PgUp] / [PgDn]",
-                "Live-Log/Terminal nach oben/unten scrollen",
-            ),
+            ("[S] / [R]", "Start or repeat the system health scan"),
+            ("[F]", "Run the selected repairs"),
+            ("[D]", "Simulation mode - shows steps, changes nothing"),
+            ("[PgUp] / [PgDn]", "Scroll the live log up / down"),
             (
                 "[Home] / [End]",
-                "Zum Log-Anfang / zurück zum Live-Tail springen",
+                "Jump to the top of the log / back to the live tail",
             ),
-            ("[E]", "Diagnosebericht als HTML exportieren"),
-            ("[Esc]", "Laufenden Scan oder Reparaturlauf abbrechen"),
+            ("[E]", "Export the diagnostic report as HTML"),
+            ("[Esc]", "Cancel a running scan or repair"),
         ],
     ),
     (
-        "Problem-Triage & Filter (Tab 3)",
+        "Issue Triage & Filters (tab 3)",
         &[
             (
                 "[c] / [w] / [i]",
-                "Nach Schweregrad filtern (Kritisch / Warnung / Info)",
+                "Filter by severity (critical / warning / info)",
             ),
-            ("[m]", "Nach Diagnose-Modul filtern (durchschalten)"),
-            ("[/]", "Volltextsuche in Befunden & Details starten"),
-            ("[x]", "Alle aktiven Filter & Suche zurücksetzen"),
-            ("[Space]", "Problem für Reparatur an-/abwählen"),
-            ("[A] / [N]", "Alle sichtbaren Probleme aus-/abwählen"),
+            ("[m]", "Filter by diagnostic module (cycles through)"),
+            ("[/]", "Search findings and details full-text"),
+            ("[x]", "Clear all active filters and the search"),
+            ("[Space]", "Select / deselect an issue for repair"),
+            ("[A] / [N]", "Select / deselect every visible issue"),
         ],
     ),
     (
-        "Sicherungen & Rollback (Tab 5)",
+        "Backups & Rollback (tab 5)",
         &[
-            ("[↑]/[↓]", "Registry-Sicherung auswählen"),
-            (
-                "[U]",
-                "Markierte .reg-Sicherung nach Rückfrage zurückspielen",
-            ),
-            ("[R]", "Wiederherstellungspunkte & Log neu laden"),
+            ("[↑]/[↓]", "Select a registry backup"),
+            ("[U]", "Restore the selected .reg backup, after confirming"),
+            ("[R]", "Reload restore points and the log"),
         ],
     ),
     (
-        "Einstellungen (Tab 6)",
+        "Settings (tab 6)",
         &[
-            ("[Space] / [Enter]", "Schalter umlegen"),
-            ("[←] / [→]", "Zahlenwert verringern / erhöhen"),
+            ("[Space] / [Enter]", "Flip a switch"),
+            ("[←] / [→]", "Decrease / increase a numeric value"),
         ],
     ),
 ];
@@ -78,7 +75,7 @@ pub fn render_help_popup(f: &mut Frame, area: Rect) {
     let mut text: Vec<Line> = vec![
         Line::from(vec![Span::styled(
             format!(
-                "  🩺 WinMedic v{} – Tastenkürzel",
+                "  🩺 WinMedic v{} - Keyboard Shortcuts",
                 env!("CARGO_PKG_VERSION")
             ),
             Style::default()
@@ -111,19 +108,19 @@ pub fn render_help_popup(f: &mut Frame, area: Rect) {
 
     text.push(Line::from(vec![
         Span::styled(
-            "  Sicherheit:",
+            "  Safety:",
             Style::default()
                 .fg(Theme::EMERALD)
                 .add_modifier(Modifier::UNDERLINED),
         ),
         Span::styled(
-            " VSS-Wiederherstellungspunkt und Registry-Backup sind in Tab [6] konfigurierbar.",
+            " The VSS restore point and registry backup are configurable in tab [6].",
             Style::default().fg(Theme::MUTED),
         ),
     ]));
     text.push(Line::from(""));
     text.push(Line::from(vec![Span::styled(
-        "  Drücken Sie [?] oder [Esc], um diese Hilfe zu schließen.",
+        "  Press [?] or [Esc] to close this help.",
         Style::default()
             .fg(Theme::MUTED)
             .add_modifier(Modifier::ITALIC),
@@ -138,7 +135,7 @@ pub fn render_help_popup(f: &mut Frame, area: Rect) {
     f.render_widget(Clear, popup_area);
 
     let block = Block::default()
-        .title(" HILFE & TASTENKÜRZEL ")
+        .title(" HELP & KEYBOARD SHORTCUTS ")
         .title_style(
             Style::default()
                 .fg(Theme::CYAN)

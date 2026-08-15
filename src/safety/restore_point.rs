@@ -29,18 +29,18 @@ impl RestorePointOutcome {
 
     pub fn message(&self) -> String {
         match self {
-            Self::Created => "VSS-Wiederherstellungspunkt wurde erstellt.".to_string(),
-            Self::Throttled => "Windows hat keinen neuen Wiederherstellungspunkt angelegt: \
-                 Es wurde bereits einer innerhalb der letzten 24 Stunden erstellt \
-                 (Windows-Standarddrosselung). Ein aktueller Punkt existiert also, \
-                 er bildet aber nicht den Stand unmittelbar vor dieser Reparatur ab."
+            Self::Created => "A VSS restore point was created.".to_string(),
+            Self::Throttled => "Windows did not create a new restore point: one was already \
+                 created within the last 24 hours (the Windows default throttle). \
+                 A recent point therefore exists, but it does not capture the state \
+                 immediately before this repair."
                 .to_string(),
-            Self::Unverified => "Wiederherstellungspunkt konnte nicht bestätigt werden: \
-                 Die Liste der Wiederherstellungspunkte war nicht lesbar \
-                 (fehlen Administratorrechte?). Es ist unklar, ob ein Punkt existiert."
+            Self::Unverified => "The restore point could not be confirmed: the list of restore \
+                 points was unreadable (missing Administrator privileges?). Whether \
+                 a point exists is unknown."
                 .to_string(),
             Self::Failed(err) => {
-                format!("Wiederherstellungspunkt fehlgeschlagen: {}", err)
+                format!("Restore point failed: {}", err)
             }
         }
     }
@@ -79,7 +79,7 @@ pub fn parse_checkpoint_output(output: &str) -> RestorePointOutcome {
         Some(rest) => {
             let detail = rest.strip_prefix("ERROR:").unwrap_or(rest).trim();
             let detail = if detail.is_empty() {
-                "unbekannter Fehler".to_string()
+                "unknown error".to_string()
             } else {
                 detail.to_string()
             };
@@ -89,7 +89,7 @@ pub fn parse_checkpoint_output(output: &str) -> RestorePointOutcome {
         None => {
             let tail = output.trim();
             let detail = if tail.is_empty() {
-                "PowerShell lieferte keine Ausgabe".to_string()
+                "PowerShell produced no output".to_string()
             } else {
                 tail.lines().next_back().unwrap_or(tail).trim().to_string()
             };
@@ -153,7 +153,7 @@ pub async fn create_system_restore_point(description: &str) -> RestorePointResul
         }
         Err(e) => RestorePointResult::from_outcome(
             description,
-            RestorePointOutcome::Failed(format!("PowerShell nicht ausführbar: {}", e)),
+            RestorePointOutcome::Failed(format!("PowerShell could not be run: {}", e)),
         ),
     }
 }
@@ -194,7 +194,7 @@ mod tests {
         assert_eq!(out, RestorePointOutcome::Throttled);
         // The whole point of this change: a throttled run is not protected.
         assert!(!out.is_protected());
-        assert!(out.message().contains("24 Stunden"));
+        assert!(out.message().contains("24 hours"));
     }
 
     #[test]
@@ -249,16 +249,17 @@ mod tests {
 
     #[test]
     fn plain_description_survives_unchanged() {
-        let script = checkpoint_script("WinMedic Auto-Restore Point (Vor Reparatur)");
-        assert!(script.contains("'WinMedic Auto-Restore Point (Vor Reparatur)'"));
+        let script = checkpoint_script("WinMedic Auto-Restore Point (before repairs)");
+        assert!(script.contains("'WinMedic Auto-Restore Point (before repairs)'"));
     }
 
     #[test]
     fn result_carries_outcome_and_description() {
-        let res = RestorePointResult::from_outcome("Vor Reparatur", RestorePointOutcome::Throttled);
+        let res =
+            RestorePointResult::from_outcome("Before repairs", RestorePointOutcome::Throttled);
         assert!(!res.success);
         assert_eq!(res.outcome, RestorePointOutcome::Throttled);
-        assert_eq!(res.description, "Vor Reparatur");
+        assert_eq!(res.description, "Before repairs");
         assert!(!res.message.is_empty());
     }
 }

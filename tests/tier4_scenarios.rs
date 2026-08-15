@@ -226,7 +226,7 @@ async fn test_scenario_3_startup_update_modal_and_confirm() {
 
     assert!(app.pending_confirm.is_some());
     let modal = app.pending_confirm.as_ref().unwrap();
-    assert_eq!(modal.title(), "NEUES WINMEDIC UPDATE VERFÜGBAR");
+    assert_eq!(modal.title(), "NEW WINMEDIC UPDATE AVAILABLE");
 
     // 3. User confirms modal -> browser launch executed and modal dismissed
     app.confirm_pending_action();
@@ -251,15 +251,15 @@ async fn test_scenario_4_disabled_update_check_workflow() {
     app.selected_setting_index = 3;
 
     let row = app.config.setting_row(3).unwrap();
-    assert_eq!(row.0, "Automatisch nach Updates suchen");
-    assert_eq!(row.1, "AUS");
+    assert_eq!(row.0, "Check for updates automatically");
+    assert_eq!(row.1, "OFF");
 
     // User presses Space / Enter to toggle setting ON
     app.toggle_current_setting();
     assert!(app.config.check_for_updates);
 
     let updated_row = app.config.setting_row(3).unwrap();
-    assert_eq!(updated_row.1, "AN");
+    assert_eq!(updated_row.1, "ON");
 
     // Verify config roundtrip persistence
     let json = serde_json::to_string(&app.config).unwrap();
@@ -362,7 +362,7 @@ fn test_scenario_7_non_admin_elevation_safety_check() {
     assert_eq!(code, exit_code::NEEDS_ADMIN);
     assert_eq!(
         exit_code::describe(code),
-        "Administratorrechte erforderlich."
+        "Administrator privileges required."
     );
 
     // When elevate flag is used, elevation request is initiated

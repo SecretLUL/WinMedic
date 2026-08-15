@@ -24,7 +24,7 @@ impl App {
                 match event {
                     ScanEvent::ModuleStarted(mod_id) => {
                         self.scan_active_module_name = mod_id.clone();
-                        self.scan_current_step_text = "Initialisiere Prüfung...".to_string();
+                        self.scan_current_step_text = "Initialising check...".to_string();
                         if let Some(pos) =
                             self.module_progress_list.iter().position(|m| m.0 == mod_id)
                         {
@@ -80,7 +80,7 @@ impl App {
                         self.issues.extend(issues);
                         push_bounded_log(
                             &mut self.scan_log_messages,
-                            format!("Modul '{}' abgeschlossen.", module_id),
+                            format!("Module '{}' finished.", module_id),
                         );
                     }
                     ScanEvent::ModuleFailed { module_id, error } => {
@@ -91,7 +91,7 @@ impl App {
                         }
                         push_bounded_log(
                             &mut self.scan_log_messages,
-                            format!("Fehler in Modul '{}': {}", module_id, error),
+                            format!("Error in module '{}': {}", module_id, error),
                         );
                     }
                     ScanEvent::ScanCancelled {
@@ -107,7 +107,7 @@ impl App {
                             }
                         }
                         let msg = format!(
-                            "Scan abgebrochen nach {}/{} Modulen ({} Teilergebnisse behalten).",
+                            "Scan cancelled after {}/{} modules ({} partial findings kept).",
                             completed_modules,
                             total_modules,
                             self.issues.len()
@@ -124,7 +124,7 @@ impl App {
                         self.is_scanning = false;
                         scan_ended = true;
                         self.status_message = Some(format!(
-                            "Scan abgeschlossen: {} Probleme gefunden (Health: {}/100)",
+                            "Scan finished: {} issues found (health: {}/100)",
                             total_issues, health_score
                         ));
                     }
@@ -144,27 +144,27 @@ impl App {
             while let Ok(event) = rx.try_recv() {
                 match event {
                     RepairEvent::DryRunStarted { issue_count } => {
-                        self.vss_status = "Simulation (kein VSS)".to_string();
+                        self.vss_status = "Simulation (no VSS)".to_string();
                         push_bounded_log(
                             &mut self.repair_console_lines,
                             format!(
-                                "Simuliere {} Reparatur(en) – kein Wiederherstellungspunkt nötig.",
+                                "Simulating {} repair(s) - no restore point needed.",
                                 issue_count
                             ),
                         );
                     }
                     RepairEvent::VssStarted => {
-                        self.vss_status = "Erstelle Restore Point...".to_string();
+                        self.vss_status = "Creating restore point...".to_string();
                         push_bounded_log(
                             &mut self.repair_console_lines,
-                            "Erstelle Windows Systemwiederherstellungspunkt (VSS)...",
+                            "Creating a Windows System Restore point (VSS)...",
                         );
                     }
                     RepairEvent::VssCompleted { success, message } => {
                         self.vss_status = if success {
-                            "Erstellt (OK)".to_string()
+                            "Created (OK)".to_string()
                         } else {
-                            "Hinweis".to_string()
+                            "Notice".to_string()
                         };
                         push_bounded_log(
                             &mut self.repair_console_lines,
@@ -176,9 +176,9 @@ impl App {
                         push_bounded_log(
                             &mut self.repair_console_lines,
                             if self.dry_run {
-                                format!("Simuliere: {}", title)
+                                format!("Simulating: {}", title)
                             } else {
-                                format!("Repariere: {}", title)
+                                format!("Repairing: {}", title)
                             },
                         );
                     }
@@ -209,7 +209,7 @@ impl App {
                             self.failed_count += 1;
                             push_bounded_log(
                                 &mut self.repair_console_lines,
-                                format!("✖ Fehler: {}", message),
+                                format!("✖ Error: {}", message),
                             );
                         }
                     }
@@ -224,7 +224,7 @@ impl App {
                         self.failed_count = failed_count;
                         self.health_score = DiagnosticEngine::calculate_health_score(&self.issues);
                         let msg = format!(
-                            "Reparatur abgebrochen: {} erledigt, {} fehlgeschlagen, {} nicht mehr ausgeführt.",
+                            "Repairs cancelled: {} done, {} failed, {} never attempted.",
                             fixed_count, failed_count, remaining
                         );
                         push_bounded_log(&mut self.repair_console_lines, format!("⏹ {}", msg));
@@ -241,12 +241,12 @@ impl App {
                         self.health_score = DiagnosticEngine::calculate_health_score(&self.issues);
                         self.status_message = Some(if self.dry_run {
                             format!(
-                                "Simulation fertig: {} Reparatur(en) geplant, nichts verändert.",
+                                "Simulation finished: {} repair(s) planned, nothing changed.",
                                 fixed_count
                             )
                         } else {
                             format!(
-                                "Reparatur fertig: {} behoben, {} fehlgeschlagen",
+                                "Repairs finished: {} fixed, {} failed",
                                 fixed_count, failed_count
                             )
                         });
@@ -269,9 +269,9 @@ impl App {
                 BackgroundEvent::RestorePointsLoaded(points) => {
                     self.restore_points_loading = false;
                     self.status_message = Some(if points.is_empty() {
-                        "Keine Windows-Wiederherstellungspunkte gefunden.".to_string()
+                        "No Windows restore points found.".to_string()
                     } else {
-                        format!("{} Wiederherstellungspunkte geladen.", points.len())
+                        format!("{} restore points loaded.", points.len())
                     });
                     self.vss_restore_points = points;
                 }
@@ -281,7 +281,7 @@ impl App {
                     self.audit_logger.log(
                         "RESTORE",
                         "reg_backup",
-                        "Registry-Rollback",
+                        "Registry rollback",
                         if success { "SUCCESS" } else { "FAILED" },
                         &message,
                     );
@@ -295,7 +295,7 @@ impl App {
                     // fire whatever the user happened to press next. Park the
                     // notice and let them open it deliberately with [U].
                     self.status_message = Some(format!(
-                        "Update verfügbar: v{} (aktuell: v{}) – [U] für Details",
+                        "Update available: v{} (current: v{}) - [U] for details",
                         info.latest_version.trim_start_matches(['v', 'V']),
                         info.current_version.trim_start_matches(['v', 'V'])
                     ));

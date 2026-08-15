@@ -11,8 +11,8 @@ pub enum Severity {
 impl Severity {
     pub fn badge(&self) -> &'static str {
         match self {
-            Severity::Critical => "🔴 KRITISCH",
-            Severity::Warning => "▲ WARNUNG",
+            Severity::Critical => "🔴 CRITICAL",
+            Severity::Warning => "▲ WARNING",
             Severity::Info => "ℹ INFO",
         }
     }
@@ -36,9 +36,9 @@ pub enum RiskScore {
 impl RiskScore {
     pub fn badge(&self) -> &'static str {
         match self {
-            RiskScore::Low => "🟢 GERING (Safe)",
-            RiskScore::Medium => "🟡 MITTEL (Service-Restart)",
-            RiskScore::High => "🟠 HOCH (Reboot/System)",
+            RiskScore::Low => "🟢 LOW (safe)",
+            RiskScore::Medium => "🟡 MEDIUM (service restart)",
+            RiskScore::High => "🟠 HIGH (reboot/system)",
         }
     }
 }

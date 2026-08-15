@@ -1155,7 +1155,7 @@ fn test_tier2_f15_modal_with_empty_strings() {
         release_url: "".to_string(),
     };
 
-    assert_eq!(modal.title(), "NEUES WINMEDIC UPDATE VERFÜGBAR");
+    assert_eq!(modal.title(), "NEW WINMEDIC UPDATE AVAILABLE");
     let body = modal.body().join("\n");
     assert!(body.contains("URL: "));
 }
@@ -1198,17 +1198,17 @@ fn test_tier2_f15_confirm_request_rollback_labels() {
         file_path: "C:\\backup.reg".to_string(),
     };
 
-    assert_eq!(modal.title(), "REGISTRY-SICHERUNG WIEDERHERSTELLEN?");
-    assert_eq!(modal.confirm_label(), "Wiederherstellen");
-    assert_eq!(modal.dismiss_label(), "Abbrechen");
+    assert_eq!(modal.title(), "RESTORE REGISTRY BACKUP?");
+    assert_eq!(modal.confirm_label(), "Restore");
+    assert_eq!(modal.dismiss_label(), "Cancel");
 }
 
 #[test]
 fn test_tier2_f15_confirm_request_elevate_labels() {
     let modal = ConfirmRequest::Elevate;
-    assert_eq!(modal.title(), "ADMINISTRATORRECHTE ERFORDERLICH");
-    assert_eq!(modal.confirm_label(), "Jetzt als Admin neu starten");
-    assert_eq!(modal.dismiss_label(), "Ohne Admin fortfahren");
+    assert_eq!(modal.title(), "ADMINISTRATOR PRIVILEGES REQUIRED");
+    assert_eq!(modal.confirm_label(), "Restart as Administrator now");
+    assert_eq!(modal.dismiss_label(), "Continue without Administrator");
 }
 
 // ============================================================================

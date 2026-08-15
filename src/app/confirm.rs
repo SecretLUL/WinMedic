@@ -29,25 +29,25 @@ pub enum ConfirmRequest {
 impl ConfirmRequest {
     pub fn title(&self) -> &'static str {
         match self {
-            ConfirmRequest::Rollback { .. } => "REGISTRY-SICHERUNG WIEDERHERSTELLEN?",
-            ConfirmRequest::Elevate => "ADMINISTRATORRECHTE ERFORDERLICH",
-            ConfirmRequest::UpdateAvailable { .. } => "NEUES WINMEDIC UPDATE VERFÜGBAR",
+            ConfirmRequest::Rollback { .. } => "RESTORE REGISTRY BACKUP?",
+            ConfirmRequest::Elevate => "ADMINISTRATOR PRIVILEGES REQUIRED",
+            ConfirmRequest::UpdateAvailable { .. } => "NEW WINMEDIC UPDATE AVAILABLE",
         }
     }
 
     pub fn confirm_label(&self) -> &'static str {
         match self {
-            ConfirmRequest::Rollback { .. } => "Wiederherstellen",
-            ConfirmRequest::Elevate => "Jetzt als Admin neu starten",
-            ConfirmRequest::UpdateAvailable { .. } => "Release-Seite im Browser öffnen",
+            ConfirmRequest::Rollback { .. } => "Restore",
+            ConfirmRequest::Elevate => "Restart as Administrator now",
+            ConfirmRequest::UpdateAvailable { .. } => "Open the release page in a browser",
         }
     }
 
     pub fn dismiss_label(&self) -> &'static str {
         match self {
-            ConfirmRequest::Rollback { .. } => "Abbrechen",
-            ConfirmRequest::Elevate => "Ohne Admin fortfahren",
-            ConfirmRequest::UpdateAvailable { .. } => "Später erinnern",
+            ConfirmRequest::Rollback { .. } => "Cancel",
+            ConfirmRequest::Elevate => "Continue without Administrator",
+            ConfirmRequest::UpdateAvailable { .. } => "Remind me later",
         }
     }
 
@@ -58,41 +58,39 @@ impl ConfirmRequest {
                 key_path,
                 file_path,
             } => vec![
-                "Die folgende Registry-Sicherung wird per 'reg import' zurückgespielt.".to_string(),
-                "Bestehende Werte unter diesem Schlüssel werden dabei überschrieben.".to_string(),
+                "The following registry backup will be restored with 'reg import'.".to_string(),
+                "Existing values under this key will be overwritten.".to_string(),
                 String::new(),
-                format!("Sicherung:  {}", description),
-                format!("Schlüssel:  {}", key_path),
-                format!("Datei:      {}", file_path),
+                format!("Backup: {}", description),
+                format!("Key:    {}", key_path),
+                format!("File:   {}", file_path),
             ],
             ConfirmRequest::Elevate => vec![
-                "WinMedic wurde ohne Administratorrechte ausgeführt.".to_string(),
-                "Vollständige Diagnose- und Reparaturfunktionen (Systemdateien via SFC/DISM,"
-                    .to_string(),
-                "Dienste und Registry) erfordern erhöhte Administratorrechte.".to_string(),
+                "WinMedic is running without Administrator privileges.".to_string(),
+                "Full diagnostics and repairs (system files via SFC/DISM, services and".to_string(),
+                "the registry) need elevated privileges.".to_string(),
                 String::new(),
-                "Möchten Sie WinMedic jetzt mit Administratorrechten (UAC) neu starten?"
-                    .to_string(),
+                "Restart WinMedic as Administrator (UAC) now?".to_string(),
             ],
             ConfirmRequest::UpdateAvailable {
                 current_version,
                 latest_version,
                 release_url,
             } => vec![
-                "Eine neue Version von WinMedic ist auf GitHub verfügbar!".to_string(),
+                "A new version of WinMedic is available on GitHub.".to_string(),
                 String::new(),
                 format!(
-                    "Installierte Version:  v{}",
+                    "Installed version: v{}",
                     current_version.trim_start_matches(['v', 'V'])
                 ),
                 format!(
-                    "Neueste Version:       v{}",
+                    "Latest version:    v{}",
                     latest_version.trim_start_matches(['v', 'V'])
                 ),
                 String::new(),
                 format!("URL: {}", release_url),
                 String::new(),
-                "Möchten Sie die GitHub Release-Seite im Standardbrowser öffnen?".to_string(),
+                "Open the GitHub release page in your default browser?".to_string(),
             ],
         }
     }
@@ -103,20 +101,19 @@ impl App {
         if let Some(request) = self.pending_confirm.take() {
             match request {
                 ConfirmRequest::Rollback { .. } => {
-                    self.status_message =
-                        Some("Abgebrochen – es wurde nichts verändert.".to_string());
+                    self.status_message = Some("Cancelled - nothing was changed.".to_string());
                 }
                 ConfirmRequest::Elevate => {
                     self.status_message = Some(
-                        "Eingeschränkter Modus: Reparaturen ohne Administratorrechte können fehlschlagen."
+                        "Limited mode: repairs without Administrator privileges may fail."
                             .to_string(),
                     );
                 }
                 ConfirmRequest::UpdateAvailable { .. } => {
-                    // "Später erinnern" — the notice stays parked in
+                    // "Remind me later" - the notice stays parked in
                     // `available_update` so [U] can bring it back.
                     self.status_message =
-                        Some("Update-Hinweis geschlossen – [U] öffnet ihn erneut.".to_string());
+                        Some("Update notice dismissed - [U] reopens it.".to_string());
                 }
             }
         }
@@ -153,31 +150,31 @@ impl App {
                 ..
             } => {
                 self.is_restoring = true;
-                self.status_message = Some(format!("Stelle '{}' wieder her...", description));
+                self.status_message = Some(format!("Restoring '{}'...", description));
 
                 let tx = self.bg_tx.clone();
                 let mgr = RegBackupManager::new();
                 tokio::spawn(async move {
                     let (success, message) = match mgr.restore_key(&file_path).await {
                         Ok(msg) => (true, msg),
-                        Err(err) => (false, format!("Rollback fehlgeschlagen: {}", err)),
+                        Err(err) => (false, format!("Rollback failed: {}", err)),
                     };
                     let _ = tx.send(BackgroundEvent::RollbackFinished { success, message });
                 });
             }
             ConfirmRequest::Elevate => {
                 if let Err(e) = relaunch_as_admin() {
-                    self.status_message = Some(format!("Elevierung fehlgeschlagen: {}", e));
+                    self.status_message = Some(format!("Elevation failed: {}", e));
                 } else {
                     self.should_quit = true;
                 }
             }
             ConfirmRequest::UpdateAvailable { release_url, .. } => {
                 if let Err(e) = updater::launch_browser(&release_url) {
-                    self.status_message = Some(format!("Browser-Start fehlgeschlagen: {}", e));
+                    self.status_message = Some(format!("Could not launch a browser: {}", e));
                 } else {
                     self.status_message =
-                        Some("GitHub Release-Seite im Browser geöffnet.".to_string());
+                        Some("Opened the GitHub release page in your browser.".to_string());
                 }
                 // The user has acted on it; stop offering it under [U].
                 self.available_update = None;
@@ -193,9 +190,9 @@ mod tests {
     #[test]
     fn test_confirm_request_elevate() {
         let req = ConfirmRequest::Elevate;
-        assert_eq!(req.title(), "ADMINISTRATORRECHTE ERFORDERLICH");
-        assert_eq!(req.confirm_label(), "Jetzt als Admin neu starten");
-        assert_eq!(req.dismiss_label(), "Ohne Admin fortfahren");
+        assert_eq!(req.title(), "ADMINISTRATOR PRIVILEGES REQUIRED");
+        assert_eq!(req.confirm_label(), "Restart as Administrator now");
+        assert_eq!(req.dismiss_label(), "Continue without Administrator");
         assert!(!req.body().is_empty());
     }
 
@@ -206,9 +203,9 @@ mod tests {
             key_path: "HKCU\\Test".to_string(),
             file_path: "C:\\test.reg".to_string(),
         };
-        assert_eq!(req.title(), "REGISTRY-SICHERUNG WIEDERHERSTELLEN?");
-        assert_eq!(req.confirm_label(), "Wiederherstellen");
-        assert_eq!(req.dismiss_label(), "Abbrechen");
+        assert_eq!(req.title(), "RESTORE REGISTRY BACKUP?");
+        assert_eq!(req.confirm_label(), "Restore");
+        assert_eq!(req.dismiss_label(), "Cancel");
         assert!(!req.body().is_empty());
     }
 
@@ -219,9 +216,9 @@ mod tests {
             latest_version: "v0.2.0".to_string(),
             release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0".to_string(),
         };
-        assert_eq!(req.title(), "NEUES WINMEDIC UPDATE VERFÜGBAR");
-        assert_eq!(req.confirm_label(), "Release-Seite im Browser öffnen");
-        assert_eq!(req.dismiss_label(), "Später erinnern");
+        assert_eq!(req.title(), "NEW WINMEDIC UPDATE AVAILABLE");
+        assert_eq!(req.confirm_label(), "Open the release page in a browser");
+        assert_eq!(req.dismiss_label(), "Remind me later");
         let body = req.body().join("\n");
         assert!(body.contains("v0.1.0"));
         assert!(body.contains("v0.2.0"));

@@ -103,11 +103,11 @@ async fn main() -> ExitCode {
 async fn run(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     if args.elevate {
         if !is_admin() {
-            println!("Fordere Administratorrechte an...");
+            println!("Requesting Administrator privileges...");
             let _ = relaunch_as_admin();
             return Ok(exit_code::OK);
         }
-        println!("Bereits mit Administratorrechten ausgeführt.");
+        println!("Already running with Administrator privileges.");
     }
 
     if args.is_headless() {
@@ -134,7 +134,7 @@ fn install_panic_hook() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         restore_terminal();
-        eprintln!("\nWinMedic ist unerwartet abgestürzt. Das Terminal wurde zurückgesetzt.");
+        eprintln!("\nWinMedic crashed unexpectedly. The terminal has been restored.");
         default_hook(info);
     }));
 }
@@ -149,7 +149,7 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     // errors, so refuse up front with a code a script can branch on.
     if args.auto_fix && !args.dry_run && !is_admin() {
         eprintln!(
-            "Administratorrechte erforderlich: '--auto-fix' kann Systemdateien, Dienste und die Registry nur als Administrator reparieren.\nStarten Sie WinMedic in einer erhöhten Konsole oder verwenden Sie '--elevate'."
+            "Administrator privileges required: '--auto-fix' can only repair system files, services and the registry as Administrator.\nStart WinMedic from an elevated console, or use '--elevate'."
         );
         return Ok(exit_code::NEEDS_ADMIN);
     }
@@ -177,9 +177,9 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
 
     if !quiet {
         DiagnosticReporter::print_banner();
-        println!("Starte WinMedic Diagnose-Engine...\n");
+        println!("Starting the WinMedic diagnostic engine...\n");
         if args.dry_run {
-            println!("⚠ SIMULATIONSMODUS: Es werden keine Änderungen vorgenommen.\n");
+            println!("⚠ SIMULATION MODE: nothing will be changed.\n");
         }
     }
 
@@ -196,7 +196,7 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
             continue;
         }
         match evt {
-            ScanEvent::ModuleStarted(id) => println!("⏳ Scanne Modul '{}'...", id),
+            ScanEvent::ModuleStarted(id) => println!("⏳ Scanning module '{}'...", id),
             ScanEvent::ModuleProgressUpdate(prog) => {
                 if let Some(msg) = prog.log_message {
                     println!("   └─ {}", msg);
@@ -204,20 +204,20 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
             }
             ScanEvent::ModuleFinished { module_id, issues } => {
                 println!(
-                    "✔ Modul '{}' fertig ({} Probleme gefunden)",
+                    "✔ Module '{}' finished ({} issues found)",
                     module_id,
                     issues.len()
                 );
             }
             ScanEvent::ModuleFailed { module_id, error } => {
-                println!("✖ Modul '{}' fehlgeschlagen: {}", module_id, error);
+                println!("✖ Module '{}' failed: {}", module_id, error);
             }
             ScanEvent::ScanCancelled {
                 completed_modules,
                 total_modules,
             } => {
                 println!(
-                    "\n⏹ Abgebrochen nach {}/{} Modulen.",
+                    "\n⏹ Cancelled after {}/{} modules.",
                     completed_modules, total_modules
                 );
             }
@@ -256,9 +256,9 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
             println!(
                 "\n{}",
                 if args.dry_run {
-                    "🔍 Simuliere Reparaturen (keine Änderungen)..."
+                    "🔍 Simulating repairs (nothing will be changed)..."
                 } else {
-                    "⚡ Starte automatische Reparatur..."
+                    "⚡ Starting automatic repairs..."
                 }
             );
         }
@@ -289,14 +289,14 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
             }
             match evt {
                 RepairEvent::DryRunStarted { issue_count } => {
-                    println!("🔍 {} Problem(e) werden simuliert.", issue_count)
+                    println!("🔍 Simulating {} issue(s).", issue_count)
                 }
                 RepairEvent::VssStarted => {
-                    println!("🛡 Erstelle Windows Systemwiederherstellungspunkt...")
+                    println!("🛡 Creating a Windows System Restore point...")
                 }
                 RepairEvent::VssCompleted { success, message } => println!(
                     "   └─ VSS Status: {} ({})",
-                    if success { "Erstellt" } else { "Hinweis" },
+                    if success { "Created" } else { "Notice" },
                     message
                 ),
                 RepairEvent::FixStarted { title, .. } => println!("🔧 {}", title),
@@ -307,7 +307,7 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
                     if success {
                         println!("   ✔ {}", message);
                     } else {
-                        println!("   ✖ Fehlgeschlagen: {}", message);
+                        println!("   ✖ Failed: {}", message);
                     }
                 }
                 RepairEvent::RepairsCancelled {
@@ -315,7 +315,7 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
                     failed_count,
                     remaining,
                 } => println!(
-                    "\n⏹ Abgebrochen: {} erledigt, {} fehlgeschlagen, {} übersprungen.",
+                    "\n⏹ Cancelled: {} done, {} failed, {} skipped.",
                     fixed_count, failed_count, remaining
                 ),
                 RepairEvent::AllRepairsCompleted { .. } => {}
@@ -328,14 +328,14 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
 
         if !quiet {
             println!(
-                "\n🎉 {}: {} {}, {} fehlgeschlagen.\n",
+                "\n🎉 {}: {} {}, {} failed.\n",
                 if args.dry_run {
-                    "Simulation abgeschlossen"
+                    "Simulation finished"
                 } else {
-                    "Reparatur abgeschlossen"
+                    "Repairs finished"
                 },
                 fixed,
-                if args.dry_run { "geplant" } else { "behoben" },
+                if args.dry_run { "planned" } else { "fixed" },
                 failed
             );
         }
@@ -358,12 +358,12 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         match DiagnosticReporter::save_report(out_path, &issues, health, &audit_entries) {
             Ok(()) => {
                 if !quiet {
-                    println!("📄 Bericht gespeichert: {}", out_path.display());
+                    println!("📄 Report saved: {}", out_path.display());
                 }
             }
             Err(e) => {
                 eprintln!(
-                    "Fehler beim Speichern des Berichts nach '{}': {}",
+                    "Could not save the report to '{}': {}",
                     out_path.display(),
                     e
                 );
@@ -378,7 +378,7 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     };
 
     if !quiet {
-        println!("Exit-Code {}: {}", code, exit_code::describe(code));
+        println!("Exit code {}: {}", code, exit_code::describe(code));
     }
 
     Ok(code)

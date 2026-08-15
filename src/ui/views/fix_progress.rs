@@ -40,20 +40,18 @@ pub fn render_fix_progress(
     };
 
     let title_str = match (dry_run, is_fixing) {
-        (true, true) => format!(" ⚠ SIMULATION LÄUFT – Aktuell: {} ", current_issue_title),
+        (true, true) => format!(" ⚠ SIMULATION RUNNING - current: {} ", current_issue_title),
         (true, false) if total_to_fix > 0 && (fixed_count + failed_count >= total_to_fix) => {
-            " ⚠ SIMULATION ABGESCHLOSSEN – es wurde nichts verändert ".to_string()
+            " ⚠ SIMULATION COMPLETE - nothing was changed ".to_string()
         }
         (true, false) => {
-            " ⚠ SIMULATIONSMODUS – [F] zeigt die geplanten Schritte, [D] schaltet um ".to_string()
+            " ⚠ SIMULATION MODE - [F] shows the planned steps, [D] switches back ".to_string()
         }
-        (false, true) => format!(" REPARATUR LÄUFT – Aktuell: {} ", current_issue_title),
+        (false, true) => format!(" REPAIRS RUNNING - current: {} ", current_issue_title),
         (false, false) if total_to_fix > 0 && (fixed_count + failed_count >= total_to_fix) => {
-            " REPARATUR-DURCHLAUF ABGESCHLOSSEN ".to_string()
+            " REPAIR RUN COMPLETE ".to_string()
         }
-        (false, false) => {
-            " REPARATUR-CENTER – Bereit zur Ausführung (Drücken Sie [F]) ".to_string()
-        }
+        (false, false) => " REPAIR CENTRE - ready to run (press [F]) ".to_string(),
     };
 
     let gauge_color = if dry_run {
@@ -97,7 +95,7 @@ pub fn render_fix_progress(
         .map(|line| {
             if line.starts_with("[STDERR]")
                 || line.to_lowercase().contains("error")
-                || line.to_lowercase().contains("fehler")
+                || line.to_lowercase().contains("failed")
             {
                 Line::from(vec![
                     Span::styled(
@@ -109,8 +107,8 @@ pub fn render_fix_progress(
                     Span::styled(line.as_str(), Style::default().fg(Theme::CORAL)),
                 ])
             } else if line.contains("SUCCESS")
-                || line.contains("erfolgreich")
-                || line.contains("repariert")
+                || line.contains("Repaired")
+                || line.contains("finished")
             {
                 Line::from(vec![
                     Span::styled(
@@ -132,14 +130,14 @@ pub fn render_fix_progress(
 
     let console_title = if scroll_offset > 0 {
         format!(
-            " LIVE-REPARATUR KONSOLE [Zeilen {}-{} von {} | End = Live] ",
+            " LIVE REPAIR CONSOLE [lines {}-{} of {} | End = live] ",
             start_idx + 1,
             end_idx,
             total_logs
         )
     } else {
         format!(
-            " LIVE-REPARATUR KONSOLE & BEFEHLSAUSGABE [{}] [PgUp/PgDn zum Scrollen] ",
+            " LIVE REPAIR CONSOLE & COMMAND OUTPUT [{}] [PgUp/PgDn to scroll] ",
             total_logs
         )
     };
@@ -170,9 +168,9 @@ pub fn render_fix_progress(
             ),
             Span::styled(
                 if dry_run {
-                    format!("◻ {} Reparatur(en) geplant", fixed_count)
+                    format!("◻ {} repair(s) planned", fixed_count)
                 } else {
-                    format!("✔ {} erfolgreich behoben", fixed_count)
+                    format!("✔ {} fixed successfully", fixed_count)
                 },
                 Style::default()
                     .fg(if dry_run {
@@ -184,7 +182,7 @@ pub fn render_fix_progress(
             ),
             Span::styled(" │ ", Style::default().fg(Theme::BORDER)),
             Span::styled(
-                format!("✖ {} fehlgeschlagen", failed_count),
+                format!("✖ {} failed", failed_count),
                 Style::default()
                     .fg(if failed_count > 0 {
                         Theme::CORAL
@@ -196,15 +194,15 @@ pub fn render_fix_progress(
             Span::styled(" │ ", Style::default().fg(Theme::BORDER)),
             Span::styled(
                 if dry_run {
-                    " 💡 [D] drücken für echte Reparatur "
+                    " 💡 Press [D] to run repairs for real "
                 } else if progress_percent >= 100 && failed_count == 0 {
-                    " 🎉 Alle Reparaturen erfolgreich durchgeführt! "
+                    " 🎉 All repairs completed successfully. "
                 } else if progress_percent >= 100 {
-                    " ⚠ Einige Reparaturen erfordern einen System-Neustart. "
+                    " ⚠ Some repairs need a system restart. "
                 } else if is_fixing {
-                    " ⚙ Reparatur-Skripte werden abgearbeitet... "
+                    " ⚙ Working through the repair scripts... "
                 } else {
-                    " 👉 Drücken Sie [F] um Reparatur zu starten, [D] für Simulation "
+                    " 👉 Press [F] to start repairs, [D] to simulate "
                 },
                 Style::default()
                     .fg(Theme::TEXT_WHITE)
@@ -212,15 +210,14 @@ pub fn render_fix_progress(
             ),
         ]),
         Line::from(vec![
-            Span::styled(" Tastatur: ", Style::default().fg(Theme::MUTED)),
+            Span::styled(" Keys: ", Style::default().fg(Theme::MUTED)),
             Span::styled(
-                "[PgUp/PgDn] Log scrollen  [Home/End] Oben/Live  [F] Start  [D] Simulation  [E] Bericht",
+                "[PgUp/PgDn] Scroll log  [Home/End] Top/Live  [F] Start  [D] Simulate  [E] Report",
                 Style::default().fg(Theme::CYAN),
             ),
         ]),
     ];
 
-    let summary_box =
-        Paragraph::new(summary_lines).block(Theme::card_block("ABSCHLUSS & HINWEISE"));
+    let summary_box = Paragraph::new(summary_lines).block(Theme::card_block("SUMMARY & NOTES"));
     f.render_widget(summary_box, chunks[2]);
 }

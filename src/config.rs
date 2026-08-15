@@ -207,41 +207,41 @@ impl AppConfig {
     pub fn setting_row(&self, index: usize) -> Option<(&'static str, String, &'static str)> {
         let on_off = |b: bool| {
             if b {
-                "AN".to_string()
+                "ON".to_string()
             } else {
-                "AUS".to_string()
+                "OFF".to_string()
             }
         };
         match index {
             0 => Some((
-                "VSS-Wiederherstellungspunkt vor Reparatur",
+                "Create a VSS restore point before repairs",
                 on_off(self.create_vss_before_repair),
-                "Legt vor jedem Reparaturlauf einen Windows-Systemwiederherstellungspunkt an.",
+                "Creates a Windows System Restore point before every repair run.",
             )),
             1 => Some((
-                "Registry vor Änderung sichern",
+                "Back up the registry before changing it",
                 on_off(self.auto_backup_registry),
-                "Exportiert betroffene Schlüssel als .reg-Datei. Ist dies AUS, laufen Registry-Fixes ohne Sicherung.",
+                "Exports affected keys as a .reg file. When OFF, registry fixes run without a safety net.",
             )),
             2 => Some((
-                "Dienste automatisch neu starten",
+                "Restart services automatically",
                 on_off(self.auto_restart_services),
-                "Erlaubt Fixes, Windows-Dienste anzuhalten und neu zu starten. Ist dies AUS, werden solche Fixes übersprungen.",
+                "Lets fixes stop and restart Windows services. When OFF, such fixes are skipped.",
             )),
             3 => Some((
-                "Automatisch nach Updates suchen",
+                "Check for updates automatically",
                 on_off(self.check_for_updates),
-                "Prüft beim Programmstart im Hintergrund auf neue WinMedic-Releases auf GitHub.",
+                "Checks GitHub for new WinMedic releases in the background at startup.",
             )),
             4 => Some((
-                "Schwelle für Temp-Dateien",
+                "Temp file threshold",
                 format!("{} MB", self.temp_clean_threshold_mb),
-                "Ab dieser Gesamtgröße werden temporäre Dateien als Problem gemeldet. [←/→] ±100 MB.",
+                "Temp files are reported as an issue past this total size. [←/→] ±100 MB.",
             )),
             5 => Some((
-                "Zeitfenster für Event-Log-Analyse",
+                "Event log analysis window",
                 format!("{} h", self.max_event_log_hours),
-                "Wie weit das Ereignisprotokoll nach kritischen Events durchsucht wird. [←/→] ±6 h.",
+                "How far back the event log is searched for critical events. [←/→] ±6 h.",
             )),
             _ => None,
         }

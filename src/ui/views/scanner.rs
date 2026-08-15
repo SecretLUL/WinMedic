@@ -34,11 +34,11 @@ pub fn render_scanner(
     // Top: Overall Progress Bar
     let gauge_title = if is_scanning {
         format!(
-            " DIAGNOSE LÄUFT – {} (Schritt: {}) ",
+            " DIAGNOSTICS RUNNING - {} (step: {}) ",
             active_module_name, current_step_text
         )
     } else {
-        " DIAGNOSE ABGESCHLOSSEN – Bereit für Triage & Reparatur ".to_string()
+        " DIAGNOSTICS COMPLETE - ready for triage & repair ".to_string()
     };
 
     let gauge_color = if overall_progress >= 100 {
@@ -71,11 +71,11 @@ pub fn render_scanner(
         .iter()
         .map(|(_id, name, icon, percent, is_done)| {
             let (status_symbol, status_color) = if *is_done {
-                ("✔ FERTIG", Theme::EMERALD)
+                ("✔ DONE", Theme::EMERALD)
             } else if *percent > 0 && *percent < 100 {
-                ("⚡ PRÜFUNG...", Theme::CYAN)
+                ("⚡ CHECKING...", Theme::CYAN)
             } else {
-                ("⏳ WARTET", Theme::MUTED)
+                ("⏳ WAITING", Theme::MUTED)
             };
 
             let line = Line::from(vec![
@@ -101,7 +101,7 @@ pub fn render_scanner(
         })
         .collect();
 
-    let module_list = List::new(items).block(Theme::card_block("DIAGNOSE-MODULE"));
+    let module_list = List::new(items).block(Theme::card_block("DIAGNOSTIC MODULES"));
     f.render_widget(module_list, center_chunks[0]);
 
     // Right: Live Log Output with scroll offset
@@ -123,14 +123,14 @@ pub fn render_scanner(
 
     let log_title = if scroll_offset > 0 {
         format!(
-            " LIVE-DIAGNOSE PROTOKOLL [Zeilen {}-{} von {} | End = Live] ",
+            " LIVE DIAGNOSTIC LOG [lines {}-{} of {} | End = live] ",
             start_idx + 1,
             end_idx,
             total_logs
         )
     } else {
         format!(
-            " LIVE-DIAGNOSE PROTOKOLL [{}] [PgUp/PgDn zum Scrollen] ",
+            " LIVE DIAGNOSTIC LOG [{}] [PgUp/PgDn to scroll] ",
             total_logs
         )
     };
@@ -163,38 +163,38 @@ pub fn render_scanner(
 
     let summary_line = Line::from(vec![
         Span::styled(
-            " Scan-Ergebnis: ",
+            " Scan result: ",
             Style::default()
                 .fg(Theme::CYAN)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(" {} Probleme insgesamt ", issues.len()),
+            format!(" {} issues in total ", issues.len()),
             Style::default()
                 .fg(Theme::TEXT_WHITE)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled("│ ", Style::default().fg(Theme::BORDER)),
         Span::styled(
-            format!(" 🔴 {} Kritisch ", crit_count),
+            format!(" 🔴 {} critical ", crit_count),
             Style::default()
                 .fg(Theme::CORAL)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled("│ ", Style::default().fg(Theme::BORDER)),
         Span::styled(
-            format!(" ▲ {} Warnungen ", warn_count),
+            format!(" ▲ {} warnings ", warn_count),
             Style::default()
                 .fg(Theme::AMBER)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled("│ ", Style::default().fg(Theme::BORDER)),
         Span::styled(
-            format!(" ℹ {} Hinweise ", info_count),
+            format!(" ℹ {} informational ", info_count),
             Style::default().fg(Theme::CYAN),
         ),
         Span::styled(
-            "   👉 Drücken Sie [3] für die Problem-Triage & Auswahl ",
+            "   👉 Press [3] for issue triage & selection ",
             Style::default()
                 .fg(Theme::EMERALD)
                 .add_modifier(Modifier::BOLD),

@@ -1151,9 +1151,9 @@ async fn test_tier1_f15_modal_confirm_request_update_available_fields() {
         release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0".to_string(),
     };
 
-    assert_eq!(modal.title(), "NEUES WINMEDIC UPDATE VERFÜGBAR");
-    assert_eq!(modal.confirm_label(), "Release-Seite im Browser öffnen");
-    assert_eq!(modal.dismiss_label(), "Später erinnern");
+    assert_eq!(modal.title(), "NEW WINMEDIC UPDATE AVAILABLE");
+    assert_eq!(modal.confirm_label(), "Open the release page in a browser");
+    assert_eq!(modal.dismiss_label(), "Remind me later");
     let body_text = modal.body().join(" ");
     assert!(body_text.contains("0.2.0"));
     assert!(body_text.contains("0.1.0"));
@@ -1252,7 +1252,7 @@ async fn test_tier1_f15_modal_skipped_when_check_for_updates_disabled() {
 fn test_tier1_f16_browser_launch_empty_url_rejected() {
     let res = launch_browser("");
     assert!(res.is_err());
-    assert_eq!(res.unwrap_err(), "URL darf nicht leer sein");
+    assert_eq!(res.unwrap_err(), "The URL must not be empty");
 }
 
 #[test]
@@ -1316,8 +1316,8 @@ fn test_tier1_f17_setting_count_equals_six() {
 fn test_tier1_f17_setting_row_three_is_update_setting() {
     let config = AppConfig::default();
     let (label, val, desc) = config.setting_row(3).unwrap();
-    assert_eq!(label, "Automatisch nach Updates suchen");
-    assert_eq!(val, "AN");
+    assert_eq!(label, "Check for updates automatically");
+    assert_eq!(val, "ON");
     assert!(desc.contains("GitHub"));
 }
 
@@ -1329,7 +1329,7 @@ fn test_tier1_f17_toggle_setting_three_flips_boolean() {
     config.toggle_setting(3);
     assert!(!config.check_for_updates);
     let (_, val_off, _) = config.setting_row(3).unwrap();
-    assert_eq!(val_off, "AUS");
+    assert_eq!(val_off, "OFF");
 
     config.toggle_setting(3);
     assert!(config.check_for_updates);

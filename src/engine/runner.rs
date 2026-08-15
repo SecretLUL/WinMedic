@@ -212,7 +212,7 @@ impl DiagnosticEngine {
                         "System-Diagnose",
                         "WARNING",
                         &format!(
-                            "Scan durch Benutzer abgebrochen nach {}/{} Modulen.",
+                            "Scan cancelled by the user after {}/{} modules.",
                             completed_modules, total_modules
                         ),
                     );
@@ -263,7 +263,7 @@ impl DiagnosticEngine {
                             }
                         }
                         Err(join_err) => {
-                            eprintln!("Scan-Task abgebrochen oder fehlgeschlagen: {}", join_err);
+                            eprintln!("Scan task was aborted or failed: {}", join_err);
                         }
                     }
                 }
@@ -320,17 +320,17 @@ impl DiagnosticEngine {
             self.audit_logger.log(
                 "DRYRUN",
                 "engine",
-                "Reparatur-Simulation",
+                "Repair simulation",
                 "INFO",
                 &format!(
-                    "Simulation gestartet für {} ausgewählte Probleme. Es wurde nichts verändert.",
+                    "Simulation started for {} selected issues. Nothing was changed.",
                     pending
                 ),
             );
         } else if options.create_vss {
             let _ = event_tx.send(RepairEvent::VssStarted).await;
             let vss_res =
-                create_system_restore_point("WinMedic Auto-Restore Point (Vor Reparatur)").await;
+                create_system_restore_point("WinMedic Auto-Restore Point (before repairs)").await;
             let _ = event_tx
                 .send(RepairEvent::VssCompleted {
                     success: vss_res.success,
@@ -371,10 +371,10 @@ impl DiagnosticEngine {
                 self.audit_logger.log(
                     "FIX",
                     "engine",
-                    "Reparaturlauf",
+                    "Repair run",
                     "WARNING",
                     &format!(
-                        "Abgebrochen nach {} Reparaturen ({} offen).",
+                        "Cancelled after {} repairs ({} still open).",
                         processed,
                         pending.saturating_sub(processed)
                     ),
@@ -404,7 +404,7 @@ impl DiagnosticEngine {
                     .send(RepairEvent::FixFinished {
                         issue_id: issue.id.clone(),
                         success: false,
-                        message: "Modul nicht gefunden".to_string(),
+                        message: "Module not found".to_string(),
                     })
                     .await;
                 continue;
@@ -436,12 +436,12 @@ impl DiagnosticEngine {
             let _ = forward_handle.await;
 
             let Some(result) = outcome else {
-                issue.fix_error = Some("Reparatur durch Benutzer abgebrochen.".to_string());
+                issue.fix_error = Some("Repair cancelled by the user.".to_string());
                 let _ = event_tx
                     .send(RepairEvent::FixFinished {
                         issue_id: issue.id.clone(),
                         success: false,
-                        message: "Abgebrochen durch Benutzer.".to_string(),
+                        message: "Cancelled by the user.".to_string(),
                     })
                     .await;
                 self.audit_logger.log(
@@ -449,7 +449,7 @@ impl DiagnosticEngine {
                     &issue.module_id,
                     &issue.title,
                     "WARNING",
-                    "Reparatur durch Benutzer abgebrochen.",
+                    "Repair cancelled by the user.",
                 );
                 let _ = event_tx
                     .send(RepairEvent::RepairsCancelled {
@@ -521,16 +521,16 @@ impl DiagnosticEngine {
                 .await;
         };
 
-        emit(format!("[SIMULATION] Geplant: {}", issue.recommended_fix)).await;
+        emit(format!("[SIMULATION] Planned: {}", issue.recommended_fix)).await;
         for (idx, step) in issue.fix_steps.iter().enumerate() {
             emit(format!("[SIMULATION]   {}. {}", idx + 1, step)).await;
         }
         if issue.fix_steps.is_empty() {
-            emit("[SIMULATION]   (keine Einzelschritte hinterlegt)".to_string()).await;
+            emit("[SIMULATION]   (no individual steps recorded)".to_string()).await;
         }
 
         let message = format!(
-            "Simulation: {} Schritt(e) würden ausgeführt. Es wurde nichts verändert.",
+            "Simulation: {} step(s) would run. Nothing was changed.",
             issue.fix_steps.len()
         );
 

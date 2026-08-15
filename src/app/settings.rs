@@ -39,15 +39,12 @@ impl App {
         match self.config.save() {
             Ok(()) => {
                 self.status_message = Some(format!(
-                    "Einstellung gespeichert: {}",
+                    "Setting saved: {}",
                     AppConfig::config_path().display()
                 ));
             }
             Err(e) => {
-                self.status_message = Some(format!(
-                    "Einstellung konnte nicht gespeichert werden: {}",
-                    e
-                ));
+                self.status_message = Some(format!("Setting could not be saved: {}", e));
             }
         }
 

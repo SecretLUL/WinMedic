@@ -26,8 +26,8 @@ pub fn render_settings(
         let is_current = idx == selected_index;
 
         let value_color = match value.as_str() {
-            "AN" => Theme::EMERALD,
-            "AUS" => Theme::CORAL,
+            "ON" => Theme::EMERALD,
+            "OFF" => Theme::CORAL,
             _ => Theme::CYAN,
         };
 
@@ -61,7 +61,7 @@ pub fn render_settings(
     }
 
     let list = List::new(items).block(Theme::card_block(
-        "EINSTELLUNGEN – [↑/↓] Auswahl  [Space/Enter] Umschalten  [←/→] Wert ändern",
+        "SETTINGS - [↑/↓] Select  [Space/Enter] Toggle  [←/→] Change Value",
     ));
     f.render_widget(list, chunks[0]);
 
@@ -69,14 +69,14 @@ pub fn render_settings(
     let mut info_lines = Vec::new();
     if let Some((label, value, help)) = config.setting_row(selected_index) {
         info_lines.push(Line::from(vec![
-            Span::styled(" Einstellung: ", Style::default().fg(Theme::MUTED)),
+            Span::styled(" Setting: ", Style::default().fg(Theme::MUTED)),
             Span::styled(
                 label,
                 Style::default()
                     .fg(Theme::TEXT_WHITE)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("   Aktuell: ", Style::default().fg(Theme::MUTED)),
+            Span::styled("   Current: ", Style::default().fg(Theme::MUTED)),
             Span::styled(
                 value,
                 Style::default()
@@ -92,37 +92,37 @@ pub fn render_settings(
 
     info_lines.push(Line::from(""));
     info_lines.push(Line::from(vec![
-        Span::styled(" Simulationsmodus [D]: ", Style::default().fg(Theme::MUTED)),
+        Span::styled(" Simulation mode [D]: ", Style::default().fg(Theme::MUTED)),
         if dry_run {
             Span::styled(
-                "AN – Reparaturen werden nur angezeigt, nicht ausgeführt",
+                "ON - repairs are only shown, never executed",
                 Style::default()
                     .fg(Theme::AMBER)
                     .add_modifier(Modifier::BOLD),
             )
         } else {
             Span::styled(
-                "AUS – Reparaturen werden wirklich ausgeführt",
+                "OFF - repairs really are executed",
                 Style::default().fg(Theme::EMERALD),
             )
         },
     ]));
     info_lines.push(Line::from(vec![
-        Span::styled(" Gespeichert in: ", Style::default().fg(Theme::MUTED)),
+        Span::styled(" Stored in: ", Style::default().fg(Theme::MUTED)),
         Span::styled(
             AppConfig::config_path().display().to_string(),
             Style::default().fg(Theme::EMERALD),
         ),
     ]));
     info_lines.push(Line::from(vec![Span::styled(
-        " Änderungen werden sofort gespeichert und gelten ab dem nächsten Scan.",
+        " Changes are saved immediately and take effect from the next scan.",
         Style::default()
             .fg(Theme::MUTED)
             .add_modifier(Modifier::ITALIC),
     )]));
 
     let info_box = Paragraph::new(info_lines)
-        .block(Theme::card_block("BESCHREIBUNG"))
+        .block(Theme::card_block("DESCRIPTION"))
         .wrap(Wrap { trim: true });
     f.render_widget(info_box, chunks[1]);
 }

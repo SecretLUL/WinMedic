@@ -134,12 +134,12 @@ impl App {
             selected_filtered_index: 0,
             is_scanning: false,
             scan_overall_progress: 0,
-            scan_active_module_name: "Bereit".to_string(),
-            scan_current_step_text: "Kein Scan aktiv".to_string(),
+            scan_active_module_name: "Ready".to_string(),
+            scan_current_step_text: "No scan running".to_string(),
             module_progress_list,
             module_statuses,
             scan_log_messages: VecDeque::from([String::from(
-                "WinMedic initialisiert. Bereit für Diagnose.",
+                "WinMedic initialised. Ready to diagnose.",
             )]),
             scan_log_scroll: 0,
             is_fixing: false,
@@ -148,8 +148,8 @@ impl App {
             fixed_count: 0,
             failed_count: 0,
             total_to_fix: 0,
-            vss_status: "Bereit".to_string(),
-            repair_console_lines: VecDeque::from([String::from("Reparatur-Center bereit.")]),
+            vss_status: "Ready".to_string(),
+            repair_console_lines: VecDeque::from([String::from("Repair centre ready.")]),
             repair_log_scroll: 0,
             audit_logger,
             reg_backup_mgr,
@@ -168,7 +168,7 @@ impl App {
             status_message: Some(
                 config_status
                     .warning()
-                    .unwrap_or_else(|| "Bereit".to_string()),
+                    .unwrap_or_else(|| "Ready".to_string()),
             ),
             show_help: false,
             pending_confirm: if !admin_flag {
@@ -321,7 +321,7 @@ impl App {
 
         DiagnosticReporter::save_report(&path, &self.issues, health, &self.audit_entries)
             .map(|_| path)
-            .map_err(|e| format!("Export fehlgeschlagen: {}", e))
+            .map_err(|e| format!("Export failed: {}", e))
     }
 }
 
@@ -338,7 +338,7 @@ mod tests {
         let path = res.unwrap();
         assert!(path.exists());
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("WinMedic Diagnosebericht"));
+        assert!(content.contains("WinMedic Diagnostic Report"));
         let _ = std::fs::remove_file(path);
     }
 

@@ -23,7 +23,7 @@ impl App {
         self.selected_filtered_index = 0;
         self.scan_log_scroll = 0;
         self.scan_log_messages.clear();
-        self.push_scan_log("Starte vollständigen System-Health-Scan...");
+        self.push_scan_log("Starting a full system health scan...");
 
         for item in &mut self.module_progress_list {
             item.3 = 0;
@@ -44,7 +44,7 @@ impl App {
             engine_clone.run_scan(tx, cancel).await;
         });
 
-        self.status_message = Some("Diagnose-Scan läuft... [Esc] bricht ab".to_string());
+        self.status_message = Some("Diagnostic scan running... [Esc] cancels".to_string());
     }
 
     pub fn start_repairs(&mut self) {
@@ -54,8 +54,7 @@ impl App {
 
         if !self.is_admin && !self.dry_run {
             self.pending_confirm = Some(ConfirmRequest::Elevate);
-            self.status_message =
-                Some("Administratorrechte erforderlich für Reparaturen.".to_string());
+            self.status_message = Some("Repairs require Administrator privileges.".to_string());
             return;
         }
 
@@ -65,8 +64,7 @@ impl App {
             .filter(|i| i.is_selected && !i.is_fixed)
             .count();
         if selected_count == 0 {
-            self.status_message =
-                Some("Keine offenen Probleme zur Reparatur ausgewählt.".to_string());
+            self.status_message = Some("No open issues selected for repair.".to_string());
             return;
         }
 
@@ -79,19 +77,16 @@ impl App {
         self.vss_status = if self.dry_run {
             "Simulation".to_string()
         } else {
-            "Initialisiere...".to_string()
+            "Initialising...".to_string()
         };
         self.repair_console_lines.clear();
         self.push_repair_log(if self.dry_run {
             format!(
-                "SIMULATION: Zeige geplante Schritte für {} Probleme. Es wird nichts verändert.",
+                "SIMULATION: showing the planned steps for {} issues. Nothing will be changed.",
                 selected_count
             )
         } else {
-            format!(
-                "Starte Reparatur von {} ausgewählten Problemen...",
-                selected_count
-            )
+            format!("Starting repairs for {} selected issues...", selected_count)
         });
 
         let (tx, rx) = channel::<RepairEvent>(100);
@@ -111,9 +106,9 @@ impl App {
         });
 
         self.status_message = Some(if self.dry_run {
-            "Simulation läuft... [Esc] bricht ab".to_string()
+            "Simulation running... [Esc] cancels".to_string()
         } else {
-            "Reparaturen werden ausgeführt... [Esc] bricht ab".to_string()
+            "Running repairs... [Esc] cancels".to_string()
         });
     }
 
@@ -129,13 +124,12 @@ impl App {
         }
 
         token.cancel();
-        let target = if self.is_scanning {
-            "Scan"
-        } else {
-            "Reparatur"
-        };
-        self.status_message = Some(format!("{} wird abgebrochen...", target));
-        let line = format!("⏹ Abbruch angefordert – laufender {} wird beendet.", target);
+        let target = if self.is_scanning { "Scan" } else { "Repair" };
+        self.status_message = Some(format!("Cancelling the {}...", target.to_lowercase()));
+        let line = format!(
+            "⏹ Cancellation requested - stopping the running {}.",
+            target.to_lowercase()
+        );
         if self.is_scanning {
             self.push_scan_log(line);
         } else {
@@ -147,16 +141,15 @@ impl App {
     /// Toggle simulation mode. Not allowed while a run is in progress.
     pub fn toggle_dry_run(&mut self) {
         if self.is_busy() {
-            self.status_message = Some(
-                "Simulationsmodus kann während eines Laufs nicht geändert werden.".to_string(),
-            );
+            self.status_message =
+                Some("Simulation mode cannot be changed while a run is in progress.".to_string());
             return;
         }
         self.dry_run = !self.dry_run;
         self.status_message = Some(if self.dry_run {
-            "Simulationsmodus AN – [F] zeigt nur die geplanten Schritte.".to_string()
+            "Simulation mode ON - [F] only shows the planned steps.".to_string()
         } else {
-            "Simulationsmodus AUS – [F] führt Reparaturen wirklich aus.".to_string()
+            "Simulation mode OFF - [F] really executes repairs.".to_string()
         });
     }
 }

@@ -66,15 +66,14 @@ impl App {
     pub fn request_rollback(&mut self) {
         if self.is_busy() || self.is_restoring {
             self.status_message =
-                Some("Rollback nicht möglich, während ein anderer Vorgang läuft.".to_string());
+                Some("A rollback cannot start while another operation is running.".to_string());
             return;
         }
 
         let ordered = self.backups_newest_first();
         let Some(record) = ordered.get(self.selected_backup_index) else {
             self.status_message = Some(
-                "Keine Registry-Sicherung vorhanden. Sicherungen entstehen bei Registry-Fixes."
-                    .to_string(),
+                "No registry backup available. Backups are created by registry fixes.".to_string(),
             );
             return;
         };
@@ -145,7 +144,10 @@ mod tests {
         app.request_rollback();
 
         assert!(app.pending_confirm.is_none(), "nothing to confirm");
-        assert!(app.status_message.is_some_and(|m| m.contains("Sicherung")));
+        assert!(
+            app.status_message
+                .is_some_and(|m| m.contains("No registry backup"))
+        );
     }
 
     #[test]
