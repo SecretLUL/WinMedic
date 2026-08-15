@@ -209,7 +209,7 @@ impl DiagnosticEngine {
                     self.audit_logger.log(
                         "SCAN",
                         "all",
-                        "System-Diagnose",
+                        "System diagnostics",
                         "WARNING",
                         &format!(
                             "Scan cancelled by the user after {}/{} modules.",

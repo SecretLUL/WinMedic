@@ -801,13 +801,13 @@ mod tests {
                 "storage_temp_bloat",
                 "storage",
                 "Temp files are using a lot of space",
-                "Speicherplatz & Bereinigung",
+                "Storage & Cleanup",
                 Severity::Warning,
                 RiskScore::Low,
                 "1500 MB of temp files found.",
                 "C:\\Windows\\Temp",
                 "Clean up temp files safely",
-                vec!["Bereinigen".to_string()],
+                vec!["Clean up".to_string()],
             ),
         ]
     }

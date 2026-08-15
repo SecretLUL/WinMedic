@@ -178,7 +178,7 @@ async fn test_tier2_f02_winsxs_dism_exit_code_87_invalid_param() {
     let res = module.fix("sys_clean_winsxs", None).await;
 
     assert!(res.is_err());
-    assert!(res.unwrap_err().contains("DISM-Fehler"));
+    assert!(res.unwrap_err().contains("DISM error"));
 }
 
 #[tokio::test]
@@ -267,7 +267,7 @@ async fn test_tier2_f03_delivery_opt_powershell_failure_does_not_panic() {
     assert!(res.is_ok());
     assert!(
         res.unwrap()
-            .contains("Delivery Optimization (WUDO) Cache bereinigt")
+            .contains("Delivery Optimization (WUDO) cache cleaned")
     );
 }
 
@@ -369,7 +369,7 @@ async fn test_tier2_f04_package_cache_unknown_issue_id_returns_error() {
     let (_sandbox, module) = sandboxed_cleaner("tier2_boundaries_353", runner);
     let res = module.fix("sys_clean_invalid_id", None).await;
     assert!(res.is_err());
-    assert!(res.unwrap_err().contains("Unbekannte Problem-ID"));
+    assert!(res.unwrap_err().contains("Unknown issue ID"));
 }
 
 // ============================================================================

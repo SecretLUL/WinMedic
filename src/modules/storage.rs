@@ -52,11 +52,11 @@ impl DiagnosticModule for StorageModule {
     }
 
     fn name(&self) -> &'static str {
-        "Speicher & Dateisystem"
+        "Storage & File System"
     }
 
     fn description(&self) -> &'static str {
-        "Prüft SMART-Laufwerkszustand, Dateisystemfehler (Dirty Bit), Junk/Temp-Dateien und IconCache"
+        "Checks SMART drive health, file system errors (dirty bit), junk/temp files and the icon cache"
     }
 
     fn icon(&self) -> &'static str {
@@ -73,7 +73,7 @@ impl DiagnosticModule for StorageModule {
         Self::send_progress(
             &progress_tx,
             15,
-            "Prüfe Dateisystem-Integrität (Dirty Bit auf Laufwerk C:)...",
+            "Checking file system integrity (dirty bit on drive C:)...",
             Some("fsutil dirty query C:..."),
         )
         .await;
@@ -96,21 +96,21 @@ impl DiagnosticModule for StorageModule {
                 issues.push(Issue::new(
                     "storage_dirty_bit",
                     self.id(),
-                    "Dateisystem-Inkonsistenz auf Systemlaufwerk C: (Dirty Bit gesetzt)",
-                    "Speicher & Dateisystem",
+                    "File system inconsistency on system drive C: (dirty bit set)",
+                    "Storage & File System",
                     Severity::Critical,
                     RiskScore::Medium,
-                    "Auf Laufwerk C: ist das Dateisystem-Integritäts-Flag ('Dirty Bit') gesetzt. Dies deutet auf unvollständig geschriebene Sektoren oder abrupte Systemabschaltungen hin.",
+                    "Drive C: has the file system integrity flag ('dirty bit') set. That points to incompletely written sectors or abrupt shutdowns.",
                     out.stdout,
-                    "Dateisystemprüfung via 'chkdsk C: /scan' durchführen",
-                    vec!["chkdsk C: /scan online ausführen".to_string()],
+                    "Run a file system check via 'chkdsk C: /scan'",
+                    vec!["Run chkdsk C: /scan online".to_string()],
                 ));
             } else {
                 Self::send_progress(
                     &progress_tx,
                     35,
-                    "Dateisystem C: ist sauber",
-                    Some("✔ Dateisystem C: Keine Dirty-Bit-Inkonsistenzen."),
+                    "File system C: is clean",
+                    Some("✔ File system C: no dirty-bit inconsistencies."),
                 )
                 .await;
             }
@@ -120,7 +120,7 @@ impl DiagnosticModule for StorageModule {
         Self::send_progress(
             &progress_tx,
             45,
-            "Prüfe physische Laufwerke & SMART-Status...",
+            "Checking physical drives & SMART status...",
             Some("PowerShell Get-PhysicalDisk..."),
         )
         .await;
@@ -139,8 +139,8 @@ impl DiagnosticModule for StorageModule {
                     Self::send_progress(
                         &progress_tx,
                         60,
-                        "SMART Status geprüft",
-                        Some(&format!("✔ Laufwerk: {}", l)),
+                        "SMART status checked",
+                        Some(&format!("✔ Drive: {}", l)),
                     )
                     .await;
                     if l.to_lowercase().contains("unhealthy")
@@ -149,14 +149,14 @@ impl DiagnosticModule for StorageModule {
                         issues.push(Issue::new(
                             "storage_smart_warning",
                             self.id(),
-                            "SMART-Hardwarewarnung für ein physisches Laufwerk festgestellt",
-                            "Speicher & Dateisystem",
+                            "SMART hardware warning reported for a physical drive",
+                            "Storage & File System",
                             Severity::Critical,
                             RiskScore::High,
-                            format!("Ein physischer Datenträger meldet einen eingeschränkten Gesundheitsstatus: {}", l),
+                            format!("A physical disk reports a degraded health status: {}", l),
                             l.to_string(),
-                            "Wichtige Daten sichern und Laufwerksdiagnose des Herstellers ausführen",
-                            vec!["Sofortiges Backup wichtiger Daten durchführen".to_string()],
+                            "Back up important data and run the vendor's drive diagnostics",
+                            vec!["Back up important data immediately".to_string()],
                         ));
                     }
                 }
@@ -167,8 +167,8 @@ impl DiagnosticModule for StorageModule {
         Self::send_progress(
             &progress_tx,
             75,
-            "Berechne Größe von Junk- & Temp-Dateien...",
-            Some("Scanne %TEMP% und Windows\\Temp..."),
+            "Measuring junk & temp file size...",
+            Some("Scanning %TEMP% and Windows\\Temp..."),
         )
         .await;
         sleep(Duration::from_millis(150)).await;
@@ -193,25 +193,25 @@ impl DiagnosticModule for StorageModule {
             issues.push(Issue::new(
                 "storage_temp_bloat",
                 self.id(),
-                format!("Über {} MB temporäre Junk-Dateien gefunden ({} Dateien)", total_temp_mb, total_temp_files),
-                "Speicher & Dateisystem",
+                format!("Found {} MB of temporary junk files ({} files)", total_temp_mb, total_temp_files),
+                "Storage & File System",
                 Severity::Warning,
                 RiskScore::Low,
-                format!("Im System- und Benutzer-Temp-Verzeichnis liegen {} MB veraltete temporäre Dateien, die wertvollen Speicherplatz belegen.", total_temp_mb),
-                format!("Temp-Größe: {} MB in {} Dateien", total_temp_mb, total_temp_files),
-                "Temporäre Dateien sicher bereinigen (gesperrte Dateien werden übersprungen)",
+                format!("The system and user temp directories hold {} MB of stale temporary files taking up disk space.", total_temp_mb),
+                format!("Temp size: {} MB across {} files", total_temp_mb, total_temp_files),
+                "Safely clean temporary files (locked files are skipped)",
                 vec![
-                    "Benutzer-Temp (%TEMP%) bereinigen".to_string(),
-                    "Windows-Temp (C:\\Windows\\Temp) bereinigen".to_string(),
+                    "Clean the user temp directory (%TEMP%)".to_string(),
+                    "Clean the Windows temp directory (C:\\Windows\\Temp)".to_string(),
                 ],
             ));
         } else {
             Self::send_progress(
                 &progress_tx,
                 88,
-                "Temporäre Dateien im normalen Bereich",
+                "Temporary files within the normal range",
                 Some(&format!(
-                    "✔ Temp-Dateien: {} MB ({} Dateien), Schwelle liegt bei {} MB.",
+                    "✔ Temp files: {} MB ({} files), threshold is {} MB.",
                     total_temp_mb, total_temp_files, self.config.temp_clean_threshold_mb
                 )),
             )
@@ -222,8 +222,8 @@ impl DiagnosticModule for StorageModule {
         Self::send_progress(
             &progress_tx,
             92,
-            "Prüfe Explorer Icon- & Thumbnail-Cache...",
-            Some("IconCache.db Integrität..."),
+            "Checking the Explorer icon & thumbnail cache...",
+            Some("IconCache.db integrity..."),
         )
         .await;
         sleep(Duration::from_millis(150)).await;
@@ -237,16 +237,16 @@ impl DiagnosticModule for StorageModule {
                 issues.push(Issue::new(
                             "storage_icon_cache_bloated",
                             self.id(),
-                            "Icon- & Thumbnail-Cache ist überdimensioniert / korrupt",
-                            "Speicher & Dateisystem",
+                            "Icon & thumbnail cache is oversized / corrupt",
+                            "Storage & File System",
                             Severity::Info,
                             RiskScore::Low,
-                            "Der Windows Icon-Cache ist über 25 MB groß. Dies kann zu fehlerhaften oder weißen Symbolen in der Taskleiste und im Explorer führen.",
-                            format!("IconCache.db Größe: {} MB", meta.len() / (1024 * 1024)),
-                            "Icon- und Thumbnail-Cache sauber neu erstellen",
+                            "The Windows icon cache exceeds 25 MB. That causes broken or blank icons in the taskbar and in Explorer.",
+                            format!("IconCache.db size: {} MB", meta.len() / (1024 * 1024)),
+                            "Rebuild the icon and thumbnail cache cleanly",
                             vec![
-                                "Explorer-Prozess neu starten".to_string(),
-                                "IconCache.db zurücksetzen".to_string(),
+                                "Restart the Explorer process".to_string(),
+                                "Reset IconCache.db".to_string(),
                             ],
                         ));
             }
@@ -255,7 +255,7 @@ impl DiagnosticModule for StorageModule {
         Self::send_progress(
             &progress_tx,
             100,
-            "Speicher- und Dateisystemdiagnose abgeschlossen",
+            "Storage and file system diagnostics complete",
             None,
         )
         .await;
@@ -275,12 +275,9 @@ impl DiagnosticModule for StorageModule {
                     .run("chkdsk.exe", &["C:", "/scan"], Duration::from_secs(120))
                     .await?;
                 if out.success {
-                    Ok(
-                        "Dateisystemprüfung (chkdsk /scan) erfolgreich ohne Fehler beendet."
-                            .to_string(),
-                    )
+                    Ok("File system check (chkdsk /scan) finished without errors.".to_string())
                 } else {
-                    Ok(format!("chkdsk ausgeführt: {}", out.stdout))
+                    Ok(format!("chkdsk ran: {}", out.stdout))
                 }
             }
             "storage_temp_bloat" => {
@@ -315,7 +312,7 @@ impl DiagnosticModule for StorageModule {
                     }
                 }
                 Ok(format!(
-                    "Temporäre Verzeichnisse bereinigt: {} Dateien entfernt (ca. {} MB freigegeben).",
+                    "Temporary directories cleaned: {} files removed (about {} MB freed).",
                     deleted_files, freed_mb
                 ))
             }
@@ -338,15 +335,12 @@ impl DiagnosticModule for StorageModule {
                         Duration::from_secs(8),
                     )
                     .await;
-                Ok(
-                    "Icon- & Thumbnail-Cache erfolgreich zurückgesetzt und Explorer neu gestartet."
-                        .to_string(),
-                )
+                Ok("Icon & thumbnail cache reset and Explorer restarted successfully.".to_string())
             }
-            "storage_smart_warning" => Ok(
-                "SMART-Warnung zur Kenntnis genommen und im Audit-Log dokumentiert.".to_string(),
-            ),
-            _ => Err(format!("Unbekannte Problem-ID: {}", issue_id)),
+            "storage_smart_warning" => {
+                Ok("SMART warning acknowledged and recorded in the audit log.".to_string())
+            }
+            _ => Err(format!("Unknown issue ID: {}", issue_id)),
         }
     }
 }

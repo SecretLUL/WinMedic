@@ -123,7 +123,7 @@ impl DiagnosticModule for RegistryStartupModule {
         Self::send_progress(
             &progress_tx,
             20,
-            "Scanne HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run...",
+            "Scanning HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run...",
             Some("Checking user autostart entries..."),
         )
         .await;
@@ -149,7 +149,7 @@ impl DiagnosticModule for RegistryStartupModule {
                             format!("HKCU\\Run -> {} = {}", name, cmd_str),
                             "Safely remove the invalid autostart entry after a .reg backup",
                             vec![
-                                "Registry-Snapshot anlegen".to_string(),
+                                "Take a registry snapshot".to_string(),
                                 format!("Delete entry '{}' from HKCU\\Run", name),
                             ],
                         ));
@@ -174,7 +174,7 @@ impl DiagnosticModule for RegistryStartupModule {
         Self::send_progress(
             &progress_tx,
             55,
-            "Scanne HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run...",
+            "Scanning HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run...",
             Some("Checking machine autostart entries..."),
         )
         .await;
@@ -200,7 +200,7 @@ impl DiagnosticModule for RegistryStartupModule {
                             format!("HKLM\\Run -> {} = {}", name, cmd_str),
                             "Remove the invalid autostart entry after a .reg backup",
                             vec![
-                                "Registry-Snapshot anlegen".to_string(),
+                                "Take a registry snapshot".to_string(),
                                 format!("Delete entry '{}' from HKLM\\Run", name),
                             ],
                         ));

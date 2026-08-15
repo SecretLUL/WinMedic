@@ -399,7 +399,7 @@ fn test_tier3_reporter_html_with_system_cleaner_issues() {
     let issues = vec![Issue::new(
         "sys_clean_browser_cache",
         "system_cleaner",
-        "Browser-Caches (150 MB, 500 Dateien)",
+        "Browser caches (150 MB, 500 files)",
         "System & Cache Cleaner",
         Severity::Info,
         RiskScore::Low,
@@ -412,7 +412,7 @@ fn test_tier3_reporter_html_with_system_cleaner_issues() {
     let audit_entries = vec![];
 
     let html = DiagnosticReporter::to_html(&issues, health, &audit_entries);
-    assert!(html.contains("Browser-Caches"));
+    assert!(html.contains("Browser caches"));
     assert!(html.contains("System &amp; Cache Cleaner") || html.contains("System & Cache Cleaner"));
 }
 
@@ -421,7 +421,7 @@ fn test_tier3_reporter_markdown_with_system_cleaner_issues() {
     let issues = vec![Issue::new(
         "sys_clean_package_cache",
         "system_cleaner",
-        "Installer Package Cache (1.20 GB, 50 Dateien)",
+        "Installer package cache (1.20 GB, 50 files)",
         "System & Cache Cleaner",
         Severity::Warning,
         RiskScore::Low,
@@ -434,7 +434,7 @@ fn test_tier3_reporter_markdown_with_system_cleaner_issues() {
     let audit_entries = vec![];
 
     let md = DiagnosticReporter::to_markdown(&issues, health, &audit_entries);
-    assert!(md.contains("Installer Package Cache"));
+    assert!(md.contains("Installer package cache"));
     assert!(md.contains("system_cleaner"));
 }
 
@@ -445,16 +445,16 @@ fn test_tier3_audit_logger_records_system_cleaner_fixes() {
     logger.log(
         "FIX",
         "system_cleaner",
-        "Browser-Caches bereinigen",
+        "Clean browser caches",
         "SUCCESS",
-        "50 MB freigegeben",
+        "50 MB freed",
     );
 
     let history = logger.get_history();
     assert_eq!(history.len(), 1);
     let last = &history[0];
     assert_eq!(last.module_id, "system_cleaner");
-    assert_eq!(last.title, "Browser-Caches bereinigen");
+    assert_eq!(last.title, "Clean browser caches");
     assert_eq!(last.status, "SUCCESS");
 }
 

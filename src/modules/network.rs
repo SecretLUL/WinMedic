@@ -75,7 +75,7 @@ impl DiagnosticModule for NetworkModule {
             &progress_tx,
             20,
             "Testing DNS name resolution...",
-            Some("Lookup auf Google & Cloudflare DNS..."),
+            Some("Looking up Google & Cloudflare DNS..."),
         )
         .await;
         sleep(Duration::from_millis(150)).await;
@@ -114,7 +114,7 @@ impl DiagnosticModule for NetworkModule {
                     "net_dns_failure",
                     self.id(),
                     "DNS name resolution failed (IP reachable)",
-                    "Netzwerk & DNS",
+                    "Network & DNS",
                     Severity::Critical,
                     RiskScore::Low,
                     "Websites cannot be resolved by domain name even though IP connectivity to the internet works. The usual cause is a stale DNS cache or broken resolver settings.",
@@ -130,7 +130,7 @@ impl DiagnosticModule for NetworkModule {
                     "net_offline_warning",
                     self.id(),
                     "No active internet or gateway connection",
-                    "Netzwerk & DNS",
+                    "Network & DNS",
                     Severity::Warning,
                     RiskScore::Low,
                     "The system can reach neither external IP addresses nor DNS servers. Check the router, the Wi-Fi/LAN cable or any VPN connection.",
@@ -175,21 +175,21 @@ impl DiagnosticModule for NetworkModule {
                     issues.push(Issue::new(
                         "net_proxy_active",
                         self.id(),
-                        format!("Manuell konfigurierter Proxy-Server aktiv: {}", server),
-                        "Netzwerk & DNS",
+                        format!("Manually configured proxy server active: {}", server),
+                        "Network & DNS",
                         Severity::Warning,
                         RiskScore::Low,
                         format!("An active proxy server ({}) is configured in the system settings. If that proxy is unreachable, every connection fails.", server),
                         format!("Registry ProxyServer: {}", server),
-                        "Proxy-Einstellungen deaktivieren (Direktverbindung verwenden)",
-                        vec!["ProxyEnable in Registry auf 0 setzen".to_string()],
+                        "Disable the proxy settings (use a direct connection)",
+                        vec!["Set ProxyEnable to 0 in the registry".to_string()],
                     ));
                 }
             } else {
                 Self::send_progress(
                     &progress_tx,
                     80,
-                    "Direkte Internetverbindung aktiv",
+                    "Direct internet connection active",
                     Some("✔ No blocking manual proxy server is configured."),
                 )
                 .await;
@@ -222,8 +222,8 @@ impl DiagnosticModule for NetworkModule {
                 issues.push(Issue::new(
                     "net_winsock_corrupt",
                     self.id(),
-                    "Winsock-Katalog weist Inkonsistenzen auf",
-                    "Netzwerk & DNS",
+                    "Winsock catalog shows inconsistencies",
+                    "Network & DNS",
                     Severity::Warning,
                     RiskScore::Medium,
                     "The Winsock Layered Service Provider (LSP) catalog contains damaged or incomplete entries, which can cause dropped connections.",
@@ -235,7 +235,7 @@ impl DiagnosticModule for NetworkModule {
                 Self::send_progress(
                     &progress_tx,
                     95,
-                    "Winsock-Katalog intakt",
+                    "Winsock catalog intact",
                     Some("✔ The Winsock LSP catalog is consistent."),
                 )
                 .await;

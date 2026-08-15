@@ -75,7 +75,7 @@ impl DiagnosticModule for EventLogModule {
             &progress_tx,
             15,
             "Checking for BSOD minidumps (%SystemRoot%\\Minidump)...",
-            Some("Minidump-Verzeichnis scannen..."),
+            Some("Scanning the minidump directory..."),
         )
         .await;
         sleep(Duration::from_millis(150)).await;
@@ -136,7 +136,7 @@ impl DiagnosticModule for EventLogModule {
             Self::send_progress(
                 &progress_tx,
                 35,
-                "Minidump-Verzeichnis leer",
+                "Minidump directory empty",
                 Some("✔ The minidump directory is clean."),
             )
             .await;
@@ -226,14 +226,14 @@ impl DiagnosticModule for EventLogModule {
                 issues.push(Issue::new(
                     "evt_whea_hardware_error",
                     self.id(),
-                    "WHEA-Hardwarefehler im Systemprotokoll festgestellt",
+                    "WHEA hardware faults found in the system log",
                     "Event-Log & Crashes",
                     Severity::Critical,
                     RiskScore::High,
                     "Windows Hardware Error Architecture (WHEA) is reporting hardware warnings (for example CPU voltage drops, PCIe bus errors or unstable RAM).",
                     stdout.to_string(),
                     "Apply a BIOS/UEFI update, reset any overclock and run a RAM diagnostic",
-                    vec!["Windows-Speicherdiagnose (mdsched.exe) planen".to_string()],
+                    vec!["Schedule the Windows memory diagnostic (mdsched.exe)".to_string()],
                 ));
             } else {
                 Self::send_progress(

@@ -63,12 +63,12 @@ pub fn scan_path_recursive(path: &Path) -> DirStats {
 pub fn cleanup_result(label: &str, stats: CleanStats) -> Result<String, String> {
     if stats.deleted_files == 0 && stats.skipped_locked > 0 {
         return Err(format!(
-            "{} fehlgeschlagen: keine der {} Dateien konnte entfernt werden (alle gesperrt). Schließen Sie laufende Programme und versuchen Sie es erneut.",
+            "{} failed: none of the {} files could be removed (all locked). Close any running programs and try again.",
             label, stats.skipped_locked
         ));
     }
     Ok(format!(
-        "{}: {} Dateien gelöscht ({} freigegeben, {} gesperrte Dateien übersprungen).",
+        "{}: {} files deleted ({} freed, {} locked files skipped).",
         label,
         stats.deleted_files,
         format_bytes(stats.freed_bytes),
@@ -588,7 +588,7 @@ impl DiagnosticModule for SystemCleanerModule {
     }
 
     fn description(&self) -> &'static str {
-        "Bereinigt WinSxS, Delivery Optimization, Browser-Caches, Setup-Logs, Shader-Caches und temporäre Systemdaten."
+        "Cleans WinSxS, Delivery Optimization, browser caches, setup logs, shader caches and temporary system data."
     }
 
     fn icon(&self) -> &'static str {
@@ -605,7 +605,7 @@ impl DiagnosticModule for SystemCleanerModule {
         Self::send_progress(
             &progress_tx,
             10,
-            "Analysiere WinSxS Komponentenspeicher...",
+            "Analysing the WinSxS component store...",
             Some("dism.exe /Online /Cleanup-Image /AnalyzeComponentStore"),
         )
         .await;
@@ -628,25 +628,25 @@ impl DiagnosticModule for SystemCleanerModule {
             if analysis.cleanup_recommended || analysis.reclaimable_packages > 0 {
                 let title = if analysis.reclaimable_packages > 0 {
                     format!(
-                        "WinSxS Komponenten-Store Bereinigung empfohlen ({} wiederverwendbare Pakete)",
+                        "WinSxS component store cleanup recommended ({} reclaimable packages)",
                         analysis.reclaimable_packages
                     )
                 } else {
-                    "WinSxS Komponenten-Store Bereinigung empfohlen".to_string()
+                    "WinSxS component store cleanup recommended".to_string()
                 };
 
                 let mut details = Vec::new();
                 if let Some(size) = &analysis.reported_size {
-                    details.push(format!("Explorer-Größe: {}", size));
+                    details.push(format!("Explorer size: {}", size));
                 }
                 if let Some(backups) = &analysis.backups_size {
-                    details.push(format!("Sicherungen: {}", backups));
+                    details.push(format!("Backups: {}", backups));
                 }
                 if let Some(cache) = &analysis.cache_size {
-                    details.push(format!("Cache & Temp: {}", cache));
+                    details.push(format!("Cache & temp: {}", cache));
                 }
                 details.push(format!(
-                    "Wiederverwendbare Pakete: {}",
+                    "Reclaimable packages: {}",
                     analysis.reclaimable_packages
                 ));
                 let details_str = details.join(" | ");
@@ -658,10 +658,10 @@ impl DiagnosticModule for SystemCleanerModule {
                     "System & Cache Cleaner",
                     Severity::Warning,
                     RiskScore::Medium,
-                    "Der Windows-Komponentenspeicher (WinSxS) enthält veraltete Update-Pakete und Sicherungsdaten, die sicher freigegeben werden können.",
+                    "The Windows component store (WinSxS) holds superseded update packages and backup data that can safely be reclaimed.",
                     details_str,
-                    "WinSxS Komponentenspeicher via DISM bereinigen (dism.exe /Online /Cleanup-Image /StartComponentCleanup)",
-                    vec!["dism.exe /Online /Cleanup-Image /StartComponentCleanup ausführen (kann einige Minuten dauern)".to_string()],
+                    "Clean the WinSxS component store via DISM (dism.exe /Online /Cleanup-Image /StartComponentCleanup)",
+                    vec!["Run dism.exe /Online /Cleanup-Image /StartComponentCleanup (may take several minutes)".to_string()],
                 ));
             }
         }
@@ -670,8 +670,8 @@ impl DiagnosticModule for SystemCleanerModule {
         Self::send_progress(
             &progress_tx,
             22,
-            "Prüfe Delivery Optimization (WUDO) Cache...",
-            Some("Scanne WUDO Cache-Verzeichnisse..."),
+            "Checking the Delivery Optimization (WUDO) cache...",
+            Some("Scanning the WUDO cache directories..."),
         )
         .await;
 
@@ -684,23 +684,23 @@ impl DiagnosticModule for SystemCleanerModule {
                 "sys_clean_delivery_optimization",
                 self.id(),
                 format!(
-                    "Delivery Optimization (WUDO) Cache ({}, {} Dateien)",
+                    "Delivery Optimization (WUDO) cache ({}, {} files)",
                     format_bytes(wudo_stats.bytes),
                     wudo_stats.files
                 ),
                 "System & Cache Cleaner",
                 Severity::Info,
                 RiskScore::Low,
-                "Windows Update Delivery Optimization (WUDO) speichert heruntergeladene Update-Fragmente für Peer-to-Peer-Verteilung im lokalen Netzwerk.",
+                "Windows Update Delivery Optimization (WUDO) stores downloaded update fragments for peer-to-peer distribution on the local network.",
                 format!(
-                    "WUDO Cache-Größe: {} in {} Dateien",
+                    "WUDO cache size: {} across {} files",
                     format_bytes(wudo_stats.bytes),
                     wudo_stats.files
                 ),
-                "WUDO Cache-Dateien bereinigen und Bereinigungs-Cmdlet ausführen",
+                "Clean the WUDO cache files and run the cleanup cmdlet",
                 vec![
-                    "Delivery Optimization Cache-Verzeichnisse leeren".to_string(),
-                    "PowerShell Delete-DeliveryOptimizationCache -Force ausführen".to_string(),
+                    "Empty the Delivery Optimization cache directories".to_string(),
+                    "Run PowerShell Delete-DeliveryOptimizationCache -Force".to_string(),
                 ],
             ));
         }
@@ -709,8 +709,8 @@ impl DiagnosticModule for SystemCleanerModule {
         Self::send_progress(
             &progress_tx,
             34,
-            "Prüfe Installer Package Cache...",
-            Some("Scanne %ProgramData%\\Package Cache..."),
+            "Checking the installer package cache...",
+            Some("Scanning %ProgramData%\\Package Cache..."),
         )
         .await;
 
@@ -723,7 +723,7 @@ impl DiagnosticModule for SystemCleanerModule {
                 "sys_clean_package_cache",
                 self.id(),
                 format!(
-                    "Installer Package Cache ({}, {} Dateien)",
+                    "Installer package cache ({}, {} files)",
                     format_bytes(pkg_stats.bytes),
                     pkg_stats.files
                 ),
@@ -732,16 +732,16 @@ impl DiagnosticModule for SystemCleanerModule {
                 // The fix empties the directory wholesale, including the payloads
                 // of *installed* products — not a low-risk operation.
                 RiskScore::High,
-                "Im Package Cache (%ProgramData%\\Package Cache) liegen die Installations- und Update-Payloads (.msi, .cab, .exe) von Visual Studio, WiX, VC++ Redists und .NET. ACHTUNG: Diese Bereinigung entfernt den gesamten Ordner-Inhalt, nicht nur verwaiste Pakete.",
+                "The package cache (%ProgramData%\\Package Cache) holds the install and update payloads (.msi, .cab, .exe) of Visual Studio, WiX, VC++ redistributables and .NET. WARNING: this cleanup removes the entire folder contents, not just orphaned packages.",
                 format!(
-                    "Package Cache Größe: {} in {} Dateien unter %ProgramData%\\Package Cache",
+                    "Package cache size: {} across {} files under %ProgramData%\\Package Cache",
                     format_bytes(pkg_stats.bytes),
                     pkg_stats.files
                 ),
-                "Gesamten Package Cache leeren – Reparieren/Ändern/Deinstallieren der betroffenen Produkte erfordert danach die Original-Installer",
+                "Empty the whole package cache — repairing, changing or uninstalling the affected products then requires the original installers",
                 vec![
-                    "%ProgramData%\\Package Cache vollständig leeren (gesperrte Dateien werden übersprungen)".to_string(),
-                    "Nach der Bereinigung ggf. Installer von Visual Studio / VC++ Redists neu herunterladen".to_string(),
+                    "Empty %ProgramData%\\Package Cache completely (locked files are skipped)".to_string(),
+                    "Re-download the Visual Studio / VC++ redistributable installers afterwards if needed".to_string(),
                 ],
             );
             // Not reversible by the VSS checkpoint, so it never runs unattended
@@ -754,8 +754,8 @@ impl DiagnosticModule for SystemCleanerModule {
         Self::send_progress(
             &progress_tx,
             46,
-            "Prüfe Browser-Caches (Chrome, Edge, Firefox)...",
-            Some("Scanne Chrome-, Edge- und Firefox-Profile..."),
+            "Checking browser caches (Chrome, Edge, Firefox)...",
+            Some("Scanning the Chrome, Edge and Firefox profiles..."),
         )
         .await;
 
@@ -769,21 +769,21 @@ impl DiagnosticModule for SystemCleanerModule {
                 "sys_clean_browser_cache",
                 self.id(),
                 format!(
-                    "Browser-Caches (Chrome, Edge, Firefox) ({}, {} Dateien)",
+                    "Browser caches (Chrome, Edge, Firefox) ({}, {} files)",
                     format_bytes(browser_stats.bytes),
                     browser_stats.files
                 ),
                 "System & Cache Cleaner",
                 Severity::Info,
                 RiskScore::Low,
-                "Browser speichern HTTP- und Script-Caches für schnellere Ladezeiten. Diese Caches können mehrere Gigabyte an Speicher belegen.",
+                "Browsers keep HTTP and script caches for faster load times. These caches can grow to several gigabytes.",
                 format!(
-                    "Gesamtgröße Browser-Caches: {} in {} Dateien über erkannte Profile",
+                    "Total browser cache size: {} across {} files in the detected profiles",
                     format_bytes(browser_stats.bytes),
                     browser_stats.files
                 ),
-                "Browser-Caches bereinigen (Dateien aktiver Browser-Sitzungen werden sicher übersprungen)",
-                vec!["Chrome / Edge / Firefox Cache-Verzeichnisse leeren".to_string()],
+                "Clean browser caches (files held by active browser sessions are safely skipped)",
+                vec!["Empty the Chrome / Edge / Firefox cache directories".to_string()],
             ));
         }
 
@@ -791,8 +791,8 @@ impl DiagnosticModule for SystemCleanerModule {
         Self::send_progress(
             &progress_tx,
             58,
-            "Prüfe Windows Setup- & System-Logs...",
-            Some("Scanne Panther, CBS, DISM und MoSetup Logs..."),
+            "Checking Windows setup & system logs...",
+            Some("Scanning the Panther, CBS, DISM and MoSetup logs..."),
         )
         .await;
 
@@ -804,21 +804,21 @@ impl DiagnosticModule for SystemCleanerModule {
                 "sys_clean_setup_logs",
                 self.id(),
                 format!(
-                    "Windows Setup- & System-Logs ({}, {} Dateien)",
+                    "Windows setup & system logs ({}, {} files)",
                     format_bytes(setup_log_stats.bytes),
                     setup_log_stats.files
                 ),
                 "System & Cache Cleaner",
                 Severity::Info,
                 RiskScore::Low,
-                "Windows Setup- (Panther/MoSetup), CBS- und DISM-Wartungsprotokolle akkumulieren historische Diagnoseberichte.",
+                "Windows setup (Panther/MoSetup), CBS and DISM servicing logs accumulate historical diagnostic reports.",
                 format!(
-                    "Setup- und System-Logs: {} in {} Dateien",
+                    "Setup and system logs: {} across {} files",
                     format_bytes(setup_log_stats.bytes),
                     setup_log_stats.files
                 ),
-                "Archivierte Setup-, CBS- und DISM-Logs entfernen (aktive Systemlogs werden geschont)",
-                vec!["Panther, CBS, DISM und MoSetup Log-Verzeichnisse bereinigen".to_string()],
+                "Remove archived setup, CBS and DISM logs (active system logs are left alone)",
+                vec!["Clean the Panther, CBS, DISM and MoSetup log directories".to_string()],
             ));
         }
 
@@ -826,8 +826,8 @@ impl DiagnosticModule for SystemCleanerModule {
         Self::send_progress(
             &progress_tx,
             70,
-            "Prüfe Windows-Fehlerberichte & Crash-Dumps...",
-            Some("Scanne WER-Archive und CrashDumps..."),
+            "Checking Windows error reports & crash dumps...",
+            Some("Scanning the WER archives and CrashDumps..."),
         )
         .await;
 
@@ -839,21 +839,21 @@ impl DiagnosticModule for SystemCleanerModule {
                 "sys_clean_error_reporting",
                 self.id(),
                 format!(
-                    "Windows-Fehlerberichte & Crash-Dumps ({}, {} Dateien)",
+                    "Windows error reports & crash dumps ({}, {} files)",
                     format_bytes(wer_stats.bytes),
                     wer_stats.files
                 ),
                 "System & Cache Cleaner",
                 Severity::Info,
                 RiskScore::Low,
-                "Windows Error Reporting (WER) und Minidumps/CrashDumps speichern Absturzberichte und Speicherabbilder.",
+                "Windows Error Reporting (WER) and minidumps/CrashDumps store crash reports and memory images.",
                 format!(
-                    "Fehlerberichte & Crash-Dumps: {} in {} Dateien",
+                    "Error reports & crash dumps: {} across {} files",
                     format_bytes(wer_stats.bytes),
                     wer_stats.files
                 ),
-                "Gespeicherte Absturzabbilder und WER-Berichtsarchive löschen",
-                vec!["WER ReportArchive, ReportQueue und %LOCALAPPDATA%\\CrashDumps leeren".to_string()],
+                "Delete stored crash dumps and WER report archives",
+                vec!["Empty WER ReportArchive, ReportQueue and %LOCALAPPDATA%\\CrashDumps".to_string()],
             ));
         }
 
@@ -861,8 +861,8 @@ impl DiagnosticModule for SystemCleanerModule {
         Self::send_progress(
             &progress_tx,
             80,
-            "Prüfe DirectX Shader & Zertifikats-Caches...",
-            Some("Scanne D3DSCache, DirectX ShaderCache und CryptnetUrlCache..."),
+            "Checking DirectX shader & certificate caches...",
+            Some("Scanning D3DSCache, DirectX ShaderCache and CryptnetUrlCache..."),
         )
         .await;
 
@@ -875,21 +875,21 @@ impl DiagnosticModule for SystemCleanerModule {
                 "sys_clean_shader_certs",
                 self.id(),
                 format!(
-                    "DirectX Shader & Zertifikats-Caches ({}, {} Dateien)",
+                    "DirectX shader & certificate caches ({}, {} files)",
                     format_bytes(shader_stats.bytes),
                     shader_stats.files
                 ),
                 "System & Cache Cleaner",
                 Severity::Info,
                 RiskScore::Low,
-                "DirectX Shader-Caches und CryptnetUrlCache (CRL/OCSP Zertifikatsvalidierung) speichern kompilierte Shader-Bytecodes und Zertifikatsmetadaten.",
+                "DirectX shader caches and CryptnetUrlCache (CRL/OCSP certificate validation) store compiled shader bytecode and certificate metadata.",
                 format!(
-                    "Shader- & Zertifikats-Caches: {} in {} Dateien",
+                    "Shader & certificate caches: {} across {} files",
                     format_bytes(shader_stats.bytes),
                     shader_stats.files
                 ),
-                "Veraltete Shader-Kompilate und CRL-Cache leeren",
-                vec!["D3DSCache, DirectX ShaderCache und CryptnetUrlCache leeren".to_string()],
+                "Empty stale shader builds and the CRL cache",
+                vec!["Empty D3DSCache, DirectX ShaderCache and CryptnetUrlCache".to_string()],
             ));
         }
 
@@ -897,8 +897,8 @@ impl DiagnosticModule for SystemCleanerModule {
         Self::send_progress(
             &progress_tx,
             90,
-            "Prüfe Windows Papierkorb...",
-            Some("Scanne $Recycle.Bin auf Systemlaufwerken..."),
+            "Checking the Windows Recycle Bin...",
+            Some("Scanning $Recycle.Bin on the system drives..."),
         )
         .await;
 
@@ -910,7 +910,7 @@ impl DiagnosticModule for SystemCleanerModule {
                 "sys_clean_recycle_bin",
                 self.id(),
                 format!(
-                    "Windows Papierkorb ({}, {} Dateien)",
+                    "Windows Recycle Bin ({}, {} files)",
                     format_bytes(recycle_stats.bytes),
                     recycle_stats.files
                 ),
@@ -920,16 +920,16 @@ impl DiagnosticModule for SystemCleanerModule {
                 // checkpoint taken before a repair run does not restore user
                 // files, so there is no way back from this one.
                 RiskScore::High,
-                "Der Windows Papierkorb enthält gelöschte Dateien auf allen lokalen Partitionen. ACHTUNG: Das Leeren ist endgültig – auch der Systemwiederherstellungspunkt stellt diese Dateien nicht wieder her.",
+                "The Windows Recycle Bin holds deleted files from every local partition. WARNING: emptying it is permanent — not even the system restore point brings these files back.",
                 format!(
-                    "Papierkorb-Inhalt: {} in {} Dateien auf erkannten Laufwerken",
+                    "Recycle Bin contents: {} across {} files on the detected drives",
                     format_bytes(recycle_stats.bytes),
                     recycle_stats.files
                 ),
-                "Papierkorb über alle Laufwerke endgültig leeren (nicht umkehrbar)",
-                vec!["PowerShell Clear-RecycleBin -Force ausführen".to_string()],
+                "Permanently empty the Recycle Bin on every drive (irreversible)",
+                vec!["Run PowerShell Clear-RecycleBin -Force".to_string()],
             );
-            // Never runs unattended under `--auto-fix` / "alle reparieren": the
+            // Never runs unattended under `--auto-fix` / [A] auto-fix all: the
             // user has to tick this one themselves.
             recycle_issue.is_selected = false;
             issues.push(recycle_issue);
@@ -939,8 +939,8 @@ impl DiagnosticModule for SystemCleanerModule {
         Self::send_progress(
             &progress_tx,
             95,
-            "Prüfe erweiterte System-Temp Verzeichnisse...",
-            Some("Scanne systemprofile Temp und SystemTemp..."),
+            "Checking the extended system temp directories...",
+            Some("Scanning systemprofile Temp and SystemTemp..."),
         )
         .await;
 
@@ -952,28 +952,28 @@ impl DiagnosticModule for SystemCleanerModule {
                 "sys_clean_system_temp",
                 self.id(),
                 format!(
-                    "Erweiterte System-Temp Verzeichnisse ({}, {} Dateien)",
+                    "Extended system temp directories ({}, {} files)",
                     format_bytes(system_temp_stats.bytes),
                     system_temp_stats.files
                 ),
                 "System & Cache Cleaner",
                 Severity::Info,
                 RiskScore::Low,
-                "Systemdienste (systemprofile) und das Windows SystemTemp-Verzeichnis akkumulieren temporäre Daten von Hintergrunddiensten.",
+                "System services (systemprofile) and the Windows SystemTemp directory accumulate temporary data from background services.",
                 format!(
-                    "Erweiterte System-Temp Verzeichnisse: {} in {} Dateien",
+                    "Extended system temp directories: {} across {} files",
                     format_bytes(system_temp_stats.bytes),
                     system_temp_stats.files
                 ),
-                "Erweiterte System-Temp Verzeichnisse bereinigen (gesperrte Dateien werden übersprungen)",
-                vec!["systemprofile\\AppData\\Local\\Temp und SystemTemp bereinigen".to_string()],
+                "Clean the extended system temp directories (locked files are skipped)",
+                vec!["Clean systemprofile\\AppData\\Local\\Temp and SystemTemp".to_string()],
             ));
         }
 
         Self::send_progress(
             &progress_tx,
             100,
-            "System- und Cache-Diagnose abgeschlossen",
+            "System and cache diagnostics complete",
             None,
         )
         .await;
@@ -997,14 +997,14 @@ impl DiagnosticModule for SystemCleanerModule {
                     )
                     .await?;
                 if out.success {
-                    Ok("WinSxS Komponentenspeicher erfolgreich bereinigt (StartComponentCleanup abgeschlossen).".to_string())
+                    Ok("WinSxS component store cleaned successfully (StartComponentCleanup finished).".to_string())
                 } else {
                     let err = if out.stderr.trim().is_empty() {
                         out.stdout
                     } else {
                         out.stderr
                     };
-                    Err(format!("DISM-Fehler bei StartComponentCleanup: {}", err))
+                    Err(format!("DISM error during StartComponentCleanup: {}", err))
                 }
             }
             "sys_clean_delivery_optimization" => {
@@ -1028,12 +1028,12 @@ impl DiagnosticModule for SystemCleanerModule {
                 // when the leftover sweep finds nothing, so it counts as success.
                 if !cmdlet_ok {
                     return cleanup_result(
-                        "Delivery Optimization (WUDO) Cache bereinigt",
+                        "Delivery Optimization (WUDO) cache cleaned",
                         total_clean,
                     );
                 }
                 Ok(format!(
-                    "Delivery Optimization (WUDO) Cache bereinigt: Cmdlet ausgeführt, zusätzlich {} Dateien gelöscht ({} freigegeben, {} gesperrte Dateien übersprungen).",
+                    "Delivery Optimization (WUDO) cache cleaned: cmdlet executed, {} further files deleted ({} freed, {} locked files skipped).",
                     total_clean.deleted_files,
                     format_bytes(total_clean.freed_bytes),
                     total_clean.skipped_locked
@@ -1042,27 +1042,24 @@ impl DiagnosticModule for SystemCleanerModule {
             "sys_clean_package_cache" => {
                 let pkg_cache_dir = self.paths.prog_data.join("Package Cache");
                 let stats = Self::clean_dirs(vec![pkg_cache_dir]).await;
-                cleanup_result("Package Cache bereinigt", stats)
+                cleanup_result("Package cache cleaned", stats)
             }
             "sys_clean_browser_cache" => {
                 let browser_dirs =
                     discover_browser_cache_dirs(&self.paths.local_app_data, &self.paths.app_data);
                 let total_clean = Self::clean_dirs(browser_dirs).await;
-                cleanup_result("Browser-Caches bereinigt", total_clean)
+                cleanup_result("Browser caches cleaned", total_clean)
             }
             "sys_clean_setup_logs" => {
                 let setup_log_dirs = discover_setup_log_dirs(&self.paths.sys_root);
                 let total_clean = Self::clean_log_dirs(setup_log_dirs).await;
-                cleanup_result("Windows Setup- & System-Logs bereinigt", total_clean)
+                cleanup_result("Windows setup & system logs cleaned", total_clean)
             }
             "sys_clean_error_reporting" => {
                 let wer_dirs =
                     discover_wer_and_dump_dirs(&self.paths.local_app_data, &self.paths.prog_data);
                 let total_clean = Self::clean_dirs(wer_dirs).await;
-                cleanup_result(
-                    "Windows-Fehlerberichte & Crash-Dumps bereinigt",
-                    total_clean,
-                )
+                cleanup_result("Windows error reports & crash dumps cleaned", total_clean)
             }
             "sys_clean_shader_certs" => {
                 let shader_dirs = discover_shader_and_cert_dirs(
@@ -1070,7 +1067,7 @@ impl DiagnosticModule for SystemCleanerModule {
                     &self.paths.user_profile,
                 );
                 let total_clean = Self::clean_dirs(shader_dirs).await;
-                cleanup_result("DirectX Shader & Zertifikats-Caches bereinigt", total_clean)
+                cleanup_result("DirectX shader & certificate caches cleaned", total_clean)
             }
             "sys_clean_recycle_bin" => {
                 let out = self
@@ -1081,23 +1078,17 @@ impl DiagnosticModule for SystemCleanerModule {
                     )
                     .await?;
                 if out.success {
-                    Ok("Windows Papierkorb auf allen Laufwerken erfolgreich geleert.".to_string())
+                    Ok("Windows Recycle Bin emptied successfully on every drive.".to_string())
                 } else {
-                    Err(format!(
-                        "Fehler beim Leeren des Papierkorbs: {}",
-                        out.stderr
-                    ))
+                    Err(format!("Failed to empty the Recycle Bin: {}", out.stderr))
                 }
             }
             "sys_clean_system_temp" => {
                 let system_temp_dirs = discover_system_temp_dirs(&self.paths.sys_root);
                 let total_clean = Self::clean_dirs(system_temp_dirs).await;
-                cleanup_result(
-                    "Erweiterte System-Temp Verzeichnisse bereinigt",
-                    total_clean,
-                )
+                cleanup_result("Extended system temp directories cleaned", total_clean)
             }
-            _ => Err(format!("Unbekannte Problem-ID: {}", issue_id)),
+            _ => Err(format!("Unknown issue ID: {}", issue_id)),
         }
     }
 }
@@ -1320,15 +1311,11 @@ The operation completed successfully.";
         assert!(winsxs.is_some());
         let issue = winsxs.unwrap();
         assert_eq!(issue.severity, Severity::Warning);
-        assert!(issue.title.contains("2 wiederverwendbare Pakete"));
+        assert!(issue.title.contains("2 reclaimable packages"));
 
         let fix_res = module.fix("sys_clean_winsxs", None).await;
         assert!(fix_res.is_ok());
-        assert!(
-            fix_res
-                .unwrap()
-                .contains("StartComponentCleanup abgeschlossen")
-        );
+        assert!(fix_res.unwrap().contains("StartComponentCleanup finished"));
 
         let executed = mock.executed();
         assert!(
@@ -1374,7 +1361,7 @@ The operation completed successfully.";
         let module = sandboxed(&td, Arc::new(mock.clone()));
         let fix_res = module.fix("sys_clean_recycle_bin", None).await;
         assert!(fix_res.is_ok());
-        assert!(fix_res.unwrap().contains("Windows Papierkorb"));
+        assert!(fix_res.unwrap().contains("Windows Recycle Bin"));
 
         let executed = mock.executed();
         assert!(executed.iter().any(|cmd| cmd.contains("Clear-RecycleBin")));
@@ -1457,7 +1444,7 @@ The operation completed successfully.";
         let module = sandboxed(&td, Arc::new(mock));
         let fix_res = module.fix("sys_clean_package_cache", None).await;
         assert!(fix_res.is_ok());
-        assert!(fix_res.unwrap().contains("Package Cache bereinigt"));
+        assert!(fix_res.unwrap().contains("Package cache cleaned"));
     }
 
     #[tokio::test]
@@ -1467,7 +1454,7 @@ The operation completed successfully.";
         let module = sandboxed(&td, Arc::new(mock));
         let fix_res = module.fix("sys_clean_browser_cache", None).await;
         assert!(fix_res.is_ok());
-        assert!(fix_res.unwrap().contains("Browser-Caches bereinigt"));
+        assert!(fix_res.unwrap().contains("Browser caches cleaned"));
     }
 
     #[tokio::test]
@@ -1477,7 +1464,7 @@ The operation completed successfully.";
         let module = sandboxed(&td, Arc::new(mock));
         let fix_res = module.fix("sys_clean_setup_logs", None).await;
         assert!(fix_res.is_ok());
-        assert!(fix_res.unwrap().contains("Setup- & System-Logs bereinigt"));
+        assert!(fix_res.unwrap().contains("setup & system logs cleaned"));
     }
 
     #[tokio::test]
@@ -1488,9 +1475,9 @@ The operation completed successfully.";
         let fix_res = module.fix("sys_clean_error_reporting", None).await;
         assert!(fix_res.is_ok());
         let msg = fix_res.unwrap();
-        assert!(msg.contains("Fehlerberichte & Crash-Dumps bereinigt"));
+        assert!(msg.contains("error reports & crash dumps cleaned"));
         // Every cleanup arm now reports the locked-file count.
-        assert!(msg.contains("gesperrte Dateien übersprungen"));
+        assert!(msg.contains("locked files skipped"));
     }
 
     #[tokio::test]
@@ -1501,8 +1488,8 @@ The operation completed successfully.";
         let fix_res = module.fix("sys_clean_shader_certs", None).await;
         assert!(fix_res.is_ok());
         let msg = fix_res.unwrap();
-        assert!(msg.contains("DirectX Shader & Zertifikats-Caches bereinigt"));
-        assert!(msg.contains("gesperrte Dateien übersprungen"));
+        assert!(msg.contains("DirectX shader & certificate caches cleaned"));
+        assert!(msg.contains("locked files skipped"));
     }
 
     #[tokio::test]
@@ -1515,7 +1502,7 @@ The operation completed successfully.";
         assert!(
             fix_res
                 .unwrap()
-                .contains("Erweiterte System-Temp Verzeichnisse bereinigt")
+                .contains("Extended system temp directories cleaned")
         );
     }
 
@@ -1528,7 +1515,7 @@ The operation completed successfully.";
             deleted_files: 0,
             skipped_locked: 12,
         };
-        let res = cleanup_result("Browser-Caches bereinigt", all_locked);
+        let res = cleanup_result("Browser caches cleaned", all_locked);
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("12"));
 
@@ -1538,12 +1525,12 @@ The operation completed successfully.";
             deleted_files: 3,
             skipped_locked: 4,
         };
-        let res = cleanup_result("Browser-Caches bereinigt", partial);
+        let res = cleanup_result("Browser caches cleaned", partial);
         assert!(res.is_ok());
         let msg = res.unwrap();
-        assert!(msg.contains("3 Dateien gelöscht"));
+        assert!(msg.contains("3 files deleted"));
         assert!(msg.contains("2.0 KB"));
-        assert!(msg.contains("4 gesperrte"));
+        assert!(msg.contains("4 locked"));
 
         // An empty directory is a no-op success.
         assert!(cleanup_result("X", CleanStats::default()).is_ok());
@@ -1572,6 +1559,6 @@ The operation completed successfully.";
         let module = sandboxed(&td, Arc::new(mock));
         let fix_res = module.fix("sys_clean_non_existent", None).await;
         assert!(fix_res.is_err());
-        assert!(fix_res.unwrap_err().contains("Unbekannte Problem-ID"));
+        assert!(fix_res.unwrap_err().contains("Unknown issue ID"));
     }
 }

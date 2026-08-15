@@ -169,7 +169,7 @@ async fn adv_test_winsxs_fix_failure_reporting() {
     let res = module.fix("sys_clean_winsxs", None).await;
     assert!(res.is_err());
     let err_msg = res.unwrap_err();
-    assert!(err_msg.contains("DISM-Fehler bei StartComponentCleanup"));
+    assert!(err_msg.contains("DISM error during StartComponentCleanup"));
     assert!(err_msg.contains("0x800f0806"));
 }
 
@@ -434,7 +434,7 @@ async fn adv_test_module_metadata_and_trait_conformance() {
     assert_eq!(module.icon(), "[CLR]");
     assert!(module.description().contains("WinSxS"));
     assert!(module.description().contains("Delivery Optimization"));
-    assert!(module.description().contains("Browser-Caches"));
+    assert!(module.description().contains("browser caches"));
 }
 
 #[tokio::test]
@@ -528,7 +528,7 @@ async fn adv_test_winsxs_reclaimable_packages_without_cleanup_recommended() {
         "Should trigger when reclaimable packages > 0 even if recommended is No"
     );
     let issue = winsxs.unwrap();
-    assert!(issue.title.contains("4 wiederverwendbare Pakete"));
+    assert!(issue.title.contains("4 reclaimable packages"));
 }
 
 #[tokio::test]

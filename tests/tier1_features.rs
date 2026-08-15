@@ -175,7 +175,7 @@ async fn test_tier1_f02_winsxs_scan_creates_issue_when_recommended() {
     let issue = winsxs_issue.unwrap();
     assert_eq!(issue.severity, Severity::Warning);
     assert_eq!(issue.risk_score, RiskScore::Medium);
-    assert!(issue.title.contains("3 wiederverwendbare Pakete"));
+    assert!(issue.title.contains("3 reclaimable packages"));
     assert!(issue.technical_details.contains("8.12 GB"));
 }
 
@@ -206,7 +206,7 @@ async fn test_tier1_f02_winsxs_fix_executes_start_component_cleanup() {
     let res = module.fix("sys_clean_winsxs", None).await;
 
     assert!(res.is_ok());
-    assert!(res.unwrap().contains("StartComponentCleanup abgeschlossen"));
+    assert!(res.unwrap().contains("StartComponentCleanup finished"));
     assert_eq!(runner.calls_for("dism.exe").len(), 1);
     assert_eq!(
         runner.calls_for("dism.exe")[0],
@@ -261,7 +261,7 @@ async fn test_tier1_f03_delivery_optimization_fix_runs_powershell() {
     let res = module.fix("sys_clean_delivery_optimization", None).await;
     assert!(res.is_ok());
     let msg = res.unwrap();
-    assert!(msg.contains("Delivery Optimization (WUDO) Cache bereinigt"));
+    assert!(msg.contains("Delivery Optimization (WUDO) cache cleaned"));
 
     let ps_calls = runner.calls_for("powershell.exe");
     assert!(!ps_calls.is_empty());
@@ -286,14 +286,14 @@ fn test_tier1_f03_delivery_optimization_issue_attributes() {
     let issue = winmedic::engine::issue::Issue::new(
         "sys_clean_delivery_optimization",
         "system_cleaner",
-        "Delivery Optimization (WUDO) Cache (15.0 MB, 10 Dateien)",
+        "Delivery Optimization (WUDO) cache (15.0 MB, 10 files)",
         "System & Cache Cleaner",
         Severity::Info,
         RiskScore::Low,
-        "Windows Update Delivery Optimization (WUDO) Cache",
-        "WUDO Cache-Größe: 15.0 MB in 10 Dateien",
-        "WUDO Cache-Dateien bereinigen",
-        vec!["Delivery Optimization Cache-Verzeichnisse leeren".to_string()],
+        "Windows Update Delivery Optimization (WUDO) cache",
+        "WUDO cache size: 15.0 MB across 10 files",
+        "Clean the WUDO cache files",
+        vec!["Empty the Delivery Optimization cache directories".to_string()],
     );
     assert_eq!(issue.id, "sys_clean_delivery_optimization");
     assert_eq!(issue.severity, Severity::Info);
@@ -336,7 +336,7 @@ async fn test_tier1_f04_package_cache_fix_returns_formatted_summary() {
 
     let res = module.fix("sys_clean_package_cache", None).await;
     assert!(res.is_ok());
-    assert!(res.unwrap().contains("Package Cache bereinigt"));
+    assert!(res.unwrap().contains("Package cache cleaned"));
 }
 
 #[test]
@@ -353,14 +353,14 @@ fn test_tier1_f04_package_cache_issue_severity_warning() {
     let issue = winmedic::engine::issue::Issue::new(
         "sys_clean_package_cache",
         "system_cleaner",
-        "Installer Package Cache (500.0 MB, 120 Dateien)",
+        "Installer package cache (500.0 MB, 120 files)",
         "System & Cache Cleaner",
         Severity::Warning,
         RiskScore::Low,
         "Package Cache Audit",
-        "Package Cache Größe: 500.0 MB in 120 Dateien",
-        "Verwaiste Installer-Paket-Caches bereinigen",
-        vec!["%ProgramData%\\Package Cache durchsuchen und alte Pakete entfernen".to_string()],
+        "Package cache size: 500.0 MB across 120 files",
+        "Clean orphaned installer package caches",
+        vec!["Scan %ProgramData%\\Package Cache and remove stale packages".to_string()],
     );
     assert_eq!(issue.id, "sys_clean_package_cache");
     assert_eq!(issue.severity, Severity::Warning);
@@ -453,7 +453,7 @@ async fn test_tier1_f05_browser_cache_fix_returns_success() {
 
     let res = module.fix("sys_clean_browser_cache", None).await;
     assert!(res.is_ok());
-    assert!(res.unwrap().contains("Browser-Caches bereinigt"));
+    assert!(res.unwrap().contains("Browser caches cleaned"));
 }
 
 // ============================================================================
@@ -516,10 +516,7 @@ async fn test_tier1_f06_setup_logs_fix_summary() {
 
     let res = module.fix("sys_clean_setup_logs", None).await;
     assert!(res.is_ok());
-    assert!(
-        res.unwrap()
-            .contains("Windows Setup- & System-Logs bereinigt")
-    );
+    assert!(res.unwrap().contains("Windows setup & system logs cleaned"));
 }
 
 #[test]
@@ -588,7 +585,7 @@ async fn test_tier1_f07_error_reporting_fix_summary() {
     assert!(res.is_ok());
     assert!(
         res.unwrap()
-            .contains("Windows-Fehlerberichte & Crash-Dumps bereinigt")
+            .contains("Windows error reports & crash dumps cleaned")
     );
 }
 
@@ -597,14 +594,14 @@ fn test_tier1_f07_error_reporting_issue_metadata() {
     let issue = winmedic::engine::issue::Issue::new(
         "sys_clean_error_reporting",
         "system_cleaner",
-        "Windows-Fehlerberichte & Crash-Dumps (25.0 MB, 15 Dateien)",
+        "Windows error reports & crash dumps (25.0 MB, 15 files)",
         "System & Cache Cleaner",
         Severity::Info,
         RiskScore::Low,
         "Windows Error Reporting",
-        "Fehlerberichte & Crash-Dumps: 25.0 MB in 15 Dateien",
-        "Absturzabbilder und WER-Berichtsarchive löschen",
-        vec!["WER ReportArchive leeren".to_string()],
+        "Error reports & crash dumps: 25.0 MB across 15 files",
+        "Delete crash dumps and WER report archives",
+        vec!["Empty WER ReportArchive".to_string()],
     );
     assert_eq!(issue.id, "sys_clean_error_reporting");
     assert_eq!(issue.severity, Severity::Info);
@@ -661,7 +658,7 @@ async fn test_tier1_f08_shader_certs_fix_summary() {
     assert!(res.is_ok());
     assert!(
         res.unwrap()
-            .contains("DirectX Shader & Zertifikats-Caches bereinigt")
+            .contains("DirectX shader & certificate caches cleaned")
     );
 }
 
@@ -670,14 +667,14 @@ fn test_tier1_f08_shader_certs_issue_metadata() {
     let issue = winmedic::engine::issue::Issue::new(
         "sys_clean_shader_certs",
         "system_cleaner",
-        "DirectX Shader & Zertifikats-Caches (12.5 MB, 40 Dateien)",
+        "DirectX shader & certificate caches (12.5 MB, 40 files)",
         "System & Cache Cleaner",
         Severity::Info,
         RiskScore::Low,
-        "DirectX Shader-Caches",
-        "Shader- & Zertifikats-Caches: 12.5 MB in 40 Dateien",
-        "Veraltete Shader-Kompilate und CRL-Cache leeren",
-        vec!["D3DSCache leeren".to_string()],
+        "DirectX shader caches",
+        "Shader & certificate caches: 12.5 MB across 40 files",
+        "Empty stale shader builds and the CRL cache",
+        vec!["Empty D3DSCache".to_string()],
     );
     assert_eq!(issue.id, "sys_clean_shader_certs");
     assert_eq!(issue.severity, Severity::Info);
@@ -710,7 +707,7 @@ async fn test_tier1_f09_recycle_bin_fix_runs_powershell_clear() {
     assert!(res.is_ok());
     assert!(
         res.unwrap()
-            .contains("Windows Papierkorb auf allen Laufwerken erfolgreich geleert")
+            .contains("Windows Recycle Bin emptied successfully on every drive")
     );
 
     let ps_calls = runner.calls_for("powershell.exe");
@@ -751,13 +748,13 @@ fn test_tier1_f09_recycle_bin_issue_metadata() {
     let issue = winmedic::engine::issue::Issue::new(
         "sys_clean_recycle_bin",
         "system_cleaner",
-        "Windows Papierkorb (1.20 GB, 55 Dateien)",
+        "Windows Recycle Bin (1.20 GB, 55 files)",
         "System & Cache Cleaner",
         Severity::Info,
         RiskScore::Low,
-        "Papierkorb",
-        "Papierkorb-Inhalt: 1.20 GB in 55 Dateien",
-        "Papierkorb über alle Laufwerke leeren",
+        "Recycle Bin",
+        "Recycle Bin contents: 1.20 GB across 55 files",
+        "Empty the Recycle Bin on every drive",
         vec!["PowerShell Clear-RecycleBin -Force".to_string()],
     );
     assert_eq!(issue.id, "sys_clean_recycle_bin");
@@ -812,7 +809,7 @@ async fn test_tier1_f10_system_temp_fix_summary() {
     assert!(res.is_ok());
     assert!(
         res.unwrap()
-            .contains("Erweiterte System-Temp Verzeichnisse bereinigt")
+            .contains("Extended system temp directories cleaned")
     );
 }
 
@@ -821,14 +818,14 @@ fn test_tier1_f10_system_temp_issue_metadata() {
     let issue = winmedic::engine::issue::Issue::new(
         "sys_clean_system_temp",
         "system_cleaner",
-        "Erweiterte System-Temp Verzeichnisse (80.0 MB, 200 Dateien)",
+        "Extended system temp directories (80.0 MB, 200 files)",
         "System & Cache Cleaner",
         Severity::Info,
         RiskScore::Low,
-        "System-Temp",
-        "Erweiterte System-Temp Verzeichnisse: 80.0 MB in 200 Dateien",
-        "Temp Verzeichnisse bereinigen",
-        vec!["systemprofile Temp bereinigen".to_string()],
+        "System temp",
+        "Extended system temp directories: 80.0 MB across 200 files",
+        "Clean temp directories",
+        vec!["Clean systemprofile Temp".to_string()],
     );
     assert_eq!(issue.id, "sys_clean_system_temp");
     assert_eq!(issue.severity, Severity::Info);
@@ -867,7 +864,7 @@ async fn test_tier1_f11_triage_issue_toggle_in_app() {
     let issue = winmedic::engine::issue::Issue::new(
         "sys_clean_browser_cache",
         "system_cleaner",
-        "Browser-Caches (10 MB, 5 Dateien)",
+        "Browser caches (10 MB, 5 files)",
         "System & Cache Cleaner",
         Severity::Info,
         RiskScore::Low,

@@ -318,22 +318,18 @@ async fn test_scenario_6_dism_german_locale_pipeline() {
 
     let (_sandbox, module) = sandboxed_cleaner("tier4_scenarios_278", runner.clone());
 
-    // 1. Scan detects WinSxS issue with German details
+    // 1. Scan detects the WinSxS issue from German DISM output
     let issues = module.scan(None).await.expect("scan failed");
     let winsxs_issue = issues.iter().find(|i| i.id == "sys_clean_winsxs");
     assert!(winsxs_issue.is_some());
     let issue = winsxs_issue.unwrap();
-    assert!(issue.title.contains("5 wiederverwendbare Pakete"));
+    assert!(issue.title.contains("5 reclaimable packages"));
     assert!(issue.technical_details.contains("9.45 GB"));
 
     // 2. Fix executes StartComponentCleanup successfully
     let fix_res = module.fix("sys_clean_winsxs", None).await;
     assert!(fix_res.is_ok());
-    assert!(
-        fix_res
-            .unwrap()
-            .contains("StartComponentCleanup abgeschlossen")
-    );
+    assert!(fix_res.unwrap().contains("StartComponentCleanup finished"));
 
     // 3. Post-repair exit code calculation
     let mut fixed_issues = issues.clone();

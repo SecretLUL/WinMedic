@@ -51,11 +51,11 @@ impl DiagnosticModule for SystemIntegrityModule {
     }
 
     fn name(&self) -> &'static str {
-        "System-Integrität (DISM / SFC / VSS)"
+        "System Integrity (DISM / SFC / VSS)"
     }
 
     fn description(&self) -> &'static str {
-        "Prüft Component Store (DISM), Systemdateien (SFC) und Volumenschattenkopie-Dienste"
+        "Checks the component store (DISM), system files (SFC) and Volume Shadow Copy services"
     }
 
     fn icon(&self) -> &'static str {
@@ -72,8 +72,8 @@ impl DiagnosticModule for SystemIntegrityModule {
         Self::send_progress(
             &progress_tx,
             15,
-            "Prüfe Windows Component Store (DISM CheckHealth)...",
-            Some("DISM /Online /Cleanup-Image /CheckHealth wird ausgeführt..."),
+            "Checking the Windows component store (DISM CheckHealth)...",
+            Some("Running DISM /Online /Cleanup-Image /CheckHealth..."),
         )
         .await;
         sleep(Duration::from_millis(150)).await;
@@ -98,27 +98,33 @@ impl DiagnosticModule for SystemIntegrityModule {
                     issues.push(Issue::new(
                         "sys_dism_corrupt",
                         self.id(),
-                        "Windows Component Store ist beschädigt",
-                        "System-Integrität",
+                        "Windows component store is corrupted",
+                        "System Integrity",
                         Severity::Critical,
                         RiskScore::Low,
-                        "Der Windows Component Store (WinSxS) enthält beschädigte oder inkonsistente Pakete. Dies kann zu Update- und Systemfehlern führen.",
+                        "The Windows component store (WinSxS) holds corrupted or inconsistent packages. This causes update and system failures.",
                         output.stdout.clone(),
-                        "Automatische Reparatur via DISM /Online /Cleanup-Image /RestoreHealth",
+                        "Repair automatically via DISM /Online /Cleanup-Image /RestoreHealth",
                         vec![
-                            "DISM RestoreHealth mit Windows Update als Reparaturquelle ausführen".to_string(),
-                            "Komponentenspeicher synchronisieren und Cache auffrischen".to_string(),
+                            "Run DISM RestoreHealth with Windows Update as the repair source".to_string(),
+                            "Synchronise the component store and refresh its cache".to_string(),
                         ],
                     ));
                 } else {
-                    Self::send_progress(&progress_tx, 35, "DISM Component Store ist intakt", Some("✔ DISM CheckHealth: Keine Beschädigungen im Komponentenspeicher festgestellt.")).await;
+                    Self::send_progress(
+                        &progress_tx,
+                        35,
+                        "DISM component store is intact",
+                        Some("✔ DISM CheckHealth: no corruption found in the component store."),
+                    )
+                    .await;
                 }
             }
             Err(e) => {
                 Self::send_progress(
                     &progress_tx,
                     35,
-                    "DISM Check übersprungen (eingeschränkte Rechte)",
+                    "DISM check skipped (insufficient privileges)",
                     Some(&e),
                 )
                 .await;
@@ -129,8 +135,8 @@ impl DiagnosticModule for SystemIntegrityModule {
         Self::send_progress(
             &progress_tx,
             55,
-            "Prüfe Volumenschattenkopie & VSS-Dienste...",
-            Some("Abfrage von VSS und swprv Dienststatus..."),
+            "Checking Volume Shadow Copy & VSS services...",
+            Some("Querying the VSS and swprv service status..."),
         )
         .await;
         sleep(Duration::from_millis(150)).await;
@@ -145,21 +151,21 @@ impl DiagnosticModule for SystemIntegrityModule {
                 issues.push(Issue::new(
                     "sys_vss_disabled",
                     self.id(),
-                    "Volume Shadow Copy Dienst (VSS) ist deaktiviert",
-                    "System-Integrität",
+                    "Volume Shadow Copy service (VSS) is disabled",
+                    "System Integrity",
                     Severity::Warning,
                     RiskScore::Low,
-                    "Der VSS-Dienst ist deaktiviert. Dadurch können keine Systemwiederherstellungspunkte oder konsistente Backups erstellt werden.",
+                    "The VSS service is disabled, so Windows can create neither system restore points nor consistent backups.",
                     vss_out.stdout,
-                    "VSS-Dienst-Starttyp auf 'Manuell/Demand' zurücksetzen und Dienst aktivieren",
+                    "Reset the VSS service start type to 'Manual/Demand' and enable the service",
                     vec!["sc config vss start= demand".to_string(), "net start vss".to_string()],
                 ));
             } else {
                 Self::send_progress(
                     &progress_tx,
                     70,
-                    "VSS-Dienst bereit",
-                    Some("✔ VSS-Dienststatus: Bereit für Wiederherstellungspunkte."),
+                    "VSS service ready",
+                    Some("✔ VSS service status: ready for restore points."),
                 )
                 .await;
             }
@@ -169,8 +175,8 @@ impl DiagnosticModule for SystemIntegrityModule {
         Self::send_progress(
             &progress_tx,
             85,
-            "Prüfe CBS-Systemprotokolle auf Integritätsfehler...",
-            Some("CBS.log Inspektion..."),
+            "Checking the CBS system logs for integrity errors...",
+            Some("Inspecting CBS.log..."),
         )
         .await;
         sleep(Duration::from_millis(150)).await;
@@ -189,33 +195,30 @@ impl DiagnosticModule for SystemIntegrityModule {
                 issues.push(Issue::new(
                     "sys_sfc_corrupt",
                     self.id(),
-                    "Systemdateien weisen Integritätsverletzungen auf (CBS)",
-                    "System-Integrität",
+                    "System files show integrity violations (CBS)",
+                    "System Integrity",
                     Severity::Warning,
                     RiskScore::Low,
-                    "In den Windows CBS-Protokollen wurden Integritätsfehler bei geschützten Systemdateien festgestellt.",
-                    "Gefunden in CBS.log: Cannot repair member file / Corrupt flags.",
-                    "SFC /scannow ausführen, um Systemdateien aus dem lokalen Komponentenspeicher wiederherzustellen",
-                    vec!["sfc /scannow im Hintergrund ausführen und defekte Systemdateien reparieren".to_string()],
+                    "The Windows CBS logs report integrity errors on protected system files.",
+                    "Found in CBS.log: Cannot repair member file / Corrupt flags.",
+                    "Run SFC /scannow to restore system files from the local component store",
+                    vec![
+                        "Run sfc /scannow in the background and repair damaged system files"
+                            .to_string(),
+                    ],
                 ));
             } else {
                 Self::send_progress(
                     &progress_tx,
                     95,
-                    "CBS Protokolle unauffällig",
-                    Some("✔ Keine kritischen CBS-Integritätsverletzungen gemeldet."),
+                    "CBS logs unremarkable",
+                    Some("✔ No critical CBS integrity violations reported."),
                 )
                 .await;
             }
         }
 
-        Self::send_progress(
-            &progress_tx,
-            100,
-            "System-Integritätsprüfung abgeschlossen",
-            None,
-        )
-        .await;
+        Self::send_progress(&progress_tx, 100, "System integrity check complete", None).await;
 
         Ok(issues)
     }
@@ -234,7 +237,7 @@ impl DiagnosticModule for SystemIntegrityModule {
                     let _ = tx_clone
                         .send(FixProgress {
                             issue_id: issue_id_clone.clone(),
-                            step_description: "Reparatur läuft...".to_string(),
+                            step_description: "Repair in progress...".to_string(),
                             is_success: true,
                             error: None,
                             console_line: Some(line),
@@ -260,11 +263,11 @@ impl DiagnosticModule for SystemIntegrityModule {
                     .await?;
                 if out.success {
                     Ok(
-                        "DISM /RestoreHealth erfolgreich abgeschlossen. Component Store repariert."
+                        "DISM /RestoreHealth completed successfully. Component store repaired."
                             .to_string(),
                     )
                 } else {
-                    Err(format!("DISM-Reparatur fehlgeschlagen: {}", out.stderr))
+                    Err(format!("DISM repair failed: {}", out.stderr))
                 }
             }
             "sys_vss_disabled" => {
@@ -281,7 +284,7 @@ impl DiagnosticModule for SystemIntegrityModule {
                     .run("net.exe", &["start", "vss"], Duration::from_secs(10))
                     .await;
                 Ok(
-                    "Volume Shadow Copy (VSS) Dienst wurde erfolgreich konfiguriert und gestartet."
+                    "Volume Shadow Copy (VSS) service configured and started successfully."
                         .to_string(),
                 )
             }
@@ -291,15 +294,12 @@ impl DiagnosticModule for SystemIntegrityModule {
                     .run_streaming("sfc.exe", &["/scannow"], log_tx, Duration::from_secs(600))
                     .await?;
                 if out.success {
-                    Ok(
-                        "SFC /scannow erfolgreich abgeschlossen. Systemdateien repariert."
-                            .to_string(),
-                    )
+                    Ok("SFC /scannow completed successfully. System files repaired.".to_string())
                 } else {
-                    Ok(format!("SFC ausgeführt: {}", out.stdout))
+                    Ok(format!("SFC ran: {}", out.stdout))
                 }
             }
-            _ => Err(format!("Unbekannte Problem-ID: {}", issue_id)),
+            _ => Err(format!("Unknown issue ID: {}", issue_id)),
         }
     }
 }
