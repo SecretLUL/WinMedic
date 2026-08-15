@@ -64,7 +64,7 @@ jobs:
           }
 
       - name: Upload Binary to Release Assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           # SemVer decides: only tags carrying a pre-release suffix (v0.3.0-rc1)
           # are pre-releases. Marking every pre-1.0 tag as one hid them from the
