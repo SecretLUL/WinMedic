@@ -2,6 +2,10 @@
 name = "winmedic"
 version = "0.2.0"
 edition = "2024"
+# Verified against the locked dependency tree: edition 2024 itself needs 1.85,
+# but ratatui -> instability -> darling raises the floor to 1.88. CI enforces
+# this exact version in the `msrv` job so the two can never drift apart.
+rust-version = "1.88"
 build = "build.rs"
 authors = ["Ammar <https://github.com/SecretLUL>"]
 description = "High-performance Windows Self-Healing & Diagnostic TUI in Rust"

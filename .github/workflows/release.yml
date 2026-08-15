@@ -22,14 +22,30 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
+      # --locked forbids Cargo from silently resolving different dependency
+      # versions than the ones committed in Cargo.lock, so the published binary
+      # is reproducible from the tagged tree.
       - name: Build Optimized Release Binary
-        run: cargo build --release
+        run: cargo build --locked --release
 
       - name: Prepare Single Versioned Binary
         shell: pwsh
         run: |
           $tag = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "v0.1.0" }
           Copy-Item target/release/winmedic.exe "target/release/winmedic-${tag}.exe"
+
+      # WinMedic ships unsigned, so SmartScreen cannot vouch for the download.
+      # A published checksum at least lets users verify that the .exe they got
+      # is byte-for-byte the one this workflow produced.
+      - name: Generate SHA256 Checksum
+        shell: pwsh
+        run: |
+          $tag = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "v0.1.0" }
+          $name = "winmedic-${tag}.exe"
+          $hash = (Get-FileHash -Path "target/release/$name" -Algorithm SHA256).Hash.ToLower()
+          # sha256sum-compatible layout: "<hash>  <filename>"
+          "$hash  $name" | Out-File -FilePath "target/release/$name.sha256" -Encoding ascii
+          Write-Host "$name -> $hash"
 
       # Hand-written notes live at docs/release-notes/<tag>.md. When a tag ships
       # without one, fall back to GitHub's generated commit list rather than
@@ -57,6 +73,8 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           body_path: ${{ steps.notes.outputs.body_path }}
           generate_release_notes: ${{ steps.notes.outputs.generate }}
-          files: target/release/winmedic-*.exe
+          files: |
+            target/release/winmedic-*.exe
+            target/release/winmedic-*.exe.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
