@@ -18,12 +18,13 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
     // A pending confirmation swallows every other key.
     if app.pending_confirm.is_some() {
         match code {
-            KeyCode::Char('j')
-            | KeyCode::Char('J')
-            | KeyCode::Char('y')
+            KeyCode::Char('y')
             | KeyCode::Char('Y')
+            | KeyCode::Char('j')
+            | KeyCode::Char('J')
             | KeyCode::Enter => app.confirm_pending_action(),
-            _ => app.dismiss_confirm(),
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => app.dismiss_confirm(),
+            _ => {}
         }
         return;
     }
@@ -284,10 +285,52 @@ mod tests {
         let mut app = app();
         app.pending_confirm = Some(ConfirmRequest::Elevate);
 
-        // 'q' would normally quit.
+        // 'q' or other arbitrary keys would normally trigger actions, but must be swallowed without dismissing.
         handle_key(&mut app, KeyCode::Char('q'));
         assert!(!app.should_quit, "the modal must absorb the keystroke");
-        assert!(app.pending_confirm.is_none(), "and dismiss itself");
+        assert!(
+            app.pending_confirm.is_some(),
+            "unrelated keys must not dismiss the modal"
+        );
+
+        // 'n' or Esc dismisses the confirmation.
+        handle_key(&mut app, KeyCode::Esc);
+        assert!(app.pending_confirm.is_none(), "Esc dismisses the modal");
+    }
+
+    #[test]
+    fn confirm_modal_keys_test() {
+        let mut app = app();
+
+        // Dismiss via 'n'
+        app.pending_confirm = Some(ConfirmRequest::Elevate);
+        handle_key(&mut app, KeyCode::Char(' '));
+        assert!(app.pending_confirm.is_some(), "Space ignored");
+        handle_key(&mut app, KeyCode::Char('n'));
+        assert!(app.pending_confirm.is_none(), "'n' dismisses");
+
+        // Dismiss via 'N'
+        app.pending_confirm = Some(ConfirmRequest::Elevate);
+        handle_key(&mut app, KeyCode::Char('N'));
+        assert!(app.pending_confirm.is_none(), "'N' dismisses");
+
+        // Confirm via 'y'
+        app.pending_confirm = Some(ConfirmRequest::UpdateAvailable {
+            current_version: "0.1.0".into(),
+            latest_version: "0.2.0".into(),
+            release_url: "https://example.com".into(),
+        });
+        handle_key(&mut app, KeyCode::Char('y'));
+        assert!(app.pending_confirm.is_none(), "'y' confirms");
+
+        // Confirm via 'Enter'
+        app.pending_confirm = Some(ConfirmRequest::UpdateAvailable {
+            current_version: "0.1.0".into(),
+            latest_version: "0.2.0".into(),
+            release_url: "https://example.com".into(),
+        });
+        handle_key(&mut app, KeyCode::Enter);
+        assert!(app.pending_confirm.is_none(), "'Enter' confirms");
     }
 
     #[test]

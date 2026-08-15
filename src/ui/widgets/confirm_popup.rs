@@ -28,8 +28,9 @@ pub fn render_confirm_popup(f: &mut Frame, area: Rect, request: &ConfirmRequest)
 
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
+        Span::styled("  ", Style::default()),
         Span::styled(
-            "  [J] / [Enter] ",
+            " [Y] / [Enter] ",
             Style::default()
                 .fg(Theme::BG_DEEP)
                 .bg(Theme::AMBER)
