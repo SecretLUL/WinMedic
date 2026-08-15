@@ -472,33 +472,30 @@ async fn adv_test_all_9_fix_issue_ids_respond() {
     assert!(invalid.is_err(), "Fix for invalid ID must return Err");
 }
 
+#[cfg(windows)]
 #[test]
 fn adv_test_clean_locked_file_tolerance() {
+    use std::os::windows::fs::OpenOptionsExt;
+
     let fix = TempDirFixture::new("locked_file_tolerance");
 
     let unlocked_path = fix.create_file("unlocked.txt", b"freely deletable");
-    let locked_path = fix.create_file("locked.txt", b"locked with FileShare::None");
+    let locked_path = fix.create_file("locked.txt", b"locked with FILE_SHARE_NONE");
 
-    // Spawn a PowerShell process holding an exclusive lock with FileShare::None
-    let mut child = std::process::Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-Command",
-            &format!(
-                "$f = [System.IO.File]::Open('{}', [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None); Start-Sleep -Seconds 5",
-                locked_path.display()
-            ),
-        ])
-        .spawn()
-        .unwrap();
-
-    // Give PowerShell a moment to acquire the lock
-    std::thread::sleep(std::time::Duration::from_millis(800));
+    // Hold the lock in this process. `share_mode(0)` is FILE_SHARE_NONE: while
+    // the handle lives, every other open on the file fails with a sharing
+    // violation — including the one `DeleteFile` needs — so the sweep must skip
+    // it. Locking from a spawned helper instead would race the sweep against
+    // that process's startup, which is what made this test fail on CI.
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&locked_path)
+        .expect("failed to acquire exclusive lock on locked.txt");
 
     let clean_res = winmedic::modules::system_cleaner::clean_path_contents(&fix.path);
 
-    let _ = child.kill();
-    let _ = child.wait();
+    drop(lock);
 
     // unlocked.txt is deleted, locked.txt was locked and skipped gracefully
     assert_eq!(clean_res.deleted_files, 1);
