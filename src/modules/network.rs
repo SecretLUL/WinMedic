@@ -12,6 +12,12 @@ pub struct NetworkModule {
     runner: Arc<dyn CommandRunner>,
 }
 
+impl Default for NetworkModule {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NetworkModule {
     pub fn new() -> Self {
         Self::with_runner(Arc::new(SystemCommandRunner::new()))
@@ -47,11 +53,11 @@ impl DiagnosticModule for NetworkModule {
     }
 
     fn name(&self) -> &'static str {
-        "Netzwerk & DNS-Konnektivität"
+        "Network & DNS Connectivity"
     }
 
     fn description(&self) -> &'static str {
-        "Prüft DNS-Auflösung, Winsock-Katalog, TCP/IP-Stack und fehlerhafte Proxy-Konfigurationen"
+        "Checks DNS resolution, the Winsock catalog, the TCP/IP stack and broken proxy configurations"
     }
 
     fn icon(&self) -> &'static str {
@@ -68,8 +74,8 @@ impl DiagnosticModule for NetworkModule {
         Self::send_progress(
             &progress_tx,
             20,
-            "Teste DNS-Namensauflösung...",
-            Some("Lookup auf Google & Cloudflare DNS..."),
+            "Testing DNS name resolution...",
+            Some("Looking up Google & Cloudflare DNS..."),
         )
         .await;
         sleep(Duration::from_millis(150)).await;
@@ -83,10 +89,10 @@ impl DiagnosticModule for NetworkModule {
             )
             .await;
         let mut dns_healthy = false;
-        if let Ok(out) = dns_lookup {
-            if out.stdout.contains("8.8.8.8") || out.stdout.contains("Address") {
-                dns_healthy = true;
-            }
+        if let Ok(out) = dns_lookup
+            && (out.stdout.contains("8.8.8.8") || out.stdout.contains("Address"))
+        {
+            dns_healthy = true;
         }
 
         if !dns_healthy {
@@ -107,29 +113,29 @@ impl DiagnosticModule for NetworkModule {
                 issues.push(Issue::new(
                     "net_dns_failure",
                     self.id(),
-                    "DNS-Namensauflösung fehlgeschlagen (IP erreichbar)",
-                    "Netzwerk & DNS",
+                    "DNS name resolution failed (IP reachable)",
+                    "Network & DNS",
                     Severity::Critical,
                     RiskScore::Low,
-                    "Websites können nicht über ihren Domainnamen aufgelöst werden, obwohl die IP-Konnektivität zum Internet besteht. Ursache ist meist ein veralteter DNS-Cache oder fehlerhafte Resolver-Einstellungen.",
-                    "nslookup fehlgeschlagen, ping 1.1.1.1 erfolgreich",
-                    "DNS-Cache leeren (ipconfig /flushdns) und DNS-Resolver neu registrieren",
+                    "Websites cannot be resolved by domain name even though IP connectivity to the internet works. The usual cause is a stale DNS cache or broken resolver settings.",
+                    "nslookup failed, ping 1.1.1.1 succeeded",
+                    "Flush the DNS cache (ipconfig /flushdns) and re-register the DNS resolver",
                     vec![
-                        "ipconfig /flushdns ausführen".to_string(),
-                        "ipconfig /registerdns ausführen".to_string(),
+                        "Run ipconfig /flushdns".to_string(),
+                        "Run ipconfig /registerdns".to_string(),
                     ],
                 ));
             } else {
                 issues.push(Issue::new(
                     "net_offline_warning",
                     self.id(),
-                    "Keine aktive Internet- oder Gateway-Verbindung",
-                    "Netzwerk & DNS",
+                    "No active internet or gateway connection",
+                    "Network & DNS",
                     Severity::Warning,
                     RiskScore::Low,
-                    "Das System kann weder externe IP-Adressen noch DNS-Server erreichen. Bitte prüfen Sie Router, WLAN/LAN-Kabel oder VPN-Verbindungen.",
-                    "Keine Antwort auf Ping / nslookup",
-                    "Netzwerkadapter und Winsock / IP-Stack zurücksetzen",
+                    "The system can reach neither external IP addresses nor DNS servers. Check the router, the Wi-Fi/LAN cable or any VPN connection.",
+                    "No response to ping / nslookup",
+                    "Reset the network adapter and the Winsock / IP stack",
                     vec![
                         "netsh winsock reset".to_string(),
                         "netsh int ip reset".to_string(),
@@ -140,8 +146,8 @@ impl DiagnosticModule for NetworkModule {
             Self::send_progress(
                 &progress_tx,
                 45,
-                "DNS-Auflösung erfolgreich",
-                Some("✔ DNS-Namensauflösung und IP-Routing sind einwandfrei."),
+                "DNS resolution successful",
+                Some("✔ DNS name resolution and IP routing are working correctly."),
             )
             .await;
         }
@@ -150,7 +156,7 @@ impl DiagnosticModule for NetworkModule {
         Self::send_progress(
             &progress_tx,
             65,
-            "Prüfe Proxy-Einstellungen in der Windows-Registry...",
+            "Checking proxy settings in the Windows registry...",
             Some("Registry Internet Settings..."),
         )
         .await;
@@ -169,22 +175,22 @@ impl DiagnosticModule for NetworkModule {
                     issues.push(Issue::new(
                         "net_proxy_active",
                         self.id(),
-                        format!("Manuell konfigurierter Proxy-Server aktiv: {}", server),
-                        "Netzwerk & DNS",
+                        format!("Manually configured proxy server active: {}", server),
+                        "Network & DNS",
                         Severity::Warning,
                         RiskScore::Low,
-                        format!("Ein aktiver Proxy-Server ({}) wurde in den Systemeinstellungen gefunden. Wenn dieser Proxy nicht erreichbar ist, schlagen alle Verbindungen fehl.", server),
+                        format!("An active proxy server ({}) is configured in the system settings. If that proxy is unreachable, every connection fails.", server),
                         format!("Registry ProxyServer: {}", server),
-                        "Proxy-Einstellungen deaktivieren (Direktverbindung verwenden)",
-                        vec!["ProxyEnable in Registry auf 0 setzen".to_string()],
+                        "Disable the proxy settings (use a direct connection)",
+                        vec!["Set ProxyEnable to 0 in the registry".to_string()],
                     ));
                 }
             } else {
                 Self::send_progress(
                     &progress_tx,
                     80,
-                    "Direkte Internetverbindung aktiv",
-                    Some("✔ Keine blockierenden manuellen Proxy-Server konfiguriert."),
+                    "Direct internet connection active",
+                    Some("✔ No blocking manual proxy server is configured."),
                 )
                 .await;
             }
@@ -194,7 +200,7 @@ impl DiagnosticModule for NetworkModule {
         Self::send_progress(
             &progress_tx,
             85,
-            "Prüfe Winsock-Katalog-Integrität...",
+            "Checking Winsock catalog integrity...",
             Some("netsh winsock audit..."),
         )
         .await;
@@ -216,27 +222,27 @@ impl DiagnosticModule for NetworkModule {
                 issues.push(Issue::new(
                     "net_winsock_corrupt",
                     self.id(),
-                    "Winsock-Katalog weist Inkonsistenzen auf",
-                    "Netzwerk & DNS",
+                    "Winsock catalog shows inconsistencies",
+                    "Network & DNS",
                     Severity::Warning,
                     RiskScore::Medium,
-                    "Der Winsock Layered Service Provider (LSP) Katalog enthält beschädigte oder unvollständige Einträge, was zu Verbindungsabbrüchen führen kann.",
+                    "The Winsock Layered Service Provider (LSP) catalog contains damaged or incomplete entries, which can cause dropped connections.",
                     out.stdout,
-                    "Winsock-Katalog auf Werkseinstellungen zurücksetzen",
-                    vec!["netsh winsock reset ausführen".to_string()],
+                    "Reset the Winsock catalog to its defaults",
+                    vec!["Run netsh winsock reset".to_string()],
                 ));
             } else {
                 Self::send_progress(
                     &progress_tx,
                     95,
-                    "Winsock-Katalog intakt",
-                    Some("✔ Winsock LSP-Katalog ist konsistent."),
+                    "Winsock catalog intact",
+                    Some("✔ The Winsock LSP catalog is consistent."),
                 )
                 .await;
             }
         }
 
-        Self::send_progress(&progress_tx, 100, "Netzwerkdiagnose abgeschlossen", None).await;
+        Self::send_progress(&progress_tx, 100, "Network diagnostics complete", None).await;
 
         Ok(issues)
     }
@@ -256,7 +262,7 @@ impl DiagnosticModule for NetworkModule {
                     .runner
                     .run("ipconfig.exe", &["/registerdns"], Duration::from_secs(8))
                     .await;
-                Ok("DNS-Cache erfolgreich geleert und DNS-Resolver neu registriert.".to_string())
+                Ok("DNS cache flushed and DNS resolver re-registered successfully.".to_string())
             }
             "net_offline_warning" | "net_winsock_corrupt" => {
                 let _ = self
@@ -276,7 +282,7 @@ impl DiagnosticModule for NetworkModule {
                     .run("ipconfig.exe", &["/flushdns"], Duration::from_secs(8))
                     .await;
                 Ok(
-                    "Winsock & TCP/IP-Stack erfolgreich zurückgesetzt. (Neustart empfohlen)"
+                    "Winsock and the TCP/IP stack were reset successfully. (Restart recommended.)"
                         .to_string(),
                 )
             }
@@ -288,14 +294,17 @@ impl DiagnosticModule for NetworkModule {
                 ) {
                     let _ = inet_settings.set_value("ProxyEnable", &0u32);
                     Ok(
-                        "Proxy-Server erfolgreich deaktiviert. Direkte Internetverbindung aktiv."
+                        "Proxy server disabled successfully. Direct internet connection is active."
                             .to_string(),
                     )
                 } else {
-                    Err("Konnte Registry-Schlüssel für Internet Settings nicht mit Schreibrechten öffnen.".to_string())
+                    Err(
+                        "Could not open the Internet Settings registry key for writing."
+                            .to_string(),
+                    )
                 }
             }
-            _ => Err(format!("Unbekannte Problem-ID: {}", issue_id)),
+            _ => Err(format!("Unknown issue id: {}", issue_id)),
         }
     }
 }

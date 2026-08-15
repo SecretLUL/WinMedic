@@ -57,7 +57,7 @@ impl DiagnosticModule for EventLogModule {
     }
 
     fn description(&self) -> &'static str {
-        "Analysiert Windows-Ereignisprotokolle (System/Application), BSOD-Minidumps und WHEA-Hardwarefehler"
+        "Analyses the Windows event logs (System/Application), BSOD minidumps and WHEA hardware faults"
     }
 
     fn icon(&self) -> &'static str {
@@ -74,8 +74,8 @@ impl DiagnosticModule for EventLogModule {
         Self::send_progress(
             &progress_tx,
             15,
-            "Prüfe auf BSOD-Minidumps (%SystemRoot%\\Minidump)...",
-            Some("Minidump-Verzeichnis scannen..."),
+            "Checking for BSOD minidumps (%SystemRoot%\\Minidump)...",
+            Some("Scanning the minidump directory..."),
         )
         .await;
         sleep(Duration::from_millis(150)).await;
@@ -88,15 +88,14 @@ impl DiagnosticModule for EventLogModule {
                     let path = entry.path();
                     if path.extension().map(|e| e.to_string_lossy().to_lowercase())
                         == Some("dmp".to_string())
+                        && let Ok(meta) = entry.metadata()
                     {
-                        if let Ok(meta) = entry.metadata() {
-                            let size_kb = meta.len() / 1024;
-                            dmp_files.push(format!(
-                                "{} ({} KB)",
-                                path.file_name().unwrap_or_default().to_string_lossy(),
-                                size_kb
-                            ));
-                        }
+                        let size_kb = meta.len() / 1024;
+                        dmp_files.push(format!(
+                            "{} ({} KB)",
+                            path.file_name().unwrap_or_default().to_string_lossy(),
+                            size_kb
+                        ));
                     }
                 }
             }
@@ -112,24 +111,24 @@ impl DiagnosticModule for EventLogModule {
                 issues.push(Issue::new(
                     "evt_bsod_dumps_found",
                     self.id(),
-                    format!("{} BlueScreen (BSOD) Minidump-Absturzberichte gefunden", count),
+                    format!("{} blue screen (BSOD) minidump crash reports found", count),
                     "Event-Log & Crashes",
                     Severity::Critical,
                     RiskScore::Low,
-                    format!("Es wurden {} Minidump-Dateien unter C:\\Windows\\Minidump gefunden. Diese deuten auf vorangegangene Kernel-Abstürze oder Treiberfehler hin.", count),
+                    format!("{} minidump files were found under C:\\Windows\\Minidump. These point to previous kernel crashes or driver faults.", count),
                     format!("Gefundene Dumps:\n{}", sample_list),
-                    "Treiber auf Aktualisierungen prüfen und alte Minidumps nach Analyse bereinigen",
+                    "Check drivers for updates and clean up old minidumps once analysed",
                     vec![
-                        "Alte Minidump-Dateien archivieren oder bereinigen".to_string(),
-                        "Treiber & Windows-Updates auf den neuesten Stand bringen".to_string(),
+                        "Archive or clean up old minidump files".to_string(),
+                        "Bring drivers and Windows updates up to date".to_string(),
                     ],
                 ));
             } else {
                 Self::send_progress(
                     &progress_tx,
                     35,
-                    "Keine BSOD Crash-Dumps",
-                    Some("✔ Keine BlueScreen Minidumps in %WINDIR%\\Minidump gefunden."),
+                    "No BSOD crash dumps",
+                    Some("✔ No blue screen minidumps found in %WINDIR%\\Minidump."),
                 )
                 .await;
             }
@@ -137,8 +136,8 @@ impl DiagnosticModule for EventLogModule {
             Self::send_progress(
                 &progress_tx,
                 35,
-                "Minidump-Verzeichnis leer",
-                Some("✔ Minidump-Verzeichnis ist sauber."),
+                "Minidump directory empty",
+                Some("✔ The minidump directory is clean."),
             )
             .await;
         }
@@ -149,7 +148,7 @@ impl DiagnosticModule for EventLogModule {
             &progress_tx,
             55,
             &format!(
-                "Scanne System-Ereignisprotokolle der letzten {}h (wevtutil)...",
+                "Scanning the last {}h of system event logs (wevtutil)...",
                 window_hours
             ),
             Some("wevtutil qe System..."),
@@ -178,22 +177,22 @@ impl DiagnosticModule for EventLogModule {
                 issues.push(Issue::new(
                     "evt_system_critical_events",
                     self.id(),
-                    format!("Kritische System-Ereignisse in den letzten {}h protokolliert", window_hours),
+                    format!("Critical system events logged in the last {}h", window_hours),
                     "Event-Log & Crashes",
                     Severity::Warning,
                     RiskScore::Low,
-                    format!("Das Windows System-Protokoll enthält {} Zeilen mit Fehlern oder kritischen Systemereignissen innerhalb der letzten {} Stunden.", lines_count, window_hours),
+                    format!("The Windows system log contains {} lines with errors or critical system events within the last {} hours.", lines_count, window_hours),
                     sample,
-                    "Ursache über die Windows-Ereignisanzeige analysieren und betroffene Dienste reparieren",
+                    "Analyse the cause in Windows Event Viewer and repair the affected services",
                     vec!["Detaillierten Ereignisbericht anzeigen".to_string()],
                 ));
             } else {
                 Self::send_progress(
                     &progress_tx,
                     75,
-                    "Systemprotokoll unauffällig",
+                    "System log unremarkable",
                     Some(&format!(
-                        "✔ Keine gehäuften kritischen System-Events in den letzten {}h.",
+                        "✔ No cluster of critical system events in the last {}h.",
                         window_hours
                     )),
                 )
@@ -205,8 +204,8 @@ impl DiagnosticModule for EventLogModule {
         Self::send_progress(
             &progress_tx,
             85,
-            "Prüfe auf WHEA-Hardwarefehler...",
-            Some("Filterung nach WHEA-Logger..."),
+            "Checking for WHEA hardware faults...",
+            Some("Filtering for WHEA-Logger..."),
         )
         .await;
         sleep(Duration::from_millis(150)).await;
@@ -227,27 +226,27 @@ impl DiagnosticModule for EventLogModule {
                 issues.push(Issue::new(
                     "evt_whea_hardware_error",
                     self.id(),
-                    "WHEA-Hardwarefehler im Systemprotokoll festgestellt",
+                    "WHEA hardware faults found in the system log",
                     "Event-Log & Crashes",
                     Severity::Critical,
                     RiskScore::High,
-                    "Windows Hardware Error Architecture (WHEA) meldet Hardware-Warnungen (z.B. CPU-Spannungsabfall, PCIe-Busfehler oder RAM-Instabilitäten).",
+                    "Windows Hardware Error Architecture (WHEA) is reporting hardware warnings (for example CPU voltage drops, PCIe bus errors or unstable RAM).",
                     stdout.to_string(),
-                    "BIOS/UEFI-Update durchführen, Übertaktung zurücksetzen und RAM-Diagnose ausführen",
-                    vec!["Windows-Speicherdiagnose (mdsched.exe) planen".to_string()],
+                    "Apply a BIOS/UEFI update, reset any overclock and run a RAM diagnostic",
+                    vec!["Schedule the Windows memory diagnostic (mdsched.exe)".to_string()],
                 ));
             } else {
                 Self::send_progress(
                     &progress_tx,
                     95,
                     "WHEA Hardware intakt",
-                    Some("✔ Keine WHEA-Hardwarefehler oder PCIe/CPU-Fehler protokolliert."),
+                    Some("✔ No WHEA hardware faults or PCIe/CPU errors logged."),
                 )
                 .await;
             }
         }
 
-        Self::send_progress(&progress_tx, 100, "Event-Log-Analyse abgeschlossen", None).await;
+        Self::send_progress(&progress_tx, 100, "Event log analysis complete", None).await;
 
         Ok(issues)
     }
@@ -261,27 +260,25 @@ impl DiagnosticModule for EventLogModule {
             "evt_bsod_dumps_found" => {
                 let minidump_dir = Path::new(r"C:\Windows\Minidump");
                 let mut removed = 0;
-                if minidump_dir.exists() {
-                    if let Ok(entries) = std::fs::read_dir(minidump_dir) {
+                if minidump_dir.exists()
+                    && let Ok(entries) = std::fs::read_dir(minidump_dir) {
                         for entry in entries.flatten() {
                             let path = entry.path();
-                            if path.extension().map(|e| e.to_string_lossy().to_lowercase()) == Some("dmp".to_string()) {
-                                if std::fs::remove_file(path).is_ok() {
+                            if path.extension().map(|e| e.to_string_lossy().to_lowercase()) == Some("dmp".to_string())
+                                && std::fs::remove_file(path).is_ok() {
                                     removed += 1;
                                 }
-                            }
                         }
                     }
-                }
-                Ok(format!("{} veraltete Minidump-Dateien sicher bereinigt.", removed))
+                Ok(format!("Safely cleaned up {} stale minidump files.", removed))
             }
             "evt_system_critical_events" => {
-                Ok("Ereignisse analysiert und im WinMedic Audit-Log dokumentiert.".to_string())
+                Ok("Events analysed and recorded in the WinMedic audit log.".to_string())
             }
             "evt_whea_hardware_error" => {
-                Ok("WHEA-Warnung dokumentiert. Empfehlung: Windows-Speicherdiagnose (mdsched.exe) ausführen.".to_string())
+                Ok("WHEA warning recorded. Recommendation: run the Windows Memory Diagnostic (mdsched.exe).".to_string())
             }
-            _ => Err(format!("Unbekannte Problem-ID: {}", issue_id)),
+            _ => Err(format!("Unknown issue id: {}", issue_id)),
         }
     }
 }

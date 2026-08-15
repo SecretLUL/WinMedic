@@ -34,9 +34,9 @@ impl DiagnosticReporter {
 
     /// Print issues formatted in CLI console
     pub fn print_cli_report(issues: &[Issue], health_score: u8) {
-        println!("\n{}", "═══ WINMEDIC DIAGNOSE-BERICHT ═══".cyan().bold());
+        println!("\n{}", "═══ WINMEDIC DIAGNOSTIC REPORT ═══".cyan().bold());
         println!(
-            "Gesamt-Health-Score: {}/100",
+            "Overall health score: {}/100",
             if health_score >= 80 {
                 format!("{}", health_score).green().bold()
             } else if health_score >= 50 {
@@ -45,12 +45,12 @@ impl DiagnosticReporter {
                 format!("{}", health_score).red().bold()
             }
         );
-        println!("Gefundene Probleme: {}\n", issues.len());
+        println!("Issues found: {}\n", issues.len());
 
         if issues.is_empty() {
             println!(
                 "{}",
-                "✔ Keine Probleme gefunden! Ihr System ist in hervorragendem Zustand."
+                "✔ No issues found. Your system is in excellent shape."
                     .green()
                     .bold()
             );
@@ -59,15 +59,15 @@ impl DiagnosticReporter {
 
         for (idx, issue) in issues.iter().enumerate() {
             let sev_str = match issue.severity {
-                Severity::Critical => "[KRITISCH]".red().bold(),
-                Severity::Warning => "[WARNUNG]".yellow().bold(),
+                Severity::Critical => "[CRITICAL]".red().bold(),
+                Severity::Warning => "[WARNING]".yellow().bold(),
                 Severity::Info => "[INFO]".cyan(),
             };
 
             let status_str = if issue.is_fixed {
-                "[BEHOBEN]".green().bold()
+                "[FIXED]".green().bold()
             } else {
-                "[OFFEN]".white()
+                "[OPEN]".white()
             };
 
             println!(
@@ -79,7 +79,7 @@ impl DiagnosticReporter {
                 issue.title.bold()
             );
             println!("   └─ {}", issue.description);
-            println!("      Empfohlener Fix: {}", issue.recommended_fix.green());
+            println!("      Recommended fix: {}", issue.recommended_fix.green());
             println!();
         }
     }
@@ -137,14 +137,14 @@ impl DiagnosticReporter {
         let open_count = issues.len().saturating_sub(fixed_count);
 
         let mut md = format!(
-            "# 🩺 WinMedic Diagnose- & Systembericht\n\n\
+            "# 🩺 WinMedic Diagnostic & System Report\n\n\
             - **System:** {}\n\
-            - **Zeitpunkt:** {}\n\
-            - **Health-Score:** {}/100\n\
-            - **Gefundene Probleme:** {} (Kritisch: {}, Warnungen: {}, Hinweise: {})\n\
-            - **Status:** {} behoben, {} offen\n\n\
+            - **Generated:** {}\n\
+            - **Health score:** {}/100\n\
+            - **Issues found:** {} (critical: {}, warnings: {}, informational: {})\n\
+            - **Status:** {} fixed, {} open\n\n\
             ---\n\n\
-            ## 📋 Gefundene Befunde\n\n",
+            ## 📋 Findings\n\n",
             hostname,
             timestamp,
             health_score,
@@ -157,31 +157,31 @@ impl DiagnosticReporter {
         );
 
         if issues.is_empty() {
-            md.push_str("✔ **Keine Probleme gefunden!** Das System befindet sich in hervorragendem Zustand.\n\n");
+            md.push_str("✔ **No issues found.** The system is in excellent shape.\n\n");
         } else {
             for (idx, issue) in issues.iter().enumerate() {
                 let sev_str = match issue.severity {
-                    Severity::Critical => "🔴 KRITISCH",
-                    Severity::Warning => "▲ WARNUNG",
+                    Severity::Critical => "🔴 CRITICAL",
+                    Severity::Warning => "▲ WARNING",
                     Severity::Info => "ℹ INFO",
                 };
                 let status_str = if issue.is_fixed {
-                    "✔ BEHOBEN"
+                    "✔ FIXED"
                 } else if issue.fix_error.is_some() {
-                    "✖ FEHLGESCHLAGEN"
+                    "✖ FAILED"
                 } else {
-                    "● OFFEN"
+                    "● OPEN"
                 };
 
                 md.push_str(&format!(
                     "### {}. {} [{}] {}\n\n\
-                    - **Kategorie:** {}\n\
-                    - **Modul:** {}\n\
-                    - **Risiko-Stufe:** {}\n\
+                    - **Category:** {}\n\
+                    - **Module:** {}\n\
+                    - **Risk level:** {}\n\
                     - **Status:** {}\n\
-                    - **Beschreibung:** {}\n\n\
-                    **Technische Details:**\n```\n{}\n```\n\n\
-                    **Empfohlener Fix:** {}\n\n",
+                    - **Description:** {}\n\n\
+                    **Technical details:**\n```\n{}\n```\n\n\
+                    **Recommended fix:** {}\n\n",
                     idx + 1,
                     sev_str,
                     status_str,
@@ -196,11 +196,11 @@ impl DiagnosticReporter {
                 ));
 
                 if let Some(ref err) = issue.fix_error {
-                    md.push_str(&format!("> ⚠️ **Fehler bei Reparatur:** {}\n\n", err));
+                    md.push_str(&format!("> ⚠️ **Repair error:** {}\n\n", err));
                 }
 
                 if !issue.fix_steps.is_empty() {
-                    md.push_str("**Geplante Einzelschritte:**\n");
+                    md.push_str("**Planned steps:**\n");
                     for (s_idx, step) in issue.fix_steps.iter().enumerate() {
                         md.push_str(&format!("{}. {}\n", s_idx + 1, step));
                     }
@@ -210,8 +210,8 @@ impl DiagnosticReporter {
         }
 
         if !audit_entries.is_empty() {
-            md.push_str("---\n\n## 🛡️ Audit- & Reparatur-Protokoll\n\n");
-            md.push_str("| Zeit | Aktion | Modul | Titel | Status | Details |\n");
+            md.push_str("---\n\n## 🛡️ Audit & Repair Log\n\n");
+            md.push_str("| Time | Action | Module | Title | Status | Details |\n");
             md.push_str("| :--- | :--- | :--- | :--- | :--- | :--- |\n");
             for entry in audit_entries {
                 md.push_str(&format!(
@@ -228,7 +228,7 @@ impl DiagnosticReporter {
         }
 
         md.push_str(&format!(
-            "---\n*Erstellt mit WinMedic v{}*\n",
+            "---\n*Generated with WinMedic v{}*\n",
             env!("CARGO_PKG_VERSION")
         ));
 
@@ -267,30 +267,32 @@ impl DiagnosticReporter {
                 r#"
             <div class="empty-state">
                 <div class="empty-icon">✔</div>
-                <h3>Keine Probleme gefunden</h3>
-                <p>Ihr Windows-System ist in einem hervorragenden und sauberen Zustand.</p>
+                <h3>No issues found</h3>
+                <p>Your Windows system is in excellent, clean shape.</p>
             </div>
             "#,
             );
         } else {
             for (idx, issue) in issues.iter().enumerate() {
                 let (sev_class, sev_label) = match issue.severity {
-                    Severity::Critical => ("badge-crit", "KRITISCH"),
-                    Severity::Warning => ("badge-warn", "WARNUNG"),
+                    Severity::Critical => ("badge-crit", "CRITICAL"),
+                    Severity::Warning => ("badge-warn", "WARNING"),
                     Severity::Info => ("badge-info", "INFO"),
                 };
 
                 let (status_class, status_label) = if issue.is_fixed {
-                    ("status-fixed", "✔ BEHOBEN")
+                    ("status-fixed", "✔ FIXED")
                 } else if issue.fix_error.is_some() {
-                    ("status-failed", "✖ FEHLGESCHLAGEN")
+                    ("status-failed", "✖ FAILED")
                 } else {
-                    ("status-open", "● OFFEN")
+                    ("status-open", "● OPEN")
                 };
 
                 let mut steps_html = String::new();
                 if !issue.fix_steps.is_empty() {
-                    steps_html.push_str("<div class=\"steps-title\">Geplante Einzelschritte:</div><ol class=\"steps-list\">");
+                    steps_html.push_str(
+                        "<div class=\"steps-title\">Planned steps:</div><ol class=\"steps-list\">",
+                    );
                     for step in &issue.fix_steps {
                         steps_html.push_str(&format!("<li>{}</li>", escape_html(step)));
                     }
@@ -299,7 +301,7 @@ impl DiagnosticReporter {
 
                 let fix_error_html = if let Some(ref err) = issue.fix_error {
                     format!(
-                        "<div class=\"error-banner\"><strong>Fehler bei Reparatur:</strong> {}</div>",
+                        "<div class=\"error-banner\"><strong>Repair error:</strong> {}</div>",
                         escape_html(err)
                     )
                 } else {
@@ -321,10 +323,10 @@ impl DiagnosticReporter {
                         <div class="issue-body">
                             <p class="issue-desc">{desc}</p>
                             {fix_err}
-                            <div class="section-label">Technische Details:</div>
+                            <div class="section-label">Technical details:</div>
                             <pre class="tech-details"><code>{tech}</code></pre>
                             <div class="fix-box">
-                                <div class="fix-title">💡 Empfohlene Reparatur:</div>
+                                <div class="fix-title">💡 Recommended repair:</div>
                                 <div class="fix-text">{fix}</div>
                                 {steps}
                             </div>
@@ -371,15 +373,15 @@ impl DiagnosticReporter {
             audit_html = format!(
                 r#"
                 <section class="section">
-                    <h2 class="section-heading">🛡️ Audit- &amp; Reparatur-Protokoll</h2>
+                    <h2 class="section-heading">🛡️ Audit &amp; Repair Log</h2>
                     <div class="card table-card">
                         <table class="audit-table">
                             <thead>
                                 <tr>
-                                    <th>Zeitstempel</th>
-                                    <th>Aktion</th>
-                                    <th>Modul</th>
-                                    <th>Titel</th>
+                                    <th>Timestamp</th>
+                                    <th>Action</th>
+                                    <th>Module</th>
+                                    <th>Title</th>
                                     <th>Status</th>
                                     <th>Details</th>
                                 </tr>
@@ -397,11 +399,11 @@ impl DiagnosticReporter {
 
         format!(
             r#"<!DOCTYPE html>
-<html lang="de">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WinMedic Diagnosebericht – {hostname}</title>
+    <title>WinMedic Diagnostic Report – {hostname}</title>
     <style>
         :root {{
             --bg-deep: #0f172a;
@@ -686,14 +688,14 @@ impl DiagnosticReporter {
             <div class="brand">
                 <div class="logo-icon">🩺</div>
                 <div>
-                    <h1>WinMedic Diagnosebericht</h1>
-                    <div class="meta-text">System: <strong>{hostname}</strong> │ Erstellt: {timestamp}</div>
+                    <h1>WinMedic Diagnostic Report</h1>
+                    <div class="meta-text">System: <strong>{hostname}</strong> │ Generated: {timestamp}</div>
                 </div>
             </div>
             <div class="health-badge-container">
                 <div>
                     <div class="stat-label">Health Score</div>
-                    <div class="meta-text">System-Gesundheit</div>
+                    <div class="meta-text">System health</div>
                 </div>
                 <div class="health-score">{health_score}<span style="font-size: 18px; font-weight: 500; color: var(--text-muted);">/100</span></div>
             </div>
@@ -705,28 +707,28 @@ impl DiagnosticReporter {
                 <div class="stat-val val-cyan">{total_issues}</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Kritische Fehler</div>
+                <div class="stat-label">Critical faults</div>
                 <div class="stat-val val-crit">{crit_count}</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Warnungen</div>
+                <div class="stat-label">Warnings</div>
                 <div class="stat-val val-warn">{warn_count}</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Behoben / Offen</div>
+                <div class="stat-label">Fixed / open</div>
                 <div class="stat-val"><span class="val-fixed">{fixed_count}</span> <span style="font-size: 16px; color: var(--text-muted);">/ {open_count}</span></div>
             </div>
         </div>
 
         <section class="section">
-            <h2 class="section-heading">📋 Diagnose-Befunde &amp; Analyse</h2>
+            <h2 class="section-heading">📋 Diagnostic Findings &amp; Analysis</h2>
             {issues_html}
         </section>
 
         {audit_html}
 
         <footer>
-            Erstellt mit <strong>WinMedic v{version}</strong> – Advanced Windows Self-Healing &amp; Diagnostics
+            Generated with <strong>WinMedic v{version}</strong> – Advanced Windows Self-Healing &amp; Diagnostics
         </footer>
     </div>
 </body>
@@ -754,10 +756,10 @@ impl DiagnosticReporter {
         health_score: u8,
         audit_entries: &[AuditEntry],
     ) -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                let _ = std::fs::create_dir_all(parent);
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            let _ = std::fs::create_dir_all(parent);
         }
 
         let extension = path
@@ -786,26 +788,26 @@ mod tests {
             Issue::new(
                 "sys_sfc_corrupt",
                 "system_integrity",
-                "Beschädigte Systemdateien gefunden",
-                "System-Integrität",
+                "Corrupted system files found",
+                "System integrity",
                 Severity::Critical,
                 RiskScore::Low,
-                "SFC hat beschädigte Dateien gemeldet.",
-                "CBS.log Fehler gefunden",
-                "DISM und SFC Reparatur ausführen",
+                "SFC reported corrupted files.",
+                "Errors found in CBS.log",
+                "Run a DISM and SFC repair",
                 vec!["DISM /Online /Cleanup-Image /RestoreHealth".to_string()],
             ),
             Issue::new(
                 "storage_temp_bloat",
                 "storage",
-                "Temporäre Dateien belegen viel Speicher",
-                "Speicherplatz & Bereinigung",
+                "Temp files are using a lot of space",
+                "Storage & Cleanup",
                 Severity::Warning,
                 RiskScore::Low,
-                "1500 MB Temp-Dateien gefunden.",
+                "1500 MB of temp files found.",
                 "C:\\Windows\\Temp",
-                "Temp-Dateien sicher bereinigen",
-                vec!["Bereinigen".to_string()],
+                "Clean up temp files safely",
+                vec!["Clean up".to_string()],
             ),
         ]
     }
@@ -822,8 +824,8 @@ mod tests {
     fn test_to_markdown_contains_sections() {
         let issues = sample_issues();
         let md = DiagnosticReporter::to_markdown(&issues, 65, &[]);
-        assert!(md.contains("# 🩺 WinMedic Diagnose- & Systembericht"));
-        assert!(md.contains("Beschädigte Systemdateien gefunden"));
+        assert!(md.contains("# 🩺 WinMedic Diagnostic & System Report"));
+        assert!(md.contains("Corrupted system files found"));
         assert!(md.contains("65/100"));
     }
 
@@ -832,9 +834,9 @@ mod tests {
         let issues = sample_issues();
         let html = DiagnosticReporter::to_html(&issues, 80, &[]);
         assert!(html.contains("<!DOCTYPE html>"));
-        assert!(html.contains("WinMedic Diagnosebericht"));
-        assert!(html.contains("KRITISCH"));
-        assert!(html.contains("Beschädigte Systemdateien gefunden"));
+        assert!(html.contains("WinMedic Diagnostic Report"));
+        assert!(html.contains("CRITICAL"));
+        assert!(html.contains("Corrupted system files found"));
     }
 
     #[test]

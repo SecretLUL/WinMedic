@@ -11,8 +11,8 @@ pub enum Severity {
 impl Severity {
     pub fn badge(&self) -> &'static str {
         match self {
-            Severity::Critical => "🔴 KRITISCH",
-            Severity::Warning => "▲ WARNUNG",
+            Severity::Critical => "🔴 CRITICAL",
+            Severity::Warning => "▲ WARNING",
             Severity::Info => "ℹ INFO",
         }
     }
@@ -36,9 +36,9 @@ pub enum RiskScore {
 impl RiskScore {
     pub fn badge(&self) -> &'static str {
         match self {
-            RiskScore::Low => "🟢 GERING (Safe)",
-            RiskScore::Medium => "🟡 MITTEL (Service-Restart)",
-            RiskScore::High => "🟠 HOCH (Reboot/System)",
+            RiskScore::Low => "🟢 LOW (safe)",
+            RiskScore::Medium => "🟡 MEDIUM (service restart)",
+            RiskScore::High => "🟠 HIGH (reboot/system)",
         }
     }
 }
@@ -62,6 +62,11 @@ pub struct Issue {
 }
 
 impl Issue {
+    // Every parameter maps to one required field of a fully-described finding.
+    // Bundling them into a builder is worthwhile, but it touches every module's
+    // scan path, so it is tracked separately rather than hidden behind a
+    // crate-wide lint allow.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: impl Into<String>,
         module_id: impl Into<String>,

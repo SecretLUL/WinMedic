@@ -1,0 +1,101 @@
+name: Bug report
+description: Something WinMedic detected wrongly, repaired wrongly, or failed to do
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. WinMedic runs elevated and changes the system,
+        so the audit log below usually answers most of the follow-up questions
+        in one go — please include it.
+
+        **If this is a security problem, do not file it here.** See
+        [SECURITY.md](../blob/main/SECURITY.md) for private reporting.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did WinMedic do, and what did you expect instead?
+      placeholder: |
+        The System & Cache Cleaner reported 4.2 GB reclaimable, but after the
+        repair ran, the drive had the same free space as before.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start winmedic.exe as Administrator
+        2. Press [S] to scan
+        3. Go to Issue Triage, select only the cleaner finding
+        4. Press [F]
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: WinMedic version
+      description: Output of `winmedic.exe --version`
+      placeholder: "winmedic 0.2.0"
+    validations:
+      required: true
+
+  - type: input
+    id: windows-build
+    attributes:
+      label: Windows version and build
+      description: Run `winver`, or `[System.Environment]::OSVersion.Version` in PowerShell
+      placeholder: "Windows 11 Pro 24H2, build 26100.2314"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: elevated
+    attributes:
+      label: Was WinMedic running as Administrator?
+      description: "Shown in the header bar as `[ADMIN: YES]` or `[ADMIN: NO]`"
+      options:
+        - "Yes"
+        - "No"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: How was it running?
+      options:
+        - Interactive TUI
+        - Headless (--scan)
+        - Headless with repairs (--auto-fix)
+        - Simulation (--dry-run, or [D] in the TUI)
+    validations:
+      required: true
+
+  - type: textarea
+    id: audit-log
+    attributes:
+      label: Audit log excerpt
+      description: |
+        The relevant lines from `%APPDATA%\WinMedic\logs\history.jsonl` — the
+        entries around the failure. This records every scan, fix and rollback
+        and is the single most useful thing you can attach.
+
+        Review it before pasting: it contains file paths, service names and
+        registry keys from your machine.
+      render: json
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots, the exported HTML report, unusual system configuration.
+    validations:
+      required: false

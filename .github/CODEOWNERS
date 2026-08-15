@@ -1,0 +1,11 @@
+# Default owner for everything in the repository.
+*                       @SecretLUL
+
+# The safety layer is what stands between a failed repair and a broken machine.
+/src/safety/            @SecretLUL
+
+# Repair implementations — these are the paths that actually change the system.
+/src/modules/           @SecretLUL
+
+# Release and CI plumbing.
+/.github/               @SecretLUL

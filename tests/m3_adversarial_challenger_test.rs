@@ -786,13 +786,13 @@ fn test_appconfig_default_and_setting_count() {
 fn test_appconfig_setting_row_3_metadata() {
     let mut cfg = AppConfig::default();
     let (label, val, desc) = cfg.setting_row(3).expect("Setting row 3 must exist");
-    assert_eq!(label, "Automatisch nach Updates suchen");
-    assert_eq!(val, "AN");
+    assert_eq!(label, "Check for updates automatically");
+    assert_eq!(val, "ON");
     assert!(desc.contains("GitHub"));
 
     cfg.check_for_updates = false;
     let (_, val_off, _) = cfg.setting_row(3).unwrap();
-    assert_eq!(val_off, "AUS");
+    assert_eq!(val_off, "OFF");
 }
 
 #[test]
@@ -886,15 +886,15 @@ fn test_confirm_request_update_available_dialog_contract() {
         release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0".to_string(),
     };
 
-    assert_eq!(req.title(), "NEUES WINMEDIC UPDATE VERFÜGBAR");
-    assert_eq!(req.confirm_label(), "Release-Seite im Browser öffnen");
-    assert_eq!(req.dismiss_label(), "Später erinnern");
+    assert_eq!(req.title(), "NEW WINMEDIC UPDATE AVAILABLE");
+    assert_eq!(req.confirm_label(), "Open the release page in a browser");
+    assert_eq!(req.dismiss_label(), "Remind me later");
 
     let body = req.body().join("\n");
     assert!(body.contains("v0.1.0"));
     assert!(body.contains("v0.2.0"));
     assert!(body.contains("https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0"));
-    assert!(body.contains("Standardbrowser"));
+    assert!(body.contains("default browser"));
 }
 
 #[tokio::test]
@@ -935,7 +935,7 @@ async fn test_app_update_buffering_when_elevate_dialog_is_active() {
         Some(ConfirmRequest::UpdateAvailable { .. })
     ));
 
-    // "Später erinnern" closes it but keeps it reachable under [U].
+    // "Remind me later" closes it but keeps it reachable under [U].
     app.dismiss_confirm();
     assert!(app.pending_confirm.is_none());
     assert!(app.available_update.is_some());

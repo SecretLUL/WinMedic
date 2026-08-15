@@ -43,7 +43,7 @@ impl RegistryStartupModule {
             .map(|_| ())
             .map_err(|e| {
                 format!(
-                    "Abgebrochen: Registry-Sicherung von '{}' fehlgeschlagen ({}). Es wurde nichts verändert.",
+                    "Aborted: the registry backup of '{}' failed ({}). Nothing was changed.",
                     key_path, e
                 )
             })
@@ -74,10 +74,10 @@ impl RegistryStartupModule {
         }
 
         // 1. Quoted path
-        if let Some(rest) = trimmed.strip_prefix('"') {
-            if let Some(end_quote) = rest.find('"') {
-                return Some(PathBuf::from(&rest[..end_quote]));
-            }
+        if let Some(rest) = trimmed.strip_prefix('"')
+            && let Some(end_quote) = rest.find('"')
+        {
+            return Some(PathBuf::from(&rest[..end_quote]));
         }
 
         // 2. Look for case-insensitive .exe / .cmd / .bat in the command string
@@ -106,7 +106,7 @@ impl DiagnosticModule for RegistryStartupModule {
     }
 
     fn description(&self) -> &'static str {
-        "Prüft verwaiste Autostart-Einträge (Run/RunOnce) und fehlerhafte Registry-Verknüpfungen"
+        "Checks for orphaned autostart entries (Run/RunOnce) and broken registry links"
     }
 
     fn icon(&self) -> &'static str {
@@ -123,8 +123,8 @@ impl DiagnosticModule for RegistryStartupModule {
         Self::send_progress(
             &progress_tx,
             20,
-            "Scanne HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run...",
-            Some("Prüfe Benutzer-Autostart Einträge..."),
+            "Scanning HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run...",
+            Some("Checking user autostart entries..."),
         )
         .await;
         sleep(Duration::from_millis(150)).await;
@@ -141,16 +141,16 @@ impl DiagnosticModule for RegistryStartupModule {
                         issues.push(Issue::new(
                             format!("reg_orphaned_hkcu_{}", name.replace(' ', "_")),
                             self.id(),
-                            format!("Verwaister Autostart-Eintrag in HKCU: '{}'", name),
+                            format!("Orphaned autostart entry in HKCU: '{}'", name),
                             "Registry & Autostart",
                             Severity::Warning,
                             RiskScore::Low,
-                            format!("Der Autostart-Eintrag '{}' verweist auf eine nicht existierende Datei ({}). Dies verlangsamt den Systemstart und führt zu Fehlermeldungen.", name, path.display()),
+                            format!("The autostart entry '{}' points at a file that does not exist ({}). This slows down startup and produces error messages.", name, path.display()),
                             format!("HKCU\\Run -> {} = {}", name, cmd_str),
-                            "Ungültigen Autostart-Eintrag nach .reg-Sicherung sicher entfernen",
+                            "Safely remove the invalid autostart entry after a .reg backup",
                             vec![
-                                "Registry-Snapshot anlegen".to_string(),
-                                format!("Eintrag '{}' aus HKCU\\Run löschen", name),
+                                "Take a registry snapshot".to_string(),
+                                format!("Delete entry '{}' from HKCU\\Run", name),
                             ],
                         ));
                     } else {
@@ -161,9 +161,9 @@ impl DiagnosticModule for RegistryStartupModule {
             Self::send_progress(
                 &progress_tx,
                 45,
-                "Benutzer-Autostart geprüft",
+                "User autostart checked",
                 Some(&format!(
-                    "✔ HKCU\\Run: {} gültige Autostart-Einträge verifiziert.",
+                    "✔ HKCU\\Run: {} valid autostart entries verified.",
                     valid_count
                 )),
             )
@@ -174,8 +174,8 @@ impl DiagnosticModule for RegistryStartupModule {
         Self::send_progress(
             &progress_tx,
             55,
-            "Scanne HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run...",
-            Some("Prüfe System-Autostart Einträge..."),
+            "Scanning HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run...",
+            Some("Checking machine autostart entries..."),
         )
         .await;
         sleep(Duration::from_millis(150)).await;
@@ -192,16 +192,16 @@ impl DiagnosticModule for RegistryStartupModule {
                         issues.push(Issue::new(
                             format!("reg_orphaned_hklm_{}", name.replace(' ', "_")),
                             self.id(),
-                            format!("Verwaister Autostart-Eintrag in HKLM: '{}'", name),
+                            format!("Orphaned autostart entry in HKLM: '{}'", name),
                             "Registry & Autostart",
                             Severity::Warning,
                             RiskScore::Low,
-                            format!("Der System-Autostart-Eintrag '{}' verweist auf eine gelöschte oder verschobene Datei ({}).", name, path.display()),
+                            format!("The machine autostart entry '{}' points at a deleted or moved file ({}).", name, path.display()),
                             format!("HKLM\\Run -> {} = {}", name, cmd_str),
-                            "Ungültigen Autostart-Eintrag nach .reg-Sicherung entfernen",
+                            "Remove the invalid autostart entry after a .reg backup",
                             vec![
-                                "Registry-Snapshot anlegen".to_string(),
-                                format!("Eintrag '{}' aus HKLM\\Run löschen", name),
+                                "Take a registry snapshot".to_string(),
+                                format!("Delete entry '{}' from HKLM\\Run", name),
                             ],
                         ));
                     } else {
@@ -212,9 +212,9 @@ impl DiagnosticModule for RegistryStartupModule {
             Self::send_progress(
                 &progress_tx,
                 75,
-                "System-Autostart geprüft",
+                "Machine autostart checked",
                 Some(&format!(
-                    "✔ HKLM\\Run: {} systemweite Autostart-Einträge intakt.",
+                    "✔ HKLM\\Run: {} machine-wide autostart entries intact.",
                     valid_hklm
                 )),
             )
@@ -225,8 +225,8 @@ impl DiagnosticModule for RegistryStartupModule {
         Self::send_progress(
             &progress_tx,
             85,
-            "Prüfe Benutzer-Startup-Verzeichnis...",
-            Some("Prüfe Startup-Ordner Verknüpfungen..."),
+            "Checking the user startup folder...",
+            Some("Checking startup folder shortcuts..."),
         )
         .await;
         sleep(Duration::from_millis(150)).await;
@@ -249,9 +249,9 @@ impl DiagnosticModule for RegistryStartupModule {
                 Self::send_progress(
                     &progress_tx,
                     95,
-                    "Startup-Ordner geprüft",
+                    "Startup folder checked",
                     Some(&format!(
-                        "✔ Startup-Ordner: {} Verknüpfungen geprüft.",
+                        "✔ Startup folder: {} shortcuts checked.",
                         lnk_count
                     )),
                 )
@@ -262,7 +262,7 @@ impl DiagnosticModule for RegistryStartupModule {
         Self::send_progress(
             &progress_tx,
             100,
-            "Registry- und Autostartdiagnose abgeschlossen",
+            "Registry and autostart diagnostics complete",
             None,
         )
         .await;
@@ -283,7 +283,7 @@ impl DiagnosticModule for RegistryStartupModule {
             self.backup_before_change(
                 &backup_mgr,
                 key_path,
-                "Vor Löschung von verwaistem HKCU Run Key",
+                "Before deleting an orphaned HKCU Run value",
             )
             .await?;
 
@@ -293,7 +293,7 @@ impl DiagnosticModule for RegistryStartupModule {
             {
                 let _ = run_key.delete_value(&clean_name);
                 return Ok(format!(
-                    "Verwaister Autostart-Eintrag '{}' aus HKCU\\Run entfernt.",
+                    "Removed orphaned autostart entry '{}' from HKCU\\Run.",
                     clean_name
                 ));
             }
@@ -305,7 +305,7 @@ impl DiagnosticModule for RegistryStartupModule {
             self.backup_before_change(
                 &backup_mgr,
                 key_path,
-                "Vor Löschung von verwaistem HKLM Run Key",
+                "Before deleting an orphaned HKLM Run value",
             )
             .await?;
 
@@ -315,12 +315,12 @@ impl DiagnosticModule for RegistryStartupModule {
             {
                 let _ = run_key.delete_value(&clean_name);
                 return Ok(format!(
-                    "Verwaister Autostart-Eintrag '{}' aus HKLM\\Run entfernt.",
+                    "Removed orphaned autostart entry '{}' from HKLM\\Run.",
                     clean_name
                 ));
             }
         }
 
-        Err(format!("Unbekannte Problem-ID: {}", issue_id))
+        Err(format!("Unknown issue id: {}", issue_id))
     }
 }

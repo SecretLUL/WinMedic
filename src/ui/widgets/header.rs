@@ -6,6 +6,10 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Tabs};
 
+// Ratatui render functions receive the slice of app state they draw. Passing
+// `&App` instead would couple every widget to the whole application struct, so
+// the long signature is the deliberate trade-off.
+#[allow(clippy::too_many_arguments)]
 pub fn render_header(
     f: &mut Frame,
     area: Rect,
@@ -128,7 +132,7 @@ pub fn render_header(
         format!(" [3] Issue Triage{} ", triage_badge),
         " [4] Repair Center ".to_string(),
         " [5] Backups & Logs ".to_string(),
-        " [6] Einstellungen ".to_string(),
+        " [6] Settings ".to_string(),
     ];
 
     let tabs = Tabs::new(tab_titles)

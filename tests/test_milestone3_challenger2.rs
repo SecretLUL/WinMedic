@@ -287,7 +287,7 @@ async fn test_check_for_update_command_error_and_malformed_json() {
 #[test]
 fn test_launch_browser_empty_url_is_rejected() {
     let err = launch_browser("").unwrap_err();
-    assert_eq!(err, "URL darf nicht leer sein");
+    assert_eq!(err, "The URL must not be empty");
 }
 
 #[test]
@@ -346,15 +346,15 @@ fn test_app_config_setting_row_and_toggle() {
 
     // Index 3 is check_for_updates
     let row3 = cfg.setting_row(3).expect("Setting row 3 must exist");
-    assert_eq!(row3.0, "Automatisch nach Updates suchen");
-    assert_eq!(row3.1, "AN");
+    assert_eq!(row3.0, "Check for updates automatically");
+    assert_eq!(row3.1, "ON");
     assert!(row3.2.contains("GitHub"));
 
     // Toggle row 3
     assert!(cfg.toggle_setting(3));
     assert!(!cfg.check_for_updates);
     let row3_off = cfg.setting_row(3).unwrap();
-    assert_eq!(row3_off.1, "AUS");
+    assert_eq!(row3_off.1, "OFF");
 
     // Adjust setting on index 3 also toggles
     assert!(cfg.adjust_setting(3, true));
@@ -393,7 +393,7 @@ async fn test_app_event_channel_update_checked_when_no_modal_active() {
     // We can simulate app processing bg events directly
     if let Ok(BackgroundEvent::UpdateChecked(Some(info))) = rx.try_recv() {
         app.status_message = Some(format!(
-            "Update verfügbar: v{} (aktuell: v{})",
+            "Update available: v{} (current: v{})",
             info.latest_version.trim_start_matches(['v', 'V']),
             info.current_version.trim_start_matches(['v', 'V'])
         ));
@@ -493,18 +493,18 @@ fn test_confirm_request_update_available_formatting() {
         release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0".to_string(),
     };
 
-    assert_eq!(req.title(), "NEUES WINMEDIC UPDATE VERFÜGBAR");
-    assert_eq!(req.confirm_label(), "Release-Seite im Browser öffnen");
-    assert_eq!(req.dismiss_label(), "Später erinnern");
+    assert_eq!(req.title(), "NEW WINMEDIC UPDATE AVAILABLE");
+    assert_eq!(req.confirm_label(), "Open the release page in a browser");
+    assert_eq!(req.dismiss_label(), "Remind me later");
 
     let body = req.body();
     assert!(
         body.iter()
-            .any(|line| line.contains("Installierte Version:  v0.1.0"))
+            .any(|line| line.contains("Installed version: v0.1.0"))
     );
     assert!(
         body.iter()
-            .any(|line| line.contains("Neueste Version:       v0.2.0"))
+            .any(|line| line.contains("Latest version:    v0.2.0"))
     );
     assert!(
         body.iter()
@@ -512,7 +512,7 @@ fn test_confirm_request_update_available_formatting() {
     );
     assert!(
         body.iter()
-            .any(|line| line.contains("GitHub Release-Seite im Standardbrowser öffnen"))
+            .any(|line| line.contains("Open the GitHub release page in your default browser"))
     );
 }
 
@@ -531,7 +531,7 @@ async fn test_app_update_modal_confirm_and_dismiss_actions() {
     assert!(app.pending_confirm.is_none());
     assert_eq!(
         app.status_message,
-        Some("Update-Hinweis geschlossen – [U] öffnet ihn erneut.".to_string())
+        Some("Update notice dismissed - [U] reopens it.".to_string())
     );
 
     // Test Confirm
@@ -546,6 +546,6 @@ async fn test_app_update_modal_confirm_and_dismiss_actions() {
     assert!(app.pending_confirm.is_none());
     assert_eq!(
         app.status_message,
-        Some("GitHub Release-Seite im Browser geöffnet.".to_string())
+        Some("Opened the GitHub release page in your browser.".to_string())
     );
 }

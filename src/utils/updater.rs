@@ -207,11 +207,11 @@ pub fn is_safe_release_url(url: &str) -> bool {
 /// have been parsed by cmd.exe as a command separator.
 pub fn launch_browser(url: &str) -> Result<(), String> {
     if url.is_empty() {
-        return Err("URL darf nicht leer sein".to_string());
+        return Err("The URL must not be empty".to_string());
     }
     if !is_safe_release_url(url) {
         return Err(format!(
-            "URL wurde abgelehnt (nur {}... erlaubt): {}",
+            "URL rejected (only {}... is allowed): {}",
             GITHUB_RELEASE_URL_PREFIX, url
         ));
     }
@@ -227,7 +227,7 @@ pub fn launch_browser(url: &str) -> Result<(), String> {
         cmd.creation_flags(CREATE_NO_WINDOW);
 
         cmd.spawn()
-            .map_err(|e| format!("Konnte Standardbrowser nicht starten: {}", e))?;
+            .map_err(|e| format!("Could not launch the default browser: {}", e))?;
         Ok(())
     }
     #[cfg(not(windows))]

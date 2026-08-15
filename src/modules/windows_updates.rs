@@ -49,11 +49,11 @@ impl DiagnosticModule for WindowsUpdatesModule {
     }
 
     fn name(&self) -> &'static str {
-        "Windows Update & Dienste"
+        "Windows Update & Services"
     }
 
     fn description(&self) -> &'static str {
-        "Prüft Update-Caches (SoftwareDistribution/Catroot2), Dienste (BITS, wuauserv) und Update-Blockaden"
+        "Checks update caches (SoftwareDistribution/Catroot2), services (BITS, wuauserv) and update blockers"
     }
 
     fn icon(&self) -> &'static str {
@@ -70,16 +70,16 @@ impl DiagnosticModule for WindowsUpdatesModule {
         Self::send_progress(
             &progress_tx,
             15,
-            "Prüfe Windows Update Dienste (wuauserv, bits, cryptsvc)...",
-            Some("Dienststatus abfragen..."),
+            "Checking the Windows Update services (wuauserv, bits, cryptsvc)...",
+            Some("Querying service status..."),
         )
         .await;
         sleep(Duration::from_millis(150)).await;
 
         let services = [
-            ("wuauserv", "Windows Update Dienst"),
+            ("wuauserv", "Windows Update service"),
             ("bits", "Background Intelligent Transfer Service (BITS)"),
-            ("cryptsvc", "Kryptografiedienste"),
+            ("cryptsvc", "Cryptographic Services"),
         ];
 
         for (svc, svc_name) in services {
@@ -93,13 +93,13 @@ impl DiagnosticModule for WindowsUpdatesModule {
                     issues.push(Issue::new(
                         format!("wu_svc_disabled_{}", svc),
                         self.id(),
-                        format!("Dienst '{}' ist deaktiviert", svc_name),
-                        "Windows Update & Dienste",
+                        format!("Service '{}' is disabled", svc_name),
+                        "Windows Update & Services",
                         Severity::Critical,
                         RiskScore::Medium,
-                        format!("Der Systemdienst '{}' ({}) ist deaktiviert. Ohne diesen Dienst können keine Windows-Sicherheitsupdates installiert werden.", svc_name, svc),
+                        format!("The system service '{}' ({}) is disabled. Without it Windows cannot install security updates.", svc_name, svc),
                         res.stdout,
-                        format!("Dienst '{}' auf Starttyp 'Manuell/Demand' zurücksetzen", svc),
+                        format!("Reset service '{}' to start type 'Manual/Demand'", svc),
                         vec![
                             format!("sc config {} start= demand", svc),
                             format!("net start {}", svc),
@@ -109,9 +109,9 @@ impl DiagnosticModule for WindowsUpdatesModule {
                     Self::send_progress(
                         &progress_tx,
                         35,
-                        &format!("Dienst '{}' aktiv", svc),
+                        &format!("Service '{}' running", svc),
                         Some(&format!(
-                            "✔ Dienst '{}' ({}) ist funktionsfähig.",
+                            "✔ Service '{}' ({}) is operational.",
                             svc_name, svc
                         )),
                     )
@@ -124,8 +124,8 @@ impl DiagnosticModule for WindowsUpdatesModule {
         Self::send_progress(
             &progress_tx,
             55,
-            "Prüfe SoftwareDistribution Cache-Integrität...",
-            Some("Prüfe C:\\Windows\\SoftwareDistribution\\Download..."),
+            "Checking SoftwareDistribution cache integrity...",
+            Some("Checking C:\\Windows\\SoftwareDistribution\\Download..."),
         )
         .await;
         sleep(Duration::from_millis(150)).await;
@@ -145,26 +145,26 @@ impl DiagnosticModule for WindowsUpdatesModule {
                 issues.push(Issue::new(
                     "wu_cache_bloat",
                     self.id(),
-                    format!("Windows Update Download-Cache überfüllt ({} MB)", total_size_mb),
-                    "Windows Update & Dienste",
+                    format!("Windows Update download cache is oversized ({} MB)", total_size_mb),
+                    "Windows Update & Services",
                     Severity::Warning,
                     RiskScore::Low,
-                    format!("Im Ordner 'SoftwareDistribution\\Download' liegen {} temporäre Update-Dateien mit insgesamt {} MB, die nicht mehr benötigt werden oder verwaist sind.", file_count, total_size_mb),
-                    format!("Dateien: {}, Gesamtgröße: {} MB", file_count, total_size_mb),
-                    "SoftwareDistribution-Download-Ordner sicher bereinigen",
+                    format!("The 'SoftwareDistribution\\Download' folder holds {} temporary update files totalling {} MB that are no longer needed or have been orphaned.", file_count, total_size_mb),
+                    format!("Files: {}, total size: {} MB", file_count, total_size_mb),
+                    "Safely clean the SoftwareDistribution download folder",
                     vec![
-                        "Windows Update Dienste vorübergehend anhalten".to_string(),
-                        "Temporären Download-Cache leeren".to_string(),
-                        "Dienste sauber neu starten".to_string(),
+                        "Temporarily stop the Windows Update services".to_string(),
+                        "Empty the temporary download cache".to_string(),
+                        "Restart the services cleanly".to_string(),
                     ],
                 ));
             } else {
                 Self::send_progress(
                     &progress_tx,
                     75,
-                    "Update-Cache unauffällig",
+                    "Update cache unremarkable",
                     Some(&format!(
-                        "✔ SoftwareDistribution Cache: {} MB ({} Pakete).",
+                        "✔ SoftwareDistribution cache: {} MB ({} packages).",
                         total_size_mb, file_count
                     )),
                 )
@@ -176,8 +176,8 @@ impl DiagnosticModule for WindowsUpdatesModule {
         Self::send_progress(
             &progress_tx,
             85,
-            "Prüfe auf ausstehende System-Neustarts (Pending Reboot)...",
-            Some("Registry RebootPending prüfen..."),
+            "Checking for a pending system reboot...",
+            Some("Checking the RebootPending registry keys..."),
         )
         .await;
         sleep(Duration::from_millis(150)).await;
@@ -195,14 +195,14 @@ impl DiagnosticModule for WindowsUpdatesModule {
                 issues.push(Issue::new(
                     "wu_reboot_pending",
                     self.id(),
-                    "Ausstehender System-Neustart durch Updates (Reboot Pending)",
-                    "Windows Update & Dienste",
+                    "System reboot pending after updates",
+                    "Windows Update & Services",
                     Severity::Info,
                     RiskScore::Low,
-                    "Windows signalisiert einen ausstehenden Neustart durch ein zuvor installiertes Update oder Treiberpaket. Manche Updates können erst nach einem Neustart fortgesetzt werden.",
-                    format!("Gefunden in Registry: HKLM\\{}", p_key),
-                    "Windows nach den Reparaturen neu starten, um Installationen abzuschließen",
-                    vec!["Reboot-Hinweis im Reparaturbericht vermerken".to_string()],
+                    "Windows reports a reboot pending from a previously installed update or driver package. Some updates cannot continue until the machine restarts.",
+                    format!("Found in the registry: HKLM\\{}", p_key),
+                    "Restart Windows after the repairs to finish the pending installations",
+                    vec!["Record the pending reboot in the repair report".to_string()],
                 ));
                 break;
             }
@@ -212,8 +212,8 @@ impl DiagnosticModule for WindowsUpdatesModule {
             Self::send_progress(
                 &progress_tx,
                 95,
-                "Keine ausstehenden Update-Neustarts",
-                Some("✔ Keine blockierenden Reboot-Pending-Schlüssel gefunden."),
+                "No pending update reboots",
+                Some("✔ No blocking reboot-pending keys found."),
             )
             .await;
         }
@@ -221,7 +221,7 @@ impl DiagnosticModule for WindowsUpdatesModule {
         Self::send_progress(
             &progress_tx,
             100,
-            "Windows Update Diagnose abgeschlossen",
+            "Windows Update diagnostics complete",
             None,
         )
         .await;
@@ -243,7 +243,7 @@ impl DiagnosticModule for WindowsUpdatesModule {
                     let _ = tx_clone
                         .send(FixProgress {
                             issue_id: issue_id_clone.clone(),
-                            step_description: "Update-Reparatur läuft...".to_string(),
+                            step_description: "Update repair in progress...".to_string(),
                             is_success: true,
                             error: None,
                             console_line: Some(line),
@@ -269,7 +269,7 @@ impl DiagnosticModule for WindowsUpdatesModule {
 
             if !self.config.auto_restart_services {
                 return Ok(format!(
-                    "Dienst '{}' wurde auf Starttyp 'Manuell' gesetzt. Start übersprungen, da 'Dienste automatisch neu starten' in den Einstellungen deaktiviert ist.",
+                    "Service '{}' was set to start type 'Manual'. Starting it was skipped because 'Restart services automatically' is off in the settings.",
                     svc
                 ));
             }
@@ -279,7 +279,7 @@ impl DiagnosticModule for WindowsUpdatesModule {
                 .run("net.exe", &["start", svc], Duration::from_secs(10))
                 .await;
             return Ok(format!(
-                "Dienst '{}' wurde auf Starttyp 'Manuell' gesetzt und gestartet.",
+                "Service '{}' was set to start type 'Manual' and started.",
                 svc
             ));
         }
@@ -291,48 +291,73 @@ impl DiagnosticModule for WindowsUpdatesModule {
                 // Update broken, so refuse instead of half-applying the fix.
                 if !self.config.auto_restart_services {
                     return Err(
-                        "Übersprungen: Das Leeren des Update-Caches erfordert das Anhalten und Neustarten von wuauserv, bits und cryptsvc. Aktivieren Sie 'Dienste automatisch neu starten' in den Einstellungen [6]."
+                        "Skipped: emptying the update cache requires stopping and restarting wuauserv, bits and cryptsvc. Turn on 'Restart services automatically' in the settings [6]."
                             .to_string(),
                     );
                 }
 
                 if let Some(ref tx) = log_tx {
-                    let _ = tx.send("Stoppe Windows Update Dienste...".to_string()).await;
+                    let _ = tx
+                        .send("Stopping the Windows Update services...".to_string())
+                        .await;
                 }
-                let _ = self.runner.run("net.exe", &["stop", "wuauserv"], Duration::from_secs(15)).await;
-                let _ = self.runner.run("net.exe", &["stop", "bits"], Duration::from_secs(15)).await;
-                let _ = self.runner.run("net.exe", &["stop", "cryptsvc"], Duration::from_secs(15)).await;
+                let _ = self
+                    .runner
+                    .run("net.exe", &["stop", "wuauserv"], Duration::from_secs(15))
+                    .await;
+                let _ = self
+                    .runner
+                    .run("net.exe", &["stop", "bits"], Duration::from_secs(15))
+                    .await;
+                let _ = self
+                    .runner
+                    .run("net.exe", &["stop", "cryptsvc"], Duration::from_secs(15))
+                    .await;
 
                 if let Some(ref tx) = log_tx {
-                    let _ = tx.send("Bereinige SoftwareDistribution\\Download Cache...".to_string()).await;
+                    let _ = tx
+                        .send("Cleaning the SoftwareDistribution\\Download cache...".to_string())
+                        .await;
                 }
                 let download_path = Path::new(r"C:\Windows\SoftwareDistribution\Download");
-                if download_path.exists() {
-                    if let Ok(entries) = std::fs::read_dir(download_path) {
-                        for entry in entries.flatten() {
-                            let path = entry.path();
-                            if path.is_file() {
-                                let _ = std::fs::remove_file(path);
-                            } else if path.is_dir() {
-                                let _ = std::fs::remove_dir_all(path);
-                            }
+                if download_path.exists()
+                    && let Ok(entries) = std::fs::read_dir(download_path)
+                {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_file() {
+                            let _ = std::fs::remove_file(path);
+                        } else if path.is_dir() {
+                            let _ = std::fs::remove_dir_all(path);
                         }
                     }
                 }
 
                 if let Some(ref tx) = log_tx {
-                    let _ = tx.send("Starte Windows Update Dienste wieder...".to_string()).await;
+                    let _ = tx
+                        .send("Restarting the Windows Update services...".to_string())
+                        .await;
                 }
-                let _ = self.runner.run("net.exe", &["start", "wuauserv"], Duration::from_secs(15)).await;
-                let _ = self.runner.run("net.exe", &["start", "bits"], Duration::from_secs(15)).await;
-                let _ = self.runner.run("net.exe", &["start", "cryptsvc"], Duration::from_secs(15)).await;
+                let _ = self
+                    .runner
+                    .run("net.exe", &["start", "wuauserv"], Duration::from_secs(15))
+                    .await;
+                let _ = self
+                    .runner
+                    .run("net.exe", &["start", "bits"], Duration::from_secs(15))
+                    .await;
+                let _ = self
+                    .runner
+                    .run("net.exe", &["start", "cryptsvc"], Duration::from_secs(15))
+                    .await;
 
-                Ok("SoftwareDistribution Download-Cache erfolgreich bereinigt und Dienste neu gestartet.".to_string())
+                Ok("SoftwareDistribution download cache cleaned and services restarted successfully.".to_string())
             }
-            "wu_reboot_pending" => {
-                Ok("Ausstehender Neustart vermerkt. Bitte führen Sie nach Abschluss einen System-Neustart durch.".to_string())
-            }
-            _ => Err(format!("Unbekannte Problem-ID: {}", issue_id)),
+            "wu_reboot_pending" => Ok(
+                "Pending reboot recorded. Please restart the system once the run has finished."
+                    .to_string(),
+            ),
+            _ => Err(format!("Unknown issue ID: {}", issue_id)),
         }
     }
 }

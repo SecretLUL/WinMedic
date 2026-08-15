@@ -178,7 +178,7 @@ async fn test_tier2_f02_winsxs_dism_exit_code_87_invalid_param() {
     let res = module.fix("sys_clean_winsxs", None).await;
 
     assert!(res.is_err());
-    assert!(res.unwrap_err().contains("DISM-Fehler"));
+    assert!(res.unwrap_err().contains("DISM error"));
 }
 
 #[tokio::test]
@@ -267,7 +267,7 @@ async fn test_tier2_f03_delivery_opt_powershell_failure_does_not_panic() {
     assert!(res.is_ok());
     assert!(
         res.unwrap()
-            .contains("Delivery Optimization (WUDO) Cache bereinigt")
+            .contains("Delivery Optimization (WUDO) cache cleaned")
     );
 }
 
@@ -369,7 +369,7 @@ async fn test_tier2_f04_package_cache_unknown_issue_id_returns_error() {
     let (_sandbox, module) = sandboxed_cleaner("tier2_boundaries_353", runner);
     let res = module.fix("sys_clean_invalid_id", None).await;
     assert!(res.is_err());
-    assert!(res.unwrap_err().contains("Unbekannte Problem-ID"));
+    assert!(res.unwrap_err().contains("Unknown issue ID"));
 }
 
 // ============================================================================
@@ -1155,7 +1155,7 @@ fn test_tier2_f15_modal_with_empty_strings() {
         release_url: "".to_string(),
     };
 
-    assert_eq!(modal.title(), "NEUES WINMEDIC UPDATE VERFÜGBAR");
+    assert_eq!(modal.title(), "NEW WINMEDIC UPDATE AVAILABLE");
     let body = modal.body().join("\n");
     assert!(body.contains("URL: "));
 }
@@ -1198,17 +1198,17 @@ fn test_tier2_f15_confirm_request_rollback_labels() {
         file_path: "C:\\backup.reg".to_string(),
     };
 
-    assert_eq!(modal.title(), "REGISTRY-SICHERUNG WIEDERHERSTELLEN?");
-    assert_eq!(modal.confirm_label(), "Wiederherstellen");
-    assert_eq!(modal.dismiss_label(), "Abbrechen");
+    assert_eq!(modal.title(), "RESTORE REGISTRY BACKUP?");
+    assert_eq!(modal.confirm_label(), "Restore");
+    assert_eq!(modal.dismiss_label(), "Cancel");
 }
 
 #[test]
 fn test_tier2_f15_confirm_request_elevate_labels() {
     let modal = ConfirmRequest::Elevate;
-    assert_eq!(modal.title(), "ADMINISTRATORRECHTE ERFORDERLICH");
-    assert_eq!(modal.confirm_label(), "Jetzt als Admin neu starten");
-    assert_eq!(modal.dismiss_label(), "Ohne Admin fortfahren");
+    assert_eq!(modal.title(), "ADMINISTRATOR PRIVILEGES REQUIRED");
+    assert_eq!(modal.confirm_label(), "Restart as Administrator now");
+    assert_eq!(modal.dismiss_label(), "Continue without Administrator");
 }
 
 // ============================================================================

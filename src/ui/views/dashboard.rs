@@ -45,13 +45,13 @@ pub fn render_dashboard(
     };
 
     let health_status_text = if health_score == 100 {
-        "OPTIMAL – Alle Systeme gesund"
+        "OPTIMAL - all systems healthy"
     } else if health_score >= 80 {
-        "GUT – Geringfügige Optimierungen möglich"
+        "GOOD - minor optimisations possible"
     } else if health_score >= 50 {
-        "WARNUNG – Handlungsbedarf vorhanden"
+        "WARNING - action needed"
     } else {
-        "KRITISCH – Sofortige Reparatur empfohlen"
+        "CRITICAL - immediate repair recommended"
     };
 
     let critical_count = issues
@@ -64,11 +64,11 @@ pub fn render_dashboard(
         .count();
 
     let health_gauge = Gauge::default()
-        .block(Theme::card_block("SYSTEM-GESUNDHEITS-INDEX"))
+        .block(Theme::card_block("SYSTEM HEALTH INDEX"))
         .gauge_style(Style::default().fg(health_color).bg(Theme::BG_DEEP))
         .percent(health_score as u16)
         .label(format!(
-            " {}/100 ({} Kritisch, {} Warnungen) ",
+            " {}/100 ({} critical, {} warnings) ",
             health_score, critical_count, warning_count
         ));
 
@@ -99,7 +99,7 @@ pub fn render_dashboard(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Theme::BORDER))
-                .title(" CPU Auslastung "),
+                .title(" CPU Usage "),
         )
         .gauge_style(Style::default().fg(Theme::CYAN).bg(Theme::BG_DEEP))
         .percent(cpu_val)
@@ -110,7 +110,7 @@ pub fn render_dashboard(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Theme::BORDER))
-                .title(" RAM Belegung "),
+                .title(" RAM Usage "),
         )
         .gauge_style(Style::default().fg(Theme::ACCENT_PURPLE).bg(Theme::BG_DEEP))
         .percent(ram_val)
@@ -136,23 +136,23 @@ pub fn render_dashboard(
             Line::from(vec![
                 Span::styled("CPU:     ", Style::default().fg(Theme::MUTED)),
                 Span::styled(
-                    format!("{} ({} Kerne)", t.cpu_name, t.cpu_count),
+                    format!("{} ({} cores)", t.cpu_name, t.cpu_count),
                     Style::default().fg(Theme::TEXT_WHITE),
                 ),
             ]),
             Line::from(vec![
                 Span::styled("Uptime:  ", Style::default().fg(Theme::MUTED)),
                 Span::styled(
-                    format!("{} Std. {} Min.", uptime_h, uptime_m),
+                    format!("{} h {} min", uptime_h, uptime_m),
                     Style::default().fg(Theme::EMERALD),
                 ),
             ]),
         ]
     } else {
-        vec![Line::from("Lade Systemdaten...")]
+        vec![Line::from("Loading system data...")]
     };
 
-    let sys_card = Paragraph::new(sys_lines).block(Theme::card_block("SYSTEM-SPEZIFIKATION"));
+    let sys_card = Paragraph::new(sys_lines).block(Theme::card_block("SYSTEM SPECIFICATION"));
     f.render_widget(sys_card, top_chunks[2]);
 
     // Middle Section: 7 Diagnostic Modules (Row 1: 4 Cards, Row 2: 3 Cards)
@@ -197,20 +197,18 @@ pub fn render_dashboard(
     for (idx, slot_rect) in card_slots {
         if let Some((_id, name, icon, status)) = module_statuses.get(idx) {
             let (status_badge, status_color, status_text) = match status {
-                ModuleStatus::Idle => ("[● BEREIT]", Theme::MUTED, "Bereit für Diagnose-Scan"),
-                ModuleStatus::Scanning => ("[⚡ SCAN...]", Theme::CYAN, "Diagnose läuft gerade..."),
-                ModuleStatus::Passed => {
-                    ("[✔ OPTIMAL]", Theme::EMERALD, "Keine Probleme festgestellt")
+                ModuleStatus::Idle => ("[● READY]", Theme::MUTED, "Ready for a diagnostic scan"),
+                ModuleStatus::Scanning => {
+                    ("[⚡ SCAN...]", Theme::CYAN, "Diagnostics in progress...")
                 }
+                ModuleStatus::Passed => ("[✔ OPTIMAL]", Theme::EMERALD, "No issues detected"),
                 ModuleStatus::Warning(_cnt) => {
-                    ("[▲ WARNUNG]", Theme::AMBER, "1 oder mehr Warnungen")
+                    ("[▲ WARNING]", Theme::AMBER, "One or more warnings")
                 }
                 ModuleStatus::Critical(_cnt) => {
-                    ("[✖ KRITISCH]", Theme::CORAL, "Kritische Fehler gefunden")
+                    ("[✖ CRITICAL]", Theme::CORAL, "Critical faults found")
                 }
-                ModuleStatus::Failed(_err) => {
-                    ("[⚠ FEHLER]", Theme::CORAL, "Diagnose fehlgeschlagen")
-                }
+                ModuleStatus::Failed(_err) => ("[⚠ ERROR]", Theme::CORAL, "Diagnostics failed"),
             };
 
             let card_content = vec![
@@ -258,7 +256,7 @@ pub fn render_dashboard(
                         } else {
                             Theme::BORDER
                         }))
-                        .title(format!(" Modul {} ", idx + 1)),
+                        .title(format!(" Module {} ", idx + 1)),
                 );
 
             f.render_widget(card, slot_rect);
@@ -269,7 +267,7 @@ pub fn render_dashboard(
     let bottom_content = vec![
         Line::from(vec![
             Span::styled(
-                "  Schnell-Aktionen: ",
+                "  Quick actions: ",
                 Style::default()
                     .fg(Theme::CYAN)
                     .add_modifier(Modifier::BOLD),
@@ -281,7 +279,7 @@ pub fn render_dashboard(
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "Vollständigen Health-Scan starten   ",
+                "Start a full health scan   ",
                 Style::default().fg(Theme::TEXT_WHITE),
             ),
             Span::styled(
@@ -291,7 +289,7 @@ pub fn render_dashboard(
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "1-Klick Auto-Fix All   ",
+                "One-click auto-fix all   ",
                 Style::default().fg(Theme::TEXT_WHITE),
             ),
             Span::styled(
@@ -301,7 +299,7 @@ pub fn render_dashboard(
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "Problem-Triage öffnen   ",
+                "Open issue triage   ",
                 Style::default().fg(Theme::TEXT_WHITE),
             ),
             Span::styled(
@@ -311,25 +309,25 @@ pub fn render_dashboard(
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "Hilfe & Dokumentation",
+                "Help & documentation",
                 Style::default().fg(Theme::TEXT_WHITE),
             ),
         ]),
         Line::from(vec![
             Span::styled(
-                format!("  Sicherheits-Status: {}", health_status_text),
+                format!("  Safety status: {}", health_status_text),
                 Style::default()
                     .fg(health_color)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "  │  VSS Wiederherstellungspunkte werden automatisch vor jedem Eingriff erstellt.",
+                "  │  VSS restore points are created automatically before every change.",
                 Style::default().fg(Theme::MUTED),
             ),
         ]),
     ];
 
     let bottom_bar =
-        Paragraph::new(bottom_content).block(Theme::card_block("SCHNELLZUGRIFF & EMPFEHLUNGEN"));
+        Paragraph::new(bottom_content).block(Theme::card_block("QUICK ACCESS & RECOMMENDATIONS"));
     f.render_widget(bottom_bar, main_chunks[2]);
 }

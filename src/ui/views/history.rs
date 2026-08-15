@@ -70,13 +70,12 @@ pub fn render_history(f: &mut Frame, area: Rect, state: &HistoryViewState) {
         })
         .collect();
 
-    let audit_list =
-        List::new(audit_items).block(Theme::card_block("AUDIT-LOG & DURCHGEFÜHRTE AKTIONEN"));
+    let audit_list = List::new(audit_items).block(Theme::card_block("AUDIT LOG & ACTIONS TAKEN"));
     f.render_widget(audit_list, main_split[0]);
 
     // Right Pane: Registry Backups & VSS Points
     let mut backup_lines = vec![Line::from(vec![Span::styled(
-        " 🛡 Systemwiederherstellungspunkte (VSS):",
+        " 🛡 System restore points (VSS):",
         Style::default()
             .fg(Theme::CYAN)
             .add_modifier(Modifier::BOLD),
@@ -84,12 +83,12 @@ pub fn render_history(f: &mut Frame, area: Rect, state: &HistoryViewState) {
 
     if state.restore_points_loading {
         backup_lines.push(Line::from(vec![Span::styled(
-            "   ⏳ Frage Windows-Wiederherstellungspunkte ab...",
+            "   ⏳ Querying Windows restore points...",
             Style::default().fg(Theme::AMBER),
         )]));
     } else if state.vss_restore_points.is_empty() {
         backup_lines.push(Line::from(vec![Span::styled(
-            "   (Keine Wiederherstellungspunkte gefunden – [R] aktualisiert)",
+            "   (No restore points found - [R] refreshes)",
             Style::default().fg(Theme::MUTED),
         )]));
     } else {
@@ -103,7 +102,7 @@ pub fn render_history(f: &mut Frame, area: Rect, state: &HistoryViewState) {
 
     backup_lines.push(Line::from(""));
     backup_lines.push(Line::from(vec![Span::styled(
-        " 🗄 Gespeicherte Registry-Snapshots (.reg):",
+        " 🗄 Saved registry snapshots (.reg):",
         Style::default()
             .fg(Theme::CYAN)
             .add_modifier(Modifier::BOLD),
@@ -111,7 +110,7 @@ pub fn render_history(f: &mut Frame, area: Rect, state: &HistoryViewState) {
 
     if state.backup_records.is_empty() {
         backup_lines.push(Line::from(vec![Span::styled(
-            "   (Bisher keine Registry-Modifikationen mit Backup)",
+            "   (No backed-up registry modifications yet)",
             Style::default().fg(Theme::MUTED),
         )]));
     } else {
@@ -125,7 +124,7 @@ pub fn render_history(f: &mut Frame, area: Rect, state: &HistoryViewState) {
 
         if offset > 0 {
             backup_lines.push(Line::from(vec![Span::styled(
-                format!("   ↑ {} neuere Sicherung(en)", offset),
+                format!("   ↑ {} newer backup(s)", offset),
                 Style::default().fg(Theme::MUTED),
             )]));
         }
@@ -167,9 +166,9 @@ pub fn render_history(f: &mut Frame, area: Rect, state: &HistoryViewState) {
     }
 
     let backup_title = if state.is_restoring {
-        "SICHERUNGEN – ⏳ ROLLBACK LÄUFT..."
+        "BACKUPS - ⏳ ROLLBACK RUNNING..."
     } else {
-        "SICHERUNGEN – [↑/↓] Auswahl  [U] Rollback  [R] VSS aktualisieren"
+        "BACKUPS - [↑/↓] Select  [U] Rollback  [R] Refresh VSS"
     };
 
     let backup_box = Paragraph::new(backup_lines)
@@ -182,7 +181,7 @@ pub fn render_history(f: &mut Frame, area: Rect, state: &HistoryViewState) {
     let bottom_text = vec![
         Line::from(vec![
             Span::styled(
-                "  Speicherort für Logs & Backups: ",
+                "  Location for logs & backups: ",
                 Style::default()
                     .fg(Theme::CYAN)
                     .add_modifier(Modifier::BOLD),
@@ -197,7 +196,7 @@ pub fn render_history(f: &mut Frame, area: Rect, state: &HistoryViewState) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "[U] spielt die markierte .reg-Sicherung nach Rückfrage zurück. Alternativ 'reg import <datei.reg>' ausführen.",
+                "[U] restores the selected .reg backup after confirming. Alternatively run 'reg import <file.reg>'.",
                 Style::default().fg(Theme::MUTED),
             ),
         ]),

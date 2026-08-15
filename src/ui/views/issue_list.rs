@@ -21,25 +21,25 @@ pub fn render_issue_list(f: &mut Frame, area: Rect, state: &IssueListViewState) 
         let empty_msg = vec![
             Line::from(""),
             Line::from(vec![Span::styled(
-                "  ✔ Keine offenen Probleme gefunden! ",
+                "  ✔ No open issues found. ",
                 Style::default()
                     .fg(Theme::EMERALD)
                     .add_modifier(Modifier::BOLD),
             )]),
             Line::from(""),
             Line::from(vec![Span::styled(
-                "  Ihr System befindet sich in einem einwandfreien Zustand.",
+                "  Your system is in good shape.",
                 Style::default().fg(Theme::TEXT_WHITE),
             )]),
             Line::from(vec![
-                Span::styled("  Drücken Sie ", Style::default().fg(Theme::MUTED)),
+                Span::styled("  Press ", Style::default().fg(Theme::MUTED)),
                 Span::styled(
                     "[S]",
                     Style::default()
                         .fg(Theme::AMBER)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(" oder ", Style::default().fg(Theme::MUTED)),
+                Span::styled(" or ", Style::default().fg(Theme::MUTED)),
                 Span::styled(
                     "[R]",
                     Style::default()
@@ -47,12 +47,12 @@ pub fn render_issue_list(f: &mut Frame, area: Rect, state: &IssueListViewState) 
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    ", um einen neuen System-Health-Scan zu starten.",
+                    " to start a new system health scan.",
                     Style::default().fg(Theme::MUTED),
                 ),
             ]),
         ];
-        let empty_box = Paragraph::new(empty_msg).block(Theme::card_block("PROBLEM-TRIAGE"));
+        let empty_box = Paragraph::new(empty_msg).block(Theme::card_block("ISSUE TRIAGE"));
         f.render_widget(empty_box, area);
         return;
     }
@@ -79,35 +79,32 @@ pub fn render_issue_list(f: &mut Frame, area: Rect, state: &IssueListViewState) 
         let no_match_lines = vec![
             Line::from(""),
             Line::from(vec![Span::styled(
-                "  Keine Befunde für aktiven Filter",
+                "  No findings match the active filter",
                 Style::default()
                     .fg(Theme::AMBER)
                     .add_modifier(Modifier::BOLD),
             )]),
             Line::from(""),
             Line::from(vec![
-                Span::styled("  Drücken Sie ", Style::default().fg(Theme::MUTED)),
+                Span::styled("  Press ", Style::default().fg(Theme::MUTED)),
                 Span::styled(
                     "[x]",
                     Style::default()
                         .fg(Theme::CYAN)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(" oder ", Style::default().fg(Theme::MUTED)),
+                Span::styled(" or ", Style::default().fg(Theme::MUTED)),
                 Span::styled(
                     "[Esc]",
                     Style::default()
                         .fg(Theme::CYAN)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(
-                    ", um alle Filter zurückzusetzen.",
-                    Style::default().fg(Theme::MUTED),
-                ),
+                Span::styled(" to clear every filter.", Style::default().fg(Theme::MUTED)),
             ]),
         ];
         let no_match_box =
-            Paragraph::new(no_match_lines).block(Theme::card_block("GEFUNDENE PROBLEME [0]"));
+            Paragraph::new(no_match_lines).block(Theme::card_block("ISSUES FOUND [0]"));
         f.render_widget(no_match_box, main_split[0]);
     } else {
         let items: Vec<ListItem> = state
@@ -118,7 +115,7 @@ pub fn render_issue_list(f: &mut Frame, area: Rect, state: &IssueListViewState) 
                 let issue = &state.issues[orig_idx];
                 let is_current = pos == state.selected_filtered_index;
                 let check_box = if issue.is_fixed {
-                    "[✔ BEHOBEN]"
+                    "[✔ FIXED]"
                 } else if issue.is_selected {
                     "[X]"
                 } else {
@@ -165,7 +162,7 @@ pub fn render_issue_list(f: &mut Frame, area: Rect, state: &IssueListViewState) 
             .collect();
 
         let list_title = format!(
-            " GEFUNDENE PROBLEME [{}/{}] – [Space] An-/Abwählen ",
+            " ISSUES FOUND [{}/{}] - [Space] select/deselect ",
             state.filtered_indices.len(),
             state.issues.len()
         );
@@ -185,20 +182,20 @@ pub fn render_issue_list(f: &mut Frame, area: Rect, state: &IssueListViewState) 
         let issue = &state.issues[orig_idx];
 
         let (sev_badge, sev_color) = match issue.severity {
-            Severity::Critical => ("🔴 KRITISCH", Theme::CORAL),
-            Severity::Warning => ("▲ WARNUNG", Theme::AMBER),
-            Severity::Info => ("ℹ HINWEIS", Theme::CYAN),
+            Severity::Critical => ("🔴 CRITICAL", Theme::CORAL),
+            Severity::Warning => ("▲ WARNING", Theme::AMBER),
+            Severity::Info => ("ℹ INFO", Theme::CYAN),
         };
 
         let (risk_badge, risk_color) = match issue.risk_score {
-            RiskScore::Low => ("🟢 GERING (Safe Auto-Fix)", Theme::EMERALD),
-            RiskScore::Medium => ("🟡 MITTEL (Dienst-Neustart)", Theme::AMBER),
-            RiskScore::High => ("🟠 HOCH (Reboot/System)", Theme::CORAL),
+            RiskScore::Low => ("🟢 LOW (safe auto-fix)", Theme::EMERALD),
+            RiskScore::Medium => ("🟡 MEDIUM (service restart)", Theme::AMBER),
+            RiskScore::High => ("🟠 HIGH (reboot/system)", Theme::CORAL),
         };
 
         let mut detail_lines = vec![
             Line::from(vec![
-                Span::styled(" Titel:       ", Style::default().fg(Theme::MUTED)),
+                Span::styled(" Title:       ", Style::default().fg(Theme::MUTED)),
                 Span::styled(
                     issue.title.clone(),
                     Style::default()
@@ -207,21 +204,21 @@ pub fn render_issue_list(f: &mut Frame, area: Rect, state: &IssueListViewState) 
                 ),
             ]),
             Line::from(vec![
-                Span::styled(" Kategorie:   ", Style::default().fg(Theme::MUTED)),
+                Span::styled(" Category:    ", Style::default().fg(Theme::MUTED)),
                 Span::styled(issue.category.clone(), Style::default().fg(Theme::CYAN)),
-                Span::styled("    Modul: ", Style::default().fg(Theme::MUTED)),
+                Span::styled("    Module: ", Style::default().fg(Theme::MUTED)),
                 Span::styled(
                     issue.module_id.clone(),
                     Style::default().fg(Theme::TEXT_WHITE),
                 ),
             ]),
             Line::from(vec![
-                Span::styled(" Schweregrad: ", Style::default().fg(Theme::MUTED)),
+                Span::styled(" Severity:    ", Style::default().fg(Theme::MUTED)),
                 Span::styled(
                     sev_badge,
                     Style::default().fg(sev_color).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("    Risiko-Score: ", Style::default().fg(Theme::MUTED)),
+                Span::styled("    Risk score: ", Style::default().fg(Theme::MUTED)),
                 Span::styled(
                     risk_badge,
                     Style::default().fg(risk_color).add_modifier(Modifier::BOLD),
@@ -229,7 +226,7 @@ pub fn render_issue_list(f: &mut Frame, area: Rect, state: &IssueListViewState) 
             ]),
             Line::from(""),
             Line::from(vec![Span::styled(
-                " Beschreibung:",
+                " Description:",
                 Style::default()
                     .fg(Theme::CYAN)
                     .add_modifier(Modifier::BOLD),
@@ -240,7 +237,7 @@ pub fn render_issue_list(f: &mut Frame, area: Rect, state: &IssueListViewState) 
             )]),
             Line::from(""),
             Line::from(vec![Span::styled(
-                " Technische Diagnose / Fund:",
+                " Technical diagnosis / finding:",
                 Style::default()
                     .fg(Theme::CYAN)
                     .add_modifier(Modifier::BOLD),
@@ -251,7 +248,7 @@ pub fn render_issue_list(f: &mut Frame, area: Rect, state: &IssueListViewState) 
             )]),
             Line::from(""),
             Line::from(vec![Span::styled(
-                " Empfohlene Reparatur (Auto-Fix):",
+                " Recommended repair (auto-fix):",
                 Style::default()
                     .fg(Theme::EMERALD)
                     .add_modifier(Modifier::BOLD),
@@ -262,7 +259,7 @@ pub fn render_issue_list(f: &mut Frame, area: Rect, state: &IssueListViewState) 
             )]),
             Line::from(""),
             Line::from(vec![Span::styled(
-                " Reparatur-Schritte:",
+                " Repair steps:",
                 Style::default()
                     .fg(Theme::MUTED)
                     .add_modifier(Modifier::BOLD),
@@ -283,7 +280,7 @@ pub fn render_issue_list(f: &mut Frame, area: Rect, state: &IssueListViewState) 
             detail_lines.push(Line::from(""));
             detail_lines.push(Line::from(vec![
                 Span::styled(
-                    " ✖ Letzter Reparatur-Fehler: ",
+                    " ✖ Last repair error: ",
                     Style::default()
                         .fg(Theme::CORAL)
                         .add_modifier(Modifier::BOLD),
@@ -294,20 +291,20 @@ pub fn render_issue_list(f: &mut Frame, area: Rect, state: &IssueListViewState) 
 
         detail_lines.push(Line::from(""));
         detail_lines.push(Line::from(vec![Span::styled(
-            " 🛡 VSS Wiederherstellungspunkt wird vor Reparatur automatisch erstellt.",
+            " 🛡 A VSS restore point is created automatically before repairs.",
             Style::default()
                 .fg(Theme::EMERALD)
                 .add_modifier(Modifier::ITALIC),
         )]));
 
         let detail_box = Paragraph::new(detail_lines)
-            .block(Theme::card_block("PROBLEM-DETAILS & REPARATUR-VORSCHLAG"))
+            .block(Theme::card_block("ISSUE DETAILS & SUGGESTED REPAIR"))
             .wrap(Wrap { trim: true });
 
         f.render_widget(detail_box, main_split[1]);
     } else {
         let empty_detail =
-            Paragraph::new("Kein Problem ausgewählt.").block(Theme::card_block("PROBLEM-DETAILS"));
+            Paragraph::new("No issue selected.").block(Theme::card_block("ISSUE DETAILS"));
         f.render_widget(empty_detail, main_split[1]);
     }
 }
@@ -318,7 +315,7 @@ fn render_filter_bar(f: &mut Frame, area: Rect, state: &IssueListViewState) {
     // Severity pills
     let crit_active = state.severity_filter == Some(Severity::Critical);
     spans.push(Span::styled(
-        " [c] 🔴 Kritisch ",
+        " [c] 🔴 Critical ",
         if crit_active {
             Style::default()
                 .fg(Theme::BG_DEEP)
@@ -332,7 +329,7 @@ fn render_filter_bar(f: &mut Frame, area: Rect, state: &IssueListViewState) {
 
     let warn_active = state.severity_filter == Some(Severity::Warning);
     spans.push(Span::styled(
-        " [w] ▲ Warnung ",
+        " [w] ▲ Warning ",
         if warn_active {
             Style::default()
                 .fg(Theme::BG_DEEP)
@@ -360,8 +357,8 @@ fn render_filter_bar(f: &mut Frame, area: Rect, state: &IssueListViewState) {
 
     // Module filter
     let mod_label = match state.module_filter {
-        Some(m) => format!(" [m] Modul: {} ", m),
-        None => " [m] Modul: Alle ".to_string(),
+        Some(m) => format!(" [m] Module: {} ", m),
+        None => " [m] Module: all ".to_string(),
     };
     spans.push(Span::styled(
         mod_label,
@@ -378,11 +375,11 @@ fn render_filter_bar(f: &mut Frame, area: Rect, state: &IssueListViewState) {
 
     // Search query
     let search_text = if state.is_searching {
-        format!(" [/] 🔍 Suche: \"{}\"█ ", state.search_query)
+        format!(" [/] 🔍 Search: \"{}\"█ ", state.search_query)
     } else if !state.search_query.is_empty() {
-        format!(" [/] 🔍 Suche: \"{}\" ", state.search_query)
+        format!(" [/] 🔍 Search: \"{}\" ", state.search_query)
     } else {
-        " [/] 🔍 Suche ".to_string()
+        " [/] 🔍 Search ".to_string()
     };
 
     spans.push(Span::styled(

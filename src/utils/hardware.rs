@@ -30,6 +30,12 @@ pub struct TelemetryCollector {
     disks: Disks,
 }
 
+impl Default for TelemetryCollector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TelemetryCollector {
     pub fn new() -> Self {
         let mut sys = System::new_all();

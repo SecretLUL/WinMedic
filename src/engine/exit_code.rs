@@ -45,14 +45,14 @@ pub fn from_issues(issues: &[Issue], failed_fixes: usize) -> u8 {
 /// One-line explanation of a code, printed at the end of a headless run.
 pub fn describe(code: u8) -> &'static str {
     match code {
-        OK => "Keine offenen Probleme oberhalb der Info-Stufe.",
-        WARNINGS => "Offene Warnungen vorhanden.",
-        CRITICAL => "Offene kritische Probleme vorhanden.",
-        FIX_FAILED => "Mindestens eine Reparatur ist fehlgeschlagen.",
-        NEEDS_ADMIN => "Administratorrechte erforderlich.",
-        INTERNAL_ERROR => "Interner WinMedic-Fehler.",
-        CANCELLED => "Lauf abgebrochen – Ergebnis unvollständig.",
-        _ => "Unbekannter Status.",
+        OK => "No open issues above informational level.",
+        WARNINGS => "Open warnings present.",
+        CRITICAL => "Open critical issues present.",
+        FIX_FAILED => "At least one repair failed.",
+        NEEDS_ADMIN => "Administrator privileges required.",
+        INTERNAL_ERROR => "Internal WinMedic error.",
+        CANCELLED => "Run aborted - results are incomplete.",
+        _ => "Unknown status.",
     }
 }
 
@@ -65,14 +65,14 @@ mod tests {
         Issue::new(
             id,
             "storage",
-            "Titel",
-            "Kategorie",
+            "Title",
+            "Category",
             severity,
             RiskScore::Low,
-            "Beschreibung",
+            "Description",
             "Details",
             "Fix",
-            vec!["Schritt".to_string()],
+            vec!["Step".to_string()],
         )
     }
 

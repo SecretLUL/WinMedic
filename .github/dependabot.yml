@@ -1,0 +1,36 @@
+version: 2
+
+updates:
+  # Cargo.lock is committed and CI builds with `--locked`, so a dependency
+  # update has to arrive as a pull request that updates the lockfile — which
+  # is exactly what Dependabot produces.
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    # No `labels:` override on purpose. Dependabot creates and applies its own
+    # `dependencies` label, whereas an explicit list is only applied for labels
+    # that already exist in the repository — naming one that does not exist
+    # silently produces unlabelled pull requests.
+    groups:
+      # Patch and minor bumps across the whole tree land as one pull request
+      # instead of a dozen; majors stay separate because they need review.
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # The workflows pin actions/checkout@v4, Swatinem/rust-cache@v2,
+  # dtolnay/rust-toolchain, rustsec/audit-check@v2 and
+  # softprops/action-gh-release@v2 with nothing else watching them.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "ci"

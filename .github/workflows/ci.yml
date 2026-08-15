@@ -3,15 +3,32 @@ name: CI
 on:
   push:
     branches: [ "main" ]
+  # Deliberately unfiltered: a `branches:` filter here matches the PR's *target*
+  # branch, so restricting it to main means pull requests into any other branch
+  # (long-lived feature branches, release branches) merge without ever being
+  # linted, tested or built.
   pull_request:
-    branches: [ "main" ]
+
+# Force-pushing to a branch under review should not leave the superseded run
+# burning a Windows runner to completion.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
 
+# Least privilege by default; the audit job widens this for itself.
+permissions:
+  contents: read
+
 jobs:
-  check:
-    name: Code Formatting & Clippy Lints
+  # rustfmt, clippy and the test suite share one runner. They do not share a
+  # compile — clippy caches under its own driver — but they do share the
+  # checkout, the toolchain install and the cache round trip, which is the
+  # fixed cost that made a separate `check` job wasteful.
+  test:
+    name: Lints & Test Suite
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,30 +41,81 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
+      # Cheapest gate first: no build required, so a misformatted PR fails in
+      # seconds instead of after a full compile.
       - name: Check Formatting (rustfmt)
         run: cargo fmt -- --check
 
       - name: Lint (clippy)
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
-  test:
-    name: Test Suite
+      - name: Run Tests
+        run: cargo test --locked --verbose
+
+  msrv:
+    name: Minimum Supported Rust Version
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      # Read the MSRV out of the manifest instead of hardcoding it here, so
+      # bumping `rust-version` in Cargo.toml automatically moves this gate too.
+      - name: Read MSRV from Cargo.toml
+        id: msrv
+        shell: pwsh
+        run: |
+          $match = Select-String -Path Cargo.toml -Pattern '^rust-version\s*=\s*"([^"]+)"'
+          if (-not $match) {
+            Write-Error "No rust-version key found in Cargo.toml"
+            exit 1
+          }
+          $version = $match.Matches[0].Groups[1].Value
+          Write-Host "MSRV from manifest: $version"
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Setup pinned MSRV toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv-${{ steps.msrv.outputs.version }}
 
-      - name: Run Tests
-        run: cargo test --verbose
+      # Runs on every change, not only when the manifest moves: the MSRV breaks
+      # just as easily by using a newer language feature in ordinary source as
+      # by bumping a dependency, and catching that is the entire point.
+      - name: Check Against MSRV
+        run: cargo check --locked --all-targets
 
+  # Reads Cargo.lock rather than compiling, so it needs neither Windows nor a
+  # build of the crate — which is why it can run on the cheaper Linux runner.
+  audit:
+    name: Dependency Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: taiki-e/install-action@cargo-audit
+
+      # Plain `cargo audit` fails on a vulnerability and passes on an
+      # informational warning, which is the policy we want: the three warnings
+      # open today (RUSTSEC-2024-0436 paste, RUSTSEC-2026-0002 and
+      # RUSTSEC-2026-0253 lru) all arrive through ratatui and cannot be
+      # resolved here. A gate that is red for reasons nobody can act on is a
+      # gate people learn to ignore. Warnings still show up in the job log.
+      - name: Audit Dependencies
+        run: cargo audit
+
+  # `lto = true` plus `codegen-units = 1` makes this the most expensive job in
+  # the workflow by a wide margin, and on a pull request it proves only that
+  # the release profile still links. Run it once per merge instead of once per
+  # push to every open branch; the release workflow builds the real artifact.
   build:
     name: Build Release Binary
     runs-on: windows-latest
+    if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
 
@@ -58,7 +126,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build Release
-        run: cargo build --release
+        run: cargo build --locked --release
 
       - name: Verify Binary
         shell: pwsh
