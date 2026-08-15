@@ -315,7 +315,7 @@ fn render_filter_bar(f: &mut Frame, area: Rect, state: &IssueListViewState) {
     // Severity pills
     let crit_active = state.severity_filter == Some(Severity::Critical);
     spans.push(Span::styled(
-        " [c] [!] Critical ",
+        " [c] Critical ",
         if crit_active {
             Style::default()
                 .fg(Theme::BG_DEEP)
@@ -329,7 +329,7 @@ fn render_filter_bar(f: &mut Frame, area: Rect, state: &IssueListViewState) {
 
     let warn_active = state.severity_filter == Some(Severity::Warning);
     spans.push(Span::styled(
-        " [w] [!] Warning ",
+        " [w] Warning ",
         if warn_active {
             Style::default()
                 .fg(Theme::BG_DEEP)
@@ -343,7 +343,7 @@ fn render_filter_bar(f: &mut Frame, area: Rect, state: &IssueListViewState) {
 
     let info_active = state.severity_filter == Some(Severity::Info);
     spans.push(Span::styled(
-        " [i] [i] Info ",
+        " [i] Info ",
         if info_active {
             Style::default()
                 .fg(Theme::BG_DEEP)
@@ -421,7 +421,7 @@ fn render_filter_bar(f: &mut Frame, area: Rect, state: &IssueListViewState) {
         } else {
             Theme::BORDER
         }))
-        .title(" FILTER & SUCHE ");
+        .title(" FILTER & SEARCH ");
 
     let paragraph = Paragraph::new(Line::from(spans)).block(block);
     f.render_widget(paragraph, area);
