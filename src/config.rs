@@ -219,37 +219,37 @@ impl AppConfig {
             0 => Some((
                 "Create a VSS restore point before repairs",
                 on_off(self.create_vss_before_repair),
-                "Creates a Windows System Restore point before every repair run.",
+                "Creates a Windows System Restore point before every repair run. [Space/Enter] Toggle.",
             )),
             1 => Some((
                 "Back up the registry before changing it",
                 on_off(self.auto_backup_registry),
-                "Exports affected keys as a .reg file. When OFF, registry fixes run without a safety net.",
+                "Exports affected keys as a .reg file. When OFF, registry fixes run without a safety net. [Space/Enter] Toggle.",
             )),
             2 => Some((
                 "Restart services automatically",
                 on_off(self.auto_restart_services),
-                "Lets fixes stop and restart Windows services. When OFF, such fixes are skipped.",
+                "Lets fixes stop and restart Windows services. When OFF, such fixes are skipped. [Space/Enter] Toggle.",
             )),
             3 => Some((
                 "Check for updates automatically",
                 on_off(self.check_for_updates),
-                "Checks GitHub for new WinMedic releases in the background at startup.",
+                "Checks GitHub for new WinMedic releases in the background at startup. [Space/Enter] Toggle.",
             )),
             4 => Some((
                 "Temp file threshold",
                 format!("{} MB", self.temp_clean_threshold_mb),
-                "Temp files are reported as an issue past this total size. [+/-] ±100 MB.",
+                "Temp files are reported as an issue past this total size. [Enter] Custom value, [+/-] ±100 MB.",
             )),
             5 => Some((
                 "Event log analysis window",
                 format!("{} h", self.max_event_log_hours),
-                "How far back the event log is searched for critical events. [+/-] ±6 h.",
+                "How far back the event log is searched for critical events. [Enter] Custom value, [+/-] ±6 h.",
             )),
             6 => Some((
                 "Enable verbose / debug logs",
                 on_off(self.verbose_logging),
-                "Shows detailed diagnostic traces, debug logs, module timing, and step-by-step command outputs in scan and repair logs.",
+                "Shows detailed diagnostic traces, debug logs, module timing, and step-by-step command outputs in scan and repair logs. [Space/Enter] Toggle.",
             )),
             _ => None,
         }

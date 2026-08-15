@@ -28,6 +28,30 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
         return;
     }
 
+    // A pending setting numeric input modal captures typing until saved or cancelled.
+    if let Some(input) = app.setting_input.as_mut() {
+        match code {
+            KeyCode::Char(c) if c.is_ascii_digit() => {
+                if input.buffer.len() < 10 {
+                    input.buffer.push(c);
+                    input.error_msg = None;
+                }
+            }
+            KeyCode::Backspace => {
+                input.buffer.pop();
+                input.error_msg = None;
+            }
+            KeyCode::Enter => {
+                app.submit_setting_input();
+            }
+            KeyCode::Esc => {
+                app.cancel_setting_input();
+            }
+            _ => {}
+        }
+        return;
+    }
+
     if app.show_help {
         match code {
             KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
@@ -120,7 +144,13 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
             }
         },
 
-        KeyCode::Char(' ') | KeyCode::Enter => match app.active_tab {
+        KeyCode::Enter => match app.active_tab {
+            TAB_TRIAGE => app.toggle_selected_issue(),
+            TAB_SETTINGS => app.open_setting_input(),
+            _ => {}
+        },
+
+        KeyCode::Char(' ') => match app.active_tab {
             TAB_TRIAGE => app.toggle_selected_issue(),
             TAB_SETTINGS => app.toggle_current_setting(),
             _ => {}
@@ -480,5 +510,49 @@ mod tests {
         assert_eq!(app.active_tab, before);
         assert!(!app.should_quit);
         assert!(!app.show_help);
+    }
+
+    #[test]
+    fn setting_input_modal_captures_digits_and_submits_on_enter() {
+        let mut app = app();
+        app.config.temp_clean_threshold_mb = 500;
+        app.active_tab = TAB_SETTINGS;
+        app.selected_setting_index = 4; // Temp clean threshold
+        assert_eq!(app.config.temp_clean_threshold_mb, 500);
+
+        // Enter opens input modal
+        handle_key(&mut app, KeyCode::Enter);
+        assert!(app.setting_input.is_some());
+
+        // Backspace 3 times
+        handle_key(&mut app, KeyCode::Backspace);
+        handle_key(&mut app, KeyCode::Backspace);
+        handle_key(&mut app, KeyCode::Backspace);
+        assert_eq!(app.setting_input.as_ref().unwrap().buffer, "");
+
+        // Type '8', '0', '0'
+        handle_key(&mut app, KeyCode::Char('8'));
+        handle_key(&mut app, KeyCode::Char('0'));
+        handle_key(&mut app, KeyCode::Char('0'));
+        assert_eq!(app.setting_input.as_ref().unwrap().buffer, "800");
+
+        // Non-digits are ignored
+        handle_key(&mut app, KeyCode::Char('a'));
+        handle_key(&mut app, KeyCode::Char('q'));
+        assert_eq!(app.setting_input.as_ref().unwrap().buffer, "800");
+        assert!(!app.should_quit, "modal swallows 'q'");
+
+        // Enter submits and saves
+        handle_key(&mut app, KeyCode::Enter);
+        assert!(app.setting_input.is_none());
+        assert_eq!(app.config.temp_clean_threshold_mb, 800);
+
+        // Esc cancels without saving
+        handle_key(&mut app, KeyCode::Enter);
+        assert!(app.setting_input.is_some());
+        handle_key(&mut app, KeyCode::Char('9'));
+        handle_key(&mut app, KeyCode::Esc);
+        assert!(app.setting_input.is_none());
+        assert_eq!(app.config.temp_clean_threshold_mb, 800);
     }
 }

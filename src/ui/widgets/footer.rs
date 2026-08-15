@@ -69,7 +69,7 @@ pub fn render_footer(
             TAB_SETTINGS => vec![
                 ("←/→", "Tabs"),
                 ("↑/↓", "Select"),
-                ("Space", "Toggle"),
+                ("Space/Enter", "Toggle"),
                 ("+/-", "Value"),
                 ("?", "Help"),
                 ("Q", "Quit"),

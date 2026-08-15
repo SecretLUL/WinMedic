@@ -30,7 +30,7 @@ pub mod state;
 
 pub use confirm::ConfirmRequest;
 pub use input::handle_key;
-pub use state::App;
+pub use state::{App, SettingInput};
 
 /// Maximum number of log lines kept in memory for scan and repair terminal buffers.
 pub const MAX_LOG_LINES: usize = 2000;

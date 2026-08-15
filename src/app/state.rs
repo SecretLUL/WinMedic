@@ -25,6 +25,17 @@ use tokio_util::sync::CancellationToken;
 
 use super::confirm::ConfirmRequest;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingInput {
+    pub setting_index: usize,
+    pub setting_name: String,
+    pub unit: String,
+    pub min_value: u64,
+    pub max_value: u64,
+    pub buffer: String,
+    pub error_msg: Option<String>,
+}
+
 pub struct App {
     pub active_tab: usize,
     pub is_admin: bool,
@@ -82,6 +93,7 @@ pub struct App {
 
     // Settings
     pub selected_setting_index: usize,
+    pub setting_input: Option<SettingInput>,
 
     // UI state
     pub status_message: Option<String>,
@@ -164,6 +176,7 @@ impl App {
             restore_points_requested: false,
             is_restoring: false,
             selected_setting_index: 0,
+            setting_input: None,
             // A corrupt config file is the one startup condition worth
             // interrupting the user's first glance for: their saved settings
             // are not in effect and the defaults silently re-enable things
