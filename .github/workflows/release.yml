@@ -31,10 +31,32 @@ jobs:
           $tag = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "v0.1.0" }
           Copy-Item target/release/winmedic.exe "target/release/winmedic-${tag}.exe"
 
+      # Hand-written notes live at docs/release-notes/<tag>.md. When a tag ships
+      # without one, fall back to GitHub's generated commit list rather than
+      # publishing a release with an empty body.
+      - name: Resolve Release Notes
+        id: notes
+        shell: pwsh
+        run: |
+          $path = "docs/release-notes/$env:GITHUB_REF_NAME.md"
+          if (Test-Path $path) {
+            "body_path=$path"  | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "generate=false"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            "body_path="       | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "generate=true"    | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+
       - name: Upload Binary to Release Assets
         uses: softprops/action-gh-release@v2
         with:
-          prerelease: ${{ !startsWith(github.ref_name, 'v1.') }}
+          # SemVer decides: only tags carrying a pre-release suffix (v0.3.0-rc1)
+          # are pre-releases. Marking every pre-1.0 tag as one hid them from the
+          # in-app updater, which reads /releases/latest — an endpoint that skips
+          # pre-releases entirely.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          body_path: ${{ steps.notes.outputs.body_path }}
+          generate_release_notes: ${{ steps.notes.outputs.generate }}
           files: target/release/winmedic-*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
