@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/SecretLUL/WinMedic/security/advisories/new
+    about: WinMedic runs elevated and modifies the registry. Report security problems privately, not as a public issue.
+  - name: Contributing guide
+    url: https://github.com/SecretLUL/WinMedic/blob/main/CONTRIBUTING.md
+    about: How to build, what CI enforces, and which parts of the codebase need extra care.

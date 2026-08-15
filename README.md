@@ -209,6 +209,19 @@ cargo build --locked --release
 
 ---
 
+## 🤝 Contributing
+
+Pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers the build
+prerequisites, what CI enforces (`cargo fmt`, `cargo clippy -D warnings`,
+`cargo test`, and the MSRV gate) and which parts of the codebase need extra
+care — the safety layer and the repair paths that actually change the system.
+
+Found a security problem? WinMedic runs elevated and writes to the registry, so
+please report it privately rather than as a public issue —
+see [SECURITY.md](SECURITY.md).
+
+---
+
 ## 📄 License
 
 This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.

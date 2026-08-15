@@ -1,0 +1,49 @@
+name: Feature request
+description: A new diagnostic, a new repair, or an improvement to an existing one
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve
+      description: Describe the situation on a real machine, not the feature itself.
+      placeholder: |
+        Scheduled tasks pointing at uninstalled software keep failing every
+        boot and there is no way to find them without opening Task Scheduler
+        and reading each one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: What should WinMedic detect, and what should it offer to do about it?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Would this change the system?
+      description: |
+        Anything that writes needs a backup path and an honest risk score.
+        See CONTRIBUTING.md.
+      options:
+        - "Detection only — reports, never changes anything"
+        - "Changes the system, reversible (registry, service state)"
+        - "Changes the system, hard to reverse (deletes files, needs a reboot)"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: detection
+    attributes:
+      label: How would it detect the problem
+      description: |
+        If you know the command or API — `Get-ScheduledTask`, a registry key, an
+        event log channel — say so. Detection heuristics are usually the hard
+        part, not the plumbing.
+    validations:
+      required: false
