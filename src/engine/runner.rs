@@ -76,6 +76,8 @@ pub struct RepairOptions {
     pub create_vss: bool,
     /// Report what each fix *would* do without executing it.
     pub dry_run: bool,
+    /// Output detailed debug logs during repairs.
+    pub verbose_logging: bool,
 }
 
 impl RepairOptions {
@@ -83,6 +85,7 @@ impl RepairOptions {
         Self {
             create_vss: config.create_vss_before_repair,
             dry_run,
+            verbose_logging: config.verbose_logging,
         }
     }
 }
@@ -92,6 +95,7 @@ impl Default for RepairOptions {
         Self {
             create_vss: true,
             dry_run: false,
+            verbose_logging: false,
         }
     }
 }
@@ -99,6 +103,7 @@ impl Default for RepairOptions {
 pub struct DiagnosticEngine {
     modules: Vec<Arc<dyn DiagnosticModule>>,
     audit_logger: AuditLogger,
+    pub verbose_logging: bool,
 }
 
 impl DiagnosticEngine {
@@ -106,6 +111,7 @@ impl DiagnosticEngine {
         Self {
             modules: get_all_modules(&ModuleConfig::from(config)),
             audit_logger: AuditLogger::new(),
+            verbose_logging: config.verbose_logging,
         }
     }
 
@@ -113,6 +119,7 @@ impl DiagnosticEngine {
         Self {
             modules: get_all_modules_with_runner(&ModuleConfig::from(config), runner),
             audit_logger: AuditLogger::new(),
+            verbose_logging: config.verbose_logging,
         }
     }
 
@@ -125,6 +132,7 @@ impl DiagnosticEngine {
         Self {
             modules,
             audit_logger: AuditLogger::new(),
+            verbose_logging: false,
         }
     }
 
@@ -171,6 +179,20 @@ impl DiagnosticEngine {
         let (prog_tx, mut prog_rx) = channel::<ModuleProgress>(100);
         let evt_tx_clone = event_tx.clone();
 
+        if self.verbose_logging {
+            let _ = event_tx
+                .send(ScanEvent::ModuleProgressUpdate(ModuleProgress {
+                    module_id: "engine".to_string(),
+                    progress_percent: 0,
+                    current_step: "Verbose diagnostic mode enabled".to_string(),
+                    log_message: Some(format!(
+                        "[DEBUG] Parallel scan initiated across {} modules (verbose mode ON).",
+                        total_modules
+                    )),
+                }))
+                .await;
+        }
+
         let forward_handle = tokio::spawn(async move {
             while let Some(prog) = prog_rx.recv().await {
                 let _ = evt_tx_clone
@@ -185,12 +207,26 @@ impl DiagnosticEngine {
             let mod_name = module.name().to_string();
             let module = Arc::clone(module);
             let p_tx = prog_tx.clone();
+            let verbose = self.verbose_logging;
 
             let _ = event_tx
                 .send(ScanEvent::ModuleStarted(mod_id.clone()))
                 .await;
 
             set.spawn(async move {
+                if verbose {
+                    let _ = p_tx
+                        .send(ModuleProgress {
+                            module_id: mod_id.clone(),
+                            progress_percent: 0,
+                            current_step: format!("Starting {} check", mod_name),
+                            log_message: Some(format!(
+                                "[DEBUG] Module '{}' ({}) spawned for execution.",
+                                mod_name, mod_id
+                            )),
+                        })
+                        .await;
+                }
                 let result = module.scan(Some(p_tx)).await;
                 (mod_id, mod_name, result)
             });
@@ -227,6 +263,38 @@ impl DiagnosticEngine {
                         Ok((mod_id, mod_name, scan_result)) => {
                             match scan_result {
                                 Ok(issues) => {
+                                    if self.verbose_logging {
+                                        let crit = issues
+                                            .iter()
+                                            .filter(|i| i.severity == Severity::Critical)
+                                            .count();
+                                        let warn = issues
+                                            .iter()
+                                            .filter(|i| i.severity == Severity::Warning)
+                                            .count();
+                                        let info = issues
+                                            .iter()
+                                            .filter(|i| i.severity == Severity::Info)
+                                            .count();
+                                        let _ = event_tx
+                                            .send(ScanEvent::ModuleProgressUpdate(
+                                                ModuleProgress {
+                                                    module_id: mod_id.clone(),
+                                                    progress_percent: 100,
+                                                    current_step: "Module finished".to_string(),
+                                                    log_message: Some(format!(
+                                                        "[DEBUG] Module '{}' finished: {} findings (Critical: {}, Warning: {}, Info: {}).",
+                                                        mod_id,
+                                                        issues.len(),
+                                                        crit,
+                                                        warn,
+                                                        info
+                                                    )),
+                                                },
+                                            ))
+                                            .await;
+                                    }
+
                                     let _ = event_tx
                                         .send(ScanEvent::ModuleFinished {
                                             module_id: mod_id.clone(),
@@ -390,6 +458,18 @@ impl DiagnosticEngine {
                     title: issue.title.clone(),
                 })
                 .await;
+
+            if options.verbose_logging {
+                let _ = event_tx
+                    .send(RepairEvent::FixOutput {
+                        issue_id: issue.id.clone(),
+                        line: format!(
+                            "[DEBUG] Initiating fix for '{}' (Module: '{}', Risk: {:?})",
+                            issue.id, issue.module_id, issue.risk_score
+                        ),
+                    })
+                    .await;
+            }
 
             if options.dry_run {
                 self.simulate_fix(issue, &event_tx).await;
@@ -604,6 +684,7 @@ mod tests {
         let options = RepairOptions {
             create_vss: true,
             dry_run: true,
+            verbose_logging: false,
         };
         let (fixed, failed) = engine
             .run_repairs(&mut issues, options, tx, CancellationToken::new())
@@ -649,6 +730,7 @@ mod tests {
         let options = RepairOptions {
             create_vss: false,
             dry_run: false,
+            verbose_logging: false,
         };
         let (fixed, failed) = engine.run_repairs(&mut issues, options, tx, cancel).await;
 
@@ -755,5 +837,29 @@ mod tests {
         assert!(issues.iter().any(|i| i.id == "sys_dism_corrupt"));
         assert!(issues.iter().any(|i| i.id == "wu_svc_disabled_wuauserv"));
         assert!(issues.iter().any(|i| i.id == "sys_vss_disabled"));
+    }
+
+    #[tokio::test]
+    async fn test_verbose_scan_and_repair_emits_debug_logs() {
+        let config = AppConfig {
+            verbose_logging: true,
+            ..Default::default()
+        };
+        let engine = DiagnosticEngine::new(&config);
+        assert!(engine.verbose_logging);
+
+        let (tx, mut rx) = channel::<ScanEvent>(200);
+        let _issues = engine.run_scan(tx, CancellationToken::new()).await;
+
+        let mut saw_debug_log = false;
+        while let Ok(evt) = rx.try_recv() {
+            if let ScanEvent::ModuleProgressUpdate(prog) = evt
+                && let Some(log) = prog.log_message
+                && log.starts_with("[DEBUG]")
+            {
+                saw_debug_log = true;
+            }
+        }
+        assert!(saw_debug_log, "verbose scan should emit [DEBUG] log lines");
     }
 }

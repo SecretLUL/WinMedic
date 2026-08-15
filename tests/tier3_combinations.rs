@@ -117,6 +117,7 @@ async fn test_tier3_triage_selection_winsxs_browser_with_dry_run() {
     let options = RepairOptions {
         create_vss: false,
         dry_run: true,
+        verbose_logging: false,
     };
 
     let mut dry_run_started = false;
@@ -180,6 +181,7 @@ async fn test_tier3_triage_selection_logs_temp_with_real_fix() {
     let options = RepairOptions {
         create_vss: false,
         dry_run: false,
+        verbose_logging: false,
     };
 
     let fix_handle = tokio::spawn(async move {
@@ -249,6 +251,7 @@ async fn test_tier3_system_cleaner_vss_enabled_repair() {
     let options = RepairOptions {
         create_vss: true,
         dry_run: false,
+        verbose_logging: false,
     };
 
     let fix_handle = tokio::spawn(async move {
@@ -296,6 +299,7 @@ async fn test_tier3_system_cleaner_vss_disabled_repair() {
     let options = RepairOptions {
         create_vss: false,
         dry_run: false,
+        verbose_logging: false,
     };
 
     let fix_handle = tokio::spawn(async move {
@@ -607,6 +611,7 @@ async fn test_tier3_repair_cancellation_between_cleaner_fixes() {
     let options = RepairOptions {
         create_vss: false,
         dry_run: false,
+        verbose_logging: false,
     };
 
     let fix_handle = tokio::spawn(async move {
@@ -745,6 +750,7 @@ async fn test_tier3_mixed_cleaner_and_integrity_repairs() {
     let options = RepairOptions {
         create_vss: false,
         dry_run: true,
+        verbose_logging: false,
     };
 
     let fix_handle = tokio::spawn(async move {

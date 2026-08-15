@@ -1305,8 +1305,8 @@ fn test_tier1_f17_default_config_check_for_updates_is_true() {
 }
 
 #[test]
-fn test_tier1_f17_setting_count_equals_six() {
-    assert_eq!(AppConfig::SETTING_COUNT, 6);
+fn test_tier1_f17_setting_count_equals_seven() {
+    assert_eq!(AppConfig::SETTING_COUNT, 7);
 }
 
 #[test]
@@ -1333,15 +1333,42 @@ fn test_tier1_f17_toggle_setting_three_flips_boolean() {
 }
 
 #[test]
-fn test_tier1_f17_config_serialization_roundtrip_includes_check_for_updates() {
+fn test_tier1_f17_setting_row_six_is_verbose_logging_setting() {
+    let config = AppConfig::default();
+    assert!(!config.verbose_logging);
+    let (label, val, desc) = config.setting_row(6).unwrap();
+    assert_eq!(label, "Enable verbose / debug logs");
+    assert_eq!(val, "OFF");
+    assert!(desc.contains("debug"));
+}
+
+#[test]
+fn test_tier1_f17_toggle_setting_six_flips_verbose_logging() {
+    let mut config = AppConfig::default();
+    assert!(!config.verbose_logging);
+
+    config.toggle_setting(6);
+    assert!(config.verbose_logging);
+    let (_, val_on, _) = config.setting_row(6).unwrap();
+    assert_eq!(val_on, "ON");
+
+    config.toggle_setting(6);
+    assert!(!config.verbose_logging);
+}
+
+#[test]
+fn test_tier1_f17_config_serialization_roundtrip_includes_check_for_updates_and_verbose_logging() {
     let config = AppConfig {
         check_for_updates: false,
+        verbose_logging: true,
         ..Default::default()
     };
 
     let json = serde_json::to_string(&config).expect("failed to serialize");
     assert!(json.contains("\"check_for_updates\":false"));
+    assert!(json.contains("\"verbose_logging\":true"));
 
     let deserialized: AppConfig = serde_json::from_str(&json).expect("failed to deserialize");
     assert!(!deserialized.check_for_updates);
+    assert!(deserialized.verbose_logging);
 }

@@ -464,7 +464,7 @@ impl Default for CleanerPaths {
 }
 
 pub struct SystemCleanerModule {
-    _config: ModuleConfig,
+    config: ModuleConfig,
     runner: Arc<dyn CommandRunner>,
     paths: CleanerPaths,
 }
@@ -485,7 +485,7 @@ impl SystemCleanerModule {
         paths: CleanerPaths,
     ) -> Self {
         Self {
-            _config: config,
+            config,
             runner,
             paths,
         }
@@ -600,6 +600,16 @@ impl DiagnosticModule for SystemCleanerModule {
         progress_tx: Option<Sender<ModuleProgress>>,
     ) -> Result<Vec<Issue>, String> {
         let mut issues = Vec::new();
+
+        if self.config.verbose_logging {
+            Self::send_progress(
+                &progress_tx,
+                0,
+                "Starting system cleaner sweep...",
+                Some("[DEBUG] Initialising cleaner cache targets and path scanners..."),
+            )
+            .await;
+        }
 
         // 1. WinSxS Component Store Deep Clean
         Self::send_progress(

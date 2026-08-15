@@ -110,7 +110,7 @@ impl DiagnosticModule for RegistryStartupModule {
     }
 
     fn icon(&self) -> &'static str {
-        "⚡"
+        "[REG]"
     }
 
     async fn scan(
@@ -163,7 +163,7 @@ impl DiagnosticModule for RegistryStartupModule {
                 45,
                 "User autostart checked",
                 Some(&format!(
-                    "✔ HKCU\\Run: {} valid autostart entries verified.",
+                    "HKCU\\Run: {} valid autostart entries verified.",
                     valid_count
                 )),
             )
@@ -214,7 +214,7 @@ impl DiagnosticModule for RegistryStartupModule {
                 75,
                 "Machine autostart checked",
                 Some(&format!(
-                    "✔ HKLM\\Run: {} machine-wide autostart entries intact.",
+                    "HKLM\\Run: {} machine-wide autostart entries intact.",
                     valid_hklm
                 )),
             )
@@ -250,10 +250,7 @@ impl DiagnosticModule for RegistryStartupModule {
                     &progress_tx,
                     95,
                     "Startup folder checked",
-                    Some(&format!(
-                        "✔ Startup folder: {} shortcuts checked.",
-                        lnk_count
-                    )),
+                    Some(&format!("Startup folder: {} shortcuts checked.", lnk_count)),
                 )
                 .await;
             }

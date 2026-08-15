@@ -59,7 +59,7 @@ impl DiagnosticModule for SystemIntegrityModule {
     }
 
     fn icon(&self) -> &'static str {
-        "🛡"
+        "[SYS]"
     }
 
     async fn scan(
@@ -115,7 +115,7 @@ impl DiagnosticModule for SystemIntegrityModule {
                         &progress_tx,
                         35,
                         "DISM component store is intact",
-                        Some("✔ DISM CheckHealth: no corruption found in the component store."),
+                        Some("DISM CheckHealth: no corruption found in the component store."),
                     )
                     .await;
                 }
@@ -165,7 +165,7 @@ impl DiagnosticModule for SystemIntegrityModule {
                     &progress_tx,
                     70,
                     "VSS service ready",
-                    Some("✔ VSS service status: ready for restore points."),
+                    Some("VSS service status: ready for restore points."),
                 )
                 .await;
             }
@@ -212,7 +212,7 @@ impl DiagnosticModule for SystemIntegrityModule {
                     &progress_tx,
                     95,
                     "CBS logs unremarkable",
-                    Some("✔ No critical CBS integrity violations reported."),
+                    Some("No critical CBS integrity violations reported."),
                 )
                 .await;
             }

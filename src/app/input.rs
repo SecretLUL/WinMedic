@@ -10,9 +10,7 @@
 //! the normal bindings.
 
 use super::state::App;
-use super::{
-    TAB_COUNT, TAB_DASHBOARD, TAB_HISTORY, TAB_REPAIR, TAB_SCANNER, TAB_SETTINGS, TAB_TRIAGE,
-};
+use super::{TAB_DASHBOARD, TAB_HISTORY, TAB_REPAIR, TAB_SCANNER, TAB_SETTINGS, TAB_TRIAGE};
 use crate::engine::issue::Severity;
 use crossterm::event::KeyCode;
 
@@ -20,12 +18,37 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
     // A pending confirmation swallows every other key.
     if app.pending_confirm.is_some() {
         match code {
-            KeyCode::Char('j')
-            | KeyCode::Char('J')
-            | KeyCode::Char('y')
+            KeyCode::Char('y')
             | KeyCode::Char('Y')
+            | KeyCode::Char('j')
+            | KeyCode::Char('J')
             | KeyCode::Enter => app.confirm_pending_action(),
-            _ => app.dismiss_confirm(),
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => app.dismiss_confirm(),
+            _ => {}
+        }
+        return;
+    }
+
+    // A pending setting numeric input modal captures typing until saved or cancelled.
+    if let Some(input) = app.setting_input.as_mut() {
+        match code {
+            KeyCode::Char(c) if c.is_ascii_digit() => {
+                if input.buffer.len() < 10 {
+                    input.buffer.push(c);
+                    input.error_msg = None;
+                }
+            }
+            KeyCode::Backspace => {
+                input.buffer.pop();
+                input.error_msg = None;
+            }
+            KeyCode::Enter => {
+                app.submit_setting_input();
+            }
+            KeyCode::Esc => {
+                app.cancel_setting_input();
+            }
+            _ => {}
         }
         return;
     }
@@ -72,22 +95,8 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
         }
         KeyCode::Char('6') => app.active_tab = TAB_SETTINGS,
 
-        KeyCode::Tab => {
-            app.active_tab = (app.active_tab + 1) % TAB_COUNT;
-            if app.active_tab == TAB_HISTORY {
-                app.load_history_data();
-            }
-        }
-        KeyCode::BackTab => {
-            app.active_tab = if app.active_tab == 0 {
-                TAB_COUNT - 1
-            } else {
-                app.active_tab - 1
-            };
-            if app.active_tab == TAB_HISTORY {
-                app.load_history_data();
-            }
-        }
+        KeyCode::Tab => app.next_tab(),
+        KeyCode::BackTab => app.prev_tab(),
 
         KeyCode::Char('s') | KeyCode::Char('S') => app.start_scan(),
         KeyCode::Char('r') | KeyCode::Char('R') => {
@@ -129,14 +138,20 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
 
         KeyCode::Char('e') | KeyCode::Char('E') => match app.export_report() {
             Ok(path) => {
-                app.status_message = Some(format!("📄 Report exported: {}", path.display()));
+                app.status_message = Some(format!("Report exported: {}", path.display()));
             }
             Err(err) => {
                 app.status_message = Some(err);
             }
         },
 
-        KeyCode::Char(' ') | KeyCode::Enter => match app.active_tab {
+        KeyCode::Enter => match app.active_tab {
+            TAB_TRIAGE => app.toggle_selected_issue(),
+            TAB_SETTINGS => app.open_setting_input(),
+            _ => {}
+        },
+
+        KeyCode::Char(' ') => match app.active_tab {
             TAB_TRIAGE => app.toggle_selected_issue(),
             TAB_SETTINGS => app.toggle_current_setting(),
             _ => {}
@@ -190,15 +205,18 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
             app.clear_filters();
         }
 
-        KeyCode::Left | KeyCode::Char('h') => {
-            if app.active_tab == TAB_SETTINGS {
-                app.adjust_current_setting(false);
-            }
+        KeyCode::Left | KeyCode::Char('h') => app.prev_tab(),
+        KeyCode::Right | KeyCode::Char('l') => app.next_tab(),
+
+        KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char(']')
+            if app.active_tab == TAB_SETTINGS =>
+        {
+            app.adjust_current_setting(true);
         }
-        KeyCode::Right | KeyCode::Char('l') => {
-            if app.active_tab == TAB_SETTINGS {
-                app.adjust_current_setting(true);
-            }
+        KeyCode::Char('-') | KeyCode::Char('_') | KeyCode::Char('[')
+            if app.active_tab == TAB_SETTINGS =>
+        {
+            app.adjust_current_setting(false);
         }
 
         // Esc clears active filters first, cancels a running operation second, and navigates back to dashboard third.
@@ -217,7 +235,7 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::ConfirmRequest;
+    use crate::app::{ConfirmRequest, TAB_COUNT};
     use crate::engine::issue::{Issue, RiskScore};
 
     /// An `App` with no modal in the way.
@@ -267,10 +285,52 @@ mod tests {
         let mut app = app();
         app.pending_confirm = Some(ConfirmRequest::Elevate);
 
-        // 'q' would normally quit.
+        // 'q' or other arbitrary keys would normally trigger actions, but must be swallowed without dismissing.
         handle_key(&mut app, KeyCode::Char('q'));
         assert!(!app.should_quit, "the modal must absorb the keystroke");
-        assert!(app.pending_confirm.is_none(), "and dismiss itself");
+        assert!(
+            app.pending_confirm.is_some(),
+            "unrelated keys must not dismiss the modal"
+        );
+
+        // 'n' or Esc dismisses the confirmation.
+        handle_key(&mut app, KeyCode::Esc);
+        assert!(app.pending_confirm.is_none(), "Esc dismisses the modal");
+    }
+
+    #[test]
+    fn confirm_modal_keys_test() {
+        let mut app = app();
+
+        // Dismiss via 'n'
+        app.pending_confirm = Some(ConfirmRequest::Elevate);
+        handle_key(&mut app, KeyCode::Char(' '));
+        assert!(app.pending_confirm.is_some(), "Space ignored");
+        handle_key(&mut app, KeyCode::Char('n'));
+        assert!(app.pending_confirm.is_none(), "'n' dismisses");
+
+        // Dismiss via 'N'
+        app.pending_confirm = Some(ConfirmRequest::Elevate);
+        handle_key(&mut app, KeyCode::Char('N'));
+        assert!(app.pending_confirm.is_none(), "'N' dismisses");
+
+        // Confirm via 'y'
+        app.pending_confirm = Some(ConfirmRequest::UpdateAvailable {
+            current_version: "0.1.0".into(),
+            latest_version: "0.2.0".into(),
+            release_url: "https://example.com".into(),
+        });
+        handle_key(&mut app, KeyCode::Char('y'));
+        assert!(app.pending_confirm.is_none(), "'y' confirms");
+
+        // Confirm via 'Enter'
+        app.pending_confirm = Some(ConfirmRequest::UpdateAvailable {
+            current_version: "0.1.0".into(),
+            latest_version: "0.2.0".into(),
+            release_url: "https://example.com".into(),
+        });
+        handle_key(&mut app, KeyCode::Enter);
+        assert!(app.pending_confirm.is_none(), "'Enter' confirms");
     }
 
     #[test]
@@ -320,6 +380,56 @@ mod tests {
 
         handle_key(&mut app, KeyCode::BackTab);
         assert_eq!(app.active_tab, TAB_COUNT - 1);
+    }
+
+    #[test]
+    fn arrow_keys_and_hl_navigate_tabs_bios_style() {
+        let mut app = app();
+        app.active_tab = 0;
+
+        // Right arrow advances tab
+        handle_key(&mut app, KeyCode::Right);
+        assert_eq!(app.active_tab, 1);
+
+        // 'l' advances tab
+        handle_key(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.active_tab, 2);
+
+        // Left arrow goes back
+        handle_key(&mut app, KeyCode::Left);
+        assert_eq!(app.active_tab, 1);
+
+        // 'h' goes back
+        handle_key(&mut app, KeyCode::Char('h'));
+        assert_eq!(app.active_tab, 0);
+
+        // Left arrow wraps to last tab
+        handle_key(&mut app, KeyCode::Left);
+        assert_eq!(app.active_tab, TAB_COUNT - 1);
+
+        // Right arrow wraps back to first tab
+        handle_key(&mut app, KeyCode::Right);
+        assert_eq!(app.active_tab, 0);
+    }
+
+    #[test]
+    fn plus_and_minus_adjust_settings_on_settings_tab() {
+        let mut app = app();
+        app.active_tab = TAB_SETTINGS;
+        app.selected_setting_index = 4; // temp_clean_threshold_mb (default 500)
+        let initial = app.config.temp_clean_threshold_mb;
+
+        handle_key(&mut app, KeyCode::Char('+'));
+        assert_eq!(app.config.temp_clean_threshold_mb, initial + 100);
+
+        handle_key(&mut app, KeyCode::Char('-'));
+        assert_eq!(app.config.temp_clean_threshold_mb, initial);
+
+        handle_key(&mut app, KeyCode::Char(']'));
+        assert_eq!(app.config.temp_clean_threshold_mb, initial + 100);
+
+        handle_key(&mut app, KeyCode::Char('['));
+        assert_eq!(app.config.temp_clean_threshold_mb, initial);
     }
 
     #[test]
@@ -443,5 +553,49 @@ mod tests {
         assert_eq!(app.active_tab, before);
         assert!(!app.should_quit);
         assert!(!app.show_help);
+    }
+
+    #[test]
+    fn setting_input_modal_captures_digits_and_submits_on_enter() {
+        let mut app = app();
+        app.config.temp_clean_threshold_mb = 500;
+        app.active_tab = TAB_SETTINGS;
+        app.selected_setting_index = 4; // Temp clean threshold
+        assert_eq!(app.config.temp_clean_threshold_mb, 500);
+
+        // Enter opens input modal
+        handle_key(&mut app, KeyCode::Enter);
+        assert!(app.setting_input.is_some());
+
+        // Backspace 3 times
+        handle_key(&mut app, KeyCode::Backspace);
+        handle_key(&mut app, KeyCode::Backspace);
+        handle_key(&mut app, KeyCode::Backspace);
+        assert_eq!(app.setting_input.as_ref().unwrap().buffer, "");
+
+        // Type '8', '0', '0'
+        handle_key(&mut app, KeyCode::Char('8'));
+        handle_key(&mut app, KeyCode::Char('0'));
+        handle_key(&mut app, KeyCode::Char('0'));
+        assert_eq!(app.setting_input.as_ref().unwrap().buffer, "800");
+
+        // Non-digits are ignored
+        handle_key(&mut app, KeyCode::Char('a'));
+        handle_key(&mut app, KeyCode::Char('q'));
+        assert_eq!(app.setting_input.as_ref().unwrap().buffer, "800");
+        assert!(!app.should_quit, "modal swallows 'q'");
+
+        // Enter submits and saves
+        handle_key(&mut app, KeyCode::Enter);
+        assert!(app.setting_input.is_none());
+        assert_eq!(app.config.temp_clean_threshold_mb, 800);
+
+        // Esc cancels without saving
+        handle_key(&mut app, KeyCode::Enter);
+        assert!(app.setting_input.is_some());
+        handle_key(&mut app, KeyCode::Char('9'));
+        handle_key(&mut app, KeyCode::Esc);
+        assert!(app.setting_input.is_none());
+        assert_eq!(app.config.temp_clean_threshold_mb, 800);
     }
 }

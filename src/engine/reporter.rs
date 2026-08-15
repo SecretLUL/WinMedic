@@ -50,7 +50,7 @@ impl DiagnosticReporter {
         if issues.is_empty() {
             println!(
                 "{}",
-                "✔ No issues found. Your system is in excellent shape."
+                "No issues found. Your system is in excellent shape."
                     .green()
                     .bold()
             );
@@ -137,14 +137,14 @@ impl DiagnosticReporter {
         let open_count = issues.len().saturating_sub(fixed_count);
 
         let mut md = format!(
-            "# 🩺 WinMedic Diagnostic & System Report\n\n\
+            "# WinMedic Diagnostic & System Report\n\n\
             - **System:** {}\n\
             - **Generated:** {}\n\
             - **Health score:** {}/100\n\
             - **Issues found:** {} (critical: {}, warnings: {}, informational: {})\n\
             - **Status:** {} fixed, {} open\n\n\
             ---\n\n\
-            ## 📋 Findings\n\n",
+            ## Findings\n\n",
             hostname,
             timestamp,
             health_score,
@@ -157,20 +157,20 @@ impl DiagnosticReporter {
         );
 
         if issues.is_empty() {
-            md.push_str("✔ **No issues found.** The system is in excellent shape.\n\n");
+            md.push_str("**No issues found.** The system is in excellent shape.\n\n");
         } else {
             for (idx, issue) in issues.iter().enumerate() {
                 let sev_str = match issue.severity {
-                    Severity::Critical => "🔴 CRITICAL",
-                    Severity::Warning => "▲ WARNING",
-                    Severity::Info => "ℹ INFO",
+                    Severity::Critical => "[!] CRITICAL",
+                    Severity::Warning => "[!] WARNING",
+                    Severity::Info => "[i] INFO",
                 };
                 let status_str = if issue.is_fixed {
-                    "✔ FIXED"
+                    "[FIXED]"
                 } else if issue.fix_error.is_some() {
-                    "✖ FAILED"
+                    "[FAILED]"
                 } else {
-                    "● OPEN"
+                    "[OPEN]"
                 };
 
                 md.push_str(&format!(
@@ -196,7 +196,7 @@ impl DiagnosticReporter {
                 ));
 
                 if let Some(ref err) = issue.fix_error {
-                    md.push_str(&format!("> ⚠️ **Repair error:** {}\n\n", err));
+                    md.push_str(&format!("> **Repair error:** {}\n\n", err));
                 }
 
                 if !issue.fix_steps.is_empty() {
@@ -210,7 +210,7 @@ impl DiagnosticReporter {
         }
 
         if !audit_entries.is_empty() {
-            md.push_str("---\n\n## 🛡️ Audit & Repair Log\n\n");
+            md.push_str("---\n\n## Audit & Repair Log\n\n");
             md.push_str("| Time | Action | Module | Title | Status | Details |\n");
             md.push_str("| :--- | :--- | :--- | :--- | :--- | :--- |\n");
             for entry in audit_entries {
@@ -266,7 +266,7 @@ impl DiagnosticReporter {
             issues_html.push_str(
                 r#"
             <div class="empty-state">
-                <div class="empty-icon">✔</div>
+                <div class="empty-icon">[OK]</div>
                 <h3>No issues found</h3>
                 <p>Your Windows system is in excellent, clean shape.</p>
             </div>
@@ -281,11 +281,11 @@ impl DiagnosticReporter {
                 };
 
                 let (status_class, status_label) = if issue.is_fixed {
-                    ("status-fixed", "✔ FIXED")
+                    ("status-fixed", "FIXED")
                 } else if issue.fix_error.is_some() {
-                    ("status-failed", "✖ FAILED")
+                    ("status-failed", "FAILED")
                 } else {
-                    ("status-open", "● OPEN")
+                    ("status-open", "OPEN")
                 };
 
                 let mut steps_html = String::new();
@@ -326,7 +326,7 @@ impl DiagnosticReporter {
                             <div class="section-label">Technical details:</div>
                             <pre class="tech-details"><code>{tech}</code></pre>
                             <div class="fix-box">
-                                <div class="fix-title">💡 Recommended repair:</div>
+                                <div class="fix-title">Recommended repair:</div>
                                 <div class="fix-text">{fix}</div>
                                 {steps}
                             </div>
@@ -373,7 +373,7 @@ impl DiagnosticReporter {
             audit_html = format!(
                 r#"
                 <section class="section">
-                    <h2 class="section-heading">🛡️ Audit &amp; Repair Log</h2>
+                    <h2 class="section-heading">Audit &amp; Repair Log</h2>
                     <div class="card table-card">
                         <table class="audit-table">
                             <thead>
@@ -686,7 +686,7 @@ impl DiagnosticReporter {
     <div class="container">
         <header>
             <div class="brand">
-                <div class="logo-icon">🩺</div>
+                <div class="logo-icon">[+]</div>
                 <div>
                     <h1>WinMedic Diagnostic Report</h1>
                     <div class="meta-text">System: <strong>{hostname}</strong> │ Generated: {timestamp}</div>
@@ -721,7 +721,7 @@ impl DiagnosticReporter {
         </div>
 
         <section class="section">
-            <h2 class="section-heading">📋 Diagnostic Findings &amp; Analysis</h2>
+            <h2 class="section-heading">Diagnostic Findings &amp; Analysis</h2>
             {issues_html}
         </section>
 
@@ -824,7 +824,7 @@ mod tests {
     fn test_to_markdown_contains_sections() {
         let issues = sample_issues();
         let md = DiagnosticReporter::to_markdown(&issues, 65, &[]);
-        assert!(md.contains("# 🩺 WinMedic Diagnostic & System Report"));
+        assert!(md.contains("# WinMedic Diagnostic & System Report"));
         assert!(md.contains("Corrupted system files found"));
         assert!(md.contains("65/100"));
     }
@@ -857,7 +857,7 @@ mod tests {
         assert!(
             std::fs::read_to_string(&md_path)
                 .unwrap()
-                .contains("# 🩺 WinMedic")
+                .contains("# WinMedic")
         );
 
         let json_path = temp_dir.join("report.json");

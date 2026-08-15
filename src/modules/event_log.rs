@@ -61,7 +61,7 @@ impl DiagnosticModule for EventLogModule {
     }
 
     fn icon(&self) -> &'static str {
-        "📋"
+        "[LOG]"
     }
 
     async fn scan(
@@ -128,7 +128,7 @@ impl DiagnosticModule for EventLogModule {
                     &progress_tx,
                     35,
                     "No BSOD crash dumps",
-                    Some("✔ No blue screen minidumps found in %WINDIR%\\Minidump."),
+                    Some("No blue screen minidumps found in %WINDIR%\\Minidump."),
                 )
                 .await;
             }
@@ -137,7 +137,7 @@ impl DiagnosticModule for EventLogModule {
                 &progress_tx,
                 35,
                 "Minidump directory empty",
-                Some("✔ The minidump directory is clean."),
+                Some("The minidump directory is clean."),
             )
             .await;
         }
@@ -192,7 +192,7 @@ impl DiagnosticModule for EventLogModule {
                     75,
                     "System log unremarkable",
                     Some(&format!(
-                        "✔ No cluster of critical system events in the last {}h.",
+                        "No cluster of critical system events in the last {}h.",
                         window_hours
                     )),
                 )
@@ -240,7 +240,7 @@ impl DiagnosticModule for EventLogModule {
                     &progress_tx,
                     95,
                     "WHEA Hardware intakt",
-                    Some("✔ No WHEA hardware faults or PCIe/CPU errors logged."),
+                    Some("No WHEA hardware faults or PCIe/CPU errors logged."),
                 )
                 .await;
             }

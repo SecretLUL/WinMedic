@@ -31,7 +31,7 @@ pub fn render_settings(
             _ => Theme::CYAN,
         };
 
-        let marker = if is_current { " ▶ " } else { "   " };
+        let marker = if is_current { " > " } else { "   " };
         let line = Line::from(vec![
             Span::styled(
                 marker,
@@ -60,9 +60,7 @@ pub fn render_settings(
         items.push(ListItem::new(line));
     }
 
-    let list = List::new(items).block(Theme::card_block(
-        "SETTINGS - [↑/↓] Select  [Space/Enter] Toggle  [←/→] Change Value",
-    ));
+    let list = List::new(items).block(Theme::card_block("SETTINGS"));
     f.render_widget(list, chunks[0]);
 
     // Explanation of the highlighted setting plus the persistence location.

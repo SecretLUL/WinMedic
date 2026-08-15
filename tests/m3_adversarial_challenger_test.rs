@@ -779,7 +779,7 @@ async fn test_github_api_large_payload_stress() {
 fn test_appconfig_default_and_setting_count() {
     let cfg = AppConfig::default();
     assert!(cfg.check_for_updates);
-    assert_eq!(AppConfig::SETTING_COUNT, 6);
+    assert_eq!(AppConfig::SETTING_COUNT, 7);
 }
 
 #[test]
@@ -812,15 +812,15 @@ fn test_appconfig_toggle_and_adjust_boundary_cases() {
     assert!(cfg.check_for_updates);
 
     // Out of bounds indices
-    assert!(!cfg.toggle_setting(6));
+    assert!(!cfg.toggle_setting(7));
     assert!(!cfg.toggle_setting(100));
     assert!(!cfg.toggle_setting(usize::MAX));
 
-    assert!(!cfg.adjust_setting(6, true));
+    assert!(!cfg.adjust_setting(7, true));
     assert!(!cfg.adjust_setting(100, false));
     assert!(!cfg.adjust_setting(usize::MAX, true));
 
-    assert_eq!(cfg.setting_row(6), None);
+    assert_eq!(cfg.setting_row(7), None);
     assert_eq!(cfg.setting_row(100), None);
     assert_eq!(cfg.setting_row(usize::MAX), None);
 }

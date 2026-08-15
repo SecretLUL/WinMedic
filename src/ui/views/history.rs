@@ -40,10 +40,10 @@ pub fn render_history(f: &mut Frame, area: Rect, state: &HistoryViewState) {
         .take(25)
         .map(|entry| {
             let (status_icon, status_color) = match entry.status.as_str() {
-                "SUCCESS" => ("✔", Theme::EMERALD),
-                "FAILED" => ("✖", Theme::CORAL),
-                "WARNING" => ("▲", Theme::AMBER),
-                _ => ("ℹ", Theme::CYAN),
+                "SUCCESS" => ("[OK]", Theme::EMERALD),
+                "FAILED" => ("[X]", Theme::CORAL),
+                "WARNING" => ("[WARN]", Theme::AMBER),
+                _ => ("[INFO]", Theme::CYAN),
             };
 
             let line = Line::from(vec![
@@ -75,7 +75,7 @@ pub fn render_history(f: &mut Frame, area: Rect, state: &HistoryViewState) {
 
     // Right Pane: Registry Backups & VSS Points
     let mut backup_lines = vec![Line::from(vec![Span::styled(
-        " 🛡 System restore points (VSS):",
+        " System restore points (VSS):",
         Style::default()
             .fg(Theme::CYAN)
             .add_modifier(Modifier::BOLD),
@@ -83,7 +83,7 @@ pub fn render_history(f: &mut Frame, area: Rect, state: &HistoryViewState) {
 
     if state.restore_points_loading {
         backup_lines.push(Line::from(vec![Span::styled(
-            "   ⏳ Querying Windows restore points...",
+            "   Querying Windows restore points...",
             Style::default().fg(Theme::AMBER),
         )]));
     } else if state.vss_restore_points.is_empty() {
@@ -94,7 +94,7 @@ pub fn render_history(f: &mut Frame, area: Rect, state: &HistoryViewState) {
     } else {
         for rp in state.vss_restore_points.iter().take(5) {
             backup_lines.push(Line::from(vec![
-                Span::styled("   ✔ ", Style::default().fg(Theme::EMERALD)),
+                Span::styled("   [OK] ", Style::default().fg(Theme::EMERALD)),
                 Span::styled(rp.as_str(), Style::default().fg(Theme::TEXT_WHITE)),
             ]));
         }
@@ -102,7 +102,7 @@ pub fn render_history(f: &mut Frame, area: Rect, state: &HistoryViewState) {
 
     backup_lines.push(Line::from(""));
     backup_lines.push(Line::from(vec![Span::styled(
-        " 🗄 Saved registry snapshots (.reg):",
+        " Saved registry snapshots (.reg):",
         Style::default()
             .fg(Theme::CYAN)
             .add_modifier(Modifier::BOLD),
@@ -139,7 +139,7 @@ pub fn render_history(f: &mut Frame, area: Rect, state: &HistoryViewState) {
             let is_current = idx == state.selected_backup_index;
             let (marker, title_style) = if is_current {
                 (
-                    " ▶ ",
+                    " > ",
                     Style::default()
                         .fg(Theme::BG_DEEP)
                         .bg(Theme::CYAN)
@@ -151,7 +151,7 @@ pub fn render_history(f: &mut Frame, area: Rect, state: &HistoryViewState) {
 
             backup_lines.push(Line::from(vec![
                 Span::styled(marker, Style::default().fg(Theme::CYAN)),
-                Span::styled("📦 ", Style::default().fg(Theme::AMBER)),
+                Span::styled("[REG] ", Style::default().fg(Theme::AMBER)),
                 Span::styled(
                     format!("[{}] ", rec.timestamp),
                     Style::default().fg(Theme::MUTED),
@@ -166,7 +166,7 @@ pub fn render_history(f: &mut Frame, area: Rect, state: &HistoryViewState) {
     }
 
     let backup_title = if state.is_restoring {
-        "BACKUPS - ⏳ ROLLBACK RUNNING..."
+        "BACKUPS - ROLLBACK RUNNING..."
     } else {
         "BACKUPS - [↑/↓] Select  [U] Rollback  [R] Refresh VSS"
     };

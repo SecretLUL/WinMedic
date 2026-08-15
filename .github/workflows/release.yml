@@ -6,6 +6,13 @@ on:
       - 'v*'
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.3.0). Leave empty to use version from Cargo.toml'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   build-release:
@@ -22,6 +29,23 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Resolve Release Tag
+        id: resolve-tag
+        shell: pwsh
+        run: |
+          $inputTag = "${{ inputs.tag }}".Trim()
+          if ($inputTag) {
+            $tag = if ($inputTag.StartsWith("v")) { $inputTag } else { "v$inputTag" }
+          } elseif ($env:GITHUB_REF_NAME -and $env:GITHUB_REF_NAME -match '^v\d') {
+            $tag = $env:GITHUB_REF_NAME
+          } else {
+            $match = Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"'
+            $ver = if ($match) { $match.Matches[0].Groups[1].Value } else { "0.3.0" }
+            $tag = "v$ver"
+          }
+          Write-Host "Resolved release tag: $tag"
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
       # --locked forbids Cargo from silently resolving different dependency
       # versions than the ones committed in Cargo.lock, so the published binary
       # is reproducible from the tagged tree.
@@ -31,7 +55,7 @@ jobs:
       - name: Prepare Single Versioned Binary
         shell: pwsh
         run: |
-          $tag = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "v0.1.0" }
+          $tag = "${{ steps.resolve-tag.outputs.tag }}"
           Copy-Item target/release/winmedic.exe "target/release/winmedic-${tag}.exe"
 
       # WinMedic ships unsigned, so SmartScreen cannot vouch for the download.
@@ -40,7 +64,7 @@ jobs:
       - name: Generate SHA256 Checksum
         shell: pwsh
         run: |
-          $tag = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "v0.1.0" }
+          $tag = "${{ steps.resolve-tag.outputs.tag }}"
           $name = "winmedic-${tag}.exe"
           $hash = (Get-FileHash -Path "target/release/$name" -Algorithm SHA256).Hash.ToLower()
           # sha256sum-compatible layout: "<hash>  <filename>"
@@ -54,11 +78,14 @@ jobs:
         id: notes
         shell: pwsh
         run: |
-          $path = "docs/release-notes/$env:GITHUB_REF_NAME.md"
+          $tag = "${{ steps.resolve-tag.outputs.tag }}"
+          $path = "docs/release-notes/${tag}.md"
           if (Test-Path $path) {
+            Write-Host "Using release notes from $path"
             "body_path=$path"  | Out-File -FilePath $env:GITHUB_OUTPUT -Append
             "generate=false"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           } else {
+            Write-Host "No manual release notes found at $path, generating from commits"
             "body_path="       | Out-File -FilePath $env:GITHUB_OUTPUT -Append
             "generate=true"    | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           }
@@ -66,11 +93,9 @@ jobs:
       - name: Upload Binary to Release Assets
         uses: softprops/action-gh-release@v3
         with:
-          # SemVer decides: only tags carrying a pre-release suffix (v0.3.0-rc1)
-          # are pre-releases. Marking every pre-1.0 tag as one hid them from the
-          # in-app updater, which reads /releases/latest — an endpoint that skips
-          # pre-releases entirely.
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          tag_name: ${{ steps.resolve-tag.outputs.tag }}
+          name: ${{ steps.resolve-tag.outputs.tag }}
+          prerelease: ${{ contains(steps.resolve-tag.outputs.tag, '-') }}
           body_path: ${{ steps.notes.outputs.body_path }}
           generate_release_notes: ${{ steps.notes.outputs.generate }}
           files: |

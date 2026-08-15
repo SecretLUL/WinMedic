@@ -127,7 +127,7 @@ impl App {
         let target = if self.is_scanning { "Scan" } else { "Repair" };
         self.status_message = Some(format!("Cancelling the {}...", target.to_lowercase()));
         let line = format!(
-            "⏹ Cancellation requested - stopping the running {}.",
+            "[STOP] Cancellation requested - stopping the running {}.",
             target.to_lowercase()
         );
         if self.is_scanning {

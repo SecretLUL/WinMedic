@@ -71,11 +71,11 @@ pub fn render_scanner(
         .iter()
         .map(|(_id, name, icon, percent, is_done)| {
             let (status_symbol, status_color) = if *is_done {
-                ("✔ DONE", Theme::EMERALD)
+                ("DONE", Theme::EMERALD)
             } else if *percent > 0 && *percent < 100 {
-                ("⚡ CHECKING...", Theme::CYAN)
+                ("CHECKING...", Theme::CYAN)
             } else {
-                ("⏳ WAITING", Theme::MUTED)
+                ("WAITING", Theme::MUTED)
             };
 
             let line = Line::from(vec![
@@ -115,7 +115,7 @@ pub fn render_scanner(
         .filter_map(|idx| log_messages.get(idx))
         .map(|msg| {
             Line::from(vec![
-                Span::styled(" ❯ ", Style::default().fg(Theme::CYAN)),
+                Span::styled(" > ", Style::default().fg(Theme::CYAN)),
                 Span::styled(msg.as_str(), Style::default().fg(Theme::TEXT_WHITE)),
             ])
         })
@@ -176,25 +176,25 @@ pub fn render_scanner(
         ),
         Span::styled("│ ", Style::default().fg(Theme::BORDER)),
         Span::styled(
-            format!(" 🔴 {} critical ", crit_count),
+            format!(" [!] {} critical ", crit_count),
             Style::default()
                 .fg(Theme::CORAL)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled("│ ", Style::default().fg(Theme::BORDER)),
         Span::styled(
-            format!(" ▲ {} warnings ", warn_count),
+            format!(" [!] {} warnings ", warn_count),
             Style::default()
                 .fg(Theme::AMBER)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled("│ ", Style::default().fg(Theme::BORDER)),
         Span::styled(
-            format!(" ℹ {} informational ", info_count),
+            format!(" [i] {} informational ", info_count),
             Style::default().fg(Theme::CYAN),
         ),
         Span::styled(
-            "   👉 Press [3] for issue triage & selection ",
+            "   -> Press [3] for issue triage & selection ",
             Style::default()
                 .fg(Theme::EMERALD)
                 .add_modifier(Modifier::BOLD),

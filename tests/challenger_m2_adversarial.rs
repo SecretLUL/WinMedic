@@ -608,6 +608,7 @@ async fn adv_test_diagnostic_engine_full_integration_with_system_cleaner() {
             RepairOptions {
                 dry_run: true,
                 create_vss: false,
+                verbose_logging: false,
             },
             dry_tx,
             cancel.clone(),
@@ -647,6 +648,7 @@ async fn adv_test_diagnostic_engine_full_integration_with_system_cleaner() {
             RepairOptions {
                 dry_run: false,
                 create_vss: false,
+                verbose_logging: false,
             },
             rep_tx,
             cancel,

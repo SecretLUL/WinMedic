@@ -105,6 +105,8 @@ pub struct AppConfig {
     pub max_event_log_hours: u32,
     /// Check for newer WinMedic releases on GitHub upon startup.
     pub check_for_updates: bool,
+    /// Emit detailed diagnostic traces and debug logs during scan and repair.
+    pub verbose_logging: bool,
 }
 
 impl Default for AppConfig {
@@ -116,6 +118,7 @@ impl Default for AppConfig {
             temp_clean_threshold_mb: 500,
             max_event_log_hours: 24,
             check_for_updates: true,
+            verbose_logging: false,
         }
     }
 }
@@ -201,7 +204,7 @@ impl AppConfig {
     }
 
     /// Number of editable settings exposed in the settings tab.
-    pub const SETTING_COUNT: usize = 6;
+    pub const SETTING_COUNT: usize = 7;
 
     /// Human readable label, current value and explanation for setting `index`.
     pub fn setting_row(&self, index: usize) -> Option<(&'static str, String, &'static str)> {
@@ -216,32 +219,37 @@ impl AppConfig {
             0 => Some((
                 "Create a VSS restore point before repairs",
                 on_off(self.create_vss_before_repair),
-                "Creates a Windows System Restore point before every repair run.",
+                "Creates a Windows System Restore point before every repair run. [Space/Enter] Toggle.",
             )),
             1 => Some((
                 "Back up the registry before changing it",
                 on_off(self.auto_backup_registry),
-                "Exports affected keys as a .reg file. When OFF, registry fixes run without a safety net.",
+                "Exports affected keys as a .reg file. When OFF, registry fixes run without a safety net. [Space/Enter] Toggle.",
             )),
             2 => Some((
                 "Restart services automatically",
                 on_off(self.auto_restart_services),
-                "Lets fixes stop and restart Windows services. When OFF, such fixes are skipped.",
+                "Lets fixes stop and restart Windows services. When OFF, such fixes are skipped. [Space/Enter] Toggle.",
             )),
             3 => Some((
                 "Check for updates automatically",
                 on_off(self.check_for_updates),
-                "Checks GitHub for new WinMedic releases in the background at startup.",
+                "Checks GitHub for new WinMedic releases in the background at startup. [Space/Enter] Toggle.",
             )),
             4 => Some((
                 "Temp file threshold",
                 format!("{} MB", self.temp_clean_threshold_mb),
-                "Temp files are reported as an issue past this total size. [←/→] ±100 MB.",
+                "Temp files are reported as an issue past this total size. [Enter] Custom value, [+/-] ±100 MB.",
             )),
             5 => Some((
                 "Event log analysis window",
                 format!("{} h", self.max_event_log_hours),
-                "How far back the event log is searched for critical events. [←/→] ±6 h.",
+                "How far back the event log is searched for critical events. [Enter] Custom value, [+/-] ±6 h.",
+            )),
+            6 => Some((
+                "Enable verbose / debug logs",
+                on_off(self.verbose_logging),
+                "Shows detailed diagnostic traces, debug logs, module timing, and step-by-step command outputs in scan and repair logs. [Space/Enter] Toggle.",
             )),
             _ => None,
         }
@@ -254,6 +262,7 @@ impl AppConfig {
             1 => self.auto_backup_registry = !self.auto_backup_registry,
             2 => self.auto_restart_services = !self.auto_restart_services,
             3 => self.check_for_updates = !self.check_for_updates,
+            6 => self.verbose_logging = !self.verbose_logging,
             _ => return false,
         }
         true
@@ -490,6 +499,7 @@ mod tests {
         assert!(cfg.auto_restart_services);
         assert!(cfg.auto_backup_registry);
         assert!(cfg.check_for_updates);
+        assert!(!cfg.verbose_logging);
         assert_eq!(cfg.max_event_log_hours, 24);
         assert_eq!(cfg.temp_clean_threshold_mb, 500);
     }
@@ -502,6 +512,7 @@ mod tests {
         assert_eq!(cfg.max_event_log_hours, 24);
         assert!(cfg.create_vss_before_repair);
         assert!(cfg.check_for_updates);
+        assert!(!cfg.verbose_logging);
     }
 
     #[test]
@@ -509,12 +520,14 @@ mod tests {
         let mut cfg = AppConfig::default();
         cfg.toggle_setting(0);
         cfg.toggle_setting(3);
+        cfg.toggle_setting(6);
         cfg.adjust_setting(4, true);
         let json = serde_json::to_string(&cfg).unwrap();
         let restored: AppConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(cfg, restored);
         assert!(!restored.create_vss_before_repair);
         assert!(!restored.check_for_updates);
+        assert!(restored.verbose_logging);
         assert_eq!(restored.temp_clean_threshold_mb, 600);
     }
 
@@ -547,5 +560,17 @@ mod tests {
         assert!(cfg.toggle_setting(3));
         assert!(cfg.check_for_updates);
         assert!(!cfg.toggle_setting(99));
+    }
+
+    #[test]
+    fn test_toggle_verbose_logging_setting() {
+        let mut cfg = AppConfig::default();
+        assert!(!cfg.verbose_logging);
+        assert!(cfg.toggle_setting(6));
+        assert!(cfg.verbose_logging);
+        assert_eq!(cfg.setting_row(6).unwrap().1, "ON");
+        assert!(cfg.toggle_setting(6));
+        assert!(!cfg.verbose_logging);
+        assert_eq!(cfg.setting_row(6).unwrap().1, "OFF");
     }
 }

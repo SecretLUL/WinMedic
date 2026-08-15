@@ -94,6 +94,7 @@ async fn test_scenario_1_full_system_scan_and_dry_run_triage() {
     let options = RepairOptions {
         create_vss: false,
         dry_run: true,
+        verbose_logging: false,
     };
 
     let engine2 = DiagnosticEngine::new(&config);

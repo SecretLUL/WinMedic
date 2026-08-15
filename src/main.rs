@@ -30,7 +30,7 @@ use utils::admin::{is_admin, relaunch_as_admin};
 #[command(
     name = "WinMedic",
     version,
-    about = "🩺 WinMedic – Advanced Windows Self-Healing & Diagnostic TUI in Rust",
+    about = "WinMedic - Advanced Windows Self-Healing & Diagnostic TUI in Rust",
     long_about = "A high-performance terminal utility that automatically diagnoses, categorizes, and safely repairs Windows errors, update stalls, registry bloat, and network issues.
 
 Exit codes (headless mode):
@@ -179,7 +179,7 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         DiagnosticReporter::print_banner();
         println!("Starting the WinMedic diagnostic engine...\n");
         if args.dry_run {
-            println!("⚠ SIMULATION MODE: nothing will be changed.\n");
+            println!("[!] SIMULATION MODE: nothing will be changed.\n");
         }
     }
 
@@ -196,7 +196,7 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
             continue;
         }
         match evt {
-            ScanEvent::ModuleStarted(id) => println!("⏳ Scanning module '{}'...", id),
+            ScanEvent::ModuleStarted(id) => println!("Scanning module '{}'...", id),
             ScanEvent::ModuleProgressUpdate(prog) => {
                 if let Some(msg) = prog.log_message {
                     println!("   └─ {}", msg);
@@ -204,20 +204,20 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
             }
             ScanEvent::ModuleFinished { module_id, issues } => {
                 println!(
-                    "✔ Module '{}' finished ({} issues found)",
+                    "[OK] Module '{}' finished ({} issues found)",
                     module_id,
                     issues.len()
                 );
             }
             ScanEvent::ModuleFailed { module_id, error } => {
-                println!("✖ Module '{}' failed: {}", module_id, error);
+                println!("[X] Module '{}' failed: {}", module_id, error);
             }
             ScanEvent::ScanCancelled {
                 completed_modules,
                 total_modules,
             } => {
                 println!(
-                    "\n⏹ Cancelled after {}/{} modules.",
+                    "\n[STOP] Cancelled after {}/{} modules.",
                     completed_modules, total_modules
                 );
             }
@@ -256,9 +256,9 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
             println!(
                 "\n{}",
                 if args.dry_run {
-                    "🔍 Simulating repairs (nothing will be changed)..."
+                    "Simulating repairs (nothing will be changed)..."
                 } else {
-                    "⚡ Starting automatic repairs..."
+                    "Starting automatic repairs..."
                 }
             );
         }
@@ -268,6 +268,7 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         let options = RepairOptions {
             create_vss: !args.no_vss && config.create_vss_before_repair,
             dry_run: args.dry_run,
+            verbose_logging: config.verbose_logging,
         };
 
         let fix_cancel = cancel.clone();
@@ -289,25 +290,25 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
             }
             match evt {
                 RepairEvent::DryRunStarted { issue_count } => {
-                    println!("🔍 Simulating {} issue(s).", issue_count)
+                    println!("Simulating {} issue(s).", issue_count)
                 }
                 RepairEvent::VssStarted => {
-                    println!("🛡 Creating a Windows System Restore point...")
+                    println!("Creating a Windows System Restore point...")
                 }
                 RepairEvent::VssCompleted { success, message } => println!(
                     "   └─ VSS Status: {} ({})",
                     if success { "Created" } else { "Notice" },
                     message
                 ),
-                RepairEvent::FixStarted { title, .. } => println!("🔧 {}", title),
+                RepairEvent::FixStarted { title, .. } => println!("Fix: {}", title),
                 RepairEvent::FixOutput { line, .. } => println!("   [LOG] {}", line),
                 RepairEvent::FixFinished {
                     success, message, ..
                 } => {
                     if success {
-                        println!("   ✔ {}", message);
+                        println!("   [OK] {}", message);
                     } else {
-                        println!("   ✖ Failed: {}", message);
+                        println!("   [X] Failed: {}", message);
                     }
                 }
                 RepairEvent::RepairsCancelled {
@@ -315,7 +316,7 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
                     failed_count,
                     remaining,
                 } => println!(
-                    "\n⏹ Cancelled: {} done, {} failed, {} skipped.",
+                    "\n[STOP] Cancelled: {} done, {} failed, {} skipped.",
                     fixed_count, failed_count, remaining
                 ),
                 RepairEvent::AllRepairsCompleted { .. } => {}
@@ -328,7 +329,7 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
 
         if !quiet {
             println!(
-                "\n🎉 {}: {} {}, {} failed.\n",
+                "\n{}: {} {}, {} failed.\n",
                 if args.dry_run {
                     "Simulation finished"
                 } else {
@@ -358,7 +359,7 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         match DiagnosticReporter::save_report(out_path, &issues, health, &audit_entries) {
             Ok(()) => {
                 if !quiet {
-                    println!("📄 Report saved: {}", out_path.display());
+                    println!("Report saved: {}", out_path.display());
                 }
             }
             Err(e) => {

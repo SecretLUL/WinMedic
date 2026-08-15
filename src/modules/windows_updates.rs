@@ -57,7 +57,7 @@ impl DiagnosticModule for WindowsUpdatesModule {
     }
 
     fn icon(&self) -> &'static str {
-        "🔄"
+        "[UPD]"
     }
 
     async fn scan(
@@ -110,10 +110,7 @@ impl DiagnosticModule for WindowsUpdatesModule {
                         &progress_tx,
                         35,
                         &format!("Service '{}' running", svc),
-                        Some(&format!(
-                            "✔ Service '{}' ({}) is operational.",
-                            svc_name, svc
-                        )),
+                        Some(&format!("Service '{}' ({}) is operational.", svc_name, svc)),
                     )
                     .await;
                 }
@@ -164,7 +161,7 @@ impl DiagnosticModule for WindowsUpdatesModule {
                     75,
                     "Update cache unremarkable",
                     Some(&format!(
-                        "✔ SoftwareDistribution cache: {} MB ({} packages).",
+                        "SoftwareDistribution cache: {} MB ({} packages).",
                         total_size_mb, file_count
                     )),
                 )
@@ -213,7 +210,7 @@ impl DiagnosticModule for WindowsUpdatesModule {
                 &progress_tx,
                 95,
                 "No pending update reboots",
-                Some("✔ No blocking reboot-pending keys found."),
+                Some("No blocking reboot-pending keys found."),
             )
             .await;
         }

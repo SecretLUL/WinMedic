@@ -308,7 +308,7 @@ fn test_launch_browser_valid_urls() {
 fn test_app_config_defaults_and_setting_count() {
     let cfg = AppConfig::default();
     assert!(cfg.check_for_updates);
-    assert_eq!(AppConfig::SETTING_COUNT, 6);
+    assert_eq!(AppConfig::SETTING_COUNT, 7);
 }
 
 #[test]
@@ -361,9 +361,9 @@ fn test_app_config_setting_row_and_toggle() {
     assert!(cfg.check_for_updates);
 
     // Out-of-bounds indices
-    assert!(!cfg.toggle_setting(6));
+    assert!(!cfg.toggle_setting(7));
     assert!(!cfg.toggle_setting(99));
-    assert!(cfg.setting_row(6).is_none());
+    assert!(cfg.setting_row(7).is_none());
 }
 
 // ============================================================================

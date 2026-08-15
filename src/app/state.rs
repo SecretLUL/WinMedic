@@ -2,7 +2,10 @@
 //! export. Behaviour that belongs to a specific feature lives in the sibling
 //! modules listed in [`crate::app`].
 
-use super::{BackgroundEvent, TAB_DASHBOARD, TAB_REPAIR, TAB_SCANNER, push_bounded_log};
+use super::{
+    BackgroundEvent, TAB_COUNT, TAB_DASHBOARD, TAB_HISTORY, TAB_REPAIR, TAB_SCANNER,
+    push_bounded_log,
+};
 use crate::config::AppConfig;
 use crate::engine::issue::{Issue, Severity};
 use crate::engine::reporter::DiagnosticReporter;
@@ -21,6 +24,17 @@ use tokio::sync::mpsc::{Receiver, UnboundedReceiver, UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
 use super::confirm::ConfirmRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingInput {
+    pub setting_index: usize,
+    pub setting_name: String,
+    pub unit: String,
+    pub min_value: u64,
+    pub max_value: u64,
+    pub buffer: String,
+    pub error_msg: Option<String>,
+}
 
 pub struct App {
     pub active_tab: usize,
@@ -79,6 +93,7 @@ pub struct App {
 
     // Settings
     pub selected_setting_index: usize,
+    pub setting_input: Option<SettingInput>,
 
     // UI state
     pub status_message: Option<String>,
@@ -161,6 +176,7 @@ impl App {
             restore_points_requested: false,
             is_restoring: false,
             selected_setting_index: 0,
+            setting_input: None,
             // A corrupt config file is the one startup condition worth
             // interrupting the user's first glance for: their saved settings
             // are not in effect and the defaults silently re-enable things
@@ -246,6 +262,26 @@ impl App {
     /// True while a scan or a repair run is in flight.
     pub fn is_busy(&self) -> bool {
         self.is_scanning || self.is_fixing
+    }
+
+    /// Advance to the next tab in cyclic order (BIOS-style right navigation).
+    pub fn next_tab(&mut self) {
+        self.active_tab = (self.active_tab + 1) % TAB_COUNT;
+        if self.active_tab == TAB_HISTORY {
+            self.load_history_data();
+        }
+    }
+
+    /// Go back to the previous tab in cyclic order (BIOS-style left navigation).
+    pub fn prev_tab(&mut self) {
+        self.active_tab = if self.active_tab == 0 {
+            TAB_COUNT - 1
+        } else {
+            self.active_tab - 1
+        };
+        if self.active_tab == TAB_HISTORY {
+            self.load_history_data();
+        }
     }
 
     // ------------------------------------------------------------ log buffers
@@ -378,5 +414,20 @@ mod tests {
 
         app.scroll_log_bottom();
         assert_eq!(app.scan_log_scroll, 0);
+    }
+
+    #[test]
+    fn test_tab_navigation_wrapping() {
+        let mut app = App::new();
+        app.active_tab = 0;
+
+        app.prev_tab();
+        assert_eq!(app.active_tab, TAB_COUNT - 1);
+
+        app.next_tab();
+        assert_eq!(app.active_tab, 0);
+
+        app.next_tab();
+        assert_eq!(app.active_tab, 1);
     }
 }

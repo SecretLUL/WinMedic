@@ -15,6 +15,7 @@ use crate::ui::widgets::confirm_popup::render_confirm_popup;
 use crate::ui::widgets::footer::render_footer;
 use crate::ui::widgets::header::render_header;
 use crate::ui::widgets::help_popup::render_help_popup;
+use crate::ui::widgets::setting_input_popup::render_setting_input_popup;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
 
@@ -146,9 +147,11 @@ pub fn render_app(f: &mut Frame, app: &App) {
         app.dry_run,
     );
 
-    // 4. Modal overlays — confirmation takes precedence over help.
+    // 4. Modal overlays — confirmation takes precedence, then setting input, then help.
     if let Some(request) = app.pending_confirm.as_ref() {
         render_confirm_popup(f, area, request);
+    } else if let Some(input) = app.setting_input.as_ref() {
+        render_setting_input_popup(f, area, input);
     } else if app.show_help {
         render_help_popup(f, area);
     }
