@@ -1,4 +1,6 @@
 use crate::utils::cmd::{ps_single_quoted, run_powershell};
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 
 /// Marker prefix the checkpoint script prints so the Rust side never has to
@@ -19,6 +21,9 @@ pub enum RestorePointOutcome {
     Unverified,
     /// The checkpoint call itself failed.
     Failed(String),
+    /// Windows was never asked. Only an engine built without the real
+    /// [`RestorePointService`] reports this — see [`RestorePointService::inert`].
+    NotRequested,
 }
 
 impl RestorePointOutcome {
@@ -30,6 +35,9 @@ impl RestorePointOutcome {
     pub fn message(&self) -> String {
         match self {
             Self::Created => "A VSS restore point was created.".to_string(),
+            Self::NotRequested => "No restore point was requested: this engine was built \
+                 without access to Windows System Restore."
+                .to_string(),
             Self::Throttled => "Windows did not create a new restore point: one was already \
                  created within the last 24 hours (the Windows default throttle). \
                  A recent point therefore exists, but it does not capture the state \
@@ -143,7 +151,11 @@ fn checkpoint_script(description: &str) -> String {
 /// Verifies that a restore point was really added instead of trusting the exit
 /// status, because Windows silently declines to create one if another was made
 /// within the last 24 hours.
-pub async fn create_system_restore_point(description: &str) -> RestorePointResult {
+///
+/// Deliberately private: the only way to reach it is through
+/// [`RestorePointService::real`], so a caller cannot create a restore point on
+/// the machine running the code without saying so out loud.
+async fn create_system_restore_point(description: &str) -> RestorePointResult {
     let script = checkpoint_script(description);
 
     match run_powershell(&script, Duration::from_secs(60)).await {
@@ -155,6 +167,73 @@ pub async fn create_system_restore_point(description: &str) -> RestorePointResul
             description,
             RestorePointOutcome::Failed(format!("PowerShell could not be run: {}", e)),
         ),
+    }
+}
+
+/// A boxed future, so the service below can stay a plain function pointer and
+/// therefore stay `Copy` — the engine and the app pass it around by value.
+type RestorePointFuture = Pin<Box<dyn Future<Output = RestorePointResult> + Send>>;
+
+/// Where a repair run's pre-repair restore point comes from.
+///
+/// The one thing `run_repairs` does to the machine before any module gets a
+/// turn is ask Windows for a checkpoint, and `Checkpoint-Computer` is not
+/// something a test run should ever trigger on the developer's own PC. So this
+/// follows the same shape as the `CommandRunner`, `CleanerPaths` and
+/// `SystemActions` seams: [`Default`] is the *inert* implementation, and the
+/// real one is installed explicitly by the entry points via
+/// [`RestorePointService::real`].
+#[derive(Debug, Clone, Copy)]
+pub struct RestorePointService {
+    checkpoint: fn(String) -> RestorePointFuture,
+    /// Whether `checkpoint` really talks to Windows.
+    ///
+    /// Carried as data so a guard test can assert that an engine is inert
+    /// *without* invoking it — invoking it is exactly what such a test must
+    /// never do.
+    live: bool,
+}
+
+impl RestorePointService {
+    /// The real thing: runs `Checkpoint-Computer` on this machine.
+    pub fn real() -> Self {
+        fn checkpoint(description: String) -> RestorePointFuture {
+            Box::pin(async move { create_system_restore_point(&description).await })
+        }
+        Self {
+            checkpoint,
+            live: true,
+        }
+    }
+
+    /// Reports [`RestorePointOutcome::NotRequested`] without touching Windows.
+    /// The default.
+    pub fn inert() -> Self {
+        fn checkpoint(description: String) -> RestorePointFuture {
+            Box::pin(std::future::ready(RestorePointResult::from_outcome(
+                &description,
+                RestorePointOutcome::NotRequested,
+            )))
+        }
+        Self {
+            checkpoint,
+            live: false,
+        }
+    }
+
+    /// Whether [`Self::create`] reaches the real Windows System Restore.
+    pub fn is_live(&self) -> bool {
+        self.live
+    }
+
+    pub async fn create(&self, description: &str) -> RestorePointResult {
+        (self.checkpoint)(description.to_string()).await
+    }
+}
+
+impl Default for RestorePointService {
+    fn default() -> Self {
+        Self::inert()
     }
 }
 
@@ -251,6 +330,48 @@ mod tests {
     fn plain_description_survives_unchanged() {
         let script = checkpoint_script("WinMedic Auto-Restore Point (before repairs)");
         assert!(script.contains("'WinMedic Auto-Restore Point (before repairs)'"));
+    }
+
+    /// The default service must not reach Windows, and must say so honestly
+    /// rather than reporting a protection that does not exist.
+    #[tokio::test]
+    async fn the_default_service_creates_nothing() {
+        let service = RestorePointService::default();
+        assert!(!service.is_live());
+
+        let res = service
+            .create("WinMedic Auto-Restore Point (before repairs)")
+            .await;
+        assert!(!res.success);
+        assert_eq!(res.outcome, RestorePointOutcome::NotRequested);
+        assert_eq!(
+            res.description,
+            "WinMedic Auto-Restore Point (before repairs)"
+        );
+    }
+
+    #[test]
+    fn the_real_service_is_marked_live() {
+        // Marked, not called: calling it would create a restore point on
+        // whichever machine runs the suite.
+        assert!(RestorePointService::real().is_live());
+    }
+
+    /// No test may build a live [`RestorePointService`]. `Checkpoint-Computer`
+    /// takes up to a minute, needs elevation, and — when it does succeed —
+    /// leaves a real restore point on the machine that ran `cargo test`.
+    #[test]
+    fn no_test_in_the_tree_creates_a_restore_point() {
+        let offenders = crate::utils::test_guard::integration_test_lines_mentioning(
+            "RestorePointService::real",
+        );
+
+        assert!(
+            offenders.is_empty(),
+            "these tests would run Checkpoint-Computer on the test machine; leave the engine's \
+             inert default in place and assert on the VssStarted/VssCompleted events instead: {:?}",
+            offenders
+        );
     }
 
     #[test]

@@ -9,7 +9,7 @@ use winmedic::app::{App, ConfirmRequest};
 use winmedic::config::AppConfig;
 use winmedic::utils::cmd::{CmdOutput, MockCommandRunner};
 use winmedic::utils::updater::{
-    SemVer, UpdateInfo, check_for_update, is_update_available, launch_browser,
+    SemVer, UpdateInfo, check_for_update, is_update_available, validate_release_url,
 };
 
 // ============================================================================
@@ -872,10 +872,17 @@ fn test_appconfig_serde_backward_and_forward_compatibility() {
 // 5. APP LIFECYCLE, MODAL BUFFERING & BROWSER LAUNCH
 // ============================================================================
 
+/// Asserts the acceptance rules only. Calling `launch_browser` here would open
+/// the release page in a real browser on every single test run.
 #[test]
 fn test_browser_launch_validation() {
-    assert!(launch_browser("").is_err(), "Empty URL must return Err");
-    assert!(launch_browser("https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0").is_ok());
+    assert!(
+        validate_release_url("").is_err(),
+        "Empty URL must return Err"
+    );
+    assert!(
+        validate_release_url("https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0").is_ok()
+    );
 }
 
 #[test]

@@ -26,7 +26,7 @@ use winmedic::modules::{
 use winmedic::utils::cmd::{CmdOutput, CommandRunner};
 use winmedic::utils::updater::{
     GitHubRelease, SemVer, UpdateInfo, check_for_update, is_safe_release_url, is_update_available,
-    launch_browser,
+    validate_release_url,
 };
 
 // ============================================================================
@@ -1245,8 +1245,8 @@ fn test_tier2_f16_browser_launch_extremely_long_url() {
 
 #[test]
 fn test_tier2_f16_browser_launch_whitespace_only_rejected() {
-    let _ = launch_browser("   ");
-    assert!(launch_browser("").is_err());
+    let _ = validate_release_url("   ");
+    assert!(validate_release_url("").is_err());
 }
 
 // ============================================================================

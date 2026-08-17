@@ -1,6 +1,8 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
+use crate::utils::admin::is_admin;
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
+use crate::utils::debug_log::DebugTrace;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -79,20 +81,23 @@ impl DiagnosticModule for StorageModule {
         .await;
         sleep(Duration::from_millis(150)).await;
 
-        let dirty_check = self
-            .runner
+        let dbg = DebugTrace::scan(self.id(), progress_tx.clone(), self.config.verbose_logging);
+
+        let dirty_check = dbg
             .run(
+                &self.runner,
                 "fsutil.exe",
                 &["dirty", "query", "C:"],
                 Duration::from_secs(6),
             )
             .await;
-        if let Ok(out) = dirty_check {
-            let stdout = out.stdout.to_lowercase();
-            if stdout.contains("dirty")
-                || stdout.contains("beschädigt")
-                || stdout.contains("fehlerhaft")
-            {
+        if let Ok(out) = dirty_check
+            && out.success
+        {
+            let verdict = volume_is_dirty(&out.stdout);
+            dbg.kv("dirty bit", if verdict { "set" } else { "clear" })
+                .await;
+            if verdict {
                 issues.push(Issue::new(
                     "storage_dirty_bit",
                     self.id(),
@@ -114,6 +119,12 @@ impl DiagnosticModule for StorageModule {
                 )
                 .await;
             }
+        } else {
+            // fsutil needs elevation to read the dirty bit. A refused query says
+            // nothing about the volume, and treating its error text as a verdict
+            // is how a healthy disk ends up scheduled for chkdsk.
+            dbg.warn("fsutil could not read the dirty bit - the volume state is unknown, not bad")
+                .await;
         }
 
         // 2. Physical Disk SMART Health
@@ -266,66 +277,137 @@ impl DiagnosticModule for StorageModule {
     async fn fix(
         &self,
         issue_id: &str,
-        _progress_tx: Option<Sender<FixProgress>>,
+        progress_tx: Option<Sender<FixProgress>>,
     ) -> Result<String, String> {
+        let dbg = DebugTrace::fix(issue_id, progress_tx, self.config.verbose_logging);
+
         match issue_id {
             "storage_dirty_bit" => {
-                let out = self
-                    .runner
-                    .run("chkdsk.exe", &["C:", "/scan"], Duration::from_secs(120))
-                    .await?;
-                if out.success {
-                    Ok("File system check (chkdsk /scan) finished without errors.".to_string())
-                } else {
-                    Ok(format!("chkdsk ran: {}", out.stdout))
+                dbg.section("preflight for chkdsk").await;
+                dbg.kv("elevated", if is_admin() { "yes" } else { "no" })
+                    .await;
+                for candidate in chkdsk_candidates() {
+                    dbg.path("chkdsk image", &candidate).await;
+                }
+                dbg.kv("target volume", "C:").await;
+                dbg.kv("mode", "/scan (online, no dismount, no repair)")
+                    .await;
+
+                let out = dbg
+                    .run(
+                        &self.runner,
+                        "chkdsk.exe",
+                        &["C:", "/scan"],
+                        Duration::from_secs(120),
+                    )
+                    .await
+                    .map_err(|err| {
+                        // A spawn failure is not chkdsk's verdict on the volume:
+                        // the tool never ran, so say so in the message that ends
+                        // up in the audit log and the issue list, where the
+                        // verbose console is not available.
+                        format!(
+                            "chkdsk could not be started, the volume was not checked. {}",
+                            err
+                        )
+                    })?;
+
+                match out.exit_code {
+                    Some(0) => {
+                        Ok("File system check (chkdsk /scan) finished without errors.".to_string())
+                    }
+                    Some(code) => {
+                        dbg.hint(chkdsk_exit_meaning(code)).await;
+                        Ok(format!(
+                            "chkdsk /scan finished with exit code {} ({}).",
+                            code,
+                            chkdsk_exit_meaning(code)
+                        ))
+                    }
+                    None => Ok("chkdsk /scan ended without reporting an exit code.".to_string()),
                 }
             }
             "storage_temp_bloat" => {
                 let mut freed_mb = 0;
                 let mut deleted_files = 0;
+                let mut locked = 0;
 
                 let dirs_to_clean = [
                     std::env::var("TEMP").unwrap_or_default(),
                     r"C:\Windows\Temp".to_string(),
                 ];
 
+                dbg.section("sweeping temp directories").await;
                 for dir_str in dirs_to_clean {
                     if dir_str.is_empty() {
+                        dbg.warn("TEMP is not set for this process - skipping that directory")
+                            .await;
                         continue;
                     }
                     let dir = Path::new(&dir_str);
-                    if let Ok(entries) = std::fs::read_dir(dir) {
-                        for entry in entries.flatten() {
-                            let path = entry.path();
-                            if let Ok(meta) = path.metadata() {
-                                let size = meta.len();
-                                if path.is_file() {
-                                    if std::fs::remove_file(&path).is_ok() {
-                                        freed_mb += size / (1024 * 1024);
-                                        deleted_files += 1;
+                    dbg.path("directory", dir).await;
+                    match std::fs::read_dir(dir) {
+                        Ok(entries) => {
+                            for entry in entries.flatten() {
+                                let path = entry.path();
+                                if let Ok(meta) = path.metadata() {
+                                    let size = meta.len();
+                                    if path.is_file() {
+                                        match std::fs::remove_file(&path) {
+                                            Ok(()) => {
+                                                freed_mb += size / (1024 * 1024);
+                                                deleted_files += 1;
+                                            }
+                                            Err(err) => {
+                                                locked += 1;
+                                                dbg.warn(format!(
+                                                    "locked: {} ({})",
+                                                    path.display(),
+                                                    err
+                                                ))
+                                                .await;
+                                            }
+                                        }
+                                    } else if path.is_dir() {
+                                        let _ = std::fs::remove_dir_all(&path);
                                     }
-                                } else if path.is_dir() {
-                                    let _ = std::fs::remove_dir_all(&path);
                                 }
                             }
                         }
+                        Err(err) => {
+                            dbg.warn(format!("cannot list {}: {}", dir.display(), err))
+                                .await;
+                        }
                     }
                 }
+                dbg.kv(
+                    "result",
+                    format!("{} deleted, {} locked", deleted_files, locked),
+                )
+                .await;
                 Ok(format!(
                     "Temporary directories cleaned: {} files removed (about {} MB freed).",
                     deleted_files, freed_mb
                 ))
             }
             "storage_icon_cache_bloated" => {
+                dbg.section("resetting the icon cache").await;
                 if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
                     let icon_cache = PathBuf::from(&local_app_data).join("IconCache.db");
-                    if icon_cache.exists() {
-                        let _ = std::fs::remove_file(icon_cache);
+                    dbg.path("IconCache.db", &icon_cache).await;
+                    if icon_cache.exists()
+                        && let Err(err) = std::fs::remove_file(&icon_cache)
+                    {
+                        dbg.warn(format!("could not delete IconCache.db: {}", err))
+                            .await;
                     }
+                } else {
+                    dbg.warn("LOCALAPPDATA is not set - the icon cache path is unknown")
+                        .await;
                 }
-                let _ = self
-                    .runner
+                let _ = dbg
                     .run(
+                        &self.runner,
                         "powershell.exe",
                         &[
                             "-NoProfile",
@@ -338,10 +420,71 @@ impl DiagnosticModule for StorageModule {
                 Ok("Icon & thumbnail cache reset and Explorer restarted successfully.".to_string())
             }
             "storage_smart_warning" => {
+                dbg.hint(
+                    "a SMART warning is hardware wear - WinMedic records it, only a drive replacement clears it",
+                )
+                .await;
                 Ok("SMART warning acknowledged and recorded in the audit log.".to_string())
             }
             _ => Err(format!("Unknown issue ID: {}", issue_id)),
         }
+    }
+}
+
+/// Decide whether `fsutil dirty query` reported a volume as dirty.
+///
+/// The catch is negation. A clean volume answers `Volume - C: is NOT Dirty`, and
+/// in German `Volume - C: ist NICHT fehlerhaft.` — both contain the very word
+/// that marks a *dirty* volume. Matching the keyword alone therefore reports
+/// every healthy disk as damaged, which then schedules a chkdsk run that was
+/// never needed.
+///
+/// So the negation decides: a line carrying the keyword counts as dirty only
+/// when no negation precedes it.
+///
+/// Only the verdict line is considered — every localisation of it names the
+/// volume (`Volume - C: ...`), while usage text and error messages do not. A
+/// locale that words it differently therefore yields a missed dirty bit rather
+/// than a healthy disk sent to chkdsk, which is the safer way to be wrong.
+pub fn volume_is_dirty(output: &str) -> bool {
+    const DIRTY_WORDS: [&str; 4] = ["dirty", "fehlerhaft", "beschädigt", "beschaedigt"];
+    const NEGATIONS: [&str; 3] = ["not", "nicht", "kein"];
+
+    output.to_lowercase().lines().any(|line| {
+        let Some(keyword_at) = DIRTY_WORDS.iter().filter_map(|w| line.find(w)).min() else {
+            return false;
+        };
+        // Everything that decides the verdict stands in front of the keyword:
+        // the volume being named (`Volume - C: is ...`), and the negation if
+        // there is one. Reading only that part keeps `Usage: fsutil dirty ...
+        // <volume path>` out, and stops a stray "not" further along the line
+        // from flipping a genuinely dirty verdict.
+        let before = &line[..keyword_at];
+        let words: Vec<&str> = before.split(|c: char| !c.is_alphanumeric()).collect();
+        words.contains(&"volume") && !words.iter().any(|w| NEGATIONS.contains(w))
+    })
+}
+
+/// Where `chkdsk.exe` is expected to live, in resolution order.
+///
+/// Logged before the call so a spawn failure can be told apart from a missing
+/// image without a second run.
+fn chkdsk_candidates() -> Vec<PathBuf> {
+    let sys_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+    vec![
+        PathBuf::from(&sys_root).join("System32").join("chkdsk.exe"),
+        PathBuf::from(&sys_root).join("SysWOW64").join("chkdsk.exe"),
+    ]
+}
+
+/// Translate a chkdsk exit code into the sentence the log should show.
+fn chkdsk_exit_meaning(code: i32) -> &'static str {
+    match code {
+        0 => "no errors found",
+        1 => "errors were found and fixed",
+        2 => "cleanup was performed, or a full scan is still needed",
+        3 => "errors were found but could not be fixed online - schedule an offline check",
+        _ => "unexpected exit code, see the output above",
     }
 }
 
@@ -365,5 +508,165 @@ mod tests {
         let dirty_issue = issues.iter().find(|i| i.id == "storage_dirty_bit");
         assert!(dirty_issue.is_some());
         assert_eq!(dirty_issue.unwrap().severity, Severity::Critical);
+    }
+
+    /// The regression that started this: on a German system `fsutil` answers
+    /// "ist NICHT fehlerhaft" for a healthy volume, the old substring match saw
+    /// "fehlerhaft" and reported a critical file system fault on every clean
+    /// disk — then sent chkdsk after it.
+    #[test]
+    fn a_negated_verdict_is_not_a_dirty_volume() {
+        for clean in [
+            "Volume - C: ist NICHT fehlerhaft.",
+            "Volume - C: is NOT Dirty",
+            "Volume - C: ist nicht beschädigt.",
+            "Volume - C: ist nicht beschaedigt.",
+        ] {
+            assert!(!volume_is_dirty(clean), "false alarm on: {}", clean);
+        }
+    }
+
+    #[test]
+    fn an_actually_dirty_volume_is_still_detected() {
+        for dirty in [
+            "Volume - C: is Dirty",
+            "Volume - C: ist fehlerhaft.",
+            "Volume - C: ist beschädigt.",
+        ] {
+            assert!(volume_is_dirty(dirty), "missed: {}", dirty);
+        }
+    }
+
+    /// Anything that is not the verdict line must be ignored — the usage text
+    /// alone mentions "dirty" often enough to trip a naive match.
+    #[test]
+    fn output_without_a_verdict_is_not_dirty() {
+        for other in [
+            "",
+            "Fehler 5: Zugriff verweigert",
+            "Usage: fsutil dirty {query | set} <volume path>",
+            "---- DIRTY Meaning: the dirty bit is set",
+        ] {
+            assert!(!volume_is_dirty(other), "false alarm on: {}", other);
+        }
+    }
+
+    /// A refused `fsutil` call carries no verdict, so it must not raise the
+    /// issue — an unelevated run used to be enough to schedule a chkdsk.
+    #[tokio::test]
+    async fn a_clean_volume_raises_no_issue_in_either_language() {
+        for output in [
+            "Volume - C: ist NICHT fehlerhaft.",
+            "Volume - C: is NOT Dirty",
+        ] {
+            let mock = MockCommandRunner::new();
+            mock.add_response("dirty query C:", CmdOutput::ok(output));
+            mock.add_response("Get-PhysicalDisk", CmdOutput::ok("SSD | Health: Healthy"));
+
+            let module = StorageModule::with_runner(ModuleConfig::default(), Arc::new(mock));
+            let issues = module.scan(None).await.unwrap();
+
+            assert!(
+                !issues.iter().any(|i| i.id == "storage_dirty_bit"),
+                "'{}' was read as a fault",
+                output
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_dirty_query_raises_no_issue() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "dirty query C:",
+            CmdOutput::failed(1, "Fehler 5: Zugriff verweigert"),
+        );
+        mock.add_response("Get-PhysicalDisk", CmdOutput::ok("SSD | Health: Healthy"));
+
+        let module = StorageModule::with_runner(ModuleConfig::default(), Arc::new(mock));
+        let issues = module.scan(None).await.unwrap();
+
+        assert!(!issues.iter().any(|i| i.id == "storage_dirty_bit"));
+    }
+
+    /// Windows refusing to *start* chkdsk says nothing about the volume, and the
+    /// old message ("Failed to spawn command ...") read as though the check had
+    /// run and come back unhappy.
+    #[tokio::test]
+    async fn a_chkdsk_that_never_started_says_the_volume_was_not_checked() {
+        // A mock with no configured response fails the call the same way a
+        // refused CreateProcess does: an error instead of an exit code.
+        let module =
+            StorageModule::with_runner(ModuleConfig::default(), Arc::new(MockCommandRunner::new()));
+
+        let err = module.fix("storage_dirty_bit", None).await.unwrap_err();
+        assert!(
+            err.contains("could not be started") && err.contains("not checked"),
+            "unhelpful message: {}",
+            err
+        );
+    }
+
+    /// Exit code 3 means chkdsk found damage it could not repair online. Folding
+    /// that into a bare "chkdsk ran" hid the one outcome that needs a reboot.
+    #[tokio::test]
+    async fn an_unrepairable_volume_is_named_in_the_result() {
+        let mock = MockCommandRunner::new();
+        mock.add_response("chkdsk.exe", CmdOutput::failed(3, ""));
+
+        let module = StorageModule::with_runner(ModuleConfig::default(), Arc::new(mock));
+        let msg = module.fix("storage_dirty_bit", None).await.unwrap();
+
+        assert!(msg.contains("exit code 3"), "{}", msg);
+        assert!(msg.contains("offline check"), "{}", msg);
+    }
+
+    #[test]
+    fn every_chkdsk_exit_code_has_a_sentence() {
+        for code in 0..=3 {
+            assert!(!chkdsk_exit_meaning(code).is_empty());
+        }
+        assert!(chkdsk_exit_meaning(99).contains("unexpected"));
+    }
+
+    /// The verbose trace has to reach the console rather than being dropped on
+    /// the floor, and it must stay silent when the setting is off.
+    #[tokio::test]
+    async fn the_chkdsk_preflight_is_traced_only_in_verbose_mode() {
+        use crate::utils::debug_log::parse_debug_line;
+
+        for verbose in [false, true] {
+            let mock = MockCommandRunner::new();
+            mock.add_response("chkdsk.exe", CmdOutput::ok(""));
+            let config = ModuleConfig {
+                verbose_logging: verbose,
+                ..ModuleConfig::default()
+            };
+            let module = StorageModule::with_runner(config, Arc::new(mock));
+
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<FixProgress>(256);
+            let _ = module.fix("storage_dirty_bit", Some(tx)).await;
+
+            let mut traces = Vec::new();
+            while let Ok(progress) = rx.try_recv() {
+                if let Some(line) = progress.console_line
+                    && parse_debug_line(&line).is_some()
+                {
+                    traces.push(line);
+                }
+            }
+
+            if verbose {
+                let joined = traces.join("\n");
+                assert!(joined.contains("chkdsk.exe C: /scan"), "{}", joined);
+                assert!(joined.contains("elevated"), "{}", joined);
+            } else {
+                assert!(
+                    traces.is_empty(),
+                    "traces leaked with verbose off: {:?}",
+                    traces
+                );
+            }
+        }
     }
 }

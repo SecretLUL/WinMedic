@@ -29,7 +29,7 @@ use winmedic::modules::{
 use winmedic::utils::cmd::{CmdOutput, CommandRunner, MockCommandRunner};
 use winmedic::utils::updater::{
     GITHUB_LATEST_RELEASE_URL, GITHUB_USER_AGENT, GitHubRelease, SemVer, UpdateInfo,
-    check_for_update, is_safe_release_url, is_update_available, launch_browser,
+    check_for_update, is_safe_release_url, is_update_available, validate_release_url,
 };
 
 // ============================================================================
@@ -1247,7 +1247,7 @@ async fn test_tier1_f15_modal_skipped_when_check_for_updates_disabled() {
 
 #[test]
 fn test_tier1_f16_browser_launch_empty_url_rejected() {
-    let res = launch_browser("");
+    let res = validate_release_url("");
     assert!(res.is_err());
     assert_eq!(res.unwrap_err(), "The URL must not be empty");
 }

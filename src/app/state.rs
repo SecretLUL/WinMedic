@@ -23,7 +23,7 @@ use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver, UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
-use super::confirm::ConfirmRequest;
+use super::confirm::{ConfirmRequest, SystemActions};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingInput {
@@ -100,6 +100,13 @@ pub struct App {
     pub show_help: bool,
     pub pending_confirm: Option<ConfirmRequest>,
     pub available_update: Option<UpdateInfo>,
+    /// What this app is allowed to do to the machine it runs on: browser
+    /// windows, UAC prompts, restore points.
+    ///
+    /// Inert unless the caller opts in through
+    /// [`App::enable_real_system_actions`], which only the TUI entry point
+    /// does — see [`SystemActions`].
+    pub system_actions: SystemActions,
     pub should_quit: bool,
 
     // Internal async event channels
@@ -123,7 +130,10 @@ impl App {
         let telemetry = Some(telemetry_collector.refresh());
         let admin_flag = is_admin();
         let (config, config_status) = AppConfig::load_reporting();
-        let engine = Arc::new(DiagnosticEngine::new(&config));
+        let system_actions = SystemActions::default();
+        let engine = Arc::new(
+            DiagnosticEngine::new(&config).with_restore_points(system_actions.restore_point),
+        );
         let audit_logger = AuditLogger::new();
         let reg_backup_mgr = RegBackupManager::new();
         let audit_entries = audit_logger.get_history();
@@ -193,6 +203,7 @@ impl App {
                 None
             },
             available_update: None,
+            system_actions,
             should_quit: false,
             scan_event_rx: None,
             repair_event_rx: None,
@@ -200,6 +211,30 @@ impl App {
             bg_tx,
             bg_rx,
         }
+    }
+
+    /// Hand this app the real machine.
+    ///
+    /// [`App::new`] builds an app that cannot touch it: confirming a dialog
+    /// opens no browser and raises no UAC prompt, and a repair run asks Windows
+    /// for no restore point. That default is what keeps `cargo test` — which
+    /// builds dozens of `App`s — off the developer's own desktop. The TUI entry
+    /// point is the one caller that wants the real thing, so it is the one
+    /// caller that opts in.
+    ///
+    /// The engine is rebuilt because it reads
+    /// [`SystemActions::restore_point`] at construction time.
+    pub fn enable_real_system_actions(&mut self) {
+        self.system_actions = SystemActions::real();
+        self.rebuild_engine();
+    }
+
+    /// Rebuild the engine from the current config and system actions.
+    pub(super) fn rebuild_engine(&mut self) {
+        self.engine = Arc::new(
+            DiagnosticEngine::new(&self.config)
+                .with_restore_points(self.system_actions.restore_point),
+        );
     }
 
     /// Kick off the background GitHub release check.

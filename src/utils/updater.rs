@@ -198,14 +198,13 @@ pub fn is_safe_release_url(url: &str) -> bool {
     })
 }
 
-/// Launch the user's default browser targeting the given URL.
+/// Check whether [`launch_browser`] would accept `url`, without launching it.
 ///
-/// The URL is validated by [`is_safe_release_url`] first and then handed to
-/// `explorer.exe`, which resolves the default handler *without* going through a
-/// command interpreter. The previous `cmd /c start "" <url>` form was unsafe:
-/// Rust only quotes arguments containing whitespace, so a `&` in the URL would
-/// have been parsed by cmd.exe as a command separator.
-pub fn launch_browser(url: &str) -> Result<(), String> {
+/// Exists so the acceptance rules can be tested directly. Asserting them through
+/// `launch_browser` means every run of the suite really does open the release
+/// page in the developer's browser — once per test, across parallel test
+/// binaries — which is exactly as disruptive as it sounds.
+pub fn validate_release_url(url: &str) -> Result<(), String> {
     if url.is_empty() {
         return Err("The URL must not be empty".to_string());
     }
@@ -215,6 +214,21 @@ pub fn launch_browser(url: &str) -> Result<(), String> {
             GITHUB_RELEASE_URL_PREFIX, url
         ));
     }
+    Ok(())
+}
+
+/// Launch the user's default browser targeting the given URL.
+///
+/// The URL is validated by [`validate_release_url`] first and then handed to
+/// `explorer.exe`, which resolves the default handler *without* going through a
+/// command interpreter. The previous `cmd /c start "" <url>` form was unsafe:
+/// Rust only quotes arguments containing whitespace, so a `&` in the URL would
+/// have been parsed by cmd.exe as a command separator.
+///
+/// Tests must assert against [`validate_release_url`] instead: this function
+/// opens a real browser window on the machine running it.
+pub fn launch_browser(url: &str) -> Result<(), String> {
+    validate_release_url(url)?;
 
     #[cfg(windows)]
     {
@@ -521,13 +535,30 @@ mod tests {
 
     #[test]
     fn test_launch_browser_empty_url() {
-        let res = launch_browser("");
+        let res = validate_release_url("");
         assert!(res.is_err());
     }
 
     #[test]
     fn test_launch_browser_rejects_unsafe_url() {
-        assert!(launch_browser("https://github.com/a&calc").is_err());
-        assert!(launch_browser("https://evil.example/x").is_err());
+        assert!(validate_release_url("https://github.com/a&calc").is_err());
+        assert!(validate_release_url("https://evil.example/x").is_err());
+    }
+
+    /// No test may call [`launch_browser`]: it hands the URL to the OS, so an
+    /// assertion on its return value opens a real browser window on whoever runs
+    /// the suite — every run, once per call, across parallel test binaries.
+    /// [`validate_release_url`] carries the entire acceptance rule, so there is
+    /// never a reason to reach for the launching one in a test.
+    #[test]
+    fn no_test_in_the_tree_launches_a_browser() {
+        let offenders =
+            crate::utils::test_guard::integration_test_lines_mentioning("launch_browser(");
+
+        assert!(
+            offenders.is_empty(),
+            "these tests would open a browser window; assert on validate_release_url instead: {:?}",
+            offenders
+        );
     }
 }

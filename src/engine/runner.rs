@@ -5,9 +5,14 @@ use crate::modules::{
     get_all_modules_with_runner,
 };
 use crate::safety::audit::AuditLogger;
-use crate::safety::restore_point::create_system_restore_point;
-use crate::utils::cmd::CommandRunner;
+use crate::safety::restore_point::RestorePointService;
+use crate::utils::admin::is_admin;
+use crate::utils::cmd::{CommandRunner, describe_os_error};
+use crate::utils::debug_log::{
+    DebugTag, extract_os_error_code, render_debug_kv, render_debug_line,
+};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::mpsc::{Sender, channel};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -100,10 +105,121 @@ impl Default for RepairOptions {
     }
 }
 
+/// Verbose tracing for the repair loop itself.
+///
+/// The modules trace through [`crate::utils::debug_log::DebugTrace`], which
+/// writes into their own progress channel. The engine sits one level above that
+/// and owns the repair event channel instead, so it renders the same line
+/// format into [`RepairEvent::FixOutput`].
+struct RepairTrace<'a> {
+    event_tx: &'a Sender<RepairEvent>,
+    issue_id: String,
+    enabled: bool,
+}
+
+impl<'a> RepairTrace<'a> {
+    fn new(event_tx: &'a Sender<RepairEvent>, issue_id: impl Into<String>, enabled: bool) -> Self {
+        Self {
+            event_tx,
+            issue_id: issue_id.into(),
+            enabled,
+        }
+    }
+
+    async fn send(&self, line: String) {
+        let _ = self
+            .event_tx
+            .send(RepairEvent::FixOutput {
+                issue_id: self.issue_id.clone(),
+                line,
+            })
+            .await;
+    }
+
+    async fn emit(&self, tag: DebugTag, message: impl AsRef<str>) {
+        if !self.enabled {
+            return;
+        }
+        self.send(render_debug_line(tag, message.as_ref())).await;
+    }
+
+    async fn section(&self, title: &str) {
+        self.emit(DebugTag::Step, format!("--- {} ---", title))
+            .await;
+    }
+
+    async fn kv(&self, key: &str, value: impl AsRef<str>) {
+        if !self.enabled {
+            return;
+        }
+        self.send(render_debug_kv(key, value.as_ref())).await;
+    }
+
+    async fn data(&self, message: impl AsRef<str>) {
+        self.emit(DebugTag::Data, message).await;
+    }
+
+    async fn warn(&self, message: impl AsRef<str>) {
+        self.emit(DebugTag::Warn, message).await;
+    }
+
+    async fn hint(&self, message: impl AsRef<str>) {
+        self.emit(DebugTag::Hint, message).await;
+    }
+
+    async fn time(&self, message: impl AsRef<str>) {
+        self.emit(DebugTag::Time, message).await;
+    }
+
+    /// Spell out a failed repair: the message, and what it means if the failure
+    /// came from Windows refusing to start the tool rather than from the tool.
+    async fn explain_failure(&self, error: &str) {
+        if !self.enabled {
+            return;
+        }
+        self.warn(format!("repair reported: {}", error)).await;
+
+        if error.trim().is_empty() || error.trim().ends_with(':') {
+            self.hint(
+                "the failure message is empty - the underlying command discarded its own error text before WinMedic could read it",
+            )
+            .await;
+        }
+
+        if let Some(code) = extract_os_error_code(error) {
+            match describe_os_error(code) {
+                Some(desc) => {
+                    if !error.contains(desc.name) {
+                        self.hint(format!(
+                            "os error {} is {}: {}",
+                            code, desc.name, desc.meaning
+                        ))
+                        .await;
+                    }
+                    for cause in desc.likely_causes {
+                        self.hint(format!("  possible cause: {}", cause)).await;
+                    }
+                }
+                None => {
+                    self.hint(format!("os error {} has no stored explanation", code))
+                        .await;
+                }
+            }
+        }
+    }
+}
+
 pub struct DiagnosticEngine {
     modules: Vec<Arc<dyn DiagnosticModule>>,
     audit_logger: AuditLogger,
     pub verbose_logging: bool,
+    /// Where the pre-repair restore point comes from.
+    ///
+    /// Inert on every constructor, so an engine built anywhere — a test, a
+    /// benchmark, a future tool — cannot run `Checkpoint-Computer` on the
+    /// machine it happens to be running on. The entry points opt in through
+    /// [`DiagnosticEngine::with_restore_points`].
+    restore_point: RestorePointService,
 }
 
 impl DiagnosticEngine {
@@ -112,6 +228,7 @@ impl DiagnosticEngine {
             modules: get_all_modules(&ModuleConfig::from(config)),
             audit_logger: AuditLogger::new(),
             verbose_logging: config.verbose_logging,
+            restore_point: RestorePointService::inert(),
         }
     }
 
@@ -120,7 +237,24 @@ impl DiagnosticEngine {
             modules: get_all_modules_with_runner(&ModuleConfig::from(config), runner),
             audit_logger: AuditLogger::new(),
             verbose_logging: config.verbose_logging,
+            restore_point: RestorePointService::inert(),
         }
+    }
+
+    /// Choose where `run_repairs` gets its restore point from.
+    ///
+    /// Only the two entry points that repair a real machine pass
+    /// [`RestorePointService::real`] here — the TUI (through
+    /// [`crate::app::SystemActions`]) and the `--fix` command line.
+    pub fn with_restore_points(mut self, service: RestorePointService) -> Self {
+        self.restore_point = service;
+        self
+    }
+
+    /// Whether a repair run on this engine would really ask Windows for a
+    /// checkpoint.
+    pub fn creates_real_restore_points(&self) -> bool {
+        self.restore_point.is_live()
     }
 
     /// Build an engine over an explicit module list.
@@ -133,6 +267,7 @@ impl DiagnosticEngine {
             modules,
             audit_logger: AuditLogger::new(),
             verbose_logging: false,
+            restore_point: RestorePointService::inert(),
         }
     }
 
@@ -185,9 +320,13 @@ impl DiagnosticEngine {
                     module_id: "engine".to_string(),
                     progress_percent: 0,
                     current_step: "Verbose diagnostic mode enabled".to_string(),
-                    log_message: Some(format!(
-                        "[DEBUG] Parallel scan initiated across {} modules (verbose mode ON).",
-                        total_modules
+                    log_message: Some(render_debug_line(
+                        DebugTag::Step,
+                        &format!(
+                            "--- scan run: {} modules in parallel, elevated: {} ---",
+                            total_modules,
+                            if is_admin() { "yes" } else { "no" }
+                        ),
                     )),
                 }))
                 .await;
@@ -220,9 +359,9 @@ impl DiagnosticEngine {
                             module_id: mod_id.clone(),
                             progress_percent: 0,
                             current_step: format!("Starting {} check", mod_name),
-                            log_message: Some(format!(
-                                "[DEBUG] Module '{}' ({}) spawned for execution.",
-                                mod_name, mod_id
+                            log_message: Some(render_debug_line(
+                                DebugTag::Step,
+                                &format!("module '{}' ({}) spawned", mod_name, mod_id),
                             )),
                         })
                         .await;
@@ -282,13 +421,16 @@ impl DiagnosticEngine {
                                                     module_id: mod_id.clone(),
                                                     progress_percent: 100,
                                                     current_step: "Module finished".to_string(),
-                                                    log_message: Some(format!(
-                                                        "[DEBUG] Module '{}' finished: {} findings (Critical: {}, Warning: {}, Info: {}).",
-                                                        mod_id,
-                                                        issues.len(),
-                                                        crit,
-                                                        warn,
-                                                        info
+                                                    log_message: Some(render_debug_line(
+                                                        DebugTag::Exit,
+                                                        &format!(
+                                                            "module '{}' finished: {} findings (critical {}, warning {}, info {})",
+                                                            mod_id,
+                                                            issues.len(),
+                                                            crit,
+                                                            warn,
+                                                            info
+                                                        ),
                                                     )),
                                                 },
                                             ))
@@ -313,6 +455,33 @@ impl DiagnosticEngine {
                                     all_issues.extend(issues);
                                 }
                                 Err(err) => {
+                                    if self.verbose_logging {
+                                        let mut lines = vec![render_debug_line(
+                                            DebugTag::Warn,
+                                            &format!("module '{}' aborted: {}", mod_id, err),
+                                        )];
+                                        if let Some(code) = extract_os_error_code(&err)
+                                            && let Some(desc) = describe_os_error(code)
+                                        {
+                                            lines.push(render_debug_line(
+                                                DebugTag::Hint,
+                                                &format!("{} - {}", desc.name, desc.meaning),
+                                            ));
+                                        }
+                                        for line in lines {
+                                            let _ = event_tx
+                                                .send(ScanEvent::ModuleProgressUpdate(
+                                                    ModuleProgress {
+                                                        module_id: mod_id.clone(),
+                                                        progress_percent: 100,
+                                                        current_step: "Module failed".to_string(),
+                                                        log_message: Some(line),
+                                                    },
+                                                ))
+                                                .await;
+                                        }
+                                    }
+
                                     let _ = event_tx
                                         .send(ScanEvent::ModuleFailed {
                                             module_id: mod_id.clone(),
@@ -379,6 +548,50 @@ impl DiagnosticEngine {
             .filter(|i| i.is_selected && !i.is_fixed)
             .count();
 
+        let run_trace = RepairTrace::new(&event_tx, "engine", options.verbose_logging);
+        run_trace.section("repair run environment").await;
+        run_trace.kv("winmedic", env!("CARGO_PKG_VERSION")).await;
+        run_trace
+            .kv(
+                "elevated",
+                if is_admin() {
+                    "yes (Administrator)"
+                } else {
+                    "NO - system-level repairs will be refused by Windows"
+                },
+            )
+            .await;
+        run_trace.kv("architecture", std::env::consts::ARCH).await;
+        run_trace
+            .kv(
+                "mode",
+                if options.dry_run {
+                    "simulation"
+                } else {
+                    "live repair"
+                },
+            )
+            .await;
+        run_trace
+            .kv(
+                "restore point",
+                match (
+                    options.create_vss && !options.dry_run,
+                    self.restore_point.is_live(),
+                ) {
+                    (true, true) => "requested before the first repair",
+                    (true, false) => "engine has no restore point service - none will be created",
+                    (false, _) => "skipped",
+                },
+            )
+            .await;
+        run_trace.kv("selected repairs", pending.to_string()).await;
+        if !is_admin() && !options.dry_run {
+            run_trace
+                .hint("without elevation expect os error 5 / 740 from chkdsk, DISM, SFC and every service or registry fix")
+                .await;
+        }
+
         if options.dry_run {
             let _ = event_tx
                 .send(RepairEvent::DryRunStarted {
@@ -397,8 +610,20 @@ impl DiagnosticEngine {
             );
         } else if options.create_vss {
             let _ = event_tx.send(RepairEvent::VssStarted).await;
-            let vss_res =
-                create_system_restore_point("WinMedic Auto-Restore Point (before repairs)").await;
+            let vss_started = Instant::now();
+            let vss_res = self
+                .restore_point
+                .create("WinMedic Auto-Restore Point (before repairs)")
+                .await;
+            run_trace
+                .time(format!("restore point took {:.2?}", vss_started.elapsed()))
+                .await;
+            if !vss_res.success {
+                run_trace.explain_failure(&vss_res.message).await;
+                run_trace
+                    .hint("repairs continue without a rollback point - System Protection may be off for C:")
+                    .await;
+            }
             let _ = event_tx
                 .send(RepairEvent::VssCompleted {
                     success: vss_res.success,
@@ -459,15 +684,26 @@ impl DiagnosticEngine {
                 })
                 .await;
 
-            if options.verbose_logging {
-                let _ = event_tx
-                    .send(RepairEvent::FixOutput {
-                        issue_id: issue.id.clone(),
-                        line: format!(
-                            "[DEBUG] Initiating fix for '{}' (Module: '{}', Risk: {:?})",
-                            issue.id, issue.module_id, issue.risk_score
-                        ),
-                    })
+            let trace = RepairTrace::new(&event_tx, issue.id.clone(), options.verbose_logging);
+            trace
+                .section(&format!("fix {} ({}/{})", issue.id, processed, pending))
+                .await;
+            trace.kv("module", &issue.module_id).await;
+            trace.kv("category", &issue.category).await;
+            trace
+                .kv(
+                    "severity / risk",
+                    format!("{:?} / {:?}", issue.severity, issue.risk_score),
+                )
+                .await;
+            trace.kv("detected", &issue.technical_details).await;
+            trace.kv("planned action", &issue.recommended_fix).await;
+            for (idx, step) in issue.fix_steps.iter().enumerate() {
+                trace.data(format!("  step {}: {}", idx + 1, step)).await;
+            }
+            if issue.fix_steps.is_empty() {
+                trace
+                    .data("  (the module records no individual steps)")
                     .await;
             }
 
@@ -507,6 +743,7 @@ impl DiagnosticEngine {
                 }
             });
 
+            let fix_started = Instant::now();
             let outcome = tokio::select! {
                 biased;
                 _ = cancel.cancelled() => None,
@@ -514,6 +751,10 @@ impl DiagnosticEngine {
             };
 
             let _ = forward_handle.await;
+
+            trace
+                .time(format!("fix returned after {:.2?}", fix_started.elapsed()))
+                .await;
 
             let Some(result) = outcome else {
                 issue.fix_error = Some("Repair cancelled by the user.".to_string());
@@ -562,6 +803,8 @@ impl DiagnosticEngine {
                     issue.is_fixed = false;
                     issue.fix_error = Some(err.clone());
                     failed_count += 1;
+
+                    trace.explain_failure(&err).await;
 
                     let _ = event_tx
                         .send(RepairEvent::FixFinished {
@@ -631,6 +874,7 @@ impl DiagnosticEngine {
 mod tests {
     use super::*;
     use crate::engine::issue::{RiskScore, Severity};
+    use crate::utils::debug_log::parse_debug_line;
 
     fn sample_issues() -> Vec<Issue> {
         vec![
@@ -855,11 +1099,81 @@ mod tests {
         while let Ok(evt) = rx.try_recv() {
             if let ScanEvent::ModuleProgressUpdate(prog) = evt
                 && let Some(log) = prog.log_message
-                && log.starts_with("[DEBUG]")
+                && parse_debug_line(&log).is_some()
             {
                 saw_debug_log = true;
             }
         }
-        assert!(saw_debug_log, "verbose scan should emit [DEBUG] log lines");
+        assert!(
+            saw_debug_log,
+            "verbose scan should emit lines the UI recognises as traces"
+        );
+    }
+
+    /// Verbose mode is what the user reaches for once a repair has failed, so
+    /// the failing path in particular has to say what went wrong and what the
+    /// error code means — not just repeat the message.
+    #[tokio::test]
+    async fn a_failed_repair_is_explained_in_the_verbose_log() {
+        let (tx, mut rx) = channel::<RepairEvent>(200);
+        let trace = RepairTrace::new(&tx, "storage_dirty_bit", true);
+
+        trace
+            .explain_failure("Failed to spawn command 'chkdsk.exe': Access is denied. (os error 5)")
+            .await;
+
+        let mut lines = Vec::new();
+        while let Ok(RepairEvent::FixOutput { line, .. }) = rx.try_recv() {
+            lines.push(line);
+        }
+
+        assert!(
+            lines.iter().all(|l| parse_debug_line(l).is_some()),
+            "every explanation line must be tagged as a trace: {:?}",
+            lines
+        );
+        let joined = lines.join("\n");
+        assert!(joined.contains("ACCESS_DENIED"), "{}", joined);
+        assert!(joined.contains("never started"), "{}", joined);
+        assert!(
+            joined.contains("security driver"),
+            "the likely causes must be listed: {}",
+            joined
+        );
+    }
+
+    /// An empty failure message is the specific case that sent the user looking
+    /// at the log in the first place, so it gets called out by name.
+    #[tokio::test]
+    async fn an_empty_failure_message_is_called_out() {
+        let (tx, mut rx) = channel::<RepairEvent>(200);
+        let trace = RepairTrace::new(&tx, "sys_clean_recycle_bin", true);
+
+        trace
+            .explain_failure("Failed to empty the Recycle Bin:")
+            .await;
+
+        let mut joined = String::new();
+        while let Ok(RepairEvent::FixOutput { line, .. }) = rx.try_recv() {
+            joined.push_str(&line);
+            joined.push('\n');
+        }
+        assert!(
+            joined.contains("discarded its own error text"),
+            "{}",
+            joined
+        );
+    }
+
+    #[tokio::test]
+    async fn a_trace_stays_silent_when_verbose_logging_is_off() {
+        let (tx, mut rx) = channel::<RepairEvent>(16);
+        let trace = RepairTrace::new(&tx, "storage_dirty_bit", false);
+
+        trace.section("nothing").await;
+        trace.kv("key", "value").await;
+        trace.explain_failure("boom (os error 5)").await;
+
+        assert!(rx.try_recv().is_err());
     }
 }

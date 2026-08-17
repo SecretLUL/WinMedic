@@ -24,6 +24,7 @@ use config::AppConfig;
 use engine::exit_code;
 use engine::reporter::DiagnosticReporter;
 use engine::runner::{DiagnosticEngine, RepairOptions, ScanEvent};
+use safety::restore_point::RestorePointService;
 use utils::admin::{is_admin, relaunch_as_admin};
 
 #[derive(Parser, Debug)]
@@ -263,7 +264,11 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
             );
         }
 
-        let engine = DiagnosticEngine::new(&config);
+        // The other half of the seam described in `run_tui`: repairs from the
+        // command line protect the machine the same way the TUI does, and this
+        // is the only other place that says so.
+        let engine =
+            DiagnosticEngine::new(&config).with_restore_points(RestorePointService::real());
         let (fix_tx, mut fix_rx) = channel(100);
         let options = RepairOptions {
             create_vss: !args.no_vss && config.create_vss_before_repair,
@@ -397,6 +402,11 @@ async fn run_tui() -> Result<u8, Box<dyn std::error::Error>> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
+    // `App::new` builds an app that cannot touch the desktop. This is the one
+    // place that wants it to: accepting the update dialog should really open a
+    // browser here, accepting the elevation dialog should really raise UAC, and
+    // a repair run should really leave a restore point behind.
+    app.enable_real_system_actions();
     app.start_update_check();
     let mut last_telemetry_tick = Instant::now();
 

@@ -225,6 +225,11 @@ async fn test_tier3_multi_module_scan_parallelism() {
     assert_eq!(finished_modules, 7);
 }
 
+/// `create_vss: true` used to run `Checkpoint-Computer` on the machine running
+/// the suite — up to a minute per run, and a real restore point when elevated.
+/// The engine now only asks Windows for one if the caller installed a live
+/// `RestorePointService`, which no test does; the events below are still
+/// emitted, so this keeps testing the wiring it always tested.
 #[tokio::test]
 async fn test_tier3_system_cleaner_vss_enabled_repair() {
     let runner = Arc::new(ProgrammableMockRunner::new());

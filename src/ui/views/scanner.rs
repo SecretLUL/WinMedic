@@ -1,5 +1,6 @@
 use crate::engine::issue::{Issue, Severity};
 use crate::ui::theme::Theme;
+use crate::ui::views::fix_progress::style_console_line;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -113,12 +114,7 @@ pub fn render_scanner(
 
     let log_lines: Vec<Line> = (start_idx..end_idx)
         .filter_map(|idx| log_messages.get(idx))
-        .map(|msg| {
-            Line::from(vec![
-                Span::styled(" > ", Style::default().fg(Theme::CYAN)),
-                Span::styled(msg.as_str(), Style::default().fg(Theme::TEXT_WHITE)),
-            ])
-        })
+        .map(|msg| style_console_line(msg))
         .collect();
 
     let log_title = if scroll_offset > 0 {

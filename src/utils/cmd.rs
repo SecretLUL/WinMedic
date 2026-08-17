@@ -203,6 +203,88 @@ impl CommandRunner for MockCommandRunner {
     }
 }
 
+/// What a process-creation error code means, in the terms the log needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OsErrorDescription {
+    /// The Windows symbolic name, e.g. `ACCESS_DENIED`.
+    pub name: &'static str,
+    /// What the code says about the attempt itself.
+    pub meaning: &'static str,
+    /// The explanations worth checking first, most likely one first.
+    pub likely_causes: &'static [&'static str],
+}
+
+/// Explain a Windows error code returned while starting a process.
+///
+/// `CreateProcess` failing is categorically different from the tool running and
+/// reporting a problem: nothing executed, so no exit code and no output exist to
+/// look at. Without this the log shows only a number, and "os error 5" reads as
+/// "chkdsk said access denied" when it actually means "chkdsk never started".
+pub fn describe_os_error(code: i32) -> Option<OsErrorDescription> {
+    let desc = match code {
+        2 => OsErrorDescription {
+            name: "FILE_NOT_FOUND",
+            meaning: "the executable was not found under that name",
+            likely_causes: &[
+                "the tool is not installed, or not on PATH for this process",
+                "a 32-bit build looking into System32, which WOW64 redirects to SysWOW64",
+            ],
+        },
+        3 => OsErrorDescription {
+            name: "PATH_NOT_FOUND",
+            meaning: "a directory in the given path does not exist",
+            likely_causes: &["a stale or mistyped directory in the command path"],
+        },
+        5 => OsErrorDescription {
+            name: "ACCESS_DENIED",
+            meaning: "Windows refused to create the process; the program never started, so this is not the tool's own output",
+            likely_causes: &[
+                "a kernel-mode security driver (anti-cheat, antivirus, EDR) blocking that image name",
+                "an execution policy: AppLocker, Software Restriction Policies or WDAC",
+                "the file's ACL not granting execute permission to this account",
+            ],
+        },
+        216 => OsErrorDescription {
+            name: "EXE_MACHINE_TYPE_MISMATCH",
+            meaning: "the image was built for a different processor architecture",
+            likely_causes: &["an x86/x64/ARM64 mismatch between WinMedic and the tool"],
+        },
+        577 => OsErrorDescription {
+            name: "INVALID_IMAGE_HASH",
+            meaning: "code integrity rejected the image signature",
+            likely_causes: &[
+                "a modified or corrupted system file",
+                "a code integrity policy demanding a signature the file does not carry",
+            ],
+        },
+        740 => OsErrorDescription {
+            name: "ELEVATION_REQUIRED",
+            meaning: "the tool demands Administrator rights and WinMedic is not elevated",
+            likely_causes: &["WinMedic was started without elevation; restart it with '--elevate'"],
+        },
+        1260 => OsErrorDescription {
+            name: "ACCESS_DISABLED_BY_POLICY",
+            meaning: "a group policy forbids running this program",
+            likely_causes: &["a Software Restriction Policy or AppLocker rule set by the domain"],
+        },
+        _ => return None,
+    };
+    Some(desc)
+}
+
+/// Render a spawn failure with the explanation attached.
+///
+/// Keeps Rust's own message intact — including the `(os error N)` suffix that
+/// [`crate::utils::debug_log::extract_os_error_code`] reads back out — and adds
+/// what that number means for the repair the user just watched fail.
+fn describe_spawn_failure(program: &str, err: &std::io::Error) -> String {
+    let base = format!("Failed to spawn command '{}': {}", program, err);
+    match err.raw_os_error().and_then(describe_os_error) {
+        Some(desc) => format!("{} [{}: {}]", base, desc.name, desc.meaning),
+        None => base,
+    }
+}
+
 /// Execute a system command with timeout and return the complete output.
 pub async fn run_cmd(
     program: &str,
@@ -225,7 +307,7 @@ pub async fn run_cmd(
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("Failed to spawn command '{}': {}", program, e))?;
+        .map_err(|e| describe_spawn_failure(program, &e))?;
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -294,7 +376,7 @@ pub async fn run_cmd_streaming(
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("Failed to spawn command '{}': {}", program, e))?;
+        .map_err(|e| describe_spawn_failure(program, &e))?;
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -431,6 +513,44 @@ mod tests {
         assert_eq!(executed.len(), 2);
         assert!(executed[0].contains("dism.exe"));
         assert!(executed[1].contains("sfc.exe"));
+    }
+
+    /// The whole point of the table is that a failed repair explains itself, so
+    /// an entry without a usable explanation is worse than no entry.
+    #[test]
+    fn every_known_os_error_carries_a_usable_explanation() {
+        for code in [2, 3, 5, 216, 577, 740, 1260] {
+            let desc = describe_os_error(code).unwrap_or_else(|| panic!("missing: {}", code));
+            assert!(!desc.name.is_empty());
+            assert!(!desc.meaning.is_empty());
+            assert!(!desc.likely_causes.is_empty(), "no causes for {}", code);
+        }
+        assert_eq!(describe_os_error(0), None);
+        assert_eq!(describe_os_error(123456), None);
+    }
+
+    /// The message keeps Rust's `(os error N)` suffix, because that is what the
+    /// verbose log parses back out to look the code up again.
+    #[test]
+    fn a_spawn_failure_keeps_its_code_and_gains_an_explanation() {
+        let err = std::io::Error::from_raw_os_error(5);
+        let message = describe_spawn_failure("chkdsk.exe", &err);
+
+        assert!(message.starts_with("Failed to spawn command 'chkdsk.exe':"));
+        assert!(message.contains("(os error 5)"));
+        assert!(message.contains("ACCESS_DENIED"));
+        assert!(message.contains("never started"));
+    }
+
+    /// An unmapped code must still produce the plain message rather than a
+    /// half-finished sentence with an empty explanation attached.
+    #[test]
+    fn an_unknown_spawn_failure_is_left_as_the_os_reported_it() {
+        let err = std::io::Error::from_raw_os_error(1450);
+        let message = describe_spawn_failure("dism.exe", &err);
+
+        assert!(message.starts_with("Failed to spawn command 'dism.exe':"));
+        assert!(!message.contains('['));
     }
 
     #[test]
