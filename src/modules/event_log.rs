@@ -240,7 +240,7 @@ impl DiagnosticModule for EventLogModule {
                     &progress_tx,
                     95,
                     "WHEA Hardware intakt",
-                    Some("No WHEA hardware faults or PCIe/CPU errors logged."),
+                    Some("No WHEA hardware faults or PCIe/CPU issues logged."),
                 )
                 .await;
             }

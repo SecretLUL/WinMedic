@@ -54,9 +54,18 @@ pub fn style_console_line(line: &str) -> Line<'_> {
         ]);
     }
 
-    if line.starts_with("[STDERR]")
-        || line.to_lowercase().contains("error")
-        || line.to_lowercase().contains("failed")
+    let lower = line.to_lowercase();
+    let is_negative_assertion = (lower.starts_with("no ")
+        || lower.starts_with("0 errors")
+        || lower.contains("no errors")
+        || lower.contains("0 errors"))
+        && !line.starts_with("[STDERR]")
+        && !line.starts_with("[X]");
+
+    if !is_negative_assertion
+        && (line.starts_with("[STDERR]")
+            || lower.contains("error")
+            || lower.contains("failed"))
     {
         return Line::from(vec![
             Span::styled(
@@ -331,5 +340,10 @@ mod tests {
         assert_eq!(gutter("[STDERR] dism reported a problem"), " [X] ");
         assert_eq!(gutter("chkdsk /scan finished"), " [OK] ");
         assert_eq!(gutter("Repairing: Browser caches"), " > ");
+        assert_eq!(
+            gutter("No WHEA hardware faults or PCIe/CPU errors logged."),
+            " > "
+        );
+        assert_eq!(gutter("No errors found in registry"), " > ");
     }
 }
