@@ -12,7 +12,7 @@
 //! | [`run_control`] | Starting, cancelling and simulating scans and repairs |
 //! | [`events`] | Draining scan, repair and background channels into state |
 //! | [`filters`] | Severity/module filtering, live search, issue selection |
-//! | [`history`] | Registry backups, restore points, rollback requests |
+//! | [`safety`] | Registry backups, restore points, rollback requests |
 //! | [`confirm`] | The confirmation modal and the parked update notice |
 //! | [`settings`] | Settings navigation and persistence |
 
@@ -22,28 +22,34 @@ use std::collections::VecDeque;
 pub mod confirm;
 pub mod events;
 pub mod filters;
-pub mod history;
 pub mod input;
 pub mod run_control;
+pub mod safety;
 pub mod settings;
 pub mod state;
 
 pub use confirm::{ConfirmRequest, SystemActions};
 pub use input::handle_key;
-pub use state::{App, SettingInput};
+pub use state::{App, SafetyFocus, SettingInput};
 
 /// Maximum number of log lines kept in memory for scan and repair terminal buffers.
 pub const MAX_LOG_LINES: usize = 2000;
 
 /// Number of tabs in the main navigation.
-pub const TAB_COUNT: usize = 6;
+pub const TAB_COUNT: usize = 5;
 
 pub const TAB_DASHBOARD: usize = 0;
 pub const TAB_SCANNER: usize = 1;
 pub const TAB_TRIAGE: usize = 2;
 pub const TAB_REPAIR: usize = 3;
-pub const TAB_HISTORY: usize = 4;
-pub const TAB_SETTINGS: usize = 5;
+/// Settings *and* the safety surface — audit log, registry backups, VSS
+/// restore points and the `[U]` rollback.
+///
+/// These used to be two tabs. They were merged because the old "Backups & Logs"
+/// tab was a read-only wall of text that nobody navigated to, while every action
+/// it offered ([U] rollback, [R] refresh) is the same kind of "what is this tool
+/// allowed to do to my machine" decision the settings list already covers.
+pub const TAB_SETTINGS: usize = 4;
 
 /// Results of short-lived background tasks that are not part of a scan or a
 /// repair run (restore point lookups, registry rollbacks, update checks).

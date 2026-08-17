@@ -63,9 +63,7 @@ pub fn style_console_line(line: &str) -> Line<'_> {
         && !line.starts_with("[X]");
 
     if !is_negative_assertion
-        && (line.starts_with("[STDERR]")
-            || lower.contains("error")
-            || lower.contains("failed"))
+        && (line.starts_with("[STDERR]") || lower.contains("error") || lower.contains("failed"))
     {
         return Line::from(vec![
             Span::styled(

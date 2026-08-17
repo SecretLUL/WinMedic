@@ -54,7 +54,7 @@ Package Cache and Recycle Bin are classified `RiskScore::High` and are **deselec
 Before WinMedic touches your system:
 1. **Windows System Restore Point (VSS)**: A checkpoint named `"WinMedic Auto-Restore Point (Vor Reparatur)"` is automatically triggered via WMI / PowerShell. WinMedic then **verifies** that a new restore point actually appeared instead of trusting the exit status — Windows silently declines to create one if another was made within the last 24 hours (`SystemRestorePointCreationFrequency`), and reports that refusal as a warning rather than an error. A throttled run is surfaced as a warning, never as success.
 2. **Registry Snapshotting**: Every modified registry key is exported into `%APPDATA%\WinMedic\backups\reg_<timestamp>.reg` prior to modification. If the export fails, the fix is aborted instead of applied. The backup index is written atomically, and an index that cannot be parsed is moved aside as `index.json.corrupt-<timestamp>` rather than overwritten, so previously recorded backups are never lost.
-3. **One-Key Rollback**: Any stored snapshot can be restored directly from the **Backups & Logs** tab with `[U]`, after an explicit confirmation prompt.
+3. **One-Key Rollback**: Any stored snapshot can be restored directly from the **`[5]` Settings & Safety** tab — `[B]` moves the arrow keys onto the snapshot list, `[U]` restores the highlighted one after an explicit confirmation prompt.
 4. **Dry-Run First**: `[D]` in the TUI or `--dry-run` on the CLI lists every command a repair would execute, without executing any of it.
 5. **High-Performance Audit Logging**: Every scan, fix, simulation, rollback, and cancellation is appended in $O(1)$ to `%APPDATA%\WinMedic\logs\history.jsonl` (with automatic 5 MB log rotation) and formatted human-readable `%APPDATA%\WinMedic\logs\audit.log`.
 6. **Self-Contained Report Export**: Complete diagnostic findings can be exported at any time with `[E]` or `--output <file>` as responsive, standalone HTML, Markdown, or JSON reports.
@@ -63,7 +63,7 @@ Before WinMedic touches your system:
 
 ## ⚙️ Configuration
 
-Settings live in the **`[6]` Einstellungen** tab and are persisted to `%APPDATA%\WinMedic\config.json` immediately on change.
+Settings live in the **`[5]` Settings & Safety** tab and are persisted to `%APPDATA%\WinMedic\config.json` immediately on change. The same tab carries the safety surface — VSS restore points, registry snapshots, the audit trail and the `[U]` rollback — with `[B]` switching the arrow keys between the settings list and the snapshot list.
 
 | Setting | Default | Effect |
 | :--- | :--- | :--- |
@@ -88,7 +88,7 @@ The check is deliberately conservative: release URLs must start with `https://gi
 
 | Shortcut | Action |
 | :--- | :--- |
-| **`[1]` - `[6]`** | Switch tabs (Dashboard, Health Scan, Issue Triage, Repair Center, Backups & Logs, Settings) |
+| **`[1]` - `[5]`** | Switch tabs (Dashboard, Health Scan, Issue Triage, Repair Center, Settings & Safety) |
 | **`[Tab]` / `[Shift+Tab]`** | Cycle forward / backward through tabs |
 | **`[S]`** | Start full system health scan |
 | **`[R]`** | Re-run scan / refresh current view |
@@ -102,10 +102,12 @@ The check is deliberately conservative: release URLs must start with `https://gi
 | **`[F]`** | Proceed to Repair Center / Execute repairs |
 | **`[D]`** | Toggle dry-run mode — repairs are shown, not executed |
 | **`[E]`** | Export diagnostic & repair report as self-contained HTML |
-| **`[U]`** | Backups & Logs tab: restore the selected registry snapshot — elsewhere: open the pending "update available" notice |
+| **`[B]`** | Settings & Safety tab: move `[↑]`/`[↓]` between the settings list and the registry snapshot list |
+| **`[U]`** | Settings & Safety tab: restore the selected registry snapshot — elsewhere: open the pending "update available" notice |
 | **`[PgUp]` / `[PgDn]`** | Scroll live log console (Scan and Repair tabs) |
 | **`[Home]` / `[End]`** | Jump to earliest log line / return to live tail follow mode |
-| **`[←]` / `[→]`** | Adjust the highlighted numeric setting (Settings tab) |
+| **`[←]` / `[→]` or `[h]` / `[l]`** | Switch tabs (BIOS-style, wraps around) |
+| **`[+]` / `[-]` or `[[` / `]]`** | Adjust the highlighted numeric setting (Settings & Safety tab) |
 | **`[↑]` / `[↓]` or `[j]` / `[k]`** | Navigate list items and scroll logs |
 | **`[?]`** | Open interactive Help Modal overlay |
 | **`[Esc]`** | Clear filters / abort a running operation / close modal / return to Dashboard |

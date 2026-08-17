@@ -3,7 +3,7 @@
 //! modules listed in [`crate::app`].
 
 use super::{
-    BackgroundEvent, TAB_COUNT, TAB_DASHBOARD, TAB_HISTORY, TAB_REPAIR, TAB_SCANNER,
+    BackgroundEvent, TAB_COUNT, TAB_DASHBOARD, TAB_REPAIR, TAB_SCANNER, TAB_SETTINGS,
     push_bounded_log,
 };
 use crate::config::AppConfig;
@@ -24,6 +24,16 @@ use tokio::sync::mpsc::{Receiver, UnboundedReceiver, UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
 use super::confirm::{ConfirmRequest, SystemActions};
+
+/// Which of the two lists on the Settings & Safety tab currently owns `↑`/`↓`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SafetyFocus {
+    /// The configuration list. What the tab opens on.
+    #[default]
+    Settings,
+    /// The registry backup list, so `↑`/`↓` picks the target of `[U]`.
+    Backups,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingInput {
@@ -80,7 +90,7 @@ pub struct App {
     pub repair_console_lines: VecDeque<String>,
     pub repair_log_scroll: usize,
 
-    // Backups & History
+    // Safety: audit log, registry backups, VSS restore points
     pub audit_logger: AuditLogger,
     pub reg_backup_mgr: RegBackupManager,
     pub audit_entries: Vec<AuditEntry>,
@@ -94,6 +104,8 @@ pub struct App {
     // Settings
     pub selected_setting_index: usize,
     pub setting_input: Option<SettingInput>,
+    /// Which list on the Settings & Safety tab the arrow keys drive.
+    pub safety_focus: SafetyFocus,
 
     // UI state
     pub status_message: Option<String>,
@@ -187,6 +199,7 @@ impl App {
             is_restoring: false,
             selected_setting_index: 0,
             setting_input: None,
+            safety_focus: SafetyFocus::default(),
             // A corrupt config file is the one startup condition worth
             // interrupting the user's first glance for: their saved settings
             // are not in effect and the defaults silently re-enable things
@@ -302,9 +315,7 @@ impl App {
     /// Advance to the next tab in cyclic order (BIOS-style right navigation).
     pub fn next_tab(&mut self) {
         self.active_tab = (self.active_tab + 1) % TAB_COUNT;
-        if self.active_tab == TAB_HISTORY {
-            self.load_history_data();
-        }
+        self.on_tab_entered();
     }
 
     /// Go back to the previous tab in cyclic order (BIOS-style left navigation).
@@ -314,8 +325,30 @@ impl App {
         } else {
             self.active_tab - 1
         };
-        if self.active_tab == TAB_HISTORY {
-            self.load_history_data();
+        self.on_tab_entered();
+    }
+
+    /// Jump straight to a tab, as the number keys do.
+    ///
+    /// Out-of-range indices are ignored rather than clamped: silently landing on
+    /// a neighbouring tab would be a worse answer than not moving at all.
+    pub fn goto_tab(&mut self, index: usize) {
+        if index >= TAB_COUNT {
+            return;
+        }
+        self.active_tab = index;
+        self.on_tab_entered();
+    }
+
+    /// Per-tab work that has to happen however the tab was reached.
+    ///
+    /// Only the Settings & Safety tab needs it: its audit log and backup list
+    /// are read off disk, and both go stale the moment a repair run writes to
+    /// them. Routing every entry point through here is what stops `[Tab]` and
+    /// `→` from showing a different list than `[5]` does.
+    fn on_tab_entered(&mut self) {
+        if self.active_tab == TAB_SETTINGS {
+            self.load_safety_data();
         }
     }
 

@@ -14,8 +14,8 @@ const SECTIONS: &[Section] = &[
         &[
             ("[←]/[→] or [h]/[l]", "Switch tab (BIOS-style navigation)"),
             (
-                "[1] - [6]",
-                "Jump directly to tab (Dashboard, Scan, Triage, Fix, Logs, Settings)",
+                "[1] - [5]",
+                "Jump directly to tab (Dashboard, Scan, Triage, Repair, Settings & Safety)",
             ),
             (
                 "[Tab] / [Shift+Tab]",
@@ -56,15 +56,7 @@ const SECTIONS: &[Section] = &[
         ],
     ),
     (
-        "Backups & Rollback (tab 5)",
-        &[
-            ("[↑]/[↓]", "Select a registry backup"),
-            ("[U]", "Restore the selected .reg backup, after confirming"),
-            ("[R]", "Reload restore points and the log"),
-        ],
-    ),
-    (
-        "Settings (tab 6)",
+        "Settings & Safety (tab 5)",
         &[
             (
                 "[Enter]",
@@ -75,6 +67,12 @@ const SECTIONS: &[Section] = &[
                 "[+] / [-] or [[]/[]]",
                 "Increase / decrease a numeric value",
             ),
+            (
+                "[B]",
+                "Move [↑]/[↓] between the settings and the backup list",
+            ),
+            ("[U]", "Restore the selected .reg backup, after confirming"),
+            ("[R]", "Reload the restore points, backups and audit log"),
         ],
     ),
 ];
@@ -126,7 +124,7 @@ pub fn render_help_popup(f: &mut Frame, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            " The VSS restore point and registry backup are configurable in tab [6].",
+            " VSS restore points, registry backups and the rollback all live in tab [5].",
             Style::default().fg(Theme::MUTED),
         ),
     ]));

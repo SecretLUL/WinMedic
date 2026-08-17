@@ -10,7 +10,7 @@
 //! the normal bindings.
 
 use super::state::App;
-use super::{TAB_DASHBOARD, TAB_HISTORY, TAB_REPAIR, TAB_SCANNER, TAB_SETTINGS, TAB_TRIAGE};
+use super::{TAB_DASHBOARD, TAB_REPAIR, TAB_SCANNER, TAB_SETTINGS, TAB_TRIAGE};
 use crate::engine::issue::Severity;
 use crossterm::event::KeyCode;
 
@@ -85,27 +85,29 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
         KeyCode::Char('q') | KeyCode::Char('Q') => app.should_quit = true,
         KeyCode::Char('?') => app.show_help = true,
 
-        KeyCode::Char('1') => app.active_tab = 0,
-        KeyCode::Char('2') => app.active_tab = 1,
-        KeyCode::Char('3') => app.active_tab = 2,
-        KeyCode::Char('4') => app.active_tab = 3,
-        KeyCode::Char('5') => {
-            app.active_tab = TAB_HISTORY;
-            app.load_history_data();
-        }
-        KeyCode::Char('6') => app.active_tab = TAB_SETTINGS,
+        KeyCode::Char('1') => app.goto_tab(TAB_DASHBOARD),
+        KeyCode::Char('2') => app.goto_tab(TAB_SCANNER),
+        KeyCode::Char('3') => app.goto_tab(TAB_TRIAGE),
+        KeyCode::Char('4') => app.goto_tab(TAB_REPAIR),
+        KeyCode::Char('5') => app.goto_tab(TAB_SETTINGS),
 
         KeyCode::Tab => app.next_tab(),
         KeyCode::BackTab => app.prev_tab(),
 
         KeyCode::Char('s') | KeyCode::Char('S') => app.start_scan(),
         KeyCode::Char('r') | KeyCode::Char('R') => {
-            if app.active_tab == TAB_HISTORY {
-                app.load_history_data();
+            if app.active_tab == TAB_SETTINGS {
+                app.load_safety_data();
                 app.refresh_restore_points();
             } else {
                 app.start_scan();
             }
+        }
+
+        // Hands the arrow keys to the backup list and back, so one tab can carry
+        // both the settings list and the rollback target selection.
+        KeyCode::Char('b') | KeyCode::Char('B') if app.active_tab == TAB_SETTINGS => {
+            app.toggle_safety_focus();
         }
 
         KeyCode::Char('d') | KeyCode::Char('D') => app.toggle_dry_run(),
@@ -128,7 +130,7 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
         KeyCode::Char('n') | KeyCode::Char('N') => app.deselect_all_issues(),
 
         KeyCode::Char('u') | KeyCode::Char('U') => {
-            if app.active_tab == TAB_HISTORY {
+            if app.active_tab == TAB_SETTINGS {
                 app.request_rollback();
             } else {
                 // Opens the parked "update available" notice, if there is one.
@@ -145,28 +147,32 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
             }
         },
 
+        // Enter and Space edit settings, so they stay inert while the backup
+        // list holds focus — there is nothing on that side to toggle, and
+        // silently editing the hidden selection would be worse than doing
+        // nothing.
         KeyCode::Enter => match app.active_tab {
             TAB_TRIAGE => app.toggle_selected_issue(),
-            TAB_SETTINGS => app.open_setting_input(),
+            TAB_SETTINGS if !app.backups_focused() => app.open_setting_input(),
             _ => {}
         },
 
         KeyCode::Char(' ') => match app.active_tab {
             TAB_TRIAGE => app.toggle_selected_issue(),
-            TAB_SETTINGS => app.toggle_current_setting(),
+            TAB_SETTINGS if !app.backups_focused() => app.toggle_current_setting(),
             _ => {}
         },
 
         KeyCode::Up | KeyCode::Char('k') => match app.active_tab {
             TAB_TRIAGE => app.prev_issue(),
-            TAB_HISTORY => app.prev_backup(),
+            TAB_SETTINGS if app.backups_focused() => app.prev_backup(),
             TAB_SETTINGS => app.prev_setting(),
             TAB_SCANNER | TAB_REPAIR => app.scroll_log_up(1),
             _ => {}
         },
         KeyCode::Down | KeyCode::Char('j') => match app.active_tab {
             TAB_TRIAGE => app.next_issue(),
-            TAB_HISTORY => app.next_backup(),
+            TAB_SETTINGS if app.backups_focused() => app.next_backup(),
             TAB_SETTINGS => app.next_setting(),
             TAB_SCANNER | TAB_REPAIR => app.scroll_log_down(1),
             _ => {}
@@ -209,20 +215,23 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
         KeyCode::Right | KeyCode::Char('l') => app.next_tab(),
 
         KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char(']')
-            if app.active_tab == TAB_SETTINGS =>
+            if app.active_tab == TAB_SETTINGS && !app.backups_focused() =>
         {
             app.adjust_current_setting(true);
         }
         KeyCode::Char('-') | KeyCode::Char('_') | KeyCode::Char('[')
-            if app.active_tab == TAB_SETTINGS =>
+            if app.active_tab == TAB_SETTINGS && !app.backups_focused() =>
         {
             app.adjust_current_setting(false);
         }
 
-        // Esc clears active filters first, cancels a running operation second, and navigates back to dashboard third.
+        // Esc unwinds one layer at a time: filters, then backup focus, then a
+        // running operation, then the tab itself.
         KeyCode::Esc => {
             if app.active_tab == TAB_TRIAGE && app.has_active_filters() {
                 app.clear_filters();
+            } else if app.active_tab == TAB_SETTINGS && app.backups_focused() {
+                app.toggle_safety_focus();
             } else if !app.cancel_current_operation() && app.active_tab != TAB_DASHBOARD {
                 app.active_tab = TAB_DASHBOARD;
             }
@@ -237,6 +246,17 @@ mod tests {
     use super::*;
     use crate::app::{ConfirmRequest, TAB_COUNT};
     use crate::engine::issue::{Issue, RiskScore};
+    use crate::safety::reg_backup::BackupRecord;
+
+    fn backup(id: &str) -> BackupRecord {
+        BackupRecord {
+            id: id.to_string(),
+            timestamp: "2026-01-01 12:00:00".to_string(),
+            description: format!("backup {}", id),
+            key_path: format!("HKCU\\Test\\{}", id),
+            file_path: format!("C:\\backups\\{}.reg", id),
+        }
+    }
 
     /// An `App` with no modal in the way.
     ///
@@ -464,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn u_means_rollback_on_history_and_update_notice_everywhere_else() {
+    fn u_means_rollback_on_settings_and_update_notice_everywhere_else() {
         let mut app = app();
         app.active_tab = TAB_DASHBOARD;
         app.available_update = None;
@@ -473,12 +493,82 @@ mod tests {
         handle_key(&mut app, KeyCode::Char('u'));
         assert!(app.pending_confirm.is_none());
 
-        app.active_tab = TAB_HISTORY;
+        app.active_tab = TAB_SETTINGS;
         app.backup_records.clear();
         handle_key(&mut app, KeyCode::Char('u'));
         // No backups to roll back, so it explains itself instead.
         assert!(app.pending_confirm.is_none());
         assert!(app.status_message.is_some());
+    }
+
+    #[test]
+    fn b_hands_the_arrow_keys_to_the_backup_list_and_back() {
+        let mut app = app();
+        app.active_tab = TAB_SETTINGS;
+        app.backup_records = vec![backup("a"), backup("b"), backup("c")];
+        app.selected_setting_index = 0;
+
+        // Focus starts on the settings list.
+        handle_key(&mut app, KeyCode::Down);
+        assert_eq!(app.selected_setting_index, 1);
+        assert_eq!(app.selected_backup_index, 0, "the backup list stayed put");
+
+        handle_key(&mut app, KeyCode::Char('b'));
+        handle_key(&mut app, KeyCode::Down);
+        assert_eq!(app.selected_backup_index, 1);
+        assert_eq!(
+            app.selected_setting_index, 1,
+            "the settings list stayed put"
+        );
+
+        // While backups hold focus, the setting editors are inert.
+        let before = app.config.temp_clean_threshold_mb;
+        app.selected_setting_index = 4; // temp_clean_threshold_mb
+        handle_key(&mut app, KeyCode::Char('+'));
+        assert_eq!(app.config.temp_clean_threshold_mb, before);
+        handle_key(&mut app, KeyCode::Enter);
+        assert!(app.setting_input.is_none(), "Enter opens no input dialog");
+
+        // Esc gives the arrow keys back before it navigates anywhere.
+        handle_key(&mut app, KeyCode::Esc);
+        assert!(!app.backups_focused());
+        assert_eq!(app.active_tab, TAB_SETTINGS, "and stays on the tab");
+
+        handle_key(&mut app, KeyCode::Esc);
+        assert_eq!(app.active_tab, TAB_DASHBOARD);
+    }
+
+    #[test]
+    fn b_does_nothing_outside_the_settings_tab() {
+        let mut app = app();
+        app.active_tab = TAB_TRIAGE;
+
+        handle_key(&mut app, KeyCode::Char('b'));
+        assert!(!app.backups_focused());
+    }
+
+    #[test]
+    fn number_keys_reach_every_tab_and_ignore_the_retired_sixth() {
+        let mut app = app();
+
+        for (key, expected) in [
+            ('1', TAB_DASHBOARD),
+            ('2', TAB_SCANNER),
+            ('3', TAB_TRIAGE),
+            ('4', TAB_REPAIR),
+            ('5', TAB_SETTINGS),
+        ] {
+            handle_key(&mut app, KeyCode::Char(key));
+            assert_eq!(
+                app.active_tab, expected,
+                "'{key}' should open tab {expected}"
+            );
+        }
+
+        // '6' used to be Settings. It now points past the last tab and must not
+        // move the user anywhere.
+        handle_key(&mut app, KeyCode::Char('6'));
+        assert_eq!(app.active_tab, TAB_SETTINGS, "'6' is no longer bound");
     }
 
     #[test]
