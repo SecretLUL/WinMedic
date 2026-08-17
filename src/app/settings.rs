@@ -1,7 +1,5 @@
 use super::state::{App, SettingInput};
 use crate::config::AppConfig;
-use crate::engine::runner::DiagnosticEngine;
-use std::sync::Arc;
 
 impl App {
     pub fn next_setting(&mut self) {
@@ -133,7 +131,7 @@ impl App {
             return;
         }
 
-        self.engine = Arc::new(DiagnosticEngine::new(&self.config));
+        self.rebuild_engine();
         let (progress, statuses) = Self::module_lists(&self.engine);
         self.module_progress_list = progress;
         // Findings from the last scan stay on screen; only reset the per-module

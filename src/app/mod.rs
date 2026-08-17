@@ -28,7 +28,7 @@ pub mod run_control;
 pub mod settings;
 pub mod state;
 
-pub use confirm::ConfirmRequest;
+pub use confirm::{ConfirmRequest, SystemActions};
 pub use input::handle_key;
 pub use state::{App, SettingInput};
 

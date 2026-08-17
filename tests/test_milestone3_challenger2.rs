@@ -4,7 +4,7 @@ use winmedic::config::AppConfig;
 use winmedic::utils::cmd::{CmdOutput, MockCommandRunner};
 use winmedic::utils::updater::{
     GITHUB_LATEST_RELEASE_URL, SemVer, UpdateInfo, check_for_update, is_update_available,
-    launch_browser,
+    validate_release_url,
 };
 
 // ============================================================================
@@ -286,17 +286,20 @@ async fn test_check_for_update_command_error_and_malformed_json() {
 
 #[test]
 fn test_launch_browser_empty_url_is_rejected() {
-    let err = launch_browser("").unwrap_err();
+    let err = validate_release_url("").unwrap_err();
     assert_eq!(err, "The URL must not be empty");
 }
 
+/// Asserts the acceptance rules only. `launch_browser` really does open a
+/// browser window, so a test suite must never call it.
 #[test]
 fn test_launch_browser_valid_urls() {
     // Valid HTTPS URL
-    assert!(launch_browser("https://github.com/SecretLUL/WinMedic/releases/latest").is_ok());
+    assert!(validate_release_url("https://github.com/SecretLUL/WinMedic/releases/latest").is_ok());
     // Valid URL with query params and anchors
     assert!(
-        launch_browser("https://github.com/SecretLUL/WinMedic/releases?tab=tags#v0.2.0").is_ok()
+        validate_release_url("https://github.com/SecretLUL/WinMedic/releases?tab=tags#v0.2.0")
+            .is_ok()
     );
 }
 

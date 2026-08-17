@@ -30,7 +30,7 @@ use winmedic::modules::system_cleaner::{
 use winmedic::modules::{DiagnosticModule, ModuleConfig, get_all_modules_with_runner};
 use winmedic::safety::audit::{AuditEntry, AuditLogger, MAX_LOG_FILE_BYTES};
 use winmedic::utils::cmd::{CmdOutput, CommandRunner};
-use winmedic::utils::updater::{UpdateInfo, check_for_update, launch_browser};
+use winmedic::utils::updater::{UpdateInfo, check_for_update};
 
 // ============================================================================
 // SCENARIO 1: Full System Scan & Dry-Run Triage across all 7 modules (F2–F12)
@@ -229,9 +229,15 @@ async fn test_scenario_3_startup_update_modal_and_confirm() {
     let modal = app.pending_confirm.as_ref().unwrap();
     assert_eq!(modal.title(), "NEW WINMEDIC UPDATE AVAILABLE");
 
-    // 3. User confirms modal -> browser launch executed and modal dismissed
+    // 3. User confirms modal -> release page requested and modal dismissed.
+    //    `App::new` leaves the OS actions inert, so this asserts the decision
+    //    without a browser window opening on the machine running the suite.
     app.confirm_pending_action();
     assert!(app.pending_confirm.is_none());
+    assert_eq!(
+        app.status_message,
+        Some("Opened the GitHub release page in your browser.".to_string())
+    );
 }
 
 // ============================================================================

@@ -1,6 +1,7 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
+use crate::utils::debug_log::DebugTrace;
 use crate::utils::fs_stats::dir_stats_recursive;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -526,36 +527,70 @@ impl SystemCleanerModule {
         .unwrap_or_default()
     }
 
-    /// Delete the contents of `dirs` on a blocking thread.
-    async fn clean_dirs(dirs: Vec<PathBuf>) -> CleanStats {
-        tokio::task::spawn_blocking(move || {
-            let mut total = CleanStats::default();
-            for dir in &dirs {
-                let stats = clean_path_contents(dir);
-                total.freed_bytes += stats.freed_bytes;
-                total.deleted_files += stats.deleted_files;
-                total.skipped_locked += stats.skipped_locked;
-            }
-            total
-        })
-        .await
-        .unwrap_or_default()
-    }
+    /// Delete the contents of `dirs` on a blocking thread, reporting each one.
+    ///
+    /// A cleanup that frees nothing is the hardest kind of failure to read from
+    /// a summary line: "0 files deleted" is the same number whether the
+    /// directory was already empty, missing, or locked by a running service.
+    /// Per-directory tracing is what tells those three apart. With tracing off
+    /// this falls straight through to the batched sweep, which keeps the common
+    /// case on one blocking task instead of one per directory.
+    async fn clean_dirs_reporting(
+        dirs: Vec<PathBuf>,
+        sweep: fn(&Path) -> CleanStats,
+        dbg: &DebugTrace,
+    ) -> CleanStats {
+        if !dbg.is_enabled() {
+            return tokio::task::spawn_blocking(move || {
+                let mut total = CleanStats::default();
+                for dir in &dirs {
+                    let stats = sweep(dir);
+                    total.freed_bytes += stats.freed_bytes;
+                    total.deleted_files += stats.deleted_files;
+                    total.skipped_locked += stats.skipped_locked;
+                }
+                total
+            })
+            .await
+            .unwrap_or_default();
+        }
 
-    /// Like [`Self::clean_dirs`], but deleting only log/diagnostic archives.
-    async fn clean_log_dirs(dirs: Vec<PathBuf>) -> CleanStats {
-        tokio::task::spawn_blocking(move || {
-            let mut total = CleanStats::default();
-            for dir in &dirs {
-                let stats = clean_log_dir_files(dir);
-                total.freed_bytes += stats.freed_bytes;
-                total.deleted_files += stats.deleted_files;
-                total.skipped_locked += stats.skipped_locked;
+        let mut total = CleanStats::default();
+        for dir in dirs {
+            dbg.path("sweeping", &dir).await;
+            if !dir.exists() {
+                dbg.data("  -> nothing to do, the path does not exist on this machine")
+                    .await;
+                continue;
             }
-            total
-        })
-        .await
-        .unwrap_or_default()
+            let target = dir.clone();
+            let stats = tokio::task::spawn_blocking(move || sweep(&target))
+                .await
+                .unwrap_or_default();
+            dbg.data(format!(
+                "  -> {} deleted, {} freed, {} locked",
+                stats.deleted_files,
+                format_bytes(stats.freed_bytes),
+                stats.skipped_locked
+            ))
+            .await;
+            if stats.skipped_locked > 0 {
+                // "1 locked" on its own gives the user nothing to act on. What
+                // survived the sweep *is* what was locked, so listing the
+                // remainder names the files without tracking them separately.
+                for path in remaining_entries(&dir, 6) {
+                    dbg.warn(format!("locked: {}", path)).await;
+                }
+                if stats.deleted_files == 0 {
+                    dbg.hint("every candidate in this directory is held open by a running process")
+                        .await;
+                }
+            }
+            total.freed_bytes += stats.freed_bytes;
+            total.deleted_files += stats.deleted_files;
+            total.skipped_locked += stats.skipped_locked;
+        }
+        total
     }
 
     async fn send_progress(
@@ -994,13 +1029,18 @@ impl DiagnosticModule for SystemCleanerModule {
     async fn fix(
         &self,
         issue_id: &str,
-        _progress_tx: Option<Sender<FixProgress>>,
+        progress_tx: Option<Sender<FixProgress>>,
     ) -> Result<String, String> {
+        let dbg = DebugTrace::fix(issue_id, progress_tx, self.config.verbose_logging);
+
         match issue_id {
             "sys_clean_winsxs" => {
-                let out = self
-                    .runner
+                dbg.section("WinSxS component store cleanup").await;
+                dbg.hint("DISM refuses to touch the component store without Administrator rights")
+                    .await;
+                let out = dbg
                     .run(
+                        &self.runner,
                         "dism.exe",
                         &["/Online", "/Cleanup-Image", "/StartComponentCleanup"],
                         Duration::from_secs(300),
@@ -1022,17 +1062,28 @@ impl DiagnosticModule for SystemCleanerModule {
                 // service to release and flush its own cache. Sweeping the
                 // directories while DoSvc still holds them open just piles every
                 // file into `skipped_locked`.
-                let ps = self
-                    .runner
+                dbg.section("Delivery Optimization cache").await;
+                let ps = dbg
                     .run_powershell(
+                        &self.runner,
                         "Delete-DeliveryOptimizationCache -Force -ErrorAction SilentlyContinue",
                         Duration::from_secs(30),
                     )
                     .await;
                 let cmdlet_ok = matches!(&ps, Ok(out) if out.success);
+                dbg.kv(
+                    "cmdlet",
+                    if cmdlet_ok {
+                        "flushed the cache"
+                    } else {
+                        "did not flush - sweeping the directories instead"
+                    },
+                )
+                .await;
 
                 let wudo_dirs = discover_delivery_optimization_dirs(&self.paths.sys_root);
-                let total_clean = Self::clean_dirs(wudo_dirs).await;
+                let total_clean =
+                    Self::clean_dirs_reporting(wudo_dirs, clean_path_contents, &dbg).await;
 
                 // The cmdlet doing the work is a perfectly good outcome even
                 // when the leftover sweep finds nothing, so it counts as success.
@@ -1050,57 +1101,285 @@ impl DiagnosticModule for SystemCleanerModule {
                 ))
             }
             "sys_clean_package_cache" => {
+                dbg.section("installer package cache").await;
                 let pkg_cache_dir = self.paths.prog_data.join("Package Cache");
-                let stats = Self::clean_dirs(vec![pkg_cache_dir]).await;
+                let stats =
+                    Self::clean_dirs_reporting(vec![pkg_cache_dir], clean_path_contents, &dbg)
+                        .await;
                 cleanup_result("Package cache cleaned", stats)
             }
             "sys_clean_browser_cache" => {
+                dbg.section("browser caches").await;
                 let browser_dirs =
                     discover_browser_cache_dirs(&self.paths.local_app_data, &self.paths.app_data);
-                let total_clean = Self::clean_dirs(browser_dirs).await;
+                let total_clean =
+                    Self::clean_dirs_reporting(browser_dirs, clean_path_contents, &dbg).await;
                 cleanup_result("Browser caches cleaned", total_clean)
             }
             "sys_clean_setup_logs" => {
+                dbg.section("Windows setup & system logs").await;
                 let setup_log_dirs = discover_setup_log_dirs(&self.paths.sys_root);
-                let total_clean = Self::clean_log_dirs(setup_log_dirs).await;
+                let total_clean =
+                    Self::clean_dirs_reporting(setup_log_dirs, clean_log_dir_files, &dbg).await;
                 cleanup_result("Windows setup & system logs cleaned", total_clean)
             }
             "sys_clean_error_reporting" => {
+                dbg.section("error reports & crash dumps").await;
                 let wer_dirs =
                     discover_wer_and_dump_dirs(&self.paths.local_app_data, &self.paths.prog_data);
-                let total_clean = Self::clean_dirs(wer_dirs).await;
+                let total_clean =
+                    Self::clean_dirs_reporting(wer_dirs, clean_path_contents, &dbg).await;
                 cleanup_result("Windows error reports & crash dumps cleaned", total_clean)
             }
             "sys_clean_shader_certs" => {
+                dbg.section("DirectX shader & certificate caches").await;
                 let shader_dirs = discover_shader_and_cert_dirs(
                     &self.paths.local_app_data,
                     &self.paths.user_profile,
                 );
-                let total_clean = Self::clean_dirs(shader_dirs).await;
+                let total_clean =
+                    Self::clean_dirs_reporting(shader_dirs, clean_path_contents, &dbg).await;
                 cleanup_result("DirectX shader & certificate caches cleaned", total_clean)
             }
             "sys_clean_recycle_bin" => {
-                let out = self
-                    .runner
-                    .run_powershell(
-                        "Clear-RecycleBin -Force -ErrorAction SilentlyContinue",
-                        Duration::from_secs(30),
-                    )
+                dbg.section("emptying the Recycle Bin").await;
+                dbg.hint(
+                    "Clear-RecycleBin without -DriveLetter walks every drive PowerShell can see, mapped network drives included, and a single unusable drive fails the whole call",
+                )
+                .await;
+
+                let out = dbg
+                    .run_powershell(&self.runner, RECYCLE_BIN_SCRIPT, Duration::from_secs(60))
                     .await?;
-                if out.success {
-                    Ok("Windows Recycle Bin emptied successfully on every drive.".to_string())
-                } else {
-                    Err(format!("Failed to empty the Recycle Bin: {}", out.stderr))
+
+                let report = RecycleBinReport::parse(&out.stdout);
+                for (drive, outcome) in &report.drives {
+                    match outcome {
+                        Ok(()) => dbg.kv(&format!("drive {}:", drive), "emptied").await,
+                        Err(msg) => {
+                            dbg.warn(format!("drive {}: refused - {}", drive, msg))
+                                .await
+                        }
+                    }
                 }
+
+                // The shell only ever sees entries whose `$R` payload still
+                // exists. An orphaned `$I` index stub — a deleted file whose
+                // data is already gone — is invisible to `Clear-RecycleBin`,
+                // which then fails with "the system cannot find the file
+                // specified", while the scan happily counts the stub and raises
+                // the issue again on the next run. Sweeping the same
+                // directories the scan measured is what breaks that loop.
+                dbg.section("leftover entries on disk").await;
+                dbg.kv(
+                    "scope",
+                    "every profile directory under the discovered $Recycle.Bin roots",
+                )
+                .await;
+                let leftovers = Self::clean_dirs_reporting(
+                    self.paths.recycle_bins.clone(),
+                    clean_path_contents,
+                    &dbg,
+                )
+                .await;
+
+                report.into_result(leftovers, out.success, || failure_reason(&out))
             }
             "sys_clean_system_temp" => {
+                dbg.section("extended system temp directories").await;
                 let system_temp_dirs = discover_system_temp_dirs(&self.paths.sys_root);
-                let total_clean = Self::clean_dirs(system_temp_dirs).await;
+                let total_clean =
+                    Self::clean_dirs_reporting(system_temp_dirs, clean_path_contents, &dbg).await;
                 cleanup_result("Extended system temp directories cleaned", total_clean)
             }
             _ => Err(format!("Unknown issue ID: {}", issue_id)),
         }
     }
+}
+
+/// Empty the Recycle Bin one drive at a time, naming each drive in the output.
+///
+/// `Clear-RecycleBin` without `-DriveLetter` walks every drive PowerShell can
+/// see, and one drive it cannot handle — a mapped network share, a drive whose
+/// bin was never created — fails the entire call. Combined with
+/// `-ErrorAction SilentlyContinue` that produced the worst possible outcome:
+/// the error text was discarded while PowerShell still exited non-zero, so the
+/// repair failed with a blank reason and nothing to act on.
+///
+/// Catching per drive inside the script keeps each message, and stops one bad
+/// drive from hiding the drives that were emptied.
+const RECYCLE_BIN_SCRIPT: &str = r#"
+$ErrorActionPreference = 'Continue'
+foreach ($vol in Get-Volume) {
+    if (-not $vol.DriveLetter) { continue }
+    if ($vol.DriveType -ne 'Fixed') { continue }
+    $letter = $vol.DriveLetter
+    try {
+        Clear-RecycleBin -DriveLetter $letter -Force -Confirm:$false -ErrorAction Stop
+        Write-Output "DRIVE $letter OK"
+    } catch {
+        Write-Output "DRIVE $letter ERR $($_.Exception.Message -replace '\s+', ' ')"
+    }
+}
+"#;
+
+/// Per-drive outcome parsed out of [`RECYCLE_BIN_SCRIPT`]'s output.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct RecycleBinReport {
+    /// Drive letter and whether it could be emptied, in the script's order.
+    drives: Vec<(String, Result<(), String>)>,
+}
+
+impl RecycleBinReport {
+    fn parse(stdout: &str) -> Self {
+        let mut drives = Vec::new();
+        for line in stdout.lines() {
+            let Some(rest) = line.trim().strip_prefix("DRIVE ") else {
+                continue;
+            };
+            let mut parts = rest.splitn(3, ' ');
+            let (Some(letter), Some(status)) = (parts.next(), parts.next()) else {
+                continue;
+            };
+            let detail = parts.next().unwrap_or("").trim();
+            let outcome = match status {
+                "OK" => Ok(()),
+                _ if detail.is_empty() => Err("no reason reported".to_string()),
+                _ => Err(detail.to_string()),
+            };
+            drives.push((letter.to_string(), outcome));
+        }
+        Self { drives }
+    }
+
+    /// Turn the per-drive outcomes and the leftover sweep into one result.
+    ///
+    /// A drive that refused is worth reporting even when others succeeded, so a
+    /// partial run stays a success with the refusals spelled out rather than
+    /// silently claiming every drive was emptied. And a shell that refused
+    /// everywhere is still a completed repair when the sweep removed the
+    /// entries it choked on — otherwise the run reports failure over files that
+    /// are, by then, gone.
+    ///
+    /// `shell_ok` and `shell_failure` describe the PowerShell run itself, for
+    /// the case where it never produced a single per-drive line.
+    fn into_result(
+        self,
+        leftovers: CleanStats,
+        shell_ok: bool,
+        shell_failure: impl FnOnce() -> String,
+    ) -> Result<String, String> {
+        let cleared: Vec<String> = self
+            .drives
+            .iter()
+            .filter(|(_, outcome)| outcome.is_ok())
+            .map(|(letter, _)| format!("{}:", letter))
+            .collect();
+        let refused: Vec<String> = self
+            .drives
+            .iter()
+            .filter_map(|(letter, outcome)| {
+                outcome
+                    .as_ref()
+                    .err()
+                    .map(|msg| format!("{}: {}", letter, msg))
+            })
+            .collect();
+
+        let swept = if leftovers.deleted_files > 0 {
+            format!(
+                " {} leftover entries removed from disk ({} freed).",
+                leftovers.deleted_files,
+                format_bytes(leftovers.freed_bytes)
+            )
+        } else {
+            String::new()
+        };
+
+        if !cleared.is_empty() {
+            return Ok(if refused.is_empty() {
+                format!(
+                    "Windows Recycle Bin emptied successfully on every drive ({}).{}",
+                    cleared.join(", "),
+                    swept
+                )
+            } else {
+                format!(
+                    "Windows Recycle Bin emptied on {} - refused on {}.{}",
+                    cleared.join(", "),
+                    refused.join("; "),
+                    swept
+                )
+            });
+        }
+
+        // Nothing the shell would admit to clearing. The sweep decides.
+        if leftovers.deleted_files > 0 {
+            let reason = if refused.is_empty() {
+                shell_failure()
+            } else {
+                refused.join("; ")
+            };
+            return Ok(format!(
+                "Windows Recycle Bin: the shell cleared nothing ({}), but{}",
+                reason,
+                swept.trim_end_matches('.')
+            ));
+        }
+
+        if refused.is_empty() && shell_ok {
+            return Ok("Windows Recycle Bin emptied successfully on every drive.".to_string());
+        }
+
+        Err(format!(
+            "Failed to empty the Recycle Bin: {}",
+            if refused.is_empty() {
+                shell_failure()
+            } else {
+                refused.join("; ")
+            }
+        ))
+    }
+}
+
+/// What is still sitting in `dir` after a sweep, up to `limit` entries.
+///
+/// A sweep only counts how many files it could not remove. Since it removes
+/// everything it can, whatever is left is exactly what was locked — so reading
+/// the directory back names them without threading paths through `CleanStats`.
+fn remaining_entries(dir: &Path, limit: usize) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .take(limit)
+        .map(|entry| {
+            let size = entry
+                .metadata()
+                .map(|m| format_bytes(m.len()))
+                .unwrap_or_else(|_| "size unknown".to_string());
+            format!("{} ({})", entry.path().display(), size)
+        })
+        .collect()
+}
+
+/// The most informative reason a command can give for having failed.
+///
+/// An empty string is a reason in itself and says so, rather than leaving the
+/// user with a message that stops after the colon.
+fn failure_reason(out: &crate::utils::cmd::CmdOutput) -> String {
+    for stream in [out.stderr.trim(), out.stdout.trim()] {
+        if !stream.is_empty() {
+            return stream.to_string();
+        }
+    }
+    format!(
+        "the command exited with code {} without writing any reason - it was suppressed rather than absent",
+        out.exit_code
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    )
 }
 
 #[cfg(test)]
@@ -1375,6 +1654,105 @@ The operation completed successfully.";
 
         let executed = mock.executed();
         assert!(executed.iter().any(|cmd| cmd.contains("Clear-RecycleBin")));
+    }
+
+    /// The failure that started all of this: PowerShell exits non-zero while
+    /// `-ErrorAction SilentlyContinue` has already thrown the reason away, and
+    /// the repair reports "Failed to empty the Recycle Bin:" with nothing after
+    /// the colon. Whatever else changes, the message must never end there again.
+    #[tokio::test]
+    async fn a_silent_recycle_bin_failure_still_reports_a_reason() {
+        let mock = MockCommandRunner::new();
+        mock.add_response("Clear-RecycleBin", CmdOutput::failed(1, ""));
+
+        let td = TestDir::new("recycle_bin_silent_failure");
+        let module = sandboxed(&td, Arc::new(mock));
+        let err = module.fix("sys_clean_recycle_bin", None).await.unwrap_err();
+
+        assert!(
+            !err.trim_end().ends_with(':'),
+            "message stops dead: {}",
+            err
+        );
+        assert!(err.contains("exited with code 1"), "{}", err);
+        assert!(err.contains("suppressed rather than absent"), "{}", err);
+    }
+
+    #[tokio::test]
+    async fn a_refusing_drive_is_named_and_the_working_drives_still_count() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "Clear-RecycleBin",
+            CmdOutput::ok("DRIVE C OK\r\nDRIVE D ERR Das Laufwerk wurde nicht gefunden.\r\n"),
+        );
+
+        let td = TestDir::new("recycle_bin_partial");
+        let module = sandboxed(&td, Arc::new(mock));
+        let msg = module.fix("sys_clean_recycle_bin", None).await.unwrap();
+
+        assert!(msg.contains("C:"), "{}", msg);
+        assert!(
+            msg.contains("D: Das Laufwerk wurde nicht gefunden."),
+            "{}",
+            msg
+        );
+    }
+
+    #[test]
+    fn the_recycle_bin_report_reads_per_drive_lines() {
+        let report = RecycleBinReport::parse(
+            "some banner\nDRIVE C OK\nDRIVE D ERR access denied on D\nDRIVE E ERR\nnoise",
+        );
+
+        assert_eq!(
+            report.drives,
+            vec![
+                ("C".to_string(), Ok(())),
+                ("D".to_string(), Err("access denied on D".to_string())),
+                ("E".to_string(), Err("no reason reported".to_string())),
+            ]
+        );
+    }
+
+    #[test]
+    fn every_drive_refusing_with_nothing_swept_is_a_failed_repair() {
+        let report = RecycleBinReport::parse("DRIVE C ERR bin is locked");
+        let err = report
+            .into_result(CleanStats::default(), false, || "unused".to_string())
+            .unwrap_err();
+        assert!(err.contains("C: bin is locked"), "{}", err);
+    }
+
+    /// The case from the field: `Clear-RecycleBin` cannot see orphaned `$I`
+    /// index stubs and fails, but the sweep removes them. The files really are
+    /// gone by then, so calling the repair failed would be a lie — and the scan
+    /// would raise the same issue forever.
+    #[test]
+    fn a_sweep_that_cleared_the_leftovers_rescues_a_refusing_shell() {
+        let report = RecycleBinReport::parse(
+            "DRIVE C ERR Das System kann die angegebene Datei nicht finden",
+        );
+        let swept = CleanStats {
+            freed_bytes: 2607,
+            deleted_files: 16,
+            skipped_locked: 0,
+        };
+
+        let msg = report
+            .into_result(swept, false, || "unused".to_string())
+            .expect("a completed sweep is a completed repair");
+        assert!(msg.contains("16 leftover entries"), "{}", msg);
+        assert!(
+            msg.contains("nicht finden"),
+            "the shell's own reason must survive: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn output_without_drive_lines_yields_no_verdict() {
+        assert!(RecycleBinReport::parse("").drives.is_empty());
+        assert!(RecycleBinReport::parse("DRIVE\nDRIVE C").drives.is_empty());
     }
 
     #[tokio::test]
