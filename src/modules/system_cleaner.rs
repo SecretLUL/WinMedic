@@ -20,6 +20,13 @@ pub struct CleanStats {
     pub freed_bytes: u64,
     pub deleted_files: usize,
     pub skipped_locked: usize,
+    /// Bytes sitting in the files that could not be removed.
+    ///
+    /// A locked file only matters to the user if it is holding disk space.
+    /// Counting the bytes separates "a running process is costing you 8 MB"
+    /// from "a system service keeps an empty placeholder open", which
+    /// [`cleanup_result`] needs to tell a real failure from a non-event.
+    pub locked_bytes: u64,
 }
 
 /// Parsed results from `dism.exe /Online /Cleanup-Image /AnalyzeComponentStore`.
@@ -61,11 +68,26 @@ pub fn scan_path_recursive(path: &Path) -> DirStats {
 /// successful repair. Reporting `Ok` there makes the engine mark the issue
 /// fixed, write a SUCCESS audit entry and lower the exit code, even though not
 /// a single byte was freed — so that case becomes an error the user can act on.
+///
+/// Unless the locked files are empty. Windows keeps zero-byte placeholders open
+/// for the lifetime of a service — `SystemTemp\FXSAPIDebugLogFile.txt` is the
+/// one every machine has — and there is no disk space behind them to recover.
+/// Failing the repair over those told the user to "close any running programs"
+/// for a byte count that could never change, so an all-locked sweep with
+/// nothing to reclaim stays a success and simply says why.
 pub fn cleanup_result(label: &str, stats: CleanStats) -> Result<String, String> {
     if stats.deleted_files == 0 && stats.skipped_locked > 0 {
+        if stats.locked_bytes == 0 {
+            return Ok(format!(
+                "{}: nothing to reclaim ({} locked, 0 B). The remaining entries are empty files held open by a system process.",
+                label, stats.skipped_locked
+            ));
+        }
         return Err(format!(
-            "{} failed: none of the {} files could be removed (all locked). Close any running programs and try again.",
-            label, stats.skipped_locked
+            "{} failed: none of the {} files could be removed (all locked, {} still in use). Close any running programs and try again.",
+            label,
+            stats.skipped_locked,
+            format_bytes(stats.locked_bytes)
         ));
     }
     Ok(format!(
@@ -91,12 +113,14 @@ pub fn clean_path_contents(path: &Path) -> CleanStats {
                         stats.deleted_files += 1;
                     } else {
                         stats.skipped_locked += 1;
+                        stats.locked_bytes += len;
                     }
                 } else if meta.is_dir() {
                     let sub = clean_path_contents(&p);
                     stats.freed_bytes += sub.freed_bytes;
                     stats.deleted_files += sub.deleted_files;
                     stats.skipped_locked += sub.skipped_locked;
+                    stats.locked_bytes += sub.locked_bytes;
                     let _ = std::fs::remove_dir(&p);
                 }
             }
@@ -153,6 +177,7 @@ pub fn clean_log_dir_files(path: &Path) -> CleanStats {
                             stats.deleted_files += 1;
                         } else {
                             stats.skipped_locked += 1;
+                            stats.locked_bytes += len;
                         }
                     }
                 } else if meta.is_dir() {
@@ -160,6 +185,7 @@ pub fn clean_log_dir_files(path: &Path) -> CleanStats {
                     stats.freed_bytes += sub.freed_bytes;
                     stats.deleted_files += sub.deleted_files;
                     stats.skipped_locked += sub.skipped_locked;
+                    stats.locked_bytes += sub.locked_bytes;
                 }
             }
         }
@@ -548,6 +574,7 @@ impl SystemCleanerModule {
                     total.freed_bytes += stats.freed_bytes;
                     total.deleted_files += stats.deleted_files;
                     total.skipped_locked += stats.skipped_locked;
+                    total.locked_bytes += stats.locked_bytes;
                 }
                 total
             })
@@ -568,10 +595,11 @@ impl SystemCleanerModule {
                 .await
                 .unwrap_or_default();
             dbg.data(format!(
-                "  -> {} deleted, {} freed, {} locked",
+                "  -> {} deleted, {} freed, {} locked ({} held)",
                 stats.deleted_files,
                 format_bytes(stats.freed_bytes),
-                stats.skipped_locked
+                stats.skipped_locked,
+                format_bytes(stats.locked_bytes)
             ))
             .await;
             if stats.skipped_locked > 0 {
@@ -582,13 +610,18 @@ impl SystemCleanerModule {
                     dbg.warn(format!("locked: {}", path)).await;
                 }
                 if stats.deleted_files == 0 {
-                    dbg.hint("every candidate in this directory is held open by a running process")
-                        .await;
+                    dbg.hint(if stats.locked_bytes == 0 {
+                        "every candidate in this directory is held open by a running process, but all of them are empty - there is no space to reclaim here"
+                    } else {
+                        "every candidate in this directory is held open by a running process"
+                    })
+                    .await;
                 }
             }
             total.freed_bytes += stats.freed_bytes;
             total.deleted_files += stats.deleted_files;
             total.skipped_locked += stats.skipped_locked;
+            total.locked_bytes += stats.locked_bytes;
         }
         total
     }
@@ -1741,6 +1774,7 @@ The operation completed successfully.";
             freed_bytes: 2607,
             deleted_files: 16,
             skipped_locked: 0,
+            locked_bytes: 0,
         };
 
         let msg = report
@@ -1907,16 +1941,22 @@ The operation completed successfully.";
             freed_bytes: 0,
             deleted_files: 0,
             skipped_locked: 12,
+            locked_bytes: 5_000_000,
         };
         let res = cleanup_result("Browser caches cleaned", all_locked);
         assert!(res.is_err());
-        assert!(res.unwrap_err().contains("12"));
+        let err = res.unwrap_err();
+        assert!(err.contains("12"));
+        // The size the user stands to reclaim is what justifies the failure,
+        // so it belongs in the message that asks them to close programs.
+        assert!(err.contains("4.8 MB"));
 
         // Partial progress still counts as success.
         let partial = CleanStats {
             freed_bytes: 2048,
             deleted_files: 3,
             skipped_locked: 4,
+            locked_bytes: 900,
         };
         let res = cleanup_result("Browser caches cleaned", partial);
         assert!(res.is_ok());
@@ -1927,6 +1967,38 @@ The operation completed successfully.";
 
         // An empty directory is a no-op success.
         assert!(cleanup_result("X", CleanStats::default()).is_ok());
+    }
+
+    /// Windows holds zero-byte placeholders open for the lifetime of a service
+    /// (`SystemTemp\FXSAPIDebugLogFile.txt` on every machine). Failing the
+    /// repair over those reported `1 failed` and told the user to close running
+    /// programs to recover nothing at all.
+    #[test]
+    fn test_cleanup_result_treats_empty_locked_files_as_success() {
+        let empty_placeholder = CleanStats {
+            freed_bytes: 0,
+            deleted_files: 0,
+            skipped_locked: 1,
+            locked_bytes: 0,
+        };
+        let res = cleanup_result(
+            "Extended system temp directories cleaned",
+            empty_placeholder,
+        );
+        assert!(res.is_ok(), "an empty locked file is not a failed repair");
+        let msg = res.unwrap();
+        assert!(msg.contains("nothing to reclaim"));
+        assert!(msg.contains("1 locked"));
+        // No dead-end advice for a file the user cannot free anyway.
+        assert!(!msg.contains("Close any running programs"));
+
+        // A single byte behind the lock puts it back in failure territory.
+        let one_byte = CleanStats {
+            skipped_locked: 1,
+            locked_bytes: 1,
+            ..CleanStats::default()
+        };
+        assert!(cleanup_result("X", one_byte).is_err());
     }
 
     #[test]
