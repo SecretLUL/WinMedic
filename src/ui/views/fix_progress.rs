@@ -23,12 +23,110 @@ fn debug_tag_color(tag: DebugTag) -> Color {
     }
 }
 
+/// What a console line turned out to be saying.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    Failure,
+    Success,
+    /// Anything the run has not called a failure: progress, notices, plain output.
+    Neutral,
+}
+
+impl Outcome {
+    /// The gutter printed in front of the line.
+    fn marker(self) -> &'static str {
+        match self {
+            Outcome::Failure => " [X] ",
+            Outcome::Success => " [OK] ",
+            Outcome::Neutral => " > ",
+        }
+    }
+
+    /// Styles for the gutter and the line text, in that order.
+    fn styles(self) -> (Style, Style) {
+        match self {
+            Outcome::Failure => (
+                Style::default()
+                    .fg(Theme::CORAL)
+                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(Theme::CORAL),
+            ),
+            Outcome::Success => (
+                Style::default()
+                    .fg(Theme::EMERALD)
+                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(Theme::EMERALD),
+            ),
+            Outcome::Neutral => (
+                Style::default().fg(Theme::CYAN),
+                Style::default().fg(Theme::TEXT_WHITE),
+            ),
+        }
+    }
+}
+
+/// Line prefixes the repair pipeline writes itself, and what each one means.
+///
+/// [`crate::app::events`] already knows whether a step failed, so its own marker
+/// settles the question before the keyword scan gets a look at the line. That
+/// order is what stops a repair from being judged by the thing it repaired:
+/// "Windows error reports & crash dumps" is the name of a Windows feature, so a
+/// run that cleans it *successfully* used to come out coral on both the
+/// `Repairing:` line and the `[OK]` line that followed it.
+const EMITTED_PREFIXES: &[(&str, Outcome)] = &[
+    ("[X]", Outcome::Failure),
+    ("[STDERR]", Outcome::Failure),
+    ("[OK]", Outcome::Success),
+    // A cancellation is the user's decision, not a fault — and its tally reads
+    // "0 failed" on a clean stop, which the keyword scan would take literally.
+    ("[STOP]", Outcome::Neutral),
+    ("Repairing:", Outcome::Neutral),
+    ("Simulating:", Outcome::Neutral),
+];
+
+/// Decide what an unparsed console line is reporting, and what of it to print.
+///
+/// The returned text is the line minus any prefix the gutter is about to repeat
+/// verbatim — an emitted `[OK] …` rendered as-is comes out `[OK] [OK] …`.
+/// Prefixes the gutter does *not* echo, `[STDERR]` above all, are left in place:
+/// they say something the gutter does not.
+fn classify(line: &str) -> (Outcome, &str) {
+    if let Some((prefix, outcome)) = EMITTED_PREFIXES
+        .iter()
+        .find(|(prefix, _)| line.starts_with(prefix))
+    {
+        let text = if outcome.marker().trim() == *prefix {
+            line[prefix.len()..].trim_start()
+        } else {
+            line
+        };
+        return (*outcome, text);
+    }
+
+    // Everything left is raw output from sfc, dism, chkdsk and friends, where
+    // the wording is all there is to go on.
+    let lower = line.to_lowercase();
+    let is_negative_assertion = lower.starts_with("no ")
+        || lower.starts_with("0 errors")
+        || lower.contains("no errors")
+        || lower.contains("0 errors");
+
+    if !is_negative_assertion && (lower.contains("error") || lower.contains("failed")) {
+        return (Outcome::Failure, line);
+    }
+
+    if line.contains("SUCCESS") || line.contains("Repaired") || line.contains("finished") {
+        return (Outcome::Success, line);
+    }
+
+    (Outcome::Neutral, line)
+}
+
 /// Style one console line for the repair log.
 ///
-/// Verbose traces are matched *before* the success/error keyword scan below:
-/// a trace explaining a failure necessarily contains the words "error" and
-/// "failed", and colouring those lines coral would make a single failed repair
-/// look like a dozen.
+/// Verbose traces are matched *before* [`classify`]: a trace explaining a
+/// failure necessarily contains the words "error" and "failed", and colouring
+/// those lines coral would make a single failed repair look like a dozen.
 pub fn style_console_line(line: &str) -> Line<'_> {
     if let Some(parsed) = parse_debug_line(line) {
         return Line::from(vec![
@@ -54,43 +152,12 @@ pub fn style_console_line(line: &str) -> Line<'_> {
         ]);
     }
 
-    let lower = line.to_lowercase();
-    let is_negative_assertion = (lower.starts_with("no ")
-        || lower.starts_with("0 errors")
-        || lower.contains("no errors")
-        || lower.contains("0 errors"))
-        && !line.starts_with("[STDERR]")
-        && !line.starts_with("[X]");
-
-    if !is_negative_assertion
-        && (line.starts_with("[STDERR]") || lower.contains("error") || lower.contains("failed"))
-    {
-        return Line::from(vec![
-            Span::styled(
-                " [X] ",
-                Style::default()
-                    .fg(Theme::CORAL)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(line, Style::default().fg(Theme::CORAL)),
-        ]);
-    }
-
-    if line.contains("SUCCESS") || line.contains("Repaired") || line.contains("finished") {
-        return Line::from(vec![
-            Span::styled(
-                " [OK] ",
-                Style::default()
-                    .fg(Theme::EMERALD)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(line, Style::default().fg(Theme::EMERALD)),
-        ]);
-    }
+    let (outcome, text) = classify(line);
+    let (marker_style, text_style) = outcome.styles();
 
     Line::from(vec![
-        Span::styled(" > ", Style::default().fg(Theme::CYAN)),
-        Span::styled(line, Style::default().fg(Theme::TEXT_WHITE)),
+        Span::styled(outcome.marker(), marker_style),
+        Span::styled(text, text_style),
     ])
 }
 
@@ -299,6 +366,15 @@ mod tests {
         style_console_line(line).spans[0].content.to_string()
     }
 
+    /// The whole styled line as the user reads it, gutter included.
+    fn rendered(line: &str) -> String {
+        style_console_line(line)
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
     fn color_of(line: &str, span: usize) -> Option<Color> {
         style_console_line(line).spans[span].style.fg
     }
@@ -343,5 +419,70 @@ mod tests {
             " > "
         );
         assert_eq!(gutter("No errors found in registry"), " > ");
+    }
+
+    /// A repair is judged by its own marker, never by what it repaired.
+    ///
+    /// Both of these lines are about Windows Error Reporting, so both carry the
+    /// word "error" while reporting a successful clean-up.
+    #[test]
+    fn a_fix_whose_subject_is_named_error_is_not_painted_as_one() {
+        assert_eq!(
+            gutter("Repairing: Windows error reports & crash dumps (0 B, 1 files)"),
+            " > "
+        );
+        assert_eq!(
+            gutter(
+                "[OK] Windows error reports & crash dumps cleaned: 1 files deleted (0 B freed, 0 locked files skipped)."
+            ),
+            " [OK] "
+        );
+        assert_eq!(
+            gutter("Simulating: Windows error reports & crash dumps (0 B, 1 files)"),
+            " > "
+        );
+    }
+
+    #[test]
+    fn a_cancelled_run_is_a_notice_rather_than_a_failure() {
+        assert_eq!(
+            gutter("[STOP] Repairs cancelled: 2 done, 0 failed, 3 never attempted."),
+            " > "
+        );
+    }
+
+    /// The marker still has to lose to a genuine failure it announces itself.
+    #[test]
+    fn an_emitted_failure_keeps_the_error_gutter() {
+        assert_eq!(
+            gutter("[X] Error: Windows error reports & crash dumps could not be cleaned"),
+            " [X] "
+        );
+    }
+
+    /// The gutter is the marker, so the line must not carry a second copy.
+    #[test]
+    fn a_line_that_already_names_its_outcome_is_not_marked_twice() {
+        assert_eq!(
+            rendered("[OK] Pending reboot recorded."),
+            " [OK] Pending reboot recorded."
+        );
+        assert_eq!(
+            rendered("[X] Error: could not empty the Recycle Bin"),
+            " [X] Error: could not empty the Recycle Bin"
+        );
+    }
+
+    /// `[STDERR]` says where the line came from, which the `[X]` gutter does not.
+    #[test]
+    fn a_prefix_the_gutter_does_not_repeat_is_left_alone() {
+        assert_eq!(
+            rendered("[STDERR] dism reported a problem"),
+            " [X] [STDERR] dism reported a problem"
+        );
+        assert_eq!(
+            rendered("Repairing: Browser caches"),
+            " > Repairing: Browser caches"
+        );
     }
 }
