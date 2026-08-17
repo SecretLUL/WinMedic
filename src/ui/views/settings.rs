@@ -6,9 +6,8 @@
 //! the user which one that currently is.
 
 use crate::config::AppConfig;
-use crate::safety::audit::AuditEntry;
 use crate::ui::theme::Theme;
-use crate::ui::widgets::safety_panel::{SafetyPanelState, render_audit_log, render_safety_panel};
+use crate::ui::widgets::safety_panel::{SafetyPanelState, render_safety_panel};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -19,7 +18,6 @@ pub struct SettingsViewState<'a> {
     pub config: &'a AppConfig,
     pub selected_setting_index: usize,
     pub dry_run: bool,
-    pub audit_entries: &'a [AuditEntry],
     pub safety: SafetyPanelState<'a>,
     /// Where the audit log and the `.reg` snapshots are written.
     pub log_dir_path: &'a str,
@@ -30,7 +28,7 @@ pub fn render_settings(f: &mut Frame, area: Rect, state: &SettingsViewState) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(8),    // Settings list | Backups & VSS
-            Constraint::Length(8), // Selected setting | Recent actions
+            Constraint::Length(6), // Selected setting
             Constraint::Length(5), // Storage locations & rollback hint
         ])
         .split(area);
@@ -40,11 +38,6 @@ pub fn render_settings(f: &mut Frame, area: Rect, state: &SettingsViewState) {
         .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
         .split(rows[0]);
 
-    let middle = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
-        .split(rows[1]);
-
     render_setting_list(
         f,
         top[0],
@@ -53,14 +46,15 @@ pub fn render_settings(f: &mut Frame, area: Rect, state: &SettingsViewState) {
         !state.safety.is_focused,
     );
     render_safety_panel(f, top[1], &state.safety);
+    // The description used to share this row with a "Recent actions" pane. It
+    // now spans the full width, which is what keeps a long help text on one line.
     render_description(
         f,
-        middle[0],
+        rows[1],
         state.config,
         state.selected_setting_index,
         state.dry_run,
     );
-    render_audit_log(f, middle[1], state.audit_entries, "RECENT ACTIONS");
     render_storage_locations(f, rows[2], state.log_dir_path);
 }
 

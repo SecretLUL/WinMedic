@@ -72,7 +72,7 @@ const SECTIONS: &[Section] = &[
                 "Move [↑]/[↓] between the settings and the backup list",
             ),
             ("[U]", "Restore the selected .reg backup, after confirming"),
-            ("[R]", "Reload the restore points, backups and audit log"),
+            ("[R]", "Reload the restore points and registry backups"),
         ],
     ),
 ];

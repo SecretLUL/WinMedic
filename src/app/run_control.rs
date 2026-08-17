@@ -4,6 +4,7 @@ use super::state::App;
 use super::{TAB_REPAIR, TAB_SCANNER};
 use crate::engine::runner::{RepairEvent, RepairOptions, ScanEvent};
 use crate::modules::ModuleStatus;
+use std::time::Instant;
 use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;
 
@@ -17,6 +18,7 @@ impl App {
 
         self.is_scanning = true;
         self.scan_overall_progress = 0;
+        self.scan_started_at = Some(Instant::now());
         self.active_tab = TAB_SCANNER;
         self.issues.clear();
         self.selected_issue_index = 0;
@@ -26,8 +28,7 @@ impl App {
         self.push_scan_log("Starting a full system health scan...");
 
         for item in &mut self.module_progress_list {
-            item.3 = 0;
-            item.4 = false;
+            item.reset();
         }
         for item in &mut self.module_statuses {
             item.3 = ModuleStatus::Scanning;

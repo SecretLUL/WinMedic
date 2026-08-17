@@ -6,7 +6,7 @@ use crate::app::{App, TAB_DASHBOARD, TAB_REPAIR, TAB_SCANNER, TAB_SETTINGS, TAB_
 use crate::ui::views::dashboard::render_dashboard;
 use crate::ui::views::fix_progress::render_fix_progress;
 use crate::ui::views::issue_list::{IssueListViewState, render_issue_list};
-use crate::ui::views::scanner::render_scanner;
+use crate::ui::views::scanner::{ModuleRow, ScannerViewState, render_scanner};
 use crate::ui::views::settings::{SettingsViewState, render_settings};
 use crate::ui::widgets::confirm_popup::render_confirm_popup;
 use crate::ui::widgets::footer::render_footer;
@@ -56,32 +56,33 @@ pub fn render_app(f: &mut Frame, app: &App) {
             );
         }
         TAB_SCANNER => {
-            let mod_tuples: Vec<(&str, &str, &str, u8, bool)> = app
+            // Elapsed times are read once here rather than inside the view, so
+            // the view stays a pure function of its inputs and a test can pin
+            // the clock instead of racing it.
+            let modules: Vec<ModuleRow> = app
                 .module_progress_list
                 .iter()
-                .map(|(id, name, icon, percent, is_done)| {
-                    (
-                        id.as_str(),
-                        name.as_str(),
-                        icon.as_str(),
-                        *percent,
-                        *is_done,
-                    )
+                .map(|m| ModuleRow {
+                    name: &m.name,
+                    icon: &m.icon,
+                    percent: m.percent,
+                    is_done: m.is_done,
+                    failed: m.failure.is_some(),
+                    step: &m.step,
+                    step_elapsed: m.step_elapsed(),
                 })
                 .collect();
 
-            render_scanner(
-                f,
-                body_area,
-                app.is_scanning,
-                app.scan_overall_progress,
-                &app.scan_active_module_name,
-                &app.scan_current_step_text,
-                &mod_tuples,
-                &app.scan_log_messages,
-                &app.issues,
-                app.scan_log_scroll,
-            );
+            let state = ScannerViewState {
+                is_scanning: app.is_scanning,
+                overall_progress: app.scan_overall_progress,
+                modules: &modules,
+                log_messages: &app.scan_log_messages,
+                issues: &app.issues,
+                log_scroll: app.scan_log_scroll,
+                elapsed: app.scan_elapsed(),
+            };
+            render_scanner(f, body_area, &state);
         }
         TAB_TRIAGE => {
             let filtered_indices = app.filtered_issue_indices();
@@ -117,7 +118,6 @@ pub fn render_app(f: &mut Frame, app: &App) {
                 config: &app.config,
                 selected_setting_index: app.selected_setting_index,
                 dry_run: app.dry_run,
-                audit_entries: &app.audit_entries,
                 safety: SafetyPanelState {
                     backup_records: &backups,
                     selected_backup_index: app.selected_backup_index,
@@ -250,20 +250,30 @@ mod tests {
 
         assert!(rendered.contains("SETTINGS"), "the settings list");
         assert!(rendered.contains("BACKUPS & VSS"), "the backup pane");
-        assert!(rendered.contains("RECENT ACTIONS"), "the audit log");
         assert!(rendered.contains("restore points"), "the VSS section");
         assert!(rendered.contains("[REG]"), "the registry snapshot list");
         assert!(rendered.contains("Startup entry removed"), "the snapshot");
-        assert!(
-            rendered.contains("Disabled a startup entry"),
-            "the audit entry"
-        );
         assert!(
             rendered.contains("Logs & backups:"),
             "the log directory path"
         );
         assert!(rendered.contains("[U]"), "the rollback binding");
         assert!(rendered.contains("[R]"), "the VSS refresh binding");
+    }
+
+    /// The audit trail is written and reported, just not listed on this tab.
+    ///
+    /// It survives in the file the "Logs & backups" path points at, in the
+    /// exported report, and as the dashboard's one-line summary.
+    #[test]
+    fn the_settings_tab_no_longer_lists_recent_actions() {
+        let mut app = populated_app();
+        app.active_tab = TAB_SETTINGS;
+
+        let rendered = screen(&app, 160, 45);
+
+        assert!(!rendered.contains("RECENT ACTIONS"));
+        assert!(!rendered.contains("Disabled a startup entry"));
     }
 
     #[test]

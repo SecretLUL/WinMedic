@@ -72,7 +72,7 @@ impl DiagnosticModule for SystemIntegrityModule {
         Self::send_progress(
             &progress_tx,
             15,
-            "Checking the Windows component store (DISM CheckHealth)...",
+            "Checking the component store (DISM CheckHealth, ~45s)...",
             Some("Running DISM /Online /Cleanup-Image /CheckHealth..."),
         )
         .await;

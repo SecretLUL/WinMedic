@@ -1,9 +1,9 @@
-//! The safety surface: VSS restore points, registry snapshots and the audit log.
+//! The safety surface: VSS restore points and registry snapshots.
 //!
-//! These three panes used to be a tab of their own ("Backups & Logs"). They are
-//! widgets rather than a view because the Settings & Safety tab now composes
-//! them next to the configuration list, and the dashboard renders the audit
-//! summary on its own.
+//! These panes used to be a tab of their own ("Backups & Logs"). They are
+//! widgets rather than a view because the Settings & Safety tab composes them
+//! next to the configuration list, and the dashboard renders its own one-line
+//! summary of the audit trail from [`latest_action_line`].
 
 use crate::safety::audit::AuditEntry;
 use crate::safety::reg_backup::BackupRecord;
@@ -12,7 +12,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 
 pub struct SafetyPanelState<'a> {
     /// Backup records, newest first — the order shown and selected against.
@@ -170,32 +170,6 @@ pub fn render_safety_panel(f: &mut Frame, area: Rect, state: &SafetyPanelState) 
         .wrap(Wrap { trim: false });
 
     f.render_widget(panel, area);
-}
-
-/// The audit trail, newest first — what WinMedic has actually done to this machine.
-pub fn render_audit_log(f: &mut Frame, area: Rect, entries: &[AuditEntry], title: &str) {
-    if entries.is_empty() {
-        let empty = Paragraph::new(vec![Line::from(vec![Span::styled(
-            " No actions recorded yet. Repairs and rollbacks are logged here.",
-            Style::default().fg(Theme::MUTED),
-        )])])
-        .block(Theme::card_block(title))
-        .wrap(Wrap { trim: true });
-        f.render_widget(empty, area);
-        return;
-    }
-
-    // Two rows of the block are borders; the rest is one entry per line.
-    let capacity = area.height.saturating_sub(2) as usize;
-
-    let items: Vec<ListItem> = entries
-        .iter()
-        .rev()
-        .take(capacity)
-        .map(|entry| ListItem::new(audit_line(entry)))
-        .collect();
-
-    f.render_widget(List::new(items).block(Theme::card_block(title)), area);
 }
 
 /// One audit entry as `[time] [ACTION] [STATUS] title`.
