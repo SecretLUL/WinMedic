@@ -1,6 +1,8 @@
 use crate::engine::issue::{Issue, Severity};
 use crate::modules::ModuleStatus;
+use crate::safety::audit::AuditEntry;
 use crate::ui::theme::Theme;
+use crate::ui::widgets::safety_panel::latest_action_line;
 use crate::utils::hardware::SystemTelemetry;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -8,6 +10,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Wrap};
 
+// Ratatui render functions receive the slice of app state they draw rather than
+// `&App`, which is what makes the signature long.
+#[allow(clippy::too_many_arguments)]
 pub fn render_dashboard(
     f: &mut Frame,
     area: Rect,
@@ -15,13 +20,18 @@ pub fn render_dashboard(
     health_score: u8,
     issues: &[Issue],
     module_statuses: &[(String, String, String, ModuleStatus)],
+    audit_entries: &[AuditEntry],
 ) {
+    // The summary bar grows by a line once there is an audit trail to show, so
+    // an untouched machine does not reserve space for an empty row.
+    let summary_height = if audit_entries.is_empty() { 5 } else { 6 };
+
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(7), // Health Score & Telemetry Gauges
-            Constraint::Min(12),   // 6 Module Status Cards
-            Constraint::Length(5), // Quick Action & Status Summary
+            Constraint::Length(7),              // Health Score & Telemetry Gauges
+            Constraint::Min(12),                // 7 Module Status Cards
+            Constraint::Length(summary_height), // Quick Action & Status Summary
         ])
         .split(area);
 
@@ -260,7 +270,7 @@ pub fn render_dashboard(
     }
 
     // Bottom Section: Quick Action Bar
-    let bottom_content = vec![
+    let mut bottom_content = vec![
         Line::from(vec![
             Span::styled(
                 "  Quick actions: ",
@@ -299,15 +309,22 @@ pub fn render_dashboard(
                 Style::default().fg(Theme::TEXT_WHITE),
             ),
             Span::styled(
-                " [?] ",
+                " [5] ",
                 Style::default()
                     .fg(Theme::AMBER)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "Help & documentation",
+                "Settings & safety   ",
                 Style::default().fg(Theme::TEXT_WHITE),
             ),
+            Span::styled(
+                " [?] ",
+                Style::default()
+                    .fg(Theme::AMBER)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Help", Style::default().fg(Theme::TEXT_WHITE)),
         ]),
         Line::from(vec![
             Span::styled(
@@ -322,6 +339,13 @@ pub fn render_dashboard(
             ),
         ]),
     ];
+
+    // The audit trail moved onto tab 5 when "Backups & Logs" was merged into
+    // Settings. This one line keeps the most recent action where the user
+    // already is, and points at the tab that holds the rest of it.
+    if let Some(line) = latest_action_line(audit_entries) {
+        bottom_content.push(line);
+    }
 
     let bottom_bar =
         Paragraph::new(bottom_content).block(Theme::card_block("QUICK ACCESS & RECOMMENDATIONS"));

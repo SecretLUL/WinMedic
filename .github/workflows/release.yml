@@ -1,5 +1,16 @@
 name: Release
 
+# The version a release ships under is decided here and written into the tree
+# *before* anything is built, so the tag, the committed Cargo.toml and the
+# string the binary prints cannot disagree. They used to: v0.3.1 and v0.3.2 were
+# both built from a tree that still said 0.3.0, so the published tool introduced
+# itself as 0.3.0 and — since the update check compares that same constant
+# against the newest GitHub release — kept offering its own release as an
+# available update.
+#
+# "Run workflow" is the supported way to release. The tag triggers are kept for
+# releases cut by hand, but a tag is immutable, so on that path the tree can
+# only be checked, not corrected.
 on:
   push:
     tags:
@@ -8,20 +19,34 @@ on:
     types: [published]
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Release tag (e.g. v0.3.0). Leave empty to use version from Cargo.toml'
-        required: false
+      version:
+        description: 'Version to release, e.g. 0.3.3 (a leading "v" is fine)'
+        required: true
         type: string
-        default: ''
+      dry_run:
+        description: 'Rehearsal: build and verify everything, but push no tag and publish no release'
+        required: false
+        type: boolean
+        default: false
+
+# Two releases in flight at once would race for the tag and the branch.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
-  build-release:
-    name: Build & Upload Windows Release Asset
+  release:
+    name: Build & Publish Windows Release
     runs-on: windows-latest
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The bump commit has to sit on top of real history, and a shallow
+          # clone cannot push a branch update.
+          fetch-depth: 0
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -29,22 +54,79 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Resolve Release Tag
-        id: resolve-tag
+      # User-supplied text reaches the shell through the environment rather than
+      # through ${{ }} interpolation, which would splice it into the script body.
+      - name: Resolve version
+        id: v
         shell: pwsh
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          $inputTag = "${{ inputs.tag }}".Trim()
-          if ($inputTag) {
-            $tag = if ($inputTag.StartsWith("v")) { $inputTag } else { "v$inputTag" }
-          } elseif ($env:GITHUB_REF_NAME -and $env:GITHUB_REF_NAME -match '^v\d') {
-            $tag = $env:GITHUB_REF_NAME
+          $ErrorActionPreference = 'Stop'
+
+          if ($env:EVENT_NAME -eq 'workflow_dispatch') {
+            $version = $env:INPUT_VERSION
           } else {
-            $match = Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"'
-            $ver = if ($match) { $match.Matches[0].Groups[1].Value } else { "0.3.0" }
-            $tag = "v$ver"
+            $version = if ($env:EVENT_TAG) { $env:EVENT_TAG } else { $env:GITHUB_REF_NAME }
           }
-          Write-Host "Resolved release tag: $tag"
-          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+          $version = $version.Trim().TrimStart('v', 'V')
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
+            throw "Not a SemVer version: '$version' (expected something like 0.3.3 or 1.0.0-rc1)"
+          }
+          $tag = "v$version"
+
+          # Cheapest failure available: a tag that already exists means the
+          # release is a duplicate, and finding that out after a 10-minute LTO
+          # build helps nobody.
+          if ($env:EVENT_NAME -eq 'workflow_dispatch') {
+            if (git ls-remote --tags origin "refs/tags/$tag") {
+              throw "$tag already exists. Pick a version that has not shipped yet."
+            }
+          }
+
+          Write-Host "Releasing $tag"
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "tag=$tag"         | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Write the version into the tree
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: ./scripts/set-version.ps1 ${{ steps.v.outputs.version }}
+
+      # Nothing to rewrite on this path — the tag already points at a fixed
+      # commit. Refusing to build is the only way left to keep a mislabelled
+      # binary off the releases page.
+      - name: Verify the tagged tree states the tag's version
+        if: github.event_name != 'workflow_dispatch'
+        shell: pwsh
+        run: ./scripts/set-version.ps1 ${{ steps.v.outputs.version }} -Check
+
+      # Committed before the build so that the tag names a real, self-consistent
+      # tree: `cargo build --locked` below then proves the lockfile edit was
+      # right, because a mismatched Cargo.lock fails the build outright.
+      - name: Commit and tag the bump
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          # -u stages tracked files only. The Rust cache has already restored
+          # target/ by this point, so `git add -A` would be one .gitignore slip
+          # away from committing a build directory into the release tag.
+          if (git status --porcelain --untracked-files=no) {
+            git add --update
+            git commit -m "chore(release): $env:TAG"
+          } else {
+            Write-Host "Every version site already stated $env:TAG; tagging HEAD unchanged."
+          }
+          git tag -a $env:TAG -m "WinMedic $env:TAG"
 
       # --locked forbids Cargo from silently resolving different dependency
       # versions than the ones committed in Cargo.lock, so the published binary
@@ -52,24 +134,52 @@ jobs:
       - name: Build Optimized Release Binary
         run: cargo build --locked --release
 
+      # The check the whole workflow exists for. Everything above manipulates
+      # files; this asks the actual artifact what it thinks its version is.
+      - name: Verify the binary reports the released version
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reported = (& ./target/release/winmedic.exe --version | Out-String).Trim()
+          Write-Host "winmedic.exe --version -> $reported"
+          if ($reported -ne "WinMedic $env:VERSION") {
+            throw "The binary calls itself '$reported' but this is release v$env:VERSION. Refusing to publish it."
+          }
+
       - name: Prepare Single Versioned Binary
         shell: pwsh
-        run: |
-          $tag = "${{ steps.resolve-tag.outputs.tag }}"
-          Copy-Item target/release/winmedic.exe "target/release/winmedic-${tag}.exe"
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+        run: Copy-Item target/release/winmedic.exe "target/release/winmedic-$env:TAG.exe"
 
       # WinMedic ships unsigned, so SmartScreen cannot vouch for the download.
       # A published checksum at least lets users verify that the .exe they got
       # is byte-for-byte the one this workflow produced.
       - name: Generate SHA256 Checksum
         shell: pwsh
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
         run: |
-          $tag = "${{ steps.resolve-tag.outputs.tag }}"
-          $name = "winmedic-${tag}.exe"
+          $name = "winmedic-$env:TAG.exe"
           $hash = (Get-FileHash -Path "target/release/$name" -Algorithm SHA256).Hash.ToLower()
           # sha256sum-compatible layout: "<hash>  <filename>"
           "$hash  $name" | Out-File -FilePath "target/release/$name.sha256" -Encoding ascii
           Write-Host "$name -> $hash"
+
+      # Pushed only once the binary has been built and vetted, so a failed build
+      # does not leave a tag behind that nothing was ever released under.
+      #
+      # This push authenticates as GITHUB_TOKEN, and tags pushed by GITHUB_TOKEN
+      # deliberately do not start another workflow run — which is what stops the
+      # `push: tags` trigger above from releasing this same version twice.
+      - name: Push the release tag
+        if: github.event_name == 'workflow_dispatch' && !inputs.dry_run
+        shell: pwsh
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+        run: git push origin "refs/tags/$env:TAG"
 
       # Hand-written notes live at docs/release-notes/<tag>.md. When a tag ships
       # without one, fall back to GitHub's generated commit list rather than
@@ -77,9 +187,10 @@ jobs:
       - name: Resolve Release Notes
         id: notes
         shell: pwsh
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
         run: |
-          $tag = "${{ steps.resolve-tag.outputs.tag }}"
-          $path = "docs/release-notes/${tag}.md"
+          $path = "docs/release-notes/$env:TAG.md"
           if (Test-Path $path) {
             Write-Host "Using release notes from $path"
             "body_path=$path"  | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -91,15 +202,70 @@ jobs:
           }
 
       - name: Upload Binary to Release Assets
+        # A rehearsal is the only reason not to publish; the tag-driven paths
+        # have no dry_run input to consult.
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ steps.resolve-tag.outputs.tag }}
-          name: ${{ steps.resolve-tag.outputs.tag }}
-          prerelease: ${{ contains(steps.resolve-tag.outputs.tag, '-') }}
+          tag_name: ${{ steps.v.outputs.tag }}
+          name: ${{ steps.v.outputs.tag }}
+          prerelease: ${{ contains(steps.v.outputs.tag, '-') }}
           body_path: ${{ steps.notes.outputs.body_path }}
           generate_release_notes: ${{ steps.notes.outputs.generate }}
           files: |
             target/release/winmedic-*.exe
             target/release/winmedic-*.exe.sha256
         env:
+          # Kept on GITHUB_TOKEN even when RELEASE_TOKEN exists: a release
+          # published by a PAT would re-fire the `release: published` trigger
+          # above and run this whole workflow a second time.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The tag already carries the bump, so the release is correct whatever
+      # happens here. This is only about not leaving the branch claiming a
+      # version that shipped two releases ago.
+      #
+      # `main` is protected (one approving review, four strict status checks),
+      # and GITHUB_TOKEN is not allowed through branch protection. Set a
+      # RELEASE_TOKEN secret — a PAT with `contents: write` owned by an account
+      # with admin rights, which "Do not allow bypassing" leaves unblocked — and
+      # the bump lands directly. Without one, it arrives as a pull request.
+      - name: Bring the branch up to the released version
+        if: github.event_name == 'workflow_dispatch' && !inputs.dry_run
+        shell: pwsh
+        env:
+          BRANCH: ${{ github.ref_name }}
+          TAG: ${{ steps.v.outputs.tag }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          # A rejected push is the expected outcome here, not an abort: this
+          # step's whole job is to notice it and fall back to a pull request.
+          $PSNativeCommandUseErrorActionPreference = $false
+
+          $remote = 'origin'
+          if ($env:RELEASE_TOKEN) {
+            # actions/checkout pins GITHUB_TOKEN to every github.com request via
+            # an http.extraheader, which outranks credentials in the URL.
+            git config --unset-all 'http.https://github.com/.extraheader'
+            $remote = "https://x-access-token:$env:RELEASE_TOKEN@github.com/$env:REPO.git"
+          }
+
+          git push $remote "HEAD:refs/heads/$env:BRANCH"
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Pushed $env:TAG straight to $env:BRANCH."
+            exit 0
+          }
+
+          Write-Host "::warning::Branch protection rejected the push to $env:BRANCH. Opening a pull request with the bump instead."
+          $head = "release/$env:TAG"
+          git push --force $remote "HEAD:refs/heads/$head"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Could not push $head either; $env:BRANCH still states the previous version."
+            exit 1
+          }
+
+          $body = "Raises the version to ``$env:TAG`` across Cargo.toml, Cargo.lock, the README and the issue template.`n`nThe release itself already shipped from the tag, which carries this same commit — merging this only stops ``$env:BRANCH`` from claiming an older version."
+          gh pr create --base $env:BRANCH --head $head --title "chore(release): $env:TAG" --body $body
+          exit 0

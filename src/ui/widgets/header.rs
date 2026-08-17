@@ -131,8 +131,7 @@ pub fn render_header(
         format!(" [2] Health Scan{} ", scan_indicator),
         format!(" [3] Issue Triage{} ", triage_badge),
         " [4] Repair Center ".to_string(),
-        " [5] Backups & Logs ".to_string(),
-        " [6] Settings ".to_string(),
+        " [5] Settings & Safety ".to_string(),
     ];
 
     let tabs = Tabs::new(tab_titles)

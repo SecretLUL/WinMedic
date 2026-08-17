@@ -16,8 +16,8 @@ use common::{
     sandboxed_cleaner,
 };
 use winmedic::app::{
-    App, BackgroundEvent, ConfirmRequest, TAB_DASHBOARD, TAB_HISTORY, TAB_REPAIR, TAB_SCANNER,
-    TAB_SETTINGS, TAB_TRIAGE,
+    App, BackgroundEvent, ConfirmRequest, TAB_DASHBOARD, TAB_REPAIR, TAB_SCANNER, TAB_SETTINGS,
+    TAB_TRIAGE,
 };
 use winmedic::config::AppConfig;
 use winmedic::engine::exit_code;

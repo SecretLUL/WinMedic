@@ -3,7 +3,7 @@
 //! modules listed in [`crate::app`].
 
 use super::{
-    BackgroundEvent, TAB_COUNT, TAB_DASHBOARD, TAB_HISTORY, TAB_REPAIR, TAB_SCANNER,
+    BackgroundEvent, TAB_COUNT, TAB_DASHBOARD, TAB_REPAIR, TAB_SCANNER, TAB_SETTINGS,
     push_bounded_log,
 };
 use crate::config::AppConfig;
@@ -19,11 +19,88 @@ use crate::utils::hardware::{SystemTelemetry, TelemetryCollector};
 use crate::utils::updater::{self, UpdateInfo};
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver, UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
 use super::confirm::{ConfirmRequest, SystemActions};
+
+/// One diagnostic module's live state during a scan.
+///
+/// The engine runs every module in parallel, so "what is happening right now"
+/// is a question with seven simultaneous answers. The scanner used to keep one
+/// shared step line for all of them, which meant it showed whichever module
+/// reported last — and a module sitting on a slow DISM call reported nothing at
+/// all, so it silently lost the line to its faster neighbours and looked wedged
+/// at 10%. Every module now carries its own answer.
+#[derive(Debug, Clone)]
+pub struct ModuleScanProgress {
+    pub id: String,
+    pub name: String,
+    pub icon: String,
+    pub percent: u8,
+    /// Set once the module has finished, successfully or not.
+    pub is_done: bool,
+    /// Why the module failed, when it did.
+    pub failure: Option<String>,
+    /// What the module last reported it was doing.
+    pub step: String,
+    /// When [`Self::step`] last *changed*. A step that takes two minutes has
+    /// nothing else to show for itself, so how long it has been running is the
+    /// difference between "working" and "hung".
+    pub step_since: Option<Instant>,
+}
+
+impl ModuleScanProgress {
+    pub(super) fn new(id: String, name: String, icon: String) -> Self {
+        Self {
+            id,
+            name,
+            icon,
+            percent: 0,
+            is_done: false,
+            failure: None,
+            step: String::new(),
+            step_since: None,
+        }
+    }
+
+    /// Record what the module is doing now, restamping the clock only when the
+    /// step actually changed — a module repeating itself has not made progress,
+    /// and resetting the timer for it would hide exactly the stall worth seeing.
+    pub(super) fn set_step(&mut self, step: &str) {
+        if self.step != step {
+            self.step = step.to_string();
+            self.step_since = Some(Instant::now());
+        }
+    }
+
+    pub(super) fn reset(&mut self) {
+        self.percent = 0;
+        self.is_done = false;
+        self.failure = None;
+        self.step = String::new();
+        self.step_since = None;
+    }
+
+    /// How long the current step has been running, while it still is.
+    pub fn step_elapsed(&self) -> Option<Duration> {
+        if self.is_done {
+            return None;
+        }
+        self.step_since.map(|since| since.elapsed())
+    }
+}
+
+/// Which of the two lists on the Settings & Safety tab currently owns `↑`/`↓`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SafetyFocus {
+    /// The configuration list. What the tab opens on.
+    #[default]
+    Settings,
+    /// The registry backup list, so `↑`/`↓` picks the target of `[U]`.
+    Backups,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingInput {
@@ -61,9 +138,12 @@ pub struct App {
     // Live Scanner State
     pub is_scanning: bool,
     pub scan_overall_progress: u8,
-    pub scan_active_module_name: String,
-    pub scan_current_step_text: String,
-    pub module_progress_list: Vec<(String, String, String, u8, bool)>, // (id, name, icon, percent, is_done)
+    /// When the running scan started. Cleared once it ends, so the readout
+    /// stops rather than counting up forever under "DIAGNOSTICS COMPLETE".
+    pub scan_started_at: Option<Instant>,
+    /// How long the last completed scan took.
+    pub scan_duration: Option<Duration>,
+    pub module_progress_list: Vec<ModuleScanProgress>,
     pub module_statuses: Vec<(String, String, String, ModuleStatus)>,
     pub scan_log_messages: VecDeque<String>,
     pub scan_log_scroll: usize,
@@ -80,7 +160,7 @@ pub struct App {
     pub repair_console_lines: VecDeque<String>,
     pub repair_log_scroll: usize,
 
-    // Backups & History
+    // Safety: audit log, registry backups, VSS restore points
     pub audit_logger: AuditLogger,
     pub reg_backup_mgr: RegBackupManager,
     pub audit_entries: Vec<AuditEntry>,
@@ -94,6 +174,8 @@ pub struct App {
     // Settings
     pub selected_setting_index: usize,
     pub setting_input: Option<SettingInput>,
+    /// Which list on the Settings & Safety tab the arrow keys drive.
+    pub safety_focus: SafetyFocus,
 
     // UI state
     pub status_message: Option<String>,
@@ -159,8 +241,8 @@ impl App {
             selected_filtered_index: 0,
             is_scanning: false,
             scan_overall_progress: 0,
-            scan_active_module_name: "Ready".to_string(),
-            scan_current_step_text: "No scan running".to_string(),
+            scan_started_at: None,
+            scan_duration: None,
             module_progress_list,
             module_statuses,
             scan_log_messages: VecDeque::from([String::from(
@@ -187,6 +269,7 @@ impl App {
             is_restoring: false,
             selected_setting_index: 0,
             setting_input: None,
+            safety_focus: SafetyFocus::default(),
             // A corrupt config file is the one startup condition worth
             // interrupting the user's first glance for: their saved settings
             // are not in effect and the defaults silently re-enable things
@@ -267,18 +350,16 @@ impl App {
     pub(super) fn module_lists(
         engine: &DiagnosticEngine,
     ) -> (
-        Vec<(String, String, String, u8, bool)>,
+        Vec<ModuleScanProgress>,
         Vec<(String, String, String, ModuleStatus)>,
     ) {
         let mut progress = Vec::new();
         let mut statuses = Vec::new();
         for m in engine.modules() {
-            progress.push((
+            progress.push(ModuleScanProgress::new(
                 m.id().to_string(),
                 m.name().to_string(),
                 m.icon().to_string(),
-                0u8,
-                false,
             ));
             statuses.push((
                 m.id().to_string(),
@@ -294,6 +375,14 @@ impl App {
         self.telemetry = Some(self.telemetry_collector.refresh());
     }
 
+    /// How long the scan has been running, or how long the last one took.
+    pub fn scan_elapsed(&self) -> Option<Duration> {
+        match self.scan_started_at {
+            Some(start) => Some(start.elapsed()),
+            None => self.scan_duration,
+        }
+    }
+
     /// True while a scan or a repair run is in flight.
     pub fn is_busy(&self) -> bool {
         self.is_scanning || self.is_fixing
@@ -302,9 +391,7 @@ impl App {
     /// Advance to the next tab in cyclic order (BIOS-style right navigation).
     pub fn next_tab(&mut self) {
         self.active_tab = (self.active_tab + 1) % TAB_COUNT;
-        if self.active_tab == TAB_HISTORY {
-            self.load_history_data();
-        }
+        self.on_tab_entered();
     }
 
     /// Go back to the previous tab in cyclic order (BIOS-style left navigation).
@@ -314,8 +401,30 @@ impl App {
         } else {
             self.active_tab - 1
         };
-        if self.active_tab == TAB_HISTORY {
-            self.load_history_data();
+        self.on_tab_entered();
+    }
+
+    /// Jump straight to a tab, as the number keys do.
+    ///
+    /// Out-of-range indices are ignored rather than clamped: silently landing on
+    /// a neighbouring tab would be a worse answer than not moving at all.
+    pub fn goto_tab(&mut self, index: usize) {
+        if index >= TAB_COUNT {
+            return;
+        }
+        self.active_tab = index;
+        self.on_tab_entered();
+    }
+
+    /// Per-tab work that has to happen however the tab was reached.
+    ///
+    /// Only the Settings & Safety tab needs it: its audit log and backup list
+    /// are read off disk, and both go stale the moment a repair run writes to
+    /// them. Routing every entry point through here is what stops `[Tab]` and
+    /// `→` from showing a different list than `[5]` does.
+    fn on_tab_entered(&mut self) {
+        if self.active_tab == TAB_SETTINGS {
+            self.load_safety_data();
         }
     }
 

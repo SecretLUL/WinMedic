@@ -1,13 +1,18 @@
-//! Backups, restore points and rollback requests — the "Backups & Logs" tab.
+//! Backups, restore points and rollback requests — the safety half of the
+//! "Settings & Safety" tab.
 
 use super::BackgroundEvent;
 use super::confirm::ConfirmRequest;
-use super::state::App;
+use super::state::{App, SafetyFocus};
 use crate::safety::reg_backup::BackupRecord;
 use crate::safety::restore_point::list_restore_points;
 
 impl App {
-    pub fn load_history_data(&mut self) {
+    /// Refresh the audit log and backup list shown on the Settings & Safety tab.
+    ///
+    /// Called whenever that tab is opened, from any direction — the direct `[5]`
+    /// jump, `[Tab]`, or the `←`/`→` arrows.
+    pub fn load_safety_data(&mut self) {
         self.audit_entries = self.audit_logger.get_history();
         self.backup_records = self.reg_backup_mgr.list_backups();
         self.clamp_backup_selection();
@@ -19,14 +24,37 @@ impl App {
         }
     }
 
+    /// Move the `↑`/`↓` keys between the settings list and the backup list.
+    ///
+    /// Both panes live on the same tab and both want the arrow keys, so one of
+    /// them has to hold focus. `[B]` is the toggle.
+    pub fn toggle_safety_focus(&mut self) {
+        self.safety_focus = match self.safety_focus {
+            SafetyFocus::Settings => SafetyFocus::Backups,
+            SafetyFocus::Backups => SafetyFocus::Settings,
+        };
+    }
+
+    /// True while the backup list owns the arrow keys.
+    pub fn backups_focused(&self) -> bool {
+        self.safety_focus == SafetyFocus::Backups
+    }
+
     pub fn refresh_restore_points(&mut self) {
         if self.restore_points_loading {
             return;
         }
+        // Merging this tab into Settings means every `[Tab]` and `→` that lands
+        // on tab 5 now reaches this, including from the synchronous key-dispatch
+        // tests. `tokio::spawn` panics outside a runtime, so ask rather than
+        // assume — same reasoning as `App::start_update_check`.
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
         self.restore_points_requested = true;
         self.restore_points_loading = true;
         let tx = self.bg_tx.clone();
-        tokio::spawn(async move {
+        handle.spawn(async move {
             let points = list_restore_points().await;
             let _ = tx.send(BackgroundEvent::RestorePointsLoaded(points));
         });
@@ -169,6 +197,21 @@ mod tests {
             }
             _ => panic!("expected a rollback confirmation"),
         }
+    }
+
+    #[test]
+    fn focus_toggles_between_the_settings_list_and_the_backup_list() {
+        let mut app = App::new();
+        assert!(
+            !app.backups_focused(),
+            "the settings list starts with the arrow keys"
+        );
+
+        app.toggle_safety_focus();
+        assert!(app.backups_focused());
+
+        app.toggle_safety_focus();
+        assert!(!app.backups_focused());
     }
 
     #[test]

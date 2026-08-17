@@ -1,4 +1,4 @@
-use crate::app::{TAB_DASHBOARD, TAB_HISTORY, TAB_REPAIR, TAB_SCANNER, TAB_SETTINGS, TAB_TRIAGE};
+use crate::app::{TAB_DASHBOARD, TAB_REPAIR, TAB_SCANNER, TAB_SETTINGS, TAB_TRIAGE};
 use crate::ui::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -13,6 +13,8 @@ pub fn render_footer(
     status_msg: Option<&str>,
     is_busy: bool,
     dry_run: bool,
+    // Which of the two lists on the Settings & Safety tab owns the arrow keys.
+    backups_focused: bool,
 ) {
     // While something is running, Esc is the key that matters most.
     let key_hints: Vec<(&str, &str)> = if is_busy {
@@ -57,12 +59,13 @@ pub fn render_footer(
                 ("?", "Help"),
                 ("Q", "Quit"),
             ],
-            TAB_HISTORY => vec![
+            // One tab, two lists: the hints follow whichever one has the arrows.
+            TAB_SETTINGS if backups_focused => vec![
                 ("←/→", "Tabs"),
                 ("↑/↓", "Select Backup"),
                 ("U", "Rollback"),
-                ("E", "Report"),
-                ("R", "Refresh"),
+                ("R", "Refresh VSS"),
+                ("B/Esc", "Settings"),
                 ("?", "Help"),
                 ("Q", "Quit"),
             ],
@@ -71,6 +74,7 @@ pub fn render_footer(
                 ("↑/↓", "Select"),
                 ("Space/Enter", "Toggle"),
                 ("+/-", "Value"),
+                ("B", "Backups"),
                 ("?", "Help"),
                 ("Q", "Quit"),
             ],

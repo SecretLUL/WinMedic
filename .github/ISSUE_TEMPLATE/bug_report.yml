@@ -40,7 +40,7 @@ body:
     attributes:
       label: WinMedic version
       description: Output of `winmedic.exe --version`
-      placeholder: "winmedic 0.3.0"
+      placeholder: "WinMedic 0.3.2"
     validations:
       required: true
 

@@ -647,10 +647,15 @@ impl DiagnosticModule for SystemCleanerModule {
         }
 
         // 1. WinSxS Component Store Deep Clean
+        //
+        // Reliably the longest step in the whole scan: DISM walks the component
+        // store itself and routinely takes a minute or two, during which it says
+        // nothing. The step text carries that expectation, because a bar parked
+        // at 10% with no explanation reads as a hang rather than as patience.
         Self::send_progress(
             &progress_tx,
             10,
-            "Analysing the WinSxS component store...",
+            "Analysing the WinSxS component store (DISM, 1-2 min)...",
             Some("dism.exe /Online /Cleanup-Image /AnalyzeComponentStore"),
         )
         .await;

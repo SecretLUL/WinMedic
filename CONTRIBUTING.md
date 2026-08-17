@@ -78,6 +78,34 @@ the system. A new repair should:
 **PowerShell invocation.** Never interpolate a runtime value into a script
 string. Use `utils::cmd::ps_single_quoted` — see the module documentation there.
 
+## Cutting a release
+
+Releases are cut from the **Run workflow** button on the
+[Release workflow](../../actions/workflows/release.yml) — type the version
+(`0.3.3`) and nothing else is needed. The workflow writes that version into
+every file that states one, commits it, tags the commit, builds from the tag,
+refuses to publish if the binary does not introduce itself as that version, and
+then brings `main` up to date.
+
+Do not edit `Cargo.toml` by hand to bump the version. `Cargo.lock`, the README
+checksum example and the issue-template placeholder all repeat it, and the one
+place the number actually matters — `env!("CARGO_PKG_VERSION")`, which feeds the
+header, the help popup, `--version`, the HTML report and the update check — is
+the one nobody remembers to check. Use the script the workflow uses:
+
+```powershell
+./scripts/set-version.ps1 0.3.3          # rewrite every version site
+./scripts/set-version.ps1 0.3.3 -Check   # report what disagrees, change nothing
+```
+
+Pushing a `v*` tag by hand still builds and publishes, but a tag is immutable,
+so that path can only run the `-Check` pass: if the tagged tree states a
+different version than the tag, the release fails rather than shipping a
+mislabelled binary.
+
+Release notes are read from `docs/release-notes/<tag>.md` when that file exists,
+and generated from the commit list when it does not.
+
 ## Commits and pull requests
 
 - Conventional-commit prefixes (`fix:`, `feat:`, `ci:`, `docs:`, `chore:`) are
