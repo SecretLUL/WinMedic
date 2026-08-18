@@ -223,13 +223,34 @@ jobs:
 
       # The tag already carries the bump, so the release is correct whatever
       # happens here. This is only about not leaving the branch claiming a
-      # version that shipped two releases ago.
+      # version that shipped two releases ago — and about *noticing* when that
+      # is what happened.
+      #
+      # v0.3.4 is why this step no longer trusts exit codes. The direct push was
+      # rejected, the fallback branch was pushed, `gh pr create` failed with
+      # "GitHub Actions is not permitted to create or approve pull requests",
+      # nothing read its exit code, and the script fell through to `exit 0`. The
+      # run was green, no pull request existed, and main went on stating 0.3.2
+      # while 0.3.4 was the published release — which also meant the shipped
+      # tool offered its own release as an available update.
+      #
+      # So the question "did the bump land" is now put to the remote rather than
+      # inferred from the commands that were supposed to make it land.
       #
       # `main` is protected (one approving review, four strict status checks),
-      # and GITHUB_TOKEN is not allowed through branch protection. Set a
-      # RELEASE_TOKEN secret — a PAT with `contents: write` owned by an account
-      # with admin rights, which "Do not allow bypassing" leaves unblocked — and
-      # the bump lands directly. Without one, it arrives as a pull request.
+      # and GITHUB_TOKEN is not allowed through branch protection. There are two
+      # ways to give this step a path that works, and it fails until one of them
+      # exists:
+      #
+      #   * set a RELEASE_TOKEN secret — a PAT with `contents: write` owned by
+      #     an account with admin rights, which "Do not allow bypassing" leaves
+      #     unblocked — and the bump lands on the branch directly; or
+      #   * turn on Settings → Actions → General → Workflow permissions →
+      #     "Allow GitHub Actions to create and approve pull requests", and it
+      #     arrives as a pull request for review instead.
+      #
+      # A pull request waiting to be merged is a designed outcome and passes,
+      # loudly. A bump that exists nowhere a human will see it is a failure.
       - name: Bring the branch up to the released version
         if: github.event_name == 'workflow_dispatch' && !inputs.dry_run
         shell: pwsh
@@ -240,9 +261,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
-          # A rejected push is the expected outcome here, not an abort: this
+          # A rejected push is an expected outcome here, not an abort: this
           # step's whole job is to notice it and fall back to a pull request.
+          # Every exit code below is therefore read by hand.
           $PSNativeCommandUseErrorActionPreference = $false
+
+          $head    = "release/$env:TAG"
+          $commit  = git rev-parse HEAD
+          $prUrl   = ''
+          $reasons = @()
 
           $remote = 'origin'
           if ($env:RELEASE_TOKEN) {
@@ -250,22 +277,90 @@ jobs:
             # an http.extraheader, which outranks credentials in the URL.
             git config --unset-all 'http.https://github.com/.extraheader'
             $remote = "https://x-access-token:$env:RELEASE_TOKEN@github.com/$env:REPO.git"
+          } else {
+            $reasons += 'No RELEASE_TOKEN secret is set, so the direct push can only succeed while the branch is unprotected.'
           }
 
           git push $remote "HEAD:refs/heads/$env:BRANCH"
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host "Pushed $env:TAG straight to $env:BRANCH."
-            exit 0
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::warning::Branch protection rejected the push to $env:BRANCH. Falling back to a pull request."
+            $reasons += "The direct push to $env:BRANCH was rejected."
+
+            git push --force $remote "HEAD:refs/heads/$head"
+            if ($LASTEXITCODE -ne 0) {
+              $reasons += "The fallback branch $head could not be pushed either, so the bump exists only inside this run."
+            } else {
+              $body = "Raises the version to ``$env:TAG`` across Cargo.toml, Cargo.lock, the README and the issue template.`n`nThe release itself already shipped from the tag, which carries this same commit — merging this only stops ``$env:BRANCH`` from claiming an older version."
+              $created = gh pr create --base $env:BRANCH --head $head --title "chore(release): $env:TAG" --body $body 2>&1 | Out-String
+              $createExit = $LASTEXITCODE
+              Write-Host $created.Trim()
+
+              if ($createExit -eq 0) {
+                $prUrl = ($created -split "`n" | Where-Object { $_ -match '^\s*https://' } | Select-Object -First 1).Trim()
+              } else {
+                # A re-run finds its own pull request already open, which is
+                # fine. Anything else is the failure that went unnoticed before.
+                $prUrl = (gh pr list --head $head --state open --json url --jq '.[0].url' 2>&1 | Out-String).Trim()
+                if (-not ($prUrl -match '^https://')) {
+                  $prUrl = ''
+                  $reasons += "gh pr create failed: $($created.Trim())"
+                  if ($created -match 'not permitted to create or approve pull requests') {
+                    $reasons += 'Turn on Settings -> Actions -> General -> Workflow permissions -> "Allow GitHub Actions to create and approve pull requests", or set a RELEASE_TOKEN secret.'
+                  }
+                }
+              }
+            }
           }
 
-          Write-Host "::warning::Branch protection rejected the push to $env:BRANCH. Opening a pull request with the bump instead."
-          $head = "release/$env:TAG"
-          git push --force $remote "HEAD:refs/heads/$head"
+          # The one question that matters, asked of the remote. Reading it back
+          # also covers a push that reported success but did not end up where
+          # this step believes it did.
+          git fetch --no-tags $remote "+refs/heads/$($env:BRANCH):refs/remotes/verify/$($env:BRANCH)"
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "::error::Could not push $head either; $env:BRANCH still states the previous version."
+            Write-Host "::error::Could not read $env:BRANCH back from the remote, so whether $env:TAG landed on it is unknown. Check it by hand before the next release."
             exit 1
           }
 
-          $body = "Raises the version to ``$env:TAG`` across Cargo.toml, Cargo.lock, the README and the issue template.`n`nThe release itself already shipped from the tag, which carries this same commit — merging this only stops ``$env:BRANCH`` from claiming an older version."
-          gh pr create --base $env:BRANCH --head $head --title "chore(release): $env:TAG" --body $body
+          git merge-base --is-ancestor $commit "refs/remotes/verify/$($env:BRANCH)"
+          $landed = ($LASTEXITCODE -eq 0)
+
+          $summary = @()
+          if ($landed) {
+            Write-Host "$env:BRANCH now states $env:TAG."
+            $summary += "### Branch updated"
+            $summary += ""
+            $summary += "``$env:BRANCH`` now states ``$env:TAG``."
+          } elseif ($prUrl) {
+            # Not landed, but there is a path to it and a human has it in their
+            # review queue. Loud, because a buried warning is how the last one
+            # was missed, but not a failure: the mechanism worked as designed.
+            Write-Host "::warning::$env:BRANCH does not state $env:TAG yet. Merge $prUrl to bring it up to date."
+            $summary += "### Merge required: ``$env:BRANCH`` still states the previous version"
+            $summary += ""
+            $summary += "The release shipped correctly — ``$env:TAG`` is tagged, built and published, and the tag carries the bump."
+            $summary += "What is outstanding is only the branch, and a pull request is waiting for it:"
+            $summary += ""
+            $summary += "**$prUrl**"
+            $summary += ""
+            $summary += "Until that is merged, a build from ``$env:BRANCH`` reports the previous version through CARGO_PKG_VERSION — the header, ``--version``, the HTML report and the update check all read it, so the tool will offer its own release as an available update."
+          } else {
+            Write-Host "::error::$env:BRANCH was not brought up to $env:TAG and no pull request carries the bump."
+            $summary += "### The branch was not brought up to ``$env:TAG``"
+            $summary += ""
+            $summary += "The release shipped correctly — ``$env:TAG`` is tagged, built and published, and the tag carries the bump. What failed is only the step that brings ``$env:BRANCH`` up to it, and **nothing is carrying that bump right now**:"
+            $summary += ""
+            foreach ($reason in $reasons) { $summary += "- $reason" }
+            $summary += ""
+            $summary += "Until this is fixed, a build from ``$env:BRANCH`` reports the previous version through CARGO_PKG_VERSION — the header, ``--version``, the HTML report and the update check all read it, so the tool will offer its own release as an available update."
+            $summary += ""
+            $summary += "**To recover this release:** open a pull request from ``$head`` (it was pushed and still holds the bump), or run ``./scripts/set-version.ps1 $($env:TAG.TrimStart('v'))`` on a branch and merge that."
+            $summary += ""
+            $summary += "**To stop it happening again:** set a ``RELEASE_TOKEN`` secret, or turn on Settings -> Actions -> General -> Workflow permissions -> 'Allow GitHub Actions to create and approve pull requests'."
+          }
+
+          if ($env:GITHUB_STEP_SUMMARY) {
+            ($summary -join "`n") | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+
+          if (-not $landed -and -not $prUrl) { exit 1 }
           exit 0
