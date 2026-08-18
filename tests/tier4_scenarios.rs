@@ -222,6 +222,7 @@ async fn test_scenario_3_startup_update_modal_and_confirm() {
         current_version: info.current_version.clone(),
         latest_version: info.latest_version.clone(),
         release_url: info.release_url.clone(),
+        download: None,
     });
     app.available_update = Some(info);
 
