@@ -27,6 +27,8 @@ updates:
   # The workflows pin actions/checkout@v4, Swatinem/rust-cache@v2,
   # dtolnay/rust-toolchain, rustsec/audit-check@v2 and
   # softprops/action-gh-release@v2 with nothing else watching them.
+  # vedantmgoyal9/winget-releaser is pinned to a commit rather than a tag —
+  # Dependabot updates those too, which is the only thing keeping it current.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
