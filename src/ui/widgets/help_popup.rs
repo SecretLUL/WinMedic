@@ -22,7 +22,10 @@ const SECTIONS: &[Section] = &[
                 "Cycle forwards / backwards through tabs",
             ),
             ("[↑]/[↓] or [j]/[k]", "Navigate lists / items"),
-            ("[U]", "Show available update (outside tab 5)"),
+            (
+                "[U]",
+                "Show available update - download, verify and install it (outside tab 5)",
+            ),
             ("[Esc]", "Back to dashboard"),
         ],
     ),

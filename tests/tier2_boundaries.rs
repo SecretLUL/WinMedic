@@ -1153,6 +1153,7 @@ fn test_tier2_f15_modal_with_empty_strings() {
         current_version: "".to_string(),
         latest_version: "".to_string(),
         release_url: "".to_string(),
+        download: None,
     };
 
     assert_eq!(modal.title(), "NEW WINMEDIC UPDATE AVAILABLE");
@@ -1170,6 +1171,7 @@ fn test_tier2_f15_modal_with_extremely_long_url() {
         current_version: "0.1.0".to_string(),
         latest_version: "v0.2.0".to_string(),
         release_url: long_url.clone(),
+        download: None,
     };
 
     let body = modal.body().join("\n");
@@ -1183,6 +1185,7 @@ async fn test_tier2_f15_modal_dismiss_restores_clean_state() {
         current_version: "0.1.0".to_string(),
         latest_version: "v0.2.0".to_string(),
         release_url: "https://example.com".to_string(),
+        download: None,
     });
 
     assert!(app.pending_confirm.is_some());

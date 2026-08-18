@@ -7,9 +7,17 @@ use super::state::App;
 use crate::safety::reg_backup::RegBackupManager;
 use crate::safety::restore_point::RestorePointService;
 use crate::utils::admin::relaunch_as_admin;
-use crate::utils::updater;
+use crate::utils::self_update::{InstallPlan, SelfUpdateService};
+use crate::utils::updater::{self, UpdateDownload};
 
 use super::BackgroundEvent;
+
+/// Budget for each transfer an in-place update makes.
+///
+/// Generous compared to the five seconds the *check* gets: this one is moving a
+/// several-megabyte binary over whatever connection the user has, and a timeout
+/// here throws the download away.
+const UPDATE_TRANSFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
 /// Everything this app is allowed to do to the machine it is running on.
 ///
@@ -29,6 +37,11 @@ pub struct SystemActions {
     pub open_release_page: fn(&str) -> Result<(), String>,
     /// Relaunch WinMedic through UAC, asking for Administrator rights.
     pub relaunch_elevated: fn() -> std::io::Result<()>,
+    /// Download a release, verify it and replace this executable with it.
+    /// Inert by default, for the same reason as the rest of this struct: a
+    /// test that accepts the update dialog must not start downloading
+    /// executables onto the machine running the suite.
+    pub self_update: SelfUpdateService,
     /// Where a repair run's restore point comes from. Read when the engine is
     /// built, so changing it means rebuilding the engine — which is why
     /// [`App::enable_real_system_actions`] exists instead of a plain
@@ -43,6 +56,7 @@ impl SystemActions {
         Self {
             open_release_page: updater::launch_browser,
             relaunch_elevated: relaunch_as_admin,
+            self_update: SelfUpdateService::real(),
             restore_point: RestorePointService::real(),
         }
     }
@@ -52,6 +66,7 @@ impl SystemActions {
         Self {
             open_release_page: |_| Ok(()),
             relaunch_elevated: || Ok(()),
+            self_update: SelfUpdateService::inert(),
             restore_point: RestorePointService::inert(),
         }
     }
@@ -76,6 +91,12 @@ pub enum ConfirmRequest {
         current_version: String,
         latest_version: String,
         release_url: String,
+        /// The checksum-backed download for this release, when it has one.
+        ///
+        /// Its presence is what decides whether the dialog offers to install
+        /// the update or only to open the release page: a release WinMedic
+        /// cannot verify is never installed in place.
+        download: Option<UpdateDownload>,
     },
 }
 
@@ -92,7 +113,12 @@ impl ConfirmRequest {
         match self {
             ConfirmRequest::Rollback { .. } => "Restore",
             ConfirmRequest::Elevate => "Restart as Administrator now",
-            ConfirmRequest::UpdateAvailable { .. } => "Open the release page in a browser",
+            ConfirmRequest::UpdateAvailable {
+                download: Some(_), ..
+            } => "Download, verify and install it",
+            ConfirmRequest::UpdateAvailable { download: None, .. } => {
+                "Open the release page in a browser"
+            }
         }
     }
 
@@ -129,22 +155,51 @@ impl ConfirmRequest {
                 current_version,
                 latest_version,
                 release_url,
-            } => vec![
-                "A new version of WinMedic is available on GitHub.".to_string(),
-                String::new(),
-                format!(
-                    "Installed version: v{}",
-                    current_version.trim_start_matches(['v', 'V'])
-                ),
-                format!(
-                    "Latest version:    v{}",
-                    latest_version.trim_start_matches(['v', 'V'])
-                ),
-                String::new(),
-                format!("URL: {}", release_url),
-                String::new(),
-                "Open the GitHub release page in your default browser?".to_string(),
-            ],
+                download,
+            } => {
+                let mut body = vec![
+                    "A new version of WinMedic is available on GitHub.".to_string(),
+                    String::new(),
+                    format!(
+                        "Installed version: v{}",
+                        current_version.trim_start_matches(['v', 'V'])
+                    ),
+                    format!(
+                        "Latest version:    v{}",
+                        latest_version.trim_start_matches(['v', 'V'])
+                    ),
+                    String::new(),
+                ];
+
+                match download {
+                    // Everything the install will do, before it does any of it.
+                    // Replacing the executable a user runs as Administrator is
+                    // not something to describe as "updating" and leave at that.
+                    Some(download) => body.extend([
+                        format!("WinMedic will download {}", download.binary_name),
+                        "from the release, check it against the SHA256 checksum published"
+                            .to_string(),
+                        "with it, and only then replace this executable.".to_string(),
+                        String::new(),
+                        "If the checksum does not match, nothing is replaced and the".to_string(),
+                        "release page opens in your browser instead.".to_string(),
+                        String::new(),
+                        "The running WinMedic keeps working until you restart it.".to_string(),
+                    ]),
+                    // No checksum, no in-place install: there would be nothing
+                    // to hold the downloaded bytes to.
+                    None => body.extend([
+                        "This release publishes no checksum, so WinMedic will not".to_string(),
+                        "install it in place - the download is not verifiable.".to_string(),
+                        String::new(),
+                        format!("URL: {}", release_url),
+                        String::new(),
+                        "Open the GitHub release page in your default browser?".to_string(),
+                    ]),
+                }
+
+                body
+            }
         }
     }
 }
@@ -177,7 +232,9 @@ impl App {
     /// This is the only path that raises the update modal, so it can never
     /// intercept a keystroke the user meant for something else.
     pub fn show_update_notice(&mut self) {
-        if self.pending_confirm.is_some() {
+        // Reopening the dialog mid-install would offer to start a second
+        // download onto the same staging file.
+        if self.pending_confirm.is_some() || self.is_updating {
             return;
         }
         let Some(info) = self.available_update.clone() else {
@@ -187,6 +244,83 @@ impl App {
             current_version: info.current_version,
             latest_version: info.latest_version,
             release_url: info.release_url,
+            download: info.download,
+        });
+    }
+
+    /// Open the release page because the in-place update did not happen, and
+    /// say why.
+    ///
+    /// Every failure path lands here: a download that never arrived, a checksum
+    /// that did not match, a binary that could not be replaced. The user is left
+    /// with a working WinMedic and the manual route, plus the reason the
+    /// automatic one was abandoned.
+    pub(super) fn fall_back_to_browser(&mut self, release_url: &str, reason: &str) {
+        self.status_message = Some(match (self.system_actions.open_release_page)(release_url) {
+            Ok(()) => format!(
+                "Update not installed ({}). The release page is open in your browser.",
+                reason
+            ),
+            Err(e) => format!(
+                "Update not installed ({}), and the browser could not be opened either: {}",
+                reason, e
+            ),
+        });
+        // The user has acted on it; stop offering it under [U].
+        self.available_update = None;
+    }
+
+    /// Download, verify and install the release the user just accepted.
+    ///
+    /// Returns immediately: the work runs on the Tokio runtime and reports back
+    /// through [`BackgroundEvent::UpdateInstallStep`] and
+    /// [`BackgroundEvent::UpdateInstallFinished`], so the TUI keeps drawing
+    /// while a multi-megabyte download is in flight.
+    fn start_update_install(
+        &mut self,
+        version: String,
+        release_url: String,
+        download: UpdateDownload,
+    ) {
+        let plan = match InstallPlan::for_current_exe(download, &version, UPDATE_TRANSFER_TIMEOUT) {
+            Ok(plan) => plan,
+            Err(err) => return self.fall_back_to_browser(&release_url, &err.reason()),
+        };
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return self.fall_back_to_browser(&release_url, "there is no runtime to download on");
+        };
+
+        self.is_updating = true;
+        self.status_message = Some(format!(
+            "Downloading WinMedic v{}...",
+            version.trim_start_matches(['v', 'V'])
+        ));
+
+        // Progress travels on its own channel of plain strings so the updater
+        // never has to know what a `BackgroundEvent` is; this task is the
+        // adapter between the two.
+        let (step_tx, mut step_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let step_bg = self.bg_tx.clone();
+        handle.spawn(async move {
+            while let Some(step) = step_rx.recv().await {
+                if step_bg
+                    .send(BackgroundEvent::UpdateInstallStep(step))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+
+        let service = self.system_actions.self_update;
+        let tx = self.bg_tx.clone();
+        handle.spawn(async move {
+            let result = service.install(plan, Some(step_tx)).await;
+            let _ = tx.send(BackgroundEvent::UpdateInstallFinished {
+                version,
+                release_url,
+                result,
+            });
         });
     }
 
@@ -222,16 +356,26 @@ impl App {
                     self.should_quit = true;
                 }
             }
-            ConfirmRequest::UpdateAvailable { release_url, .. } => {
-                if let Err(e) = (self.system_actions.open_release_page)(&release_url) {
-                    self.status_message = Some(format!("Could not launch a browser: {}", e));
-                } else {
-                    self.status_message =
-                        Some("Opened the GitHub release page in your browser.".to_string());
+            ConfirmRequest::UpdateAvailable {
+                latest_version,
+                release_url,
+                download,
+                ..
+            } => match download {
+                Some(download) => self.start_update_install(latest_version, release_url, download),
+                None => {
+                    // Without a checksum the browser *is* what the button
+                    // offered, so this is not a fallback from a failure.
+                    if let Err(e) = (self.system_actions.open_release_page)(&release_url) {
+                        self.status_message = Some(format!("Could not launch a browser: {}", e));
+                    } else {
+                        self.status_message =
+                            Some("Opened the GitHub release page in your browser.".to_string());
+                    }
+                    // The user has acted on it; stop offering it under [U].
+                    self.available_update = None;
                 }
-                // The user has acted on it; stop offering it under [U].
-                self.available_update = None;
-            }
+            },
         }
     }
 }
@@ -262,6 +406,11 @@ mod tests {
             !actions.restore_point.is_live(),
             "App::new installed the real restore point service"
         );
+        assert!(
+            !actions.self_update.is_live(),
+            "App::new installed the real self-updater: accepting the update \
+             dialog would download and replace an executable on this machine"
+        );
     }
 
     /// The engine an [`App`] hands a repair run must inherit that inertness —
@@ -280,6 +429,7 @@ mod tests {
             current_version: "0.1.0".to_string(),
             latest_version: "v0.2.0".to_string(),
             release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0".to_string(),
+            download: None,
         });
 
         app.confirm_pending_action();
@@ -289,6 +439,151 @@ mod tests {
             app.status_message,
             Some("Opened the GitHub release page in your browser.".to_string())
         );
+    }
+
+    /// A download pair pointing at the real release path, for dialog tests.
+    fn a_download() -> UpdateDownload {
+        UpdateDownload {
+            binary_name: "winmedic-v0.2.0.exe".to_string(),
+            binary_url:
+                "https://github.com/SecretLUL/WinMedic/releases/download/v0.2.0/winmedic-v0.2.0.exe"
+                    .to_string(),
+            checksum_url:
+                "https://github.com/SecretLUL/WinMedic/releases/download/v0.2.0/winmedic-v0.2.0.exe.sha256"
+                    .to_string(),
+            size: 4_200_000,
+        }
+    }
+
+    fn update_request(download: Option<UpdateDownload>) -> ConfirmRequest {
+        ConfirmRequest::UpdateAvailable {
+            current_version: "0.1.0".to_string(),
+            latest_version: "v0.2.0".to_string(),
+            release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0".to_string(),
+            download,
+        }
+    }
+
+    /// The button has to say which of the two things it does, because they are
+    /// very different things: one opens a web page, the other replaces the
+    /// executable the user runs as Administrator.
+    #[test]
+    fn the_dialog_offers_an_install_only_when_the_release_can_be_verified() {
+        let verifiable = update_request(Some(a_download()));
+        assert_eq!(
+            verifiable.confirm_label(),
+            "Download, verify and install it"
+        );
+        let body = verifiable.body().join("\n");
+        assert!(body.contains("winmedic-v0.2.0.exe"), "{}", body);
+        assert!(body.contains("SHA256"), "{}", body);
+        // What happens if it does not verify is part of the offer, not a
+        // surprise afterwards.
+        assert!(body.contains("nothing is replaced"), "{}", body);
+
+        let unverifiable = update_request(None);
+        assert_eq!(
+            unverifiable.confirm_label(),
+            "Open the release page in a browser"
+        );
+        let body = unverifiable.body().join("\n");
+        assert!(body.contains("publishes no checksum"), "{}", body);
+        assert!(body.contains("https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0"));
+    }
+
+    /// The parked notice has to carry the download with it, or pressing [U]
+    /// would silently downgrade an installable update to the browser flow.
+    #[test]
+    fn the_parked_notice_keeps_the_download_it_was_offered_with() {
+        let mut app = App::new();
+        // A non-elevated run parks the Elevate dialog at construction.
+        app.pending_confirm = None;
+        app.available_update = Some(crate::utils::updater::UpdateInfo {
+            current_version: "0.1.0".to_string(),
+            latest_version: "v0.2.0".to_string(),
+            release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0".to_string(),
+            release_name: None,
+            release_body: None,
+            download: Some(a_download()),
+        });
+
+        app.show_update_notice();
+
+        match app.pending_confirm {
+            Some(ConfirmRequest::UpdateAvailable {
+                download: Some(ref download),
+                ..
+            }) => assert_eq!(download.binary_name, "winmedic-v0.2.0.exe"),
+            other => panic!("expected an installable update notice, got {:?}", other),
+        }
+    }
+
+    /// Reopening the dialog mid-install would offer a second download onto the
+    /// same staging file.
+    #[test]
+    fn the_notice_does_not_reopen_while_an_install_is_running() {
+        let mut app = App::new();
+        app.pending_confirm = None;
+        app.available_update = Some(crate::utils::updater::UpdateInfo {
+            current_version: "0.1.0".to_string(),
+            latest_version: "v0.2.0".to_string(),
+            release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0".to_string(),
+            release_name: None,
+            release_body: None,
+            download: Some(a_download()),
+        });
+        app.is_updating = true;
+
+        app.show_update_notice();
+
+        assert!(app.pending_confirm.is_none());
+    }
+
+    /// Accepting an installable update starts a background job rather than
+    /// blocking the frame, and says so while it runs.
+    #[tokio::test]
+    async fn accepting_an_installable_update_starts_a_background_install() {
+        let mut app = App::new();
+        app.pending_confirm = Some(update_request(Some(a_download())));
+
+        app.confirm_pending_action();
+
+        assert!(app.pending_confirm.is_none());
+        assert!(app.is_updating, "the install was not marked as running");
+        assert!(
+            app.status_message
+                .as_deref()
+                .is_some_and(|m| m.contains("Downloading WinMedic v0.2.0")),
+            "{:?}",
+            app.status_message
+        );
+        // The default app's updater is inert, so nothing was downloaded — the
+        // failure arrives as an event and is asserted in `events`.
+    }
+
+    /// Every way an install can fail ends in the same place: a working WinMedic,
+    /// the release page open, and the reason on screen.
+    #[test]
+    fn the_browser_fallback_states_why_the_install_did_not_happen() {
+        let mut app = App::new();
+        app.available_update = Some(crate::utils::updater::UpdateInfo {
+            current_version: "0.1.0".to_string(),
+            latest_version: "v0.2.0".to_string(),
+            release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0".to_string(),
+            release_name: None,
+            release_body: None,
+            download: Some(a_download()),
+        });
+
+        app.fall_back_to_browser(
+            "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0",
+            "SHA256 mismatch",
+        );
+
+        let message = app.status_message.clone().unwrap();
+        assert!(message.contains("SHA256 mismatch"), "{}", message);
+        assert!(message.contains("release page"), "{}", message);
+        assert!(app.available_update.is_none(), "[U] still offers it");
     }
 
     #[test]
@@ -319,6 +614,7 @@ mod tests {
             current_version: "0.1.0".to_string(),
             latest_version: "v0.2.0".to_string(),
             release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0".to_string(),
+            download: None,
         };
         assert_eq!(req.title(), "NEW WINMEDIC UPDATE AVAILABLE");
         assert_eq!(req.confirm_label(), "Open the release page in a browser");

@@ -102,6 +102,12 @@ async fn main() -> ExitCode {
 }
 
 async fn run(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
+    // A binary replaced by an in-place update is still mapped by the process
+    // that replaced it, so it cannot delete itself; the next start is the first
+    // moment it can go. Best-effort and silent: leftover junk beside the
+    // executable is untidy, never a reason to refuse to run.
+    utils::self_update::clean_leftovers_beside_current_exe();
+
     if args.elevate {
         if !is_admin() {
             println!("Requesting Administrator privileges...");

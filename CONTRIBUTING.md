@@ -75,6 +75,16 @@ the system. A new repair should:
 - produce a dry-run description listing the exact commands it would run
 - back up whatever it modifies, via `safety::reg_backup` for registry keys
 
+**`src/utils/self_update.rs`** replaces the executable the user runs, very
+often as Administrator. The order — download, hash, compare against the
+published `.sha256`, only then swap — is not negotiable, and every URL and
+asset name arriving from the network is treated as hostile input. Nothing may
+be installed that has not matched the checksum, and any failure has to leave the
+installed binary untouched and fall back to the browser download. No test may
+build `SelfUpdateService::real()` or `Fetcher::curl()`; a guard test enforces
+that, and `install()` takes a stub `Fetcher` precisely so the verify-and-swap
+sequence can be tested without a network.
+
 **PowerShell invocation.** Never interpolate a runtime value into a script
 string. Use `utils::cmd::ps_single_quoted` — see the module documentation there.
 

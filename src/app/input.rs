@@ -339,6 +339,7 @@ mod tests {
             current_version: "0.1.0".into(),
             latest_version: "0.2.0".into(),
             release_url: "https://example.com".into(),
+            download: None,
         });
         handle_key(&mut app, KeyCode::Char('y'));
         assert!(app.pending_confirm.is_none(), "'y' confirms");
@@ -348,6 +349,7 @@ mod tests {
             current_version: "0.1.0".into(),
             latest_version: "0.2.0".into(),
             release_url: "https://example.com".into(),
+            download: None,
         });
         handle_key(&mut app, KeyCode::Enter);
         assert!(app.pending_confirm.is_none(), "'Enter' confirms");

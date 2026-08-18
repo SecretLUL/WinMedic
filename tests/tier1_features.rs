@@ -1146,6 +1146,7 @@ async fn test_tier1_f15_modal_confirm_request_update_available_fields() {
         current_version: "0.1.0".to_string(),
         latest_version: "v0.2.0".to_string(),
         release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0".to_string(),
+        download: None,
     };
 
     assert_eq!(modal.title(), "NEW WINMEDIC UPDATE AVAILABLE");
@@ -1168,6 +1169,7 @@ async fn test_tier1_f15_app_update_checked_event_sets_pending_confirm() {
         release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0".to_string(),
         release_name: Some("v0.2.0".to_string()),
         release_body: Some("Notes".to_string()),
+        download: None,
     };
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1182,6 +1184,7 @@ async fn test_tier1_f15_app_update_checked_event_sets_pending_confirm() {
             current_version: info.current_version.clone(),
             latest_version: info.latest_version.clone(),
             release_url: info.release_url.clone(),
+            download: None,
         });
         app.available_update = Some(info);
     }
@@ -1197,6 +1200,7 @@ async fn test_tier1_f15_app_dismiss_confirm_clears_modal() {
         current_version: "0.1.0".to_string(),
         latest_version: "v0.2.0".to_string(),
         release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0".to_string(),
+        download: None,
     });
 
     app.dismiss_confirm();
@@ -1210,6 +1214,7 @@ async fn test_tier1_f15_app_confirm_pending_clears_and_executes() {
         current_version: "0.1.0".to_string(),
         latest_version: "v0.2.0".to_string(),
         release_url: "https://example.com".to_string(),
+        download: None,
     });
 
     app.confirm_pending_action();
@@ -1228,6 +1233,7 @@ async fn test_tier1_f15_modal_skipped_when_check_for_updates_disabled() {
         release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0".to_string(),
         release_name: Some("v0.2.0".to_string()),
         release_body: None,
+        download: None,
     };
 
     if app.config.check_for_updates {
@@ -1235,6 +1241,7 @@ async fn test_tier1_f15_modal_skipped_when_check_for_updates_disabled() {
             current_version: update.current_version,
             latest_version: update.latest_version,
             release_url: update.release_url,
+            download: None,
         });
     }
 
