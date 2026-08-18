@@ -14,6 +14,22 @@ pub const GITHUB_USER_AGENT: &str = "WinMedic";
 /// [`launch_browser`].
 pub const GITHUB_RELEASE_URL_PREFIX: &str = "https://github.com/";
 
+/// Release assets are downloaded from this prefix and from nowhere else.
+///
+/// `/releases/download/` is the only path GitHub serves uploaded release assets
+/// from, so pinning it means a tampered API response cannot aim the downloader
+/// at an arbitrary attacker-controlled file that merely happens to live on
+/// github.com — a gist, a raw blob, another account's repository.
+pub const GITHUB_RELEASE_DOWNLOAD_PREFIX: &str =
+    "https://github.com/SecretLUL/WinMedic/releases/download/";
+
+/// Refuse to download anything larger than this.
+///
+/// WinMedic's release binary is a few megabytes. A release advertising an asset
+/// far past that is not describing the artifact the release workflow builds, and
+/// the download would be landing next to the executable the user runs.
+pub const MAX_UPDATE_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Minimal SemVer parser supporting standard `major.minor.patch` version strings,
 /// optional `v` or `V` prefixes, and pre-release or build metadata suffixes (e.g. `v0.2.0-rc1`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,6 +123,16 @@ pub fn is_update_available(current_version: &str, latest_tag: &str) -> bool {
     }
 }
 
+/// One file attached to a GitHub release.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseAsset {
+    pub name: String,
+    pub browser_download_url: String,
+    /// Size GitHub reports for the asset, or `0` when the payload omitted it.
+    #[serde(default)]
+    pub size: u64,
+}
+
 /// JSON payload structure returned by GitHub's `/releases/latest` endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitHubRelease {
@@ -120,6 +146,27 @@ pub struct GitHubRelease {
     pub draft: bool,
     #[serde(default)]
     pub prerelease: bool,
+    #[serde(default)]
+    pub assets: Vec<ReleaseAsset>,
+}
+
+/// The pair of assets an in-place update needs: the binary, and the checksum
+/// that vouches for it.
+///
+/// Both URLs have already passed [`is_safe_download_url`] by the time one of
+/// these exists — [`pick_update_download`] is the only constructor — so the
+/// downloader inherits the allow-list instead of re-deriving it. The two travel
+/// together because neither is any use alone: a binary with no checksum cannot
+/// be verified, and a checksum with no binary has nothing to vouch for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateDownload {
+    /// File name of the release binary, e.g. `winmedic-v0.3.3.exe`. The
+    /// checksum manifest has to name this exact file.
+    pub binary_name: String,
+    pub binary_url: String,
+    pub checksum_url: String,
+    /// Size GitHub reports for the binary, or `0` when it is unknown.
+    pub size: u64,
 }
 
 /// Summary information for an available update.
@@ -130,6 +177,12 @@ pub struct UpdateInfo {
     pub release_url: String,
     pub release_name: Option<String>,
     pub release_body: Option<String>,
+    /// The verifiable download pair for this release, when it publishes one.
+    ///
+    /// `None` means the release cannot be installed in place — there is no
+    /// checksum to hold the download to — so the browser flow is all that is
+    /// offered for it.
+    pub download: Option<UpdateDownload>,
 }
 
 /// Query GitHub for the latest release and determine if a newer version is available.
@@ -178,10 +231,119 @@ pub async fn check_for_update(
             release_url: release.html_url,
             release_name: release.name,
             release_body: release.body,
+            download: pick_update_download(&release.assets),
         })
     } else {
         None
     }
+}
+
+/// Find the release binary and its `.sha256` manifest among a release's assets.
+///
+/// Returns `None` unless *both* exist, both are served from
+/// [`GITHUB_RELEASE_DOWNLOAD_PREFIX`], and both carry a file name that is safe
+/// to write next to the running executable. A missing checksum is not a detail
+/// to work around: it is the entire reason the caller may replace a binary that
+/// will later run as Administrator, so its absence downgrades the release to the
+/// browser flow rather than relaxing the requirement.
+pub fn pick_update_download(assets: &[ReleaseAsset]) -> Option<UpdateDownload> {
+    let binary = assets.iter().find(|a| is_release_binary_name(&a.name))?;
+    let checksum_name = format!("{}.sha256", binary.name);
+    let checksum = assets.iter().find(|a| a.name == checksum_name)?;
+
+    if !is_safe_download_url(&binary.browser_download_url)
+        || !is_safe_download_url(&checksum.browser_download_url)
+    {
+        return None;
+    }
+    if binary.size > MAX_UPDATE_BYTES {
+        return None;
+    }
+
+    Some(UpdateDownload {
+        binary_name: binary.name.clone(),
+        binary_url: binary.browser_download_url.clone(),
+        checksum_url: checksum.browser_download_url.clone(),
+        size: binary.size,
+    })
+}
+
+/// Whether an asset name is the release's Windows binary.
+///
+/// The release workflow uploads exactly one `.exe` (`winmedic-<tag>.exe`); the
+/// only other asset is its `.sha256`, which the `.exe` suffix rejects.
+fn is_release_binary_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    is_safe_asset_name(name) && lower.starts_with("winmedic") && lower.ends_with(".exe")
+}
+
+/// Whether `name` is safe to use as a file name next to the running binary.
+///
+/// The name arrives from the network and is then joined onto a directory path,
+/// so a separator, a drive letter or a `..` in it would let the release response
+/// choose *where* the download lands. Only a flat name built from unremarkable
+/// characters is accepted — including no leading `.`, which is what the staging
+/// files this crate writes itself are never confused with.
+pub fn is_safe_asset_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && !name.contains("..")
+        && !name.starts_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+}
+
+/// Whether `url` is a release *asset* download that may be fetched to disk.
+///
+/// Stricter than [`is_safe_release_url`] and built on top of it, so the
+/// shell-metacharacter, scheme and length rules cover the download URL too — the
+/// release page is not the only URL in this flow that arrives off the wire.
+pub fn is_safe_download_url(url: &str) -> bool {
+    is_safe_release_url(url) && url.starts_with(GITHUB_RELEASE_DOWNLOAD_PREFIX)
+}
+
+/// Whether `s` is a 64-character SHA256 digest in hex.
+pub fn is_sha256_hex(s: &str) -> bool {
+    s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Read the expected SHA256 out of a `sha256sum`-style manifest.
+///
+/// The release workflow writes a single `"<hash>  <filename>"` line. A manifest
+/// naming a *different* file is rejected rather than used: it would mean the
+/// digest being compared against belongs to some other artifact, which is
+/// exactly the confusion someone able to shuffle release assets would want.
+pub fn parse_sha256_manifest(content: &str, expected_name: &str) -> Result<String, String> {
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let mut fields = line.split_whitespace();
+        let Some(hash) = fields.next() else {
+            continue;
+        };
+        if !is_sha256_hex(hash) {
+            return Err("the checksum file does not start with a SHA256 digest".to_string());
+        }
+
+        // `sha256sum` marks binary mode with a `*` in front of the name.
+        if let Some(name) = fields.next() {
+            let name = name.trim_start_matches('*');
+            if !name.eq_ignore_ascii_case(expected_name) {
+                return Err(format!(
+                    "the checksum file covers '{}', not '{}'",
+                    name, expected_name
+                ));
+            }
+        }
+
+        return Ok(hash.to_ascii_lowercase());
+    }
+
+    Err("the checksum file contained no digest".to_string())
 }
 
 /// Whether `url` is a plain GitHub release page that is safe to hand to the OS.
@@ -543,6 +705,294 @@ mod tests {
     fn test_launch_browser_rejects_unsafe_url() {
         assert!(validate_release_url("https://github.com/a&calc").is_err());
         assert!(validate_release_url("https://evil.example/x").is_err());
+    }
+
+    // ------------------------------------------------------ release assets
+
+    const DOWNLOAD_BASE: &str = "https://github.com/SecretLUL/WinMedic/releases/download/v0.3.3";
+
+    fn asset(name: &str, size: u64) -> ReleaseAsset {
+        ReleaseAsset {
+            name: name.to_string(),
+            browser_download_url: format!("{}/{}", DOWNLOAD_BASE, name),
+            size,
+        }
+    }
+
+    #[test]
+    fn the_binary_and_its_checksum_are_picked_out_of_a_release() {
+        let assets = vec![
+            asset("winmedic-v0.3.3.exe.sha256", 84),
+            asset("winmedic-v0.3.3.exe", 4_200_000),
+        ];
+
+        let picked = pick_update_download(&assets).expect("expected a download pair");
+        assert_eq!(picked.binary_name, "winmedic-v0.3.3.exe");
+        assert_eq!(
+            picked.binary_url,
+            format!("{}/winmedic-v0.3.3.exe", DOWNLOAD_BASE)
+        );
+        assert_eq!(
+            picked.checksum_url,
+            format!("{}/winmedic-v0.3.3.exe.sha256", DOWNLOAD_BASE)
+        );
+        assert_eq!(picked.size, 4_200_000);
+    }
+
+    /// The checksum is the entire basis for replacing an executable that later
+    /// runs as Administrator, so a release without one is not installable.
+    #[test]
+    fn a_release_without_a_checksum_offers_no_download() {
+        let assets = vec![asset("winmedic-v0.3.3.exe", 4_200_000)];
+        assert_eq!(pick_update_download(&assets), None);
+
+        // A checksum for some *other* file is not this binary's checksum.
+        let mismatched = vec![
+            asset("winmedic-v0.3.3.exe", 4_200_000),
+            asset("winmedic-v0.3.2.exe.sha256", 84),
+        ];
+        assert_eq!(pick_update_download(&mismatched), None);
+    }
+
+    #[test]
+    fn a_release_with_no_windows_binary_offers_no_download() {
+        let assets = vec![
+            asset("winmedic-v0.3.3-source.zip", 900),
+            asset("README.md", 100),
+        ];
+        assert_eq!(pick_update_download(&assets), None);
+    }
+
+    /// The download URL is attacker-controlled input in exactly the same way
+    /// the release page URL is, and gets the same allow-list.
+    #[test]
+    fn a_download_url_outside_the_release_download_path_is_refused() {
+        for hostile in [
+            "https://evil.example/releases/download/v1/winmedic-v0.3.3.exe",
+            // Right host, wrong path: a repository blob is not a release asset.
+            "https://github.com/SecretLUL/WinMedic/raw/main/winmedic-v0.3.3.exe",
+            // Another account's releases are still not this project's.
+            "https://github.com/attacker/WinMedic/releases/download/v1/winmedic-v0.3.3.exe",
+            // Downgraded scheme.
+            "http://github.com/SecretLUL/WinMedic/releases/download/v1/winmedic-v0.3.3.exe",
+        ] {
+            let assets = vec![
+                ReleaseAsset {
+                    name: "winmedic-v0.3.3.exe".to_string(),
+                    browser_download_url: hostile.to_string(),
+                    size: 100,
+                },
+                asset("winmedic-v0.3.3.exe.sha256", 84),
+            ];
+            assert_eq!(
+                pick_update_download(&assets),
+                None,
+                "accepted a binary from {}",
+                hostile
+            );
+        }
+
+        // A safe binary paired with an off-site checksum is no better: the
+        // digest would then come from wherever the response pointed.
+        let assets = vec![
+            asset("winmedic-v0.3.3.exe", 100),
+            ReleaseAsset {
+                name: "winmedic-v0.3.3.exe.sha256".to_string(),
+                browser_download_url: "https://evil.example/x.sha256".to_string(),
+                size: 84,
+            },
+        ];
+        assert_eq!(pick_update_download(&assets), None);
+    }
+
+    #[test]
+    fn an_absurdly_large_asset_is_refused() {
+        let assets = vec![
+            asset("winmedic-v0.3.3.exe", MAX_UPDATE_BYTES + 1),
+            asset("winmedic-v0.3.3.exe.sha256", 84),
+        ];
+        assert_eq!(pick_update_download(&assets), None);
+    }
+
+    /// The asset name becomes a file name beside the running executable, so a
+    /// separator or a `..` in it would choose where the download lands.
+    #[test]
+    fn an_asset_name_that_could_escape_a_directory_is_refused() {
+        for hostile in [
+            "..\\..\\Windows\\System32\\winmedic.exe",
+            "../../winmedic.exe",
+            "winmedic/../../evil.exe",
+            "C:\\Windows\\winmedic.exe",
+            "winmedic .exe",
+            ".winmedic.exe",
+        ] {
+            assert!(
+                !is_safe_asset_name(hostile),
+                "'{}' was accepted as a file name",
+                hostile
+            );
+        }
+
+        assert!(is_safe_asset_name("winmedic-v0.3.3.exe"));
+        assert!(is_safe_asset_name("winmedic-v0.3.3.exe.sha256"));
+        assert!(is_safe_asset_name("winmedic_v1-0-0.exe"));
+        assert!(!is_safe_asset_name(""));
+        assert!(!is_safe_asset_name(&"a".repeat(129)));
+    }
+
+    #[test]
+    fn is_safe_download_url_inherits_the_release_url_rules() {
+        assert!(is_safe_download_url(&format!(
+            "{}/winmedic-v0.3.3.exe",
+            DOWNLOAD_BASE
+        )));
+        // Shell metacharacters are rejected here just as they are on the page
+        // URL — the download URL reaches a process too.
+        assert!(!is_safe_download_url(&format!(
+            "{}/winmedic.exe&calc",
+            DOWNLOAD_BASE
+        )));
+        assert!(!is_safe_download_url(&format!(
+            "{}/winmedic .exe",
+            DOWNLOAD_BASE
+        )));
+        assert!(!is_safe_download_url(
+            "https://github.com/SecretLUL/WinMedic/releases/tag/v0.3.3"
+        ));
+    }
+
+    // ------------------------------------------------------ checksum files
+
+    #[test]
+    fn the_workflows_own_checksum_layout_parses() {
+        // Exactly what .github/workflows/release.yml writes.
+        let hash = "3b1f2a".to_string() + &"0".repeat(58);
+        let manifest = format!("{}  winmedic-v0.3.3.exe\n", hash);
+
+        assert_eq!(
+            parse_sha256_manifest(&manifest, "winmedic-v0.3.3.exe").unwrap(),
+            hash
+        );
+    }
+
+    #[test]
+    fn checksum_variants_and_junk_are_told_apart() {
+        let hash = "a".repeat(64);
+
+        // sha256sum binary mode, single space, and a bare digest.
+        assert!(parse_sha256_manifest(&format!("{} *winmedic.exe", hash), "winmedic.exe").is_ok());
+        assert!(parse_sha256_manifest(&format!("{} winmedic.exe", hash), "winmedic.exe").is_ok());
+        assert!(parse_sha256_manifest(&hash, "winmedic.exe").is_ok());
+        // Case in the digest does not matter; case in the name does not either.
+        assert_eq!(
+            parse_sha256_manifest(
+                &format!("{}  WinMedic.exe", hash.to_uppercase()),
+                "winmedic.exe"
+            )
+            .unwrap(),
+            hash
+        );
+
+        // A digest that is not one, a truncated one, and an empty file.
+        assert!(parse_sha256_manifest("not-a-hash  winmedic.exe", "winmedic.exe").is_err());
+        assert!(
+            parse_sha256_manifest(&format!("{}  winmedic.exe", "a".repeat(63)), "winmedic.exe")
+                .is_err()
+        );
+        assert!(parse_sha256_manifest("", "winmedic.exe").is_err());
+        assert!(parse_sha256_manifest("   \n\n", "winmedic.exe").is_err());
+        // A manifest for a different artifact must not vouch for this one.
+        assert!(parse_sha256_manifest(&format!("{}  other.exe", hash), "winmedic.exe").is_err());
+    }
+
+    #[test]
+    fn is_sha256_hex_accepts_only_a_full_digest() {
+        assert!(is_sha256_hex(&"0".repeat(64)));
+        assert!(is_sha256_hex(&"F".repeat(64)));
+        assert!(!is_sha256_hex(&"0".repeat(63)));
+        assert!(!is_sha256_hex(&"0".repeat(65)));
+        assert!(!is_sha256_hex(&"g".repeat(64)));
+        assert!(!is_sha256_hex(""));
+    }
+
+    // --------------------------------------------- assets through the check
+
+    #[tokio::test]
+    async fn a_release_with_assets_carries_its_download_through_the_check() {
+        let mock = MockCommandRunner::new();
+        let payload = format!(
+            r#"{{
+                "tag_name": "v0.3.3",
+                "html_url": "https://github.com/SecretLUL/WinMedic/releases/tag/v0.3.3",
+                "draft": false,
+                "prerelease": false,
+                "assets": [
+                    {{"name": "winmedic-v0.3.3.exe", "browser_download_url": "{base}/winmedic-v0.3.3.exe", "size": 4200000}},
+                    {{"name": "winmedic-v0.3.3.exe.sha256", "browser_download_url": "{base}/winmedic-v0.3.3.exe.sha256", "size": 84}}
+                ]
+            }}"#,
+            base = DOWNLOAD_BASE
+        );
+        mock.add_response("curl.exe", CmdOutput::ok(payload));
+
+        let info = check_for_update(&mock, "0.3.2", Duration::from_secs(5))
+            .await
+            .expect("expected UpdateInfo");
+
+        let download = info.download.expect("expected a verifiable download");
+        assert_eq!(download.binary_name, "winmedic-v0.3.3.exe");
+        assert!(download.checksum_url.ends_with(".sha256"));
+    }
+
+    /// An older release, or one uploaded by hand without a checksum, is still
+    /// worth telling the user about — it just cannot be installed in place.
+    #[tokio::test]
+    async fn a_release_without_assets_is_still_offered_via_the_browser() {
+        let mock = MockCommandRunner::new();
+        let payload = r#"{
+            "tag_name": "v0.3.3",
+            "html_url": "https://github.com/SecretLUL/WinMedic/releases/tag/v0.3.3",
+            "draft": false,
+            "prerelease": false
+        }"#;
+        mock.add_response("curl.exe", CmdOutput::ok(payload));
+
+        let info = check_for_update(&mock, "0.3.2", Duration::from_secs(5))
+            .await
+            .expect("expected UpdateInfo");
+
+        assert_eq!(info.download, None);
+        assert_eq!(
+            info.release_url,
+            "https://github.com/SecretLUL/WinMedic/releases/tag/v0.3.3"
+        );
+    }
+
+    /// A tampered response that keeps a legitimate release page but points the
+    /// download somewhere else must not produce an installable update.
+    #[tokio::test]
+    async fn a_tampered_asset_url_downgrades_the_update_to_the_browser_flow() {
+        let mock = MockCommandRunner::new();
+        let payload = r#"{
+            "tag_name": "v0.3.3",
+            "html_url": "https://github.com/SecretLUL/WinMedic/releases/tag/v0.3.3",
+            "draft": false,
+            "prerelease": false,
+            "assets": [
+                {"name": "winmedic-v0.3.3.exe", "browser_download_url": "https://evil.example/winmedic.exe", "size": 4200000},
+                {"name": "winmedic-v0.3.3.exe.sha256", "browser_download_url": "https://evil.example/winmedic.exe.sha256", "size": 84}
+            ]
+        }"#;
+        mock.add_response("curl.exe", CmdOutput::ok(payload));
+
+        let info = check_for_update(&mock, "0.3.2", Duration::from_secs(5))
+            .await
+            .expect("expected UpdateInfo");
+
+        assert_eq!(
+            info.download, None,
+            "an off-site asset URL must never become an installable download"
+        );
     }
 
     /// No test may call [`launch_browser`]: it hands the URL to the OS, so an

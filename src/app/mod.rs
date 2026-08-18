@@ -16,6 +16,7 @@
 //! | [`confirm`] | The confirmation modal and the parked update notice |
 //! | [`settings`] | Settings navigation and persistence |
 
+use crate::utils::self_update::{InstalledUpdate, UpdateFailure};
 use crate::utils::updater::UpdateInfo;
 use std::collections::VecDeque;
 
@@ -56,8 +57,22 @@ pub const TAB_SETTINGS: usize = 4;
 #[derive(Debug, Clone)]
 pub enum BackgroundEvent {
     RestorePointsLoaded(Vec<String>),
-    RollbackFinished { success: bool, message: String },
+    RollbackFinished {
+        success: bool,
+        message: String,
+    },
     UpdateChecked(Option<UpdateInfo>),
+    /// One step of an in-place update, for the status line.
+    UpdateInstallStep(String),
+    /// An in-place update finished, one way or the other.
+    ///
+    /// `release_url` travels along so that a failure can still put the user in
+    /// front of the manual download without another lookup.
+    UpdateInstallFinished {
+        version: String,
+        release_url: String,
+        result: Result<InstalledUpdate, UpdateFailure>,
+    },
 }
 
 /// Append to a log buffer, evicting the oldest line once it is full.

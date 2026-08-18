@@ -342,6 +342,58 @@ impl App {
                     self.available_update = Some(info);
                 }
                 BackgroundEvent::UpdateChecked(None) => {}
+                BackgroundEvent::UpdateInstallStep(step) => {
+                    // A step that arrives after the run finished would overwrite
+                    // the outcome the user is reading.
+                    if self.is_updating {
+                        self.status_message = Some(step);
+                    }
+                }
+                BackgroundEvent::UpdateInstallFinished {
+                    version,
+                    release_url,
+                    result,
+                } => {
+                    self.is_updating = false;
+                    let version = version.trim_start_matches(['v', 'V']).to_string();
+
+                    match result {
+                        Ok(installed) => {
+                            self.audit_logger.log(
+                                "UPDATE",
+                                "self_update",
+                                &format!("Installed WinMedic v{}", version),
+                                "SUCCESS",
+                                &format!(
+                                    "sha256={} | {} | replaced binary parked at {}",
+                                    installed.sha256,
+                                    installed.signature.summary(),
+                                    installed.retired.display()
+                                ),
+                            );
+                            self.available_update = None;
+                            // Deliberately explicit about the restart: the
+                            // process still running is the old build, and a
+                            // "done" that let someone believe otherwise would be
+                            // a lie about which code is executing.
+                            self.status_message = Some(format!(
+                                "WinMedic v{} installed and SHA256-verified. Restart WinMedic to run it.",
+                                version
+                            ));
+                        }
+                        Err(err) => {
+                            self.audit_logger.log(
+                                "UPDATE",
+                                "self_update",
+                                &format!("Did not install WinMedic v{}", version),
+                                err.kind(),
+                                &err.reason(),
+                            );
+                            self.fall_back_to_browser(&release_url, &err.reason());
+                        }
+                    }
+                    self.audit_entries = self.audit_logger.get_history();
+                }
             }
         }
     }
@@ -351,6 +403,9 @@ impl App {
 mod tests {
     use super::*;
     use crate::modules::ModuleProgress;
+    use crate::safety::audit::AuditLogger;
+    use crate::utils::self_update::{InstalledUpdate, SignatureStatus, UpdateFailure};
+    use std::path::PathBuf;
     use std::time::Duration;
     use tokio::sync::mpsc::channel;
 
@@ -474,6 +529,148 @@ mod tests {
         app.process_background_events();
 
         assert_eq!(app.scan_overall_progress as usize, 90 / total);
+    }
+
+    // ------------------------------------------------------ in-place updates
+
+    /// An app whose audit log writes to a scratch directory instead of the
+    /// developer's own `%APPDATA%\\WinMedic\\logs`.
+    fn app_with_scratch_audit_log() -> (App, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "winmedic_events_audit_{}_{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut app = App::new();
+        app.audit_logger = AuditLogger::with_dir_and_size(dir.clone(), 5 * 1024 * 1024);
+        app.is_updating = true;
+        (app, dir)
+    }
+
+    fn installed_update() -> InstalledUpdate {
+        InstalledUpdate {
+            installed: PathBuf::from(r"C:\Tools\winmedic.exe"),
+            retired: PathBuf::from(r"C:\Tools\winmedic.exe.old-v0.2.0"),
+            sha256: "a".repeat(64),
+            signature: SignatureStatus::Unsigned,
+        }
+    }
+
+    /// The process still running is the *old* build — the new one only starts
+    /// existing at the next launch. Saying "updated" and stopping there would be
+    /// a claim about which code is executing that is simply not true.
+    #[tokio::test]
+    async fn an_installed_update_clears_the_notice_and_asks_for_a_restart() {
+        let (mut app, dir) = app_with_scratch_audit_log();
+        app.available_update = None;
+
+        app.bg_tx
+            .send(BackgroundEvent::UpdateInstallFinished {
+                version: "v0.2.0".to_string(),
+                release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0"
+                    .to_string(),
+                result: Ok(installed_update()),
+            })
+            .unwrap();
+        app.process_background_events();
+
+        assert!(!app.is_updating);
+        assert!(app.available_update.is_none());
+        let message = app.status_message.clone().unwrap();
+        assert!(message.contains("v0.2.0"), "{}", message);
+        assert!(message.contains("SHA256-verified"), "{}", message);
+        assert!(message.contains("Restart"), "{}", message);
+
+        // Replacing the binary is exactly the kind of change this tool records.
+        let entry = app
+            .audit_entries
+            .iter()
+            .find(|e| e.action_type == "UPDATE")
+            .expect("the install was not written to the audit log");
+        assert_eq!(entry.status, "SUCCESS");
+        assert!(entry.details.contains(&"a".repeat(64)));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The issue's fourth prerequisite, as a test: any failure ends with the
+    /// user in front of the manual download and told why.
+    #[tokio::test]
+    async fn a_failed_install_falls_back_to_the_release_page_with_the_reason() {
+        let (mut app, dir) = app_with_scratch_audit_log();
+
+        app.bg_tx
+            .send(BackgroundEvent::UpdateInstallFinished {
+                version: "v0.2.0".to_string(),
+                release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0"
+                    .to_string(),
+                result: Err(UpdateFailure::Verification(
+                    "SHA256 mismatch - the release publishes abc, the download hashes to def"
+                        .to_string(),
+                )),
+            })
+            .unwrap();
+        app.process_background_events();
+
+        assert!(!app.is_updating);
+        let message = app.status_message.clone().unwrap();
+        assert!(message.contains("SHA256 mismatch"), "{}", message);
+        assert!(message.contains("release page"), "{}", message);
+
+        let entry = app
+            .audit_entries
+            .iter()
+            .find(|e| e.action_type == "UPDATE")
+            .expect("the refusal was not written to the audit log");
+        assert_eq!(entry.status, "VERIFICATION");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A step queued just before the run ended must not overwrite the outcome
+    /// the user is now reading.
+    #[tokio::test]
+    async fn a_late_progress_step_does_not_overwrite_the_outcome() {
+        let (mut app, dir) = app_with_scratch_audit_log();
+
+        app.bg_tx
+            .send(BackgroundEvent::UpdateInstallStep(
+                "Verifying the SHA256 checksum...".to_string(),
+            ))
+            .unwrap();
+        app.process_background_events();
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Verifying the SHA256 checksum...")
+        );
+
+        app.bg_tx
+            .send(BackgroundEvent::UpdateInstallFinished {
+                version: "v0.2.0".to_string(),
+                release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0"
+                    .to_string(),
+                result: Ok(installed_update()),
+            })
+            .unwrap();
+        app.bg_tx
+            .send(BackgroundEvent::UpdateInstallStep(
+                "Installing the new binary...".to_string(),
+            ))
+            .unwrap();
+        app.process_background_events();
+
+        assert!(
+            app.status_message
+                .as_deref()
+                .is_some_and(|m| m.contains("Restart")),
+            "{:?}",
+            app.status_message
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// "DIAGNOSTICS COMPLETE - 4:17 elapsed" has to stay at 4:17.

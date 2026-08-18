@@ -891,6 +891,7 @@ fn test_confirm_request_update_available_dialog_contract() {
         current_version: "v0.1.0".to_string(),
         latest_version: "v0.2.0".to_string(),
         release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0".to_string(),
+        download: None,
     };
 
     assert_eq!(req.title(), "NEW WINMEDIC UPDATE AVAILABLE");
@@ -917,6 +918,7 @@ async fn test_app_update_buffering_when_elevate_dialog_is_active() {
         release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0".to_string(),
         release_name: Some("v0.2.0".to_string()),
         release_body: Some("Changelog".to_string()),
+        download: None,
     };
 
     // The update check lands while the Elevate dialog is up.
@@ -965,6 +967,7 @@ async fn test_app_update_survives_accepting_another_dialog() {
         release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0".to_string(),
         release_name: None,
         release_body: None,
+        download: None,
     });
 
     // Confirming Elevate when UAC is declined leaves the app running; the

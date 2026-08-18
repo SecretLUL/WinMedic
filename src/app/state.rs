@@ -182,6 +182,9 @@ pub struct App {
     pub show_help: bool,
     pub pending_confirm: Option<ConfirmRequest>,
     pub available_update: Option<UpdateInfo>,
+    /// True from the moment the user accepts an update until the download has
+    /// either been installed or given up on.
+    pub is_updating: bool,
     /// What this app is allowed to do to the machine it runs on: browser
     /// windows, UAC prompts, restore points.
     ///
@@ -286,6 +289,7 @@ impl App {
                 None
             },
             available_update: None,
+            is_updating: false,
             system_actions,
             should_quit: false,
             scan_event_rx: None,
