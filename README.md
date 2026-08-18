@@ -70,17 +70,35 @@ Settings live in the **`[5]` Settings & Safety** tab and are persisted to `%APPD
 | VSS restore point before repair | `on` | Creates a system checkpoint before the first fix of a run |
 | Back up registry before change | `on` | Exports affected keys to `.reg`; when off, registry fixes run unprotected |
 | Restart services automatically | `on` | Allows fixes to stop/start Windows services; when off, those fixes are skipped rather than half-applied |
-| Check for updates automatically | `on` | Queries the latest GitHub release on startup and flags a newer version with `[U]` |
+| Check for updates automatically | `on` | Queries the latest GitHub release on startup and flags a newer version with `[U]`, which can then install it in place after verifying its checksum |
 | Temp file threshold | `500 MB` | Size at which junk files are reported as an issue |
 | Event log window | `24 h` | How far back the event log module searches for critical events |
 
 ---
 
-## 🔄 Update Check
+## 🔄 Update Check & In-Place Update
 
-On startup WinMedic asks GitHub for the latest release and, if a newer version exists, announces it in the header — press **`[U]`** to open the download page in your browser. Nothing is downloaded or installed automatically.
+On startup WinMedic asks GitHub for the latest release and, if a newer version exists, announces it in the status line. Nothing happens until you press **`[U]`**, which opens a dialog describing exactly what it is about to do; nothing is ever downloaded or installed without that explicit yes.
 
-The check is deliberately conservative: release URLs must start with `https://github.com/` and may not contain shell metacharacters, the browser is launched via `explorer.exe` rather than a shell, and draft and pre-releases are skipped. Version comparison is full SemVer including pre-release ordering, so `1.0.0-beta` correctly sorts below `1.0.0`. Disable it with the *Check for updates automatically* setting.
+When the release publishes both the binary and its `.sha256` — every release cut by the release workflow does — the dialog offers to **download, verify and install it in place**:
+
+1. `winmedic-<tag>.exe` is downloaded to a staging file *next to the current executable*
+2. the `.sha256` published with the release is downloaded as well
+3. the staged file is hashed and must match that checksum exactly
+4. if the download carries an Authenticode signature Windows rejects, it is refused
+5. only then is the running binary renamed aside and the new one moved into its place
+
+The old binary stays parked as `winmedic.exe.old-<tag>` until the next start — a running image cannot delete itself — and is swept up automatically then. **The running process is still the old version**; restart WinMedic to actually run the new one, which is what the confirmation message says.
+
+If *any* of that fails — the download never arrives, the checksum does not match, the file cannot be replaced — nothing is touched, the release page opens in your browser instead, and the status line states the reason. Successful and refused updates are both written to `%APPDATA%\WinMedic\logs\history.jsonl`.
+
+### What the verification is and is not worth
+
+The checksum is fetched over the same channel, from the same host, as the binary. It proves the download is intact and is the file the release says it is; it does **not** independently prove the release itself is trustworthy. Since WinMedic ships unsigned (see *Download & Verify* below), step 4 can today only reject a *broken* signature — once the project has a code-signing certificate, that step becomes the check that closes the gap. The dialog and the audit entry say which of the two you got rather than implying a guarantee that is not there.
+
+Releases without a checksum are still announced, but are never installed in place: `[U]` offers only the browser download for them, because there would be nothing to hold the downloaded bytes to.
+
+The check itself is deliberately conservative: release *and* asset URLs must start with `https://github.com/` and may not contain shell metacharacters, downloads additionally have to come from `https://github.com/SecretLUL/WinMedic/releases/download/`, curl is pinned to HTTPS across redirects, asset names may not contain path separators, the browser is launched via `explorer.exe` rather than a shell, and draft and pre-releases are skipped. Version comparison is full SemVer including pre-release ordering, so `1.0.0-beta` correctly sorts below `1.0.0`. Disable the whole thing with the *Check for updates automatically* setting.
 
 ---
 
@@ -103,7 +121,7 @@ The check is deliberately conservative: release URLs must start with `https://gi
 | **`[D]`** | Toggle dry-run mode — repairs are shown, not executed |
 | **`[E]`** | Export diagnostic & repair report as self-contained HTML |
 | **`[B]`** | Settings & Safety tab: move `[↑]`/`[↓]` between the settings list and the registry snapshot list |
-| **`[U]`** | Settings & Safety tab: restore the selected registry snapshot — elsewhere: open the pending "update available" notice |
+| **`[U]`** | Settings & Safety tab: restore the selected registry snapshot — elsewhere: open the pending "update available" notice, which can download, verify and install the new version |
 | **`[PgUp]` / `[PgDn]`** | Scroll live log console (Scan and Repair tabs) |
 | **`[Home]` / `[End]`** | Jump to earliest log line / return to live tail follow mode |
 | **`[←]` / `[→]` or `[h]` / `[l]`** | Switch tabs (BIOS-style, wraps around) |
@@ -180,12 +198,12 @@ WinMedic is **not code-signed**, so Windows SmartScreen will warn you on first l
 
 ```powershell
 # Compare the published checksum against the file you downloaded
-$expected = (Get-Content .\winmedic-v0.3.2.exe.sha256).Split(' ')[0]
-$actual   = (Get-FileHash .\winmedic-v0.3.2.exe -Algorithm SHA256).Hash.ToLower()
+$expected = (Get-Content .\winmedic-v0.3.4.exe.sha256).Split(' ')[0]
+$actual   = (Get-FileHash .\winmedic-v0.3.4.exe -Algorithm SHA256).Hash.ToLower()
 if ($expected -eq $actual) { "OK - checksum matches" } else { "MISMATCH - do not run this file" }
 ```
 
-The checksum is generated by the release workflow from the exact binary it publishes, and release builds run with `--locked` so the published artifact is reproducible from the tagged source tree.
+The checksum is generated by the release workflow from the exact binary it publishes, and release builds run with `--locked` so the published artifact is reproducible from the tagged source tree. WinMedic's own in-place updater runs this same comparison for you — see *Update Check & In-Place Update* above.
 
 ---
 

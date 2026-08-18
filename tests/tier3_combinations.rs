@@ -686,11 +686,13 @@ async fn test_tier3_update_check_with_subsequent_triage_cleanup() {
         release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0".to_string(),
         release_name: Some("v0.2.0".to_string()),
         release_body: None,
+        download: None,
     };
     app.pending_confirm = Some(ConfirmRequest::UpdateAvailable {
         current_version: info.current_version,
         latest_version: info.latest_version,
         release_url: info.release_url,
+        download: None,
     });
 
     // 2. User dismisses update modal

@@ -386,6 +386,7 @@ async fn test_app_event_channel_update_checked_when_no_modal_active() {
         release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0".to_string(),
         release_name: Some("WinMedic v0.2.0".to_string()),
         release_body: Some("Release notes".to_string()),
+        download: None,
     };
 
     // Inject UpdateChecked event directly
@@ -405,6 +406,7 @@ async fn test_app_event_channel_update_checked_when_no_modal_active() {
                 current_version: info.current_version,
                 latest_version: info.latest_version,
                 release_url: info.release_url,
+                download: None,
             });
         } else {
             app.available_update = Some(info);
@@ -417,6 +419,7 @@ async fn test_app_event_channel_update_checked_when_no_modal_active() {
             current_version,
             latest_version,
             release_url,
+            ..
         }) => {
             assert_eq!(current_version, "0.1.0");
             assert_eq!(latest_version, "v0.2.0");
@@ -444,6 +447,7 @@ async fn test_app_event_channel_update_buffering_when_elevate_modal_active() {
         release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0".to_string(),
         release_name: Some("WinMedic v0.2.0".to_string()),
         release_body: Some("Release notes".to_string()),
+        download: None,
     };
 
     // UpdateChecked arrives while the Elevate modal is open. It is always
@@ -473,6 +477,7 @@ async fn test_app_event_channel_update_buffering_when_elevate_modal_active() {
             current_version,
             latest_version,
             release_url,
+            ..
         }) => {
             assert_eq!(current_version, "0.1.0");
             assert_eq!(latest_version, "v0.2.0");
@@ -494,6 +499,7 @@ fn test_confirm_request_update_available_formatting() {
         current_version: "v0.1.0".to_string(),
         latest_version: "v0.2.0".to_string(),
         release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0".to_string(),
+        download: None,
     };
 
     assert_eq!(req.title(), "NEW WINMEDIC UPDATE AVAILABLE");
@@ -527,6 +533,7 @@ async fn test_app_update_modal_confirm_and_dismiss_actions() {
         current_version: "0.1.0".to_string(),
         latest_version: "v0.2.0".to_string(),
         release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0".to_string(),
+        download: None,
     });
     app.available_update = None;
 
@@ -542,6 +549,7 @@ async fn test_app_update_modal_confirm_and_dismiss_actions() {
         current_version: "0.1.0".to_string(),
         latest_version: "v0.2.0".to_string(),
         release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0".to_string(),
+        download: None,
     });
     app.available_update = None;
 

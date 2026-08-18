@@ -57,6 +57,11 @@ In scope:
 - A repair path that destroys data outside what it declares it will change
 - A safety mechanism that reports success without having worked — a restore
   point that was not created, a backup that was not written
+- Anything that lets the in-place updater install a binary the release did not
+  publish: a download URL that escapes
+  `https://github.com/SecretLUL/WinMedic/releases/download/`, a checksum
+  comparison that can be bypassed or satisfied by the wrong artifact, or an
+  asset name that writes outside the executable's own directory
 
 Out of scope:
 
@@ -64,6 +69,10 @@ Out of scope:
   front; the tool cannot repair system files without them.
 - The SmartScreen warning on the released binary. It is unsigned; see the
   download section of the README.
+- That the in-place updater's SHA256 check comes from the same host as the
+  binary it verifies. This is known and documented: it proves integrity, not
+  provenance. Code signing is the fix and is tracked separately; the updater
+  already refuses a download whose Authenticode signature Windows rejects.
 - Advisories in transitive dependencies with no exploitable path in WinMedic.
   These are visible in the `Dependency Audit` CI job.
 - Anything that requires the attacker to already be Administrator on the

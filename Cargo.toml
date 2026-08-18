@@ -1,6 +1,6 @@
 [package]
 name = "winmedic"
-version = "0.3.2"
+version = "0.3.4"
 edition = "2024"
 # Verified against the locked dependency tree: edition 2024 itself needs 1.85,
 # but ratatui -> instability -> darling raises the floor to 1.88. CI enforces
@@ -32,6 +32,7 @@ clap = { version = "4.5", features = ["derive"] }
 sysinfo = "0.38"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 winreg = "0.56"
 anyhow = "1.0"
