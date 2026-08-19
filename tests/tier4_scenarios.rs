@@ -33,7 +33,7 @@ use winmedic::utils::cmd::{CmdOutput, CommandRunner};
 use winmedic::utils::updater::{UpdateInfo, check_for_update};
 
 // ============================================================================
-// SCENARIO 1: Full System Scan & Dry-Run Triage across all 7 modules (F2–F12)
+// SCENARIO 1: Full System Scan & Dry-Run Triage across all 9 modules (F2–F12)
 // ============================================================================
 
 #[tokio::test]
@@ -80,7 +80,7 @@ async fn test_scenario_1_full_system_scan_and_dry_run_triage() {
     }
 
     let mut issues = scan_handle.await.unwrap();
-    assert_eq!(finished_modules, 7);
+    assert_eq!(finished_modules, 9);
     assert!(!issues.is_empty());
 
     // 2. Triage state: verify issues present and select all

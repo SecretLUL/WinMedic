@@ -115,7 +115,7 @@ pub fn render_scanner(f: &mut Frame, area: Rect, state: &ScannerViewState) {
 /// The run as a whole: how much is done, and how long it has been going.
 ///
 /// The title used to name the module that reported most recently and the step
-/// it was on. With seven modules running at once that is a lottery, not a
+/// it was on. With every module running at once that is a lottery, not a
 /// status — the winner was whichever module happened to be chatty, never the
 /// slow one actually holding the run up.
 fn render_overall_gauge(f: &mut Frame, area: Rect, state: &ScannerViewState) {
