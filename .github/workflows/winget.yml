@@ -1,0 +1,146 @@
+name: WinGet
+
+# Submits a published release to the Windows Package Manager community
+# repository, microsoft/winget-pkgs, so that `winget install SecretLUL.WinMedic`
+# is a real alternative to finding the releases page, downloading an unsigned
+# .exe and clicking through a SmartScreen warning.
+#
+# WinGet accepts unsigned binaries as long as the manifest carries the right
+# InstallerSha256, and the release workflow already publishes a .sha256 next to
+# every binary — so the input this needs exists, and komac (inside the action
+# below) computes the hash from the asset itself anyway.
+#
+# This is a *reusable* workflow rather than one triggered by `release:
+# published`, and that is not a stylistic choice. release.yml publishes with
+# GITHUB_TOKEN, and events raised by GITHUB_TOKEN deliberately do not start
+# further workflow runs — the same rule release.yml relies on to stop itself
+# releasing twice. A `release: published` trigger here would therefore never
+# fire for a release cut the supported way; it would only look like it had been
+# wired up. release.yml calls this workflow directly instead.
+#
+# `workflow_dispatch` is the manual path: re-submitting a version whose pull
+# request was closed, or catching up a release that shipped before any of this
+# existed.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag to submit, e.g. v0.3.4
+        required: true
+        type: string
+    secrets:
+      WINGET_TOKEN:
+        description: Classic PAT with the public_repo scope, used to push to the winget-pkgs fork and open the pull request
+        required: false
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to submit, e.g. v0.3.4 (the release must already be published)'
+        required: true
+        type: string
+
+# One submission at a time: komac pushes a branch to the same winget-pkgs fork
+# for every run, and two runs doing that at once would fight over it.
+concurrency:
+  group: winget
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Submit to winget-pkgs
+    # komac is cross-platform and everything here is API calls, so this does not
+    # need the Windows runner the build does.
+    runs-on: ubuntu-latest
+    steps:
+      # Separated from the submission itself so the two reasons not to submit
+      # read differently: a pre-release is a decision, a missing token is a
+      # setup step nobody has done yet.
+      - name: Decide whether this release belongs in WinGet
+        id: gate
+        shell: pwsh
+        env:
+          TAG: ${{ inputs.tag }}
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Add-Summary($lines) {
+            if ($env:GITHUB_STEP_SUMMARY) {
+              ($lines -join "`n") | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            }
+          }
+
+          if (-not $env:TAG) {
+            throw 'No release tag was passed to this workflow.'
+          }
+
+          # SemVer pre-release versions (v1.0.0-rc1) are exactly what WinGet
+          # users do not want installed by `winget upgrade --all`.
+          if ($env:TAG -match '-') {
+            Write-Host "::notice::$env:TAG is a pre-release, which does not belong in the WinGet community repository. Nothing to submit."
+            Add-Summary @(
+              "### Skipped: ``$env:TAG`` is a pre-release"
+              ''
+              'Pre-releases are not submitted to WinGet, so that `winget upgrade` never moves anyone onto one.'
+            )
+            "publish=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            exit 0
+          }
+
+          # Red rather than skipped, on purpose. A release that quietly did not
+          # reach WinGet is the failure mode worth noticing; the release itself
+          # is finished and correct by the time this workflow runs, so nothing
+          # is lost by saying so loudly.
+          if (-not $env:WINGET_TOKEN) {
+            Write-Host "::error::No WINGET_TOKEN secret is set, so $env:TAG cannot be submitted to WinGet. See docs/winget.md."
+            Add-Summary @(
+              "### ``$env:TAG`` was not submitted to WinGet"
+              ''
+              'The release shipped correctly — this is only the WinGet submission, and it needs one-time setup that has not been done:'
+              ''
+              '1. Fork [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) under the `SecretLUL` account.'
+              '2. Create a **classic** personal access token with the `public_repo` scope (fine-grained tokens are not supported by the action).'
+              '3. Save it as the repository secret `WINGET_TOKEN`.'
+              ''
+              'Then re-run this workflow from the Actions tab with the tag `' + $env:TAG + '`. `docs/winget.md` has the full walkthrough, including the first submission, which has to be opened by hand.'
+            )
+            exit 1
+          }
+
+          "publish=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      # Pinned to a commit rather than the v2 tag: v2 predates fixes the action
+      # needs (a komac argument bug among them) and has not moved since, so the
+      # tag is the stale option here, not the safe one. Dependabot watches the
+      # github-actions ecosystem and updates commit pins too.
+      - name: Submit the manifest to microsoft/winget-pkgs
+        if: steps.gate.outputs.publish == 'true'
+        uses: vedantmgoyal9/winget-releaser@b3a5dae0047c6180023acba3f548c55fdf6b7193 # main as of 2026-07-28
+        with:
+          identifier: SecretLUL.WinMedic
+          release-tag: ${{ inputs.tag }}
+          # Release assets are the binary and its checksum file. Only the first
+          # is an installer, and .sha256 does not end in .exe.
+          installers-regex: '\.exe$'
+          release-notes-url: https://github.com/${{ github.repository }}/releases/tag/${{ inputs.tag }}
+          # Not GITHUB_TOKEN: the pull request is opened against a repository
+          # this one has no relationship to.
+          token: ${{ secrets.WINGET_TOKEN }}
+
+      - name: Say where the pull request went
+        if: steps.gate.outputs.publish == 'true'
+        shell: pwsh
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          # The submission is a pull request against someone else's repository:
+          # it still has to pass their validation and be reviewed, so "submitted"
+          # is the honest word for what just happened, not "published".
+          @(
+            "### ``$env:TAG`` submitted to WinGet"
+            ''
+            'A pull request has been opened against [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs/pulls?q=is%3Apr+author%3ASecretLUL). It has to pass their automated validation and be reviewed before `winget install SecretLUL.WinMedic` offers this version.'
+          ) -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
