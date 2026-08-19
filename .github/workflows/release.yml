@@ -41,6 +41,11 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+    # Read by the `winget` job below, which needs to know both which version
+    # shipped and whether it actually reached the releases page.
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      published: ${{ steps.published.outputs.published }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -221,6 +226,16 @@ jobs:
           # above and run this whole workflow a second time.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Set only once the assets are on the releases page, because that is the
+      # precondition everything downstream has: the WinGet submission downloads
+      # the published binary to hash it, and a rehearsal or a failed upload
+      # leaves nothing for it to download.
+      - name: Record that the release is published
+        id: published
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
+        shell: pwsh
+        run: '"published=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append'
+
       # The tag already carries the bump, so the release is correct whatever
       # happens here. This is only about not leaving the branch claiming a
       # version that shipped two releases ago — and about *noticing* when that
@@ -378,3 +393,26 @@ jobs:
           # The branch, and nothing else, decides this.
           if (-not $landed) { exit 1 }
           exit 0
+
+  # Kept out of the job above because it does not belong to it: the release is
+  # complete once the assets are published, and whether microsoft/winget-pkgs
+  # accepts a manifest has no bearing on that.
+  #
+  # `always()` is what makes the two independent. The last step of the release
+  # job goes red when the version bump could not be pushed to the branch, and
+  # that is a real failure — but it is a failure about `main`, not about the
+  # release, and it must not also cost the release its place in WinGet.
+  # `needs.release.outputs.published` is the actual precondition: it is set only
+  # after the assets reached the releases page, so a failed build or a dry run
+  # leaves it empty and this job never starts.
+  winget:
+    name: Publish to WinGet
+    needs: release
+    if: ${{ always() && needs.release.outputs.published == 'true' }}
+    uses: ./.github/workflows/winget.yml
+    with:
+      tag: ${{ needs.release.outputs.tag }}
+    # The called workflow needs WINGET_TOKEN, which is not available to it
+    # otherwise; it treats the secret as optional and explains itself when it is
+    # missing rather than failing obscurely.
+    secrets: inherit

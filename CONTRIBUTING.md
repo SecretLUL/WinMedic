@@ -116,6 +116,12 @@ mislabelled binary.
 Release notes are read from `docs/release-notes/<tag>.md` when that file exists,
 and generated from the commit list when it does not.
 
+Once the release is published, the workflow hands the tag to
+`.github/workflows/winget.yml`, which opens a pull request against
+microsoft/winget-pkgs so `winget install SecretLUL.WinMedic` catches up.
+[docs/winget.md](docs/winget.md) explains the setup it needs and why it is not
+triggered by `release: published`.
+
 ## Commits and pull requests
 
 - Conventional-commit prefixes (`fix:`, `feat:`, `ci:`, `docs:`, `chore:`) are

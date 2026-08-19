@@ -94,11 +94,13 @@ If *any* of that fails — the download never arrives, the checksum does not mat
 
 ### What the verification is and is not worth
 
-The checksum is fetched over the same channel, from the same host, as the binary. It proves the download is intact and is the file the release says it is; it does **not** independently prove the release itself is trustworthy. Since WinMedic ships unsigned (see *Download & Verify* below), step 4 can today only reject a *broken* signature — once the project has a code-signing certificate, that step becomes the check that closes the gap. The dialog and the audit entry say which of the two you got rather than implying a guarantee that is not there.
+The checksum is fetched over the same channel, from the same host, as the binary. It proves the download is intact and is the file the release says it is; it does **not** independently prove the release itself is trustworthy. Since WinMedic ships unsigned (see *Install* below), step 4 can today only reject a *broken* signature — once the project has a code-signing certificate, that step becomes the check that closes the gap. The dialog and the audit entry say which of the two you got rather than implying a guarantee that is not there.
 
 Releases without a checksum are still announced, but are never installed in place: `[U]` offers only the browser download for them, because there would be nothing to hold the downloaded bytes to.
 
 The check itself is deliberately conservative: release *and* asset URLs must start with `https://github.com/` and may not contain shell metacharacters, downloads additionally have to come from `https://github.com/SecretLUL/WinMedic/releases/download/`, curl is pinned to HTTPS across redirects, asset names may not contain path separators, the browser is launched via `explorer.exe` rather than a shell, and draft and pre-releases are skipped. Version comparison is full SemVer including pre-release ordering, so `1.0.0-beta` correctly sorts below `1.0.0`. Disable the whole thing with the *Check for updates automatically* setting.
+
+If you installed WinMedic through WinGet, prefer `winget upgrade SecretLUL.WinMedic`. The in-place update works there too, but WinGet keeps believing the version it installed is the one on disk.
 
 ---
 
@@ -190,7 +192,24 @@ if ($LASTEXITCODE -ge 2) { Write-Host "Kritische Befunde – Ticket eroeffnen" }
 
 ---
 
-## 📥 Download & Verify
+## 📥 Install
+
+### Windows Package Manager (recommended)
+
+```powershell
+winget install SecretLUL.WinMedic
+```
+
+WinGet verifies the download against the checksum published with the release,
+puts `winmedic` on your `PATH`, and `winget upgrade SecretLUL.WinMedic` moves
+you to the next version. Because WinGet installs it for you, there is no
+SmartScreen prompt to click past.
+
+Diagnostics run fine unelevated; the repairs need Administrator rights, so start
+WinMedic from an elevated terminal or run `winmedic --elevate` to raise a UAC
+prompt. How releases get to WinGet is described in [docs/winget.md](docs/winget.md).
+
+### Download & verify by hand
 
 Grab `winmedic-<version>.exe` from the [latest release](https://github.com/SecretLUL/WinMedic/releases/latest).
 
