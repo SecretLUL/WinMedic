@@ -763,7 +763,10 @@ mod tests {
 
         assert_eq!(issue.severity, Severity::Critical);
         assert_eq!(issue.risk_score, RiskScore::High);
-        assert!(!issue.is_selected, "a reboot-level change is never unattended");
+        assert!(
+            !issue.is_selected,
+            "a reboot-level change is never unattended"
+        );
         assert!(issue.fix_steps.iter().any(|s| s.contains("Restart")));
     }
 
@@ -771,12 +774,8 @@ mod tests {
     async fn an_absent_page_file_under_automatic_management_is_not_reported() {
         // Windows manages it; an empty usage list here is a transient reading,
         // not a configuration fault to act on.
-        let module = PageFileModule::with_runner(Arc::new(mock_system(
-            HEALTHY_SYSTEM,
-            "",
-            "",
-            ROOMY_DISK,
-        )));
+        let module =
+            PageFileModule::with_runner(Arc::new(mock_system(HEALTHY_SYSTEM, "", "", ROOMY_DISK)));
 
         assert!(module.scan(None).await.unwrap().is_empty());
     }
