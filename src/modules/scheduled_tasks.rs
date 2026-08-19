@@ -266,7 +266,9 @@ impl ScheduledTasksModule {
         let slug = slug.trim_matches('_');
 
         let digest = Sha256::digest(full_path.as_bytes());
-        let short_hash: String = format!("{:x}", digest).chars().take(8).collect();
+        // Hex by hand: the sha2 0.11 digest output has no LowerHex impl, and four
+        // bytes are exactly the eight characters the suffix wants.
+        let short_hash: String = digest[..4].iter().map(|b| format!("{:02x}", b)).collect();
 
         if slug.is_empty() {
             format!("{}_{}", prefix, short_hash)
