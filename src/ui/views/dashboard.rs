@@ -10,6 +10,14 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Wrap};
 
+/// Module cards per dashboard row.
+const CARDS_PER_ROW: usize = 4;
+
+/// Rows one module card needs: four content lines plus its top and bottom
+/// border. The grid reserves this per row so a third row of cards is not
+/// squeezed into a height that clips it.
+const CARD_HEIGHT: usize = 6;
+
 // Ratatui render functions receive the slice of app state they draw rather than
 // `&App`, which is what makes the signature long.
 #[allow(clippy::too_many_arguments)]
@@ -26,11 +34,17 @@ pub fn render_dashboard(
     // an untouched machine does not reserve space for an empty row.
     let summary_height = if audit_entries.is_empty() { 5 } else { 6 };
 
+    // The card grid follows the module list rather than a fixed slot count, so
+    // registering a module cannot silently drop it off the dashboard.
+    let row_count = module_statuses.len().div_ceil(CARDS_PER_ROW).max(1);
+    // Four content lines plus the card's own border.
+    let cards_height = (row_count * CARD_HEIGHT) as u16;
+
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(7),              // Health Score & Telemetry Gauges
-            Constraint::Min(12),                // 7 Module Status Cards
+            Constraint::Min(cards_height),      // Module Status Cards
             Constraint::Length(summary_height), // Quick Action & Status Summary
         ])
         .split(area);
@@ -165,46 +179,32 @@ pub fn render_dashboard(
     let sys_card = Paragraph::new(sys_lines).block(Theme::card_block("SYSTEM SPECIFICATION"));
     f.render_widget(sys_card, top_chunks[2]);
 
-    // Middle Section: 7 Diagnostic Modules (Row 1: 4 Cards, Row 2: 3 Cards)
+    // Middle Section: one card per diagnostic module, four to a row.
+    let row_constraints: Vec<Constraint> = (0..row_count)
+        .map(|_| Constraint::Ratio(1, row_count as u32))
+        .collect();
     let mod_rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints(row_constraints)
         .split(main_chunks[1]);
 
-    let row1 = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-        ])
-        .split(mod_rows[0]);
+    // Every row uses the same four-column grid, so a partial last row leaves
+    // its trailing cells empty. Splitting it into fewer, wider columns would
+    // render the same kind of card at two different widths, and clip the
+    // longer module names differently in each row.
+    let column_constraints = [Constraint::Ratio(1, CARDS_PER_ROW as u32); CARDS_PER_ROW];
+    let card_slots: Vec<Rect> = mod_rows
+        .iter()
+        .flat_map(|row| {
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints(column_constraints)
+                .split(*row)
+                .to_vec()
+        })
+        .collect();
 
-    // Same four-column grid as row 1 — the trailing cell stays empty. Splitting
-    // row 2 into thirds would render the same kind of card at two different
-    // widths, and clip the longer module names differently in each row.
-    let row2 = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-        ])
-        .split(mod_rows[1]);
-
-    let card_slots = [
-        (0, row1[0]),
-        (1, row1[1]),
-        (2, row1[2]),
-        (3, row1[3]),
-        (4, row2[0]),
-        (5, row2[1]),
-        (6, row2[2]),
-    ];
-
-    for (idx, slot_rect) in card_slots {
+    for (idx, slot_rect) in card_slots.into_iter().enumerate() {
         if let Some((_id, name, icon, status)) = module_statuses.get(idx) {
             let (status_badge, status_color, status_text) = match status {
                 ModuleStatus::Idle => ("[READY]", Theme::MUTED, "Ready for a diagnostic scan"),

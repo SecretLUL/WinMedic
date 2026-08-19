@@ -1,6 +1,8 @@
 pub mod event_log;
 pub mod network;
+pub mod page_file;
 pub mod registry_startup;
+pub mod scheduled_tasks;
 pub mod storage;
 pub mod system_cleaner;
 pub mod system_integrity;
@@ -88,7 +90,7 @@ pub trait DiagnosticModule: Send + Sync {
     ) -> Result<String, String>;
 }
 
-/// Create all 7 diagnostic modules, configured from the user's settings with a specific CommandRunner.
+/// Create every diagnostic module, configured from the user's settings with a specific CommandRunner.
 pub fn get_all_modules_with_runner(
     cfg: &ModuleConfig,
     runner: Arc<dyn crate::utils::cmd::CommandRunner>,
@@ -116,12 +118,16 @@ pub fn get_all_modules_with_runner(
         )),
         Arc::new(system_cleaner::SystemCleanerModule::with_runner(
             cfg.clone(),
-            runner,
+            runner.clone(),
         )),
+        Arc::new(scheduled_tasks::ScheduledTasksModule::with_runner(
+            runner.clone(),
+        )),
+        Arc::new(page_file::PageFileModule::with_runner(runner)),
     ]
 }
 
-/// Create all 7 diagnostic modules, configured from the user's settings using the default OS runner.
+/// Create every diagnostic module, configured from the user's settings using the default OS runner.
 pub fn get_all_modules(cfg: &ModuleConfig) -> Vec<Arc<dyn DiagnosticModule>> {
     get_all_modules_with_runner(cfg, Arc::new(crate::utils::cmd::SystemCommandRunner::new()))
 }

@@ -876,6 +876,11 @@ mod tests {
     use crate::engine::issue::{RiskScore, Severity};
     use crate::utils::debug_log::parse_debug_line;
 
+    /// Deliberately a literal rather than `get_all_modules().len()`: derived
+    /// from the registry these assertions would be tautologies, and would stop
+    /// noticing a module that quietly fell out of it.
+    const MODULE_COUNT: usize = 9;
+
     fn sample_issues() -> Vec<Issue> {
         vec![
             Issue::new(
@@ -1011,7 +1016,7 @@ mod tests {
                 cancelled = Some((completed_modules, total_modules));
             }
         }
-        assert_eq!(cancelled, Some((0, 7)));
+        assert_eq!(cancelled, Some((0, MODULE_COUNT)));
     }
 
     #[tokio::test]
@@ -1036,8 +1041,15 @@ mod tests {
             }
         }
 
-        assert_eq!(started_modules.len(), 7, "all 7 modules should start");
-        assert_eq!(finished_or_failed, 7, "all 7 modules should finish or fail");
+        assert_eq!(
+            started_modules.len(),
+            MODULE_COUNT,
+            "every registered module should start"
+        );
+        assert_eq!(
+            finished_or_failed, MODULE_COUNT,
+            "every registered module should finish or fail"
+        );
         assert!(saw_completed, "scan should emit ScanCompleted");
     }
 

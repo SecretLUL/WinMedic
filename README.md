@@ -44,8 +44,10 @@ Unlike opaque one-click cleanup tools, **WinMedic** is built on five fundamental
 | **💾 Storage & Filesystem** | Dirty Bit detection (`fsutil dirty query C:`), SMART drive health, `%TEMP%` & `C:\Windows\Temp` junk accumulation, bloated `IconCache.db` | Triggers online `chkdsk C: /scan`, cleans temp files, resets icon/thumbnail cache & restarts Explorer |
 | **⚡ Registry & Autostart** | Orphaned `Run`/`RunOnce` startup keys, broken User Startup folder shortcuts, broken COM/Shell extension keys | Backs up target registry keys to `.reg` and safely removes invalid startup entries |
 | **🧹 System & Cache Cleaner** | WinSxS component store bloat (`DISM /AnalyzeComponentStore`), Delivery Optimization cache, Installer package cache, browser caches (Chrome, Edge, Firefox, Brave, Opera — all profiles), setup & CBS logs, WER crash archives, D3D shader & certificate caches, Recycle Bin, system temp | Runs `StartComponentCleanup`, purges the caches you select, and skips locked files instead of aborting the sweep |
+| **📅 Scheduled Tasks** | Tasks whose action points at a deleted program (`Get-ScheduledTask`), tasks whose last run failed with a real error code rather than a `SCHED_S_*` status, tasks with missed runs | Disables the task with `Disable-ScheduledTask` — reversible with `Enable-ScheduledTask`; nothing is deleted |
+| **🧠 Page File & Memory** | Page file disabled with automatic management off (`Win32_PageFileUsage`), page file on a volume with under 10 % or 2 GB free, manually fixed limits below RAM/8 or with an inverted min/max range | Hands the page file back to Windows (system managed) or re-enables automatic management; the nearly-full-drive finding is advisory and changes nothing |
 
-Package Cache and Recycle Bin are classified `RiskScore::High` and are **deselected by default**, so `--auto-fix` never empties them unattended.
+Package Cache and Recycle Bin are classified `RiskScore::High` and are **deselected by default**, so `--auto-fix` never empties them unattended. Every Page File & Memory finding is `RiskScore::High` for the same reason — each one needs a restart before it takes effect — and is likewise deselected. A scheduled task that merely *fails*, rather than pointing at a deleted program, is deselected too: switching it off is a judgement call, so it is left for you to tick.
 
 ---
 

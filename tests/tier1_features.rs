@@ -947,11 +947,39 @@ async fn test_tier1_f11_triage_navigation_bounds() {
 // ============================================================================
 
 #[test]
-fn test_tier1_f12_all_modules_count_equals_seven() {
+fn test_tier1_f12_all_modules_count_equals_nine() {
     let cfg = ModuleConfig::default();
     let runner = Arc::new(ProgrammableMockRunner::new());
     let modules = get_all_modules_with_runner(&cfg, runner);
-    assert_eq!(modules.len(), 7);
+    assert_eq!(modules.len(), 9);
+}
+
+#[test]
+fn test_tier1_f12_scheduled_tasks_metadata() {
+    let cfg = ModuleConfig::default();
+    let runner = Arc::new(ProgrammableMockRunner::new());
+    let modules = get_all_modules_with_runner(&cfg, runner);
+
+    let tasks = modules
+        .iter()
+        .find(|m| m.id() == "scheduled_tasks")
+        .expect("the scheduled tasks module must be registered");
+    assert_eq!(tasks.name(), "Scheduled Tasks");
+    assert_eq!(tasks.icon(), "[TSK]");
+}
+
+#[test]
+fn test_tier1_f12_page_file_metadata() {
+    let cfg = ModuleConfig::default();
+    let runner = Arc::new(ProgrammableMockRunner::new());
+    let modules = get_all_modules_with_runner(&cfg, runner);
+
+    let page_file = modules
+        .iter()
+        .find(|m| m.id() == "page_file")
+        .expect("the page file module must be registered");
+    assert_eq!(page_file.name(), "Page File & Memory");
+    assert_eq!(page_file.icon(), "[MEM]");
 }
 
 #[test]
@@ -968,16 +996,16 @@ fn test_tier1_f12_system_cleaner_metadata() {
 }
 
 #[test]
-fn test_tier1_f12_diagnostic_engine_contains_all_seven_modules() {
+fn test_tier1_f12_diagnostic_engine_contains_all_nine_modules() {
     let config = AppConfig::default();
     let engine = DiagnosticEngine::new(&config);
-    assert_eq!(engine.modules().len(), 7);
+    assert_eq!(engine.modules().len(), 9);
 }
 
 #[tokio::test]
-async fn test_tier1_f12_app_initializes_with_seven_module_statuses() {
+async fn test_tier1_f12_app_initializes_with_nine_module_statuses() {
     let app = App::new();
-    assert_eq!(app.module_statuses.len(), 7);
+    assert_eq!(app.module_statuses.len(), 9);
     assert!(
         app.module_statuses
             .iter()
