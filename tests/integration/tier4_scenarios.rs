@@ -1,6 +1,6 @@
 #![allow(dead_code, unused_imports)]
 
-mod common;
+use crate::common;
 
 use std::fs::{self, File};
 use std::io::Write;
