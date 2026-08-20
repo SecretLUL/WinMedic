@@ -6,6 +6,7 @@ pub mod scheduled_tasks;
 pub mod storage;
 pub mod system_cleaner;
 pub mod system_integrity;
+pub mod whea_logger;
 pub mod windows_updates;
 
 use crate::config::AppConfig;
@@ -124,7 +125,11 @@ pub fn get_all_modules_with_runner(
         Arc::new(scheduled_tasks::ScheduledTasksModule::with_runner(
             runner.clone(),
         )),
-        Arc::new(page_file::PageFileModule::with_runner(runner)),
+        Arc::new(page_file::PageFileModule::with_runner(runner.clone())),
+        Arc::new(whea_logger::WheaLoggerModule::with_runner(
+            cfg.clone(),
+            runner,
+        )),
     ]
 }
 

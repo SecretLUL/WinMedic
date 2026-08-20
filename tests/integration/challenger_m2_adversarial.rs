@@ -558,8 +558,8 @@ async fn adv_test_diagnostic_engine_full_integration_with_system_cleaner() {
     let engine = DiagnosticEngine::with_runner(&config, Arc::new(mock.clone()));
     assert_eq!(
         engine.modules().len(),
-        9,
-        "DiagnosticEngine must register exactly 9 modules"
+        10,
+        "DiagnosticEngine must register exactly 10 modules"
     );
 
     let (tx, mut rx) = mpsc::channel::<ScanEvent>(100);

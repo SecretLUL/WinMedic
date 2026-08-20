@@ -226,40 +226,61 @@ impl App {
         let (bg_tx, bg_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let (module_progress_list, default_module_statuses) = Self::module_lists(&engine);
-        let (saved_issues, saved_health, module_statuses, saved_duration, init_msg) =
-            if let Some(mut saved) = ScanState::load() {
-                let current_boot = sysinfo::System::boot_time();
-                let rebooted = saved.boot_time_secs.is_some_and(|b| current_boot > b);
-                if rebooted {
-                    for issue in &mut saved.issues {
-                        if issue.is_reboot_pending {
-                            issue.is_reboot_pending = false;
-                            issue.is_fixed = true;
-                        }
+        let (saved_issues, saved_health, module_statuses, saved_duration, init_msg) = if let Some(
+            mut saved,
+        ) =
+            ScanState::load()
+        {
+            let current_boot = sysinfo::System::boot_time();
+            let rebooted = saved.boot_time_secs.is_some_and(|b| current_boot > b);
+            if rebooted {
+                for issue in &mut saved.issues {
+                    if issue.is_reboot_pending {
+                        issue.is_reboot_pending = false;
+                        issue.is_fixed = true;
                     }
                 }
-                let health = DiagnosticEngine::calculate_health_score(&saved.issues);
-                let open_count = saved.issues.iter().filter(|i| !i.is_fixed).count();
-                let msg = format!(
-                    "WinMedic initialised. Loaded previous scan from {} ({} open issues, health: {}/100).",
-                    saved.timestamp, open_count, health
-                );
-                (
-                    saved.issues,
-                    health,
-                    saved.module_statuses,
-                    saved.scan_duration_secs.map(Duration::from_secs),
-                    msg,
-                )
-            } else {
-                (
-                    Vec::new(),
-                    100,
-                    default_module_statuses,
-                    None,
-                    "WinMedic initialised. Ready to diagnose.".to_string(),
-                )
-            };
+            }
+            let health = DiagnosticEngine::calculate_health_score(&saved.issues);
+            let open_count = saved.issues.iter().filter(|i| !i.is_fixed).count();
+            let msg = format!(
+                "WinMedic initialised. Loaded previous scan from {} ({} open issues, health: {}/100).",
+                saved.timestamp, open_count, health
+            );
+
+            // Reconcile saved module statuses with current engine modules so newly added modules appear
+            let mut reconciled_statuses = Vec::new();
+            for (id, name, icon, def_status) in &default_module_statuses {
+                if let Some((_, _, _, st)) =
+                    saved.module_statuses.iter().find(|(s_id, ..)| s_id == id)
+                {
+                    reconciled_statuses.push((id.clone(), name.clone(), icon.clone(), st.clone()));
+                } else {
+                    reconciled_statuses.push((
+                        id.clone(),
+                        name.clone(),
+                        icon.clone(),
+                        def_status.clone(),
+                    ));
+                }
+            }
+
+            (
+                saved.issues,
+                health,
+                reconciled_statuses,
+                saved.scan_duration_secs.map(Duration::from_secs),
+                msg,
+            )
+        } else {
+            (
+                Vec::new(),
+                100,
+                default_module_statuses,
+                None,
+                "WinMedic initialised. Ready to diagnose.".to_string(),
+            )
+        };
 
         Self {
             active_tab: TAB_DASHBOARD,
@@ -648,7 +669,8 @@ mod tests {
 
     #[test]
     fn test_app_persists_and_restores_scan_state() {
-        let tmp = std::env::temp_dir().join(format!("winmedic_state_test_{}.json", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("winmedic_state_test_{}.json", std::process::id()));
         let mut app = App::new();
         app.issues = vec![Issue::new(
             "iss_1",

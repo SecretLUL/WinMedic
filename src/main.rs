@@ -180,9 +180,8 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         }
     });
 
-    let engine = Arc::new(
-        DiagnosticEngine::new(&config).with_restore_points(RestorePointService::real()),
-    );
+    let engine =
+        Arc::new(DiagnosticEngine::new(&config).with_restore_points(RestorePointService::real()));
     let (tx, mut rx) = channel::<ScanEvent>(100);
 
     if !quiet {

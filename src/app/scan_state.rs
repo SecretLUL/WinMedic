@@ -76,7 +76,10 @@ mod tests {
 
     #[test]
     fn test_scan_state_serialization_round_trip() {
-        let tmp = std::env::temp_dir().join(format!("winmedic_scan_state_test_{}.json", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!(
+            "winmedic_scan_state_test_{}.json",
+            std::process::id()
+        ));
         let issue = Issue::new(
             "test_iss",
             "storage",
@@ -89,7 +92,12 @@ mod tests {
             "Fix",
             vec!["Step 1".to_string()],
         );
-        let statuses = vec![("storage".to_string(), "Storage".to_string(), "[DSK]".to_string(), ModuleStatus::Critical(1))];
+        let statuses = vec![(
+            "storage".to_string(),
+            "Storage".to_string(),
+            "[DSK]".to_string(),
+            ModuleStatus::Critical(1),
+        )];
 
         let state = ScanState::new(75, vec![issue], statuses, Some(12));
         state.save_to(&tmp).unwrap();

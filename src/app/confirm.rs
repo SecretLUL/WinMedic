@@ -53,7 +53,13 @@ pub struct SystemActions {
 
 fn real_restart_system() -> Result<(), String> {
     std::process::Command::new("shutdown.exe")
-        .args(["/r", "/t", "0", "/c", "WinMedic: Restarting to apply system repairs"])
+        .args([
+            "/r",
+            "/t",
+            "0",
+            "/c",
+            "WinMedic: Restarting to apply system repairs",
+        ])
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("Could not initiate restart: {}", e))
@@ -220,7 +226,8 @@ impl ConfirmRequest {
             }
             ConfirmRequest::RestartRequired { issues } => {
                 let mut body = vec![
-                    "One or more applied repairs require a system restart to take effect:".to_string(),
+                    "One or more applied repairs require a system restart to take effect:"
+                        .to_string(),
                     String::new(),
                 ];
                 for issue_title in issues {
@@ -254,8 +261,10 @@ impl App {
                         Some("Update notice dismissed - [U] reopens it.".to_string());
                 }
                 ConfirmRequest::RestartRequired { .. } => {
-                    self.status_message =
-                        Some("Restart postponed. A system restart is pending to finalize repairs.".to_string());
+                    self.status_message = Some(
+                        "Restart postponed. A system restart is pending to finalize repairs."
+                            .to_string(),
+                    );
                 }
             }
         }
