@@ -10,6 +10,7 @@ pub mod windows_updates;
 
 use crate::config::AppConfig;
 use crate::engine::issue::Issue;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
@@ -44,7 +45,7 @@ impl From<&AppConfig> for ModuleConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ModuleStatus {
     Idle,
     Scanning,

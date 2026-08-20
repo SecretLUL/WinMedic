@@ -175,6 +175,7 @@ impl App {
             self.scan_event_rx = None;
             self.cancel_token = None;
             self.audit_entries = self.audit_logger.get_history();
+            self.save_scan_state();
         }
     }
 
@@ -300,6 +301,7 @@ impl App {
             self.audit_entries = self.audit_logger.get_history();
             self.backup_records = self.reg_backup_mgr.list_backups();
             self.clamp_backup_selection();
+            self.save_scan_state();
         }
     }
 

@@ -3,7 +3,7 @@
 //! modules listed in [`crate::app`].
 
 use super::{
-    BackgroundEvent, TAB_COUNT, TAB_DASHBOARD, TAB_REPAIR, TAB_SCANNER, TAB_SETTINGS,
+    BackgroundEvent, ScanState, TAB_COUNT, TAB_DASHBOARD, TAB_REPAIR, TAB_SCANNER, TAB_SETTINGS,
     push_bounded_log,
 };
 use crate::config::AppConfig;
@@ -225,7 +225,31 @@ impl App {
         let backup_records = reg_backup_mgr.list_backups();
         let (bg_tx, bg_rx) = tokio::sync::mpsc::unbounded_channel();
 
-        let (module_progress_list, module_statuses) = Self::module_lists(&engine);
+        let (module_progress_list, default_module_statuses) = Self::module_lists(&engine);
+        let (saved_issues, saved_health, module_statuses, saved_duration, init_msg) =
+            if let Some(saved) = ScanState::load() {
+                let health = DiagnosticEngine::calculate_health_score(&saved.issues);
+                let open_count = saved.issues.iter().filter(|i| !i.is_fixed).count();
+                let msg = format!(
+                    "WinMedic initialised. Loaded previous scan from {} ({} open issues, health: {}/100).",
+                    saved.timestamp, open_count, health
+                );
+                (
+                    saved.issues,
+                    health,
+                    saved.module_statuses,
+                    saved.scan_duration_secs.map(Duration::from_secs),
+                    msg,
+                )
+            } else {
+                (
+                    Vec::new(),
+                    100,
+                    default_module_statuses,
+                    None,
+                    "WinMedic initialised. Ready to diagnose.".to_string(),
+                )
+            };
 
         Self {
             active_tab: TAB_DASHBOARD,
@@ -234,9 +258,9 @@ impl App {
             telemetry_collector,
             telemetry,
             engine,
-            issues: Vec::new(),
+            issues: saved_issues,
             selected_issue_index: 0,
-            health_score: 100,
+            health_score: saved_health,
             severity_filter: None,
             module_filter: None,
             search_query: String::new(),
@@ -245,12 +269,10 @@ impl App {
             is_scanning: false,
             scan_overall_progress: 0,
             scan_started_at: None,
-            scan_duration: None,
+            scan_duration: saved_duration,
             module_progress_list,
             module_statuses,
-            scan_log_messages: VecDeque::from([String::from(
-                "WinMedic initialised. Ready to diagnose.",
-            )]),
+            scan_log_messages: VecDeque::from([init_msg]),
             scan_log_scroll: 0,
             is_fixing: false,
             dry_run: false,
@@ -507,12 +529,24 @@ impl App {
             .map(|_| path)
             .map_err(|e| format!("Export failed: {}", e))
     }
+
+    /// Persist the latest scan results, health score, and module statuses to disk.
+    pub fn save_scan_state(&self) {
+        let state = ScanState::new(
+            self.health_score,
+            self.issues.clone(),
+            self.module_statuses.clone(),
+            self.scan_duration.map(|d| d.as_secs()),
+        );
+        let _ = state.save();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::MAX_LOG_LINES;
+    use crate::engine::issue::RiskScore;
 
     #[test]
     fn test_app_export_report() {
@@ -577,5 +611,40 @@ mod tests {
 
         app.next_tab();
         assert_eq!(app.active_tab, 1);
+    }
+
+    #[test]
+    fn test_app_persists_and_restores_scan_state() {
+        let tmp = std::env::temp_dir().join(format!("winmedic_state_test_{}.json", std::process::id()));
+        let mut app = App::new();
+        app.issues = vec![Issue::new(
+            "iss_1",
+            "storage",
+            "Low Disk Space",
+            "Storage",
+            Severity::Warning,
+            RiskScore::Low,
+            "Temp files are taking up too much space",
+            "5 GB in temp directory",
+            "Clean temp files",
+            vec!["Delete temp files".to_string()],
+        )];
+        app.health_score = 85;
+
+        let state = ScanState::new(
+            app.health_score,
+            app.issues.clone(),
+            app.module_statuses.clone(),
+            Some(5),
+        );
+        state.save_to(&tmp).unwrap();
+
+        let loaded = ScanState::load_from(&tmp).expect("should load scan state");
+        assert_eq!(loaded.health_score, 85);
+        assert_eq!(loaded.issues.len(), 1);
+        assert_eq!(loaded.issues[0].title, "Low Disk Space");
+        assert_eq!(loaded.scan_duration_secs, Some(5));
+
+        let _ = std::fs::remove_file(tmp);
     }
 }

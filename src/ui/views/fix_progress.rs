@@ -182,7 +182,7 @@ pub fn render_fix_progress(
         .constraints([
             Constraint::Length(5), // Repair Progress Gauge & VSS Badge
             Constraint::Min(10),   // Live Repair Console Output
-            Constraint::Length(5), // Execution Summary & Reboot Alert
+            Constraint::Length(4), // Execution Summary & Reboot Alert
         ])
         .split(area);
 
@@ -342,13 +342,6 @@ pub fn render_fix_progress(
                 Style::default()
                     .fg(Theme::TEXT_WHITE)
                     .add_modifier(Modifier::ITALIC),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(" Keys: ", Style::default().fg(Theme::MUTED)),
-            Span::styled(
-                "[PgUp/PgDn] Scroll log  [Home/End] Top/Live  [F] Start  [D] Simulate  [E] Report",
-                Style::default().fg(Theme::CYAN),
             ),
         ]),
     ];

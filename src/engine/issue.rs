@@ -43,7 +43,7 @@ impl RiskScore {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Issue {
     pub id: String,
     pub module_id: String,
