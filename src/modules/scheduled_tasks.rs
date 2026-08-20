@@ -294,21 +294,90 @@ impl ScheduledTasksModule {
         self.known_tasks.lock().ok()?.get(issue_id).cloned()
     }
 
+    /// Query the registered scheduled tasks from the system to populate known tasks
+    /// when the module has no cached entries (e.g. after an app restart or engine rebuild).
+    async fn refresh_known_tasks(&self) -> Result<(), String> {
+        let script = r#"Get-ScheduledTask | ForEach-Object { "$($_.TaskPath)|$($_.TaskName)" }"#;
+        let out = self
+            .runner
+            .run_powershell(script, Duration::from_secs(30))
+            .await?;
+
+        if !out.success && out.stdout.trim().is_empty() {
+            return Err(out.stderr);
+        }
+
+        if let Ok(mut known) = self.known_tasks.lock() {
+            for line in out.stdout.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if let Some((path, name)) = trimmed.split_once('|') {
+                    let path = path.trim();
+                    let name = name.trim();
+                    if name.is_empty() {
+                        continue;
+                    }
+                    let full = format!("{}{}", path, name);
+                    let task_ref = TaskRef {
+                        path: path.to_string(),
+                        name: name.to_string(),
+                    };
+                    let orphaned_id = Self::issue_id("sched_orphaned", &full);
+                    let failing_id = Self::issue_id("sched_failing", &full);
+                    known.insert(orphaned_id, task_ref.clone());
+                    known.insert(failing_id, task_ref);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Look up a task by issue id, dynamically falling back to querying the system
+    /// if the in-memory cache is empty.
+    async fn lookup_or_refresh(&self, issue_id: &str) -> Option<TaskRef> {
+        if let Some(task) = self.lookup(issue_id) {
+            return Some(task);
+        }
+
+        let _ = self.refresh_known_tasks().await;
+        self.lookup(issue_id)
+    }
+
     /// Disable a task by its exact folder and name.
     ///
     /// Both values come from the system, not from WinMedic, so both go through
     /// [`ps_single_quoted`] — a task can be named by anyone who can create one,
     /// and this command frequently runs elevated.
+    ///
+    /// If standard `Disable-ScheduledTask` fails with permission denied (common on
+    /// protected Windows tasks such as `UpdateOrchestrator\USO_UxBroker`), it takes
+    /// ownership of the task file in System32\Tasks and grants Administrators permissions
+    /// before retrying.
     async fn disable_task(&self, task: &TaskRef) -> Result<String, String> {
         let script = format!(
-            "Disable-ScheduledTask -TaskPath {} -TaskName {} -ErrorAction Stop | Out-Null",
+            concat!(
+                "try {{ ",
+                "Disable-ScheduledTask -TaskPath {0} -TaskName {1} -ErrorAction Stop | Out-Null ",
+                "}} catch {{ ",
+                "$taskPath = {0}; $taskName = {1}; ",
+                "$cleanRel = ($taskPath.Trim('\\') + '\\' + $taskName).Trim('\\'); ",
+                "$taskFile = Join-Path $env:SystemRoot \"System32\\Tasks\\$cleanRel\"; ",
+                "if (Test-Path $taskFile) {{ ",
+                "takeown.exe /f $taskFile /a | Out-Null; ",
+                "icacls.exe $taskFile /grant \"*S-1-5-32-544:F\" | Out-Null; ",
+                "Disable-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop | Out-Null ",
+                "}} else {{ throw $_ }} ",
+                "}}"
+            ),
             ps_single_quoted(&task.path),
             ps_single_quoted(&task.name),
         );
 
         let out = self
             .runner
-            .run_powershell(&script, Duration::from_secs(20))
+            .run_powershell(&script, Duration::from_secs(25))
             .await?;
 
         if out.success {
@@ -529,7 +598,7 @@ impl DiagnosticModule for ScheduledTasksModule {
             return Err(format!("Unknown issue id: {}", issue_id));
         }
 
-        let Some(task) = self.lookup(issue_id) else {
+        let Some(task) = self.lookup_or_refresh(issue_id).await else {
             return Err(format!(
                 "No scheduled task is on record for '{}'. Run the scan again before repairing.",
                 issue_id
@@ -837,5 +906,29 @@ mod tests {
 
         let err = module.scan(None).await.unwrap_err();
         assert!(err.contains("Access to the task scheduler service was denied."));
+    }
+
+    #[tokio::test]
+    async fn fix_without_prior_scan_resolves_task_from_system() {
+        let mock = MockCommandRunner::new();
+        mock.add_response("Disable-ScheduledTask", CmdOutput::ok(""));
+        mock.add_response(
+            "Get-ScheduledTask",
+            CmdOutput::ok(r"\Vendor\|Orphaned Task"),
+        );
+        let module = ScheduledTasksModule::with_runner(Arc::new(mock.clone()));
+
+        let issue_id = ScheduledTasksModule::issue_id("sched_orphaned", r"\Vendor\Orphaned Task");
+        // No scan() is called here; fix() must dynamically query the system.
+        let result = module.fix(&issue_id, None).await.unwrap();
+
+        assert!(result.contains("Orphaned Task"));
+        let disable = mock
+            .executed()
+            .into_iter()
+            .find(|c| c.contains("Disable-ScheduledTask"))
+            .expect("the fix must issue the disable command");
+        assert!(disable.contains(r"-TaskPath '\Vendor\'"));
+        assert!(disable.contains("-TaskName 'Orphaned Task'"));
     }
 }

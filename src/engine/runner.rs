@@ -784,7 +784,14 @@ impl DiagnosticEngine {
 
             match result {
                 Ok(msg) => {
-                    issue.is_fixed = true;
+                    if issue.requires_reboot {
+                        issue.is_reboot_pending = true;
+                        issue.is_fixed = false;
+                        issue.is_selected = false;
+                    } else {
+                        issue.is_fixed = true;
+                        issue.is_reboot_pending = false;
+                    }
                     issue.fix_error = None;
                     fixed_count += 1;
 
@@ -801,6 +808,7 @@ impl DiagnosticEngine {
                 }
                 Err(err) => {
                     issue.is_fixed = false;
+                    issue.is_reboot_pending = false;
                     issue.fix_error = Some(err.clone());
                     failed_count += 1;
 

@@ -20,6 +20,8 @@ pub struct ScanState {
     pub module_statuses: Vec<(String, String, String, ModuleStatus)>,
     #[serde(default)]
     pub scan_duration_secs: Option<u64>,
+    #[serde(default)]
+    pub boot_time_secs: Option<u64>,
 }
 
 impl ScanState {
@@ -35,6 +37,7 @@ impl ScanState {
             issues,
             module_statuses,
             scan_duration_secs,
+            boot_time_secs: Some(sysinfo::System::boot_time()),
         }
     }
 

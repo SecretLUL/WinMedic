@@ -227,7 +227,17 @@ impl App {
 
         let (module_progress_list, default_module_statuses) = Self::module_lists(&engine);
         let (saved_issues, saved_health, module_statuses, saved_duration, init_msg) =
-            if let Some(saved) = ScanState::load() {
+            if let Some(mut saved) = ScanState::load() {
+                let current_boot = sysinfo::System::boot_time();
+                let rebooted = saved.boot_time_secs.is_some_and(|b| current_boot > b);
+                if rebooted {
+                    for issue in &mut saved.issues {
+                        if issue.is_reboot_pending {
+                            issue.is_reboot_pending = false;
+                            issue.is_fixed = true;
+                        }
+                    }
+                }
                 let health = DiagnosticEngine::calculate_health_score(&saved.issues);
                 let open_count = saved.issues.iter().filter(|i| !i.is_fixed).count();
                 let msg = format!(
@@ -370,6 +380,29 @@ impl App {
             .await;
             let _ = tx.send(BackgroundEvent::UpdateChecked(update_info));
         });
+    }
+
+    /// Whether any repaired issue currently requires a system restart.
+    pub fn has_pending_reboot(&self) -> bool {
+        self.issues.iter().any(|i| i.is_reboot_pending)
+    }
+
+    /// Open the restart confirmation dialog if there are issues pending a reboot.
+    pub fn show_reboot_notice(&mut self) {
+        if self.pending_confirm.is_some() || self.is_fixing || self.is_scanning {
+            return;
+        }
+        let reboot_issues: Vec<String> = self
+            .issues
+            .iter()
+            .filter(|i| i.is_reboot_pending)
+            .map(|i| i.title.clone())
+            .collect();
+        if !reboot_issues.is_empty() {
+            self.pending_confirm = Some(ConfirmRequest::RestartRequired {
+                issues: reboot_issues,
+            });
+        }
     }
 
     #[allow(clippy::type_complexity)]

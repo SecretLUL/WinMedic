@@ -57,6 +57,10 @@ pub struct Issue {
     pub fix_steps: Vec<String>,
     pub is_selected: bool,
     pub is_fixed: bool,
+    #[serde(default)]
+    pub requires_reboot: bool,
+    #[serde(default)]
+    pub is_reboot_pending: bool,
     pub fix_error: Option<String>,
     pub timestamp: String,
 }
@@ -92,8 +96,15 @@ impl Issue {
             fix_steps,
             is_selected: true,
             is_fixed: false,
+            requires_reboot: false,
+            is_reboot_pending: false,
             fix_error: None,
             timestamp: Local::now().format("%H:%M:%S").to_string(),
         }
+    }
+
+    pub fn with_requires_reboot(mut self, requires_reboot: bool) -> Self {
+        self.requires_reboot = requires_reboot;
+        self
     }
 }

@@ -272,6 +272,7 @@ mod tests {
     fn app() -> App {
         let mut app = App::new();
         app.pending_confirm = None;
+        app.issues.clear();
         app
     }
 

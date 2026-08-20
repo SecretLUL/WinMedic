@@ -861,6 +861,7 @@ fn test_tier1_f11_recursive_directory_size_sum() {
 #[tokio::test]
 async fn test_tier1_f11_triage_issue_toggle_in_app() {
     let mut app = App::new();
+    app.issues.clear();
     let issue = winmedic::engine::issue::Issue::new(
         "sys_clean_browser_cache",
         "system_cleaner",
@@ -887,6 +888,7 @@ async fn test_tier1_f11_triage_issue_toggle_in_app() {
 #[tokio::test]
 async fn test_tier1_f11_triage_select_and_deselect_all() {
     let mut app = App::new();
+    app.issues.clear();
     for i in 0..5 {
         app.issues.push(winmedic::engine::issue::Issue::new(
             format!("issue_{}", i),
@@ -916,6 +918,7 @@ async fn test_tier1_f11_triage_select_and_deselect_all() {
 #[tokio::test]
 async fn test_tier1_f11_triage_navigation_bounds() {
     let mut app = App::new();
+    app.issues.clear();
     for i in 0..3 {
         app.issues.push(winmedic::engine::issue::Issue::new(
             format!("issue_{}", i),

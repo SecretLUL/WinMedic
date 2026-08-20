@@ -68,15 +68,25 @@ pub fn render_dashboard(
         .iter()
         .filter(|i| i.severity == Severity::Warning && !i.is_fixed)
         .count();
+    let reboot_pending_count = issues.iter().filter(|i| i.is_reboot_pending).count();
+
+    let health_label = if reboot_pending_count > 0 {
+        format!(
+            " {}/100 ({} critical, {} warnings, {} reboot pending) ",
+            health_score, critical_count, warning_count, reboot_pending_count
+        )
+    } else {
+        format!(
+            " {}/100 ({} critical, {} warnings) ",
+            health_score, critical_count, warning_count
+        )
+    };
 
     let health_gauge = Gauge::default()
         .block(Theme::card_block("SYSTEM HEALTH INDEX"))
         .gauge_style(Style::default().fg(health_color).bg(Theme::BG_DEEP))
         .percent(health_score as u16)
-        .label(format!(
-            " {}/100 ({} critical, {} warnings) ",
-            health_score, critical_count, warning_count
-        ));
+        .label(health_label);
 
     f.render_widget(health_gauge, top_chunks[0]);
 
@@ -126,7 +136,7 @@ pub fn render_dashboard(
     f.render_widget(ram_gauge, telem_chunks[1]);
 
     // 3. System Specs Card
-    let sys_lines = if let Some(t) = telemetry {
+    let mut sys_lines = if let Some(t) = telemetry {
         let uptime_h = t.uptime_secs / 3600;
         let uptime_m = (t.uptime_secs % 3600) / 60;
         vec![
@@ -157,6 +167,18 @@ pub fn render_dashboard(
     } else {
         vec![Line::from("Loading system data...")]
     };
+
+    if reboot_pending_count > 0 {
+        sys_lines.push(Line::from(vec![
+            Span::styled("Reboot:  ", Style::default().fg(Theme::MUTED)),
+            Span::styled(
+                "PENDING (restart required)",
+                Style::default()
+                    .fg(Theme::AMBER)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    }
 
     let sys_card = Paragraph::new(sys_lines).block(Theme::card_block("SYSTEM SPECIFICATION"));
     f.render_widget(sys_card, top_chunks[2]);

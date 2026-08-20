@@ -825,6 +825,7 @@ fn test_tier2_f11_format_bytes_boundary_exact_values() {
 #[tokio::test]
 async fn test_tier2_f11_triage_empty_search_query_matches_all() {
     let mut app = App::new();
+    app.issues.clear();
     app.issues.push(Issue::new(
         "i1",
         "mod1",
@@ -858,6 +859,7 @@ async fn test_tier2_f11_triage_empty_search_query_matches_all() {
 #[tokio::test]
 async fn test_tier2_f11_triage_search_query_no_match_clamps_to_zero() {
     let mut app = App::new();
+    app.issues.clear();
     app.issues.push(Issue::new(
         "i1",
         "mod1",
@@ -882,6 +884,7 @@ async fn test_tier2_f11_triage_search_query_no_match_clamps_to_zero() {
 #[tokio::test]
 async fn test_tier2_f11_triage_filter_all_severities_combinations() {
     let mut app = App::new();
+    app.issues.clear();
     app.issues.push(Issue::new(
         "i1",
         "m",
@@ -932,6 +935,7 @@ async fn test_tier2_f11_triage_filter_all_severities_combinations() {
 #[tokio::test]
 async fn test_tier2_f11_triage_clear_filters_restores_view() {
     let mut app = App::new();
+    app.issues.clear();
     app.issues.push(Issue::new(
         "i1",
         "m",

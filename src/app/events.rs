@@ -4,6 +4,7 @@
 //! `try_recv` until empty, never awaiting, so a slow producer cannot stall
 //! rendering.
 
+use super::ConfirmRequest;
 use super::state::{App, ModuleScanProgress};
 use super::{BackgroundEvent, push_bounded_log};
 use crate::engine::issue::Severity;
@@ -235,8 +236,19 @@ impl App {
                         if !self.dry_run
                             && let Some(issue) = self.issues.iter_mut().find(|i| i.id == issue_id)
                         {
-                            issue.is_fixed = success;
-                            if !success {
+                            if success {
+                                if issue.requires_reboot {
+                                    issue.is_reboot_pending = true;
+                                    issue.is_fixed = false;
+                                    issue.is_selected = false;
+                                } else {
+                                    issue.is_fixed = true;
+                                    issue.is_reboot_pending = false;
+                                }
+                                issue.fix_error = None;
+                            } else {
+                                issue.is_fixed = false;
+                                issue.is_reboot_pending = false;
                                 issue.fix_error = Some(message.clone());
                             }
                         }
@@ -291,6 +303,20 @@ impl App {
                                 fixed_count, failed_count
                             )
                         });
+
+                        if !self.dry_run {
+                            let reboot_issues: Vec<String> = self
+                                .issues
+                                .iter()
+                                .filter(|i| i.is_reboot_pending)
+                                .map(|i| i.title.clone())
+                                .collect();
+                            if !reboot_issues.is_empty() {
+                                self.pending_confirm = Some(ConfirmRequest::RestartRequired {
+                                    issues: reboot_issues,
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -693,5 +719,58 @@ mod tests {
         assert!(frozen >= Duration::from_secs(90));
         std::thread::sleep(Duration::from_millis(20));
         assert_eq!(app.scan_elapsed(), Some(frozen), "and it stays put");
+    }
+
+    #[tokio::test]
+    async fn repairs_requiring_reboot_trigger_restart_confirmation() {
+        let mut app = App::new();
+        app.issues.clear();
+        let issue = crate::engine::issue::Issue::new(
+            "wu_reboot_pending",
+            "windows_updates",
+            "System reboot pending after updates",
+            "Windows Update & Services",
+            crate::engine::issue::Severity::Info,
+            crate::engine::issue::RiskScore::Low,
+            "Description",
+            "Details",
+            "Fix",
+            vec!["Step 1".to_string()],
+        )
+        .with_requires_reboot(true);
+
+        app.issues.push(issue);
+        let (tx, rx) = channel::<RepairEvent>(10);
+        app.repair_event_rx = Some(rx);
+        app.is_fixing = true;
+
+        tx.send(RepairEvent::FixFinished {
+            issue_id: "wu_reboot_pending".to_string(),
+            success: true,
+            message: "Pending reboot recorded.".to_string(),
+        })
+        .await
+        .unwrap();
+
+        tx.send(RepairEvent::AllRepairsCompleted {
+            fixed_count: 1,
+            failed_count: 0,
+        })
+        .await
+        .unwrap();
+
+        app.process_background_events();
+
+        assert!(!app.is_fixing);
+        assert!(app.issues[0].is_reboot_pending);
+        assert!(!app.issues[0].is_fixed);
+        assert!(app.has_pending_reboot());
+        match app.pending_confirm {
+            Some(ConfirmRequest::RestartRequired { ref issues }) => {
+                assert_eq!(issues.len(), 1);
+                assert_eq!(issues[0], "System reboot pending after updates");
+            }
+            other => panic!("expected RestartRequired confirm request, got {:?}", other),
+        }
     }
 }

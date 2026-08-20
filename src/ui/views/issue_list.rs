@@ -114,7 +114,9 @@ pub fn render_issue_list(f: &mut Frame, area: Rect, state: &IssueListViewState) 
             .map(|(pos, &orig_idx)| {
                 let issue = &state.issues[orig_idx];
                 let is_current = pos == state.selected_filtered_index;
-                let check_box = if issue.is_fixed {
+                let check_box = if issue.is_reboot_pending {
+                    "[REBOOT]"
+                } else if issue.is_fixed {
                     "[FIXED]"
                 } else if issue.is_selected {
                     "[X]"
@@ -122,7 +124,9 @@ pub fn render_issue_list(f: &mut Frame, area: Rect, state: &IssueListViewState) 
                     "[ ]"
                 };
 
-                let check_color = if issue.is_fixed {
+                let check_color = if issue.is_reboot_pending {
+                    Theme::AMBER
+                } else if issue.is_fixed {
                     Theme::EMERALD
                 } else if issue.is_selected {
                     Theme::CYAN
@@ -226,6 +230,25 @@ pub fn render_issue_list(f: &mut Frame, area: Rect, state: &IssueListViewState) 
                     Style::default().fg(risk_color).add_modifier(Modifier::BOLD),
                 ),
             ]),
+        ];
+
+        if issue.is_reboot_pending {
+            detail_lines.push(Line::from(""));
+            detail_lines.push(Line::from(vec![
+                Span::styled(
+                    " [!] System restart pending: ",
+                    Style::default()
+                        .fg(Theme::AMBER)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "This repair has been applied and will take full effect after restarting Windows.",
+                    Style::default().fg(Theme::AMBER),
+                ),
+            ]));
+        }
+
+        detail_lines.extend([
             Line::from(""),
             Line::from(vec![Span::styled(
                 " Description:",
@@ -266,7 +289,7 @@ pub fn render_issue_list(f: &mut Frame, area: Rect, state: &IssueListViewState) 
                     .fg(Theme::MUTED)
                     .add_modifier(Modifier::BOLD),
             )]),
-        ];
+        ]);
 
         for (step_idx, step) in issue.fix_steps.iter().enumerate() {
             detail_lines.push(Line::from(vec![

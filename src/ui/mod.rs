@@ -39,6 +39,7 @@ pub fn render_app(f: &mut Frame, app: &App) {
         app.issues.iter().filter(|i| !i.is_fixed).count(),
         app.is_scanning,
         app.dry_run,
+        app.has_pending_reboot(),
     );
 
     // 2. Render Active Tab View
@@ -312,6 +313,7 @@ mod tests {
         let mut app = App::new();
         app.pending_confirm = None;
         app.active_tab = TAB_TRIAGE;
+        app.issues.clear();
         for i in 0..30 {
             app.issues.push(crate::engine::issue::Issue::new(
                 format!("issue_{i}"),
@@ -337,5 +339,55 @@ mod tests {
         app.selected_filtered_index = 25;
         let rendered_bottom = screen(&app, 120, 24);
         assert!(rendered_bottom.contains("Issue #25 Finding Title"));
+    }
+
+    #[test]
+    fn header_shows_reboot_pending_badge_when_restart_is_pending() {
+        let mut app = populated_app();
+        app.issues.clear();
+        let mut issue = crate::engine::issue::Issue::new(
+            "wu_reboot_pending",
+            "windows_updates",
+            "System reboot pending after updates",
+            "Windows Update",
+            crate::engine::issue::Severity::Info,
+            crate::engine::issue::RiskScore::Low,
+            "Description",
+            "Details",
+            "Fix",
+            vec![],
+        );
+        issue.is_reboot_pending = true;
+        app.issues.push(issue);
+
+        assert!(app.has_pending_reboot());
+        let rendered = screen(&app, 160, 45);
+        assert!(rendered.contains("[!] REBOOT PENDING"));
+    }
+
+    #[test]
+    fn triage_view_shows_reboot_badge_for_pending_reboot_issues() {
+        let mut app = App::new();
+        app.pending_confirm = None;
+        app.active_tab = TAB_TRIAGE;
+        app.issues.clear();
+        let mut issue = crate::engine::issue::Issue::new(
+            "wu_reboot_pending",
+            "windows_updates",
+            "System reboot pending after updates",
+            "Windows Update",
+            crate::engine::issue::Severity::Info,
+            crate::engine::issue::RiskScore::Low,
+            "Description",
+            "Details",
+            "Fix",
+            vec![],
+        );
+        issue.is_reboot_pending = true;
+        app.issues.push(issue);
+
+        let rendered = screen(&app, 120, 24);
+        assert!(rendered.contains("[REBOOT]"));
+        assert!(rendered.contains("System restart pending:"));
     }
 }

@@ -19,6 +19,7 @@ pub fn render_header(
     issue_count: usize,
     is_scanning: bool,
     dry_run: bool,
+    reboot_pending: bool,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -74,7 +75,19 @@ pub fn render_header(
         Span::styled("", Style::default())
     };
 
-    let top_line = Line::from(vec![
+    let reboot_badge = if reboot_pending {
+        Span::styled(
+            " [!] REBOOT PENDING ",
+            Style::default()
+                .fg(Theme::BG_DEEP)
+                .bg(Theme::AMBER)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled("", Style::default())
+    };
+
+    let mut top_spans = vec![
         Span::styled(
             format!(" WinMedic v{} ", env!("CARGO_PKG_VERSION")),
             Style::default()
@@ -106,7 +119,14 @@ pub fn render_header(
         Span::styled(" VSS: Ready ", Style::default().fg(Theme::EMERALD)),
         Span::styled("│ ", Style::default().fg(Theme::BORDER)),
         admin_badge,
-    ]);
+    ];
+
+    if reboot_pending {
+        top_spans.push(Span::styled("│ ", Style::default().fg(Theme::BORDER)));
+        top_spans.push(reboot_badge);
+    }
+
+    let top_line = Line::from(top_spans);
 
     let top_bar = Paragraph::new(top_line)
         .block(

@@ -470,6 +470,7 @@ fn test_tier3_audit_logger_records_system_cleaner_fixes() {
 #[tokio::test]
 async fn test_tier3_triage_search_filtering_by_system_cleaner_title() {
     let mut app = App::new();
+    app.issues.clear();
     app.issues.push(Issue::new(
         "sys_clean_winsxs",
         "system_cleaner",
@@ -504,6 +505,7 @@ async fn test_tier3_triage_search_filtering_by_system_cleaner_title() {
 #[tokio::test]
 async fn test_tier3_triage_module_filtering_cycle() {
     let mut app = App::new();
+    app.issues.clear();
     app.issues.push(Issue::new(
         "sys_clean_winsxs",
         "system_cleaner",
