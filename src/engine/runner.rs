@@ -997,7 +997,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_cancelled_scan_reports_progress() {
-        let engine = DiagnosticEngine::new(&AppConfig::default());
+        let mock = Arc::new(crate::utils::cmd::MockCommandRunner::new());
+        let engine = DiagnosticEngine::with_runner(&AppConfig::default(), mock);
         let (tx, mut rx) = channel::<ScanEvent>(200);
 
         let cancel = CancellationToken::new();
@@ -1021,7 +1022,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_scan_emits_events_and_completes() {
-        let engine = DiagnosticEngine::new(&AppConfig::default());
+        let mock = Arc::new(crate::utils::cmd::MockCommandRunner::new());
+        let engine = DiagnosticEngine::with_runner(&AppConfig::default(), mock);
         let (tx, mut rx) = channel::<ScanEvent>(200);
 
         let _issues = engine.run_scan(tx, CancellationToken::new()).await;
@@ -1101,7 +1103,8 @@ mod tests {
             verbose_logging: true,
             ..Default::default()
         };
-        let engine = DiagnosticEngine::new(&config);
+        let mock = Arc::new(crate::utils::cmd::MockCommandRunner::new());
+        let engine = DiagnosticEngine::with_runner(&config, mock);
         assert!(engine.verbose_logging);
 
         let (tx, mut rx) = channel::<ScanEvent>(200);
