@@ -380,54 +380,91 @@ pub fn discover_delivery_optimization_dirs(sys_root: &Path) -> Vec<PathBuf> {
     ]
 }
 
+/// The cache directories a Chromium profile keeps.
+const CHROMIUM_CACHE_DIRS: &[&str] = &["Cache", "Code Cache", "GPUCache"];
+
+/// Append every profile cache under a Chromium `User Data` root.
+///
+/// Chrome, Edge and Brave share this layout exactly: one directory per profile,
+/// named `Default` or `Profile N`, each holding the same three caches. Only
+/// directories matching those names are collected, so a stray folder somebody
+/// dropped into `User Data` is never swept.
+fn push_chromium_profile_caches(user_data: &Path, dirs: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(user_data) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let profile = entry.path();
+        if !profile.is_dir() {
+            continue;
+        }
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+        if name != "Default" && !name.starts_with("Profile ") {
+            continue;
+        }
+        for cache in CHROMIUM_CACHE_DIRS {
+            dirs.push(profile.join(cache));
+        }
+    }
+}
+
+/// Append the caches of every installed Opera flavour.
+///
+/// Opera is Chromium underneath but does not use a `User Data` root. Each
+/// installed flavour — Opera Stable, Opera GX Stable, Opera One, Opera Crypto
+/// Stable — gets its own directory under `Opera Software`, and that directory
+/// *is* the profile. The flavours are enumerated rather than named, so one
+/// Opera ships next needs no code change here.
+///
+/// Both roots are checked because the caches moved: current builds keep them
+/// under LocalAppData, older ones under Roaming, and a machine that has been
+/// upgraded still has the old directory sitting there.
+fn push_opera_caches(local_app_data: &Path, app_data: &Path, dirs: &mut Vec<PathBuf>) {
+    for root in [
+        local_app_data.join("Opera Software"),
+        app_data.join("Opera Software"),
+    ] {
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let flavour = entry.path();
+            if !flavour.is_dir() {
+                continue;
+            }
+            for cache in CHROMIUM_CACHE_DIRS {
+                dirs.push(flavour.join(cache));
+            }
+        }
+    }
+}
+
 pub fn discover_browser_cache_dirs(local_app_data: &Path, app_data: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
-    // Chrome
-    let chrome_user_data = local_app_data
-        .join("Google")
-        .join("Chrome")
-        .join("User Data");
-    if chrome_user_data.exists()
-        && let Ok(entries) = std::fs::read_dir(&chrome_user_data)
-    {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_dir() {
-                let file_name = entry.file_name();
-                let name = file_name.to_string_lossy();
-                if name == "Default" || name.starts_with("Profile ") {
-                    dirs.push(p.join("Cache"));
-                    dirs.push(p.join("Code Cache"));
-                    dirs.push(p.join("GPUCache"));
-                }
-            }
-        }
+    // Chrome, Edge and Brave, all three on the same `User Data` layout.
+    for user_data in [
+        local_app_data
+            .join("Google")
+            .join("Chrome")
+            .join("User Data"),
+        local_app_data
+            .join("Microsoft")
+            .join("Edge")
+            .join("User Data"),
+        local_app_data
+            .join("BraveSoftware")
+            .join("Brave-Browser")
+            .join("User Data"),
+    ] {
+        push_chromium_profile_caches(&user_data, &mut dirs);
     }
 
-    // Edge
-    let edge_user_data = local_app_data
-        .join("Microsoft")
-        .join("Edge")
-        .join("User Data");
-    if edge_user_data.exists()
-        && let Ok(entries) = std::fs::read_dir(&edge_user_data)
-    {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_dir() {
-                let file_name = entry.file_name();
-                let name = file_name.to_string_lossy();
-                if name == "Default" || name.starts_with("Profile ") {
-                    dirs.push(p.join("Cache"));
-                    dirs.push(p.join("Code Cache"));
-                    dirs.push(p.join("GPUCache"));
-                }
-            }
-        }
-    }
+    push_opera_caches(local_app_data, app_data, &mut dirs);
 
-    // Firefox
+    // Firefox keeps one `cache2` per profile, and the profile root moved
+    // between releases, so both locations are enumerated.
     let ff_roots = [
         local_app_data
             .join("Mozilla")
@@ -436,14 +473,13 @@ pub fn discover_browser_cache_dirs(local_app_data: &Path, app_data: &Path) -> Ve
         app_data.join("Mozilla").join("Firefox").join("Profiles"),
     ];
     for ff_root in &ff_roots {
-        if ff_root.exists()
-            && let Ok(entries) = std::fs::read_dir(ff_root)
-        {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if p.is_dir() {
-                    dirs.push(p.join("cache2"));
-                }
+        let Ok(entries) = std::fs::read_dir(ff_root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let profile = entry.path();
+            if profile.is_dir() {
+                dirs.push(profile.join("cache2"));
             }
         }
     }
@@ -933,8 +969,8 @@ impl DiagnosticModule for SystemCleanerModule {
         Self::send_progress(
             &progress_tx,
             46,
-            "Checking browser caches (Chrome, Edge, Firefox)...",
-            Some("Scanning the Chrome, Edge and Firefox profiles..."),
+            "Checking browser caches (Chrome, Edge, Brave, Opera, Firefox)...",
+            Some("Scanning the installed Chromium and Firefox profiles..."),
         )
         .await;
 
@@ -948,21 +984,23 @@ impl DiagnosticModule for SystemCleanerModule {
                 "sys_clean_browser_cache",
                 self.id(),
                 format!(
-                    "Browser caches (Chrome, Edge, Firefox) ({}, {} files)",
+                    "Browser caches (Chrome, Edge, Brave, Opera, Firefox) ({}, {} files)",
                     format_bytes(browser_stats.bytes),
                     browser_stats.files
                 ),
                 "System & Cache Cleaner",
                 Severity::Info,
                 RiskScore::Low,
-                "Browsers keep HTTP and script caches for faster load times. These caches can grow to several gigabytes.",
+                "Browsers keep HTTP and script caches for faster load times. These caches can grow to several gigabytes. Chrome, Edge, Brave, every installed Opera flavour and Firefox are covered, across all of their profiles.",
                 format!(
                     "Total browser cache size: {} across {} files in the detected profiles",
                     format_bytes(browser_stats.bytes),
                     browser_stats.files
                 ),
                 "Clean browser caches (files held by active browser sessions are safely skipped)",
-                vec!["Empty the Chrome / Edge / Firefox cache directories".to_string()],
+                vec![
+                    "Empty the Chrome / Edge / Brave / Opera / Firefox cache directories".to_string(),
+                ],
             ));
         }
 
@@ -1692,6 +1730,25 @@ The operation completed successfully.";
             b"edge cache",
         );
 
+        // Mock Brave structure - Chromium, same User Data layout as Chrome.
+        td.create_file(
+            "Local/BraveSoftware/Brave-Browser/User Data/Default/Cache/data_2",
+            b"brave cache",
+        );
+        td.create_file(
+            "Local/BraveSoftware/Brave-Browser/User Data/Profile 2/GPUCache/shader",
+            b"brave gpu",
+        );
+
+        // Mock Opera structure - one directory per flavour, no User Data root.
+        td.create_file("Local/Opera Software/Opera Stable/Cache/data_3", b"opera");
+        td.create_file(
+            "Local/Opera Software/Opera GX Stable/Code Cache/js/entry",
+            b"opera gx",
+        );
+        // The pre-move location an upgraded machine still carries.
+        td.create_file("Roaming/Opera Software/Opera Stable/Cache/data_4", b"old");
+
         // Mock Firefox structure
         td.create_file(
             "Local/Mozilla/Firefox/Profiles/abc.default/cache2/entries/1",
@@ -1699,7 +1756,6 @@ The operation completed successfully.";
         );
 
         let dirs = discover_browser_cache_dirs(&local_app_data, &app_data);
-        assert!(dirs.len() >= 4);
 
         let mut total_stats = DirStats::default();
         for dir in &dirs {
@@ -1707,7 +1763,50 @@ The operation completed successfully.";
             total_stats.bytes += stats.bytes;
             total_stats.files += stats.files;
         }
-        assert_eq!(total_stats.files, 4);
+        assert_eq!(
+            total_stats.files, 9,
+            "every mocked cache entry must be reachable from the discovered dirs"
+        );
+    }
+
+    #[test]
+    fn a_chromium_user_data_root_yields_only_real_profile_caches() {
+        let td = TestDir::new("chromium_profiles");
+        let local_app_data = td.path.join("Local");
+        let app_data = td.path.join("Roaming");
+
+        td.create_file(
+            "Local/BraveSoftware/Brave-Browser/User Data/Default/Cache/data_0",
+            b"kept",
+        );
+        // Not a profile: Chromium's own shared state, and sweeping it would
+        // take the user's dictionary and safe-browsing lists with it.
+        td.create_file(
+            "Local/BraveSoftware/Brave-Browser/User Data/Local State",
+            b"not a profile",
+        );
+        td.create_file(
+            "Local/BraveSoftware/Brave-Browser/User Data/ShaderCache/entry",
+            b"not a profile either",
+        );
+
+        let dirs = discover_browser_cache_dirs(&local_app_data, &app_data);
+
+        assert!(
+            dirs.iter()
+                .all(|d| !d.to_string_lossy().contains("Local State")
+                    && !d.to_string_lossy().contains("ShaderCache")),
+            "only Default and Profile N directories may be swept: {:?}",
+            dirs
+        );
+        assert_eq!(dirs.len(), 3, "the three caches of the one real profile");
+    }
+
+    #[test]
+    fn a_machine_without_any_browser_discovers_nothing() {
+        let td = TestDir::new("no_browsers");
+        let dirs = discover_browser_cache_dirs(&td.path.join("Local"), &td.path.join("Roaming"));
+        assert!(dirs.is_empty());
     }
 
     #[tokio::test]
