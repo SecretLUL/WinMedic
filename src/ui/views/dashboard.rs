@@ -45,9 +45,9 @@ pub fn render_dashboard(
     let top_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(33), // Health Score
-            Constraint::Percentage(33), // CPU & RAM Gauges
-            Constraint::Percentage(34), // System & Hardware Specs
+            Constraint::Percentage(28), // Health Score
+            Constraint::Percentage(28), // CPU & RAM Gauges
+            Constraint::Percentage(44), // System & Hardware Specs
         ])
         .split(main_chunks[0]);
 

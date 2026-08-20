@@ -398,12 +398,12 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
 
 // --------------------------------------------------------------------- TUI
 
-/// Ensure a comfortable minimum terminal size (140 columns x 40 rows)
-/// so that multi-column diagnostic cards and log buffers render cleanly without clipping.
+/// Ensure a comfortable minimum terminal size (165 columns x 42 rows)
+/// so that multi-column diagnostic cards and hardware specs render cleanly without clipping.
 fn ensure_terminal_size() {
     if let Ok((cols, rows)) = size() {
-        let target_cols = cols.max(140);
-        let target_rows = rows.max(40);
+        let target_cols = cols.max(165);
+        let target_rows = rows.max(42);
         if cols < target_cols || rows < target_rows {
             let mut out = stdout();
             let _ = execute!(out, SetSize(target_cols, target_rows));
