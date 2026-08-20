@@ -9,11 +9,11 @@ use crossterm::cursor::Show;
 use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    EnterAlternateScreen, LeaveAlternateScreen, SetSize, disable_raw_mode, enable_raw_mode, size,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use std::io::stdout;
+use std::io::{Write, stdout};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::channel;
@@ -398,8 +398,24 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
 
 // --------------------------------------------------------------------- TUI
 
+/// Ensure a comfortable minimum terminal size (140 columns x 40 rows)
+/// so that multi-column diagnostic cards and log buffers render cleanly without clipping.
+fn ensure_terminal_size() {
+    if let Ok((cols, rows)) = size() {
+        let target_cols = cols.max(140);
+        let target_rows = rows.max(40);
+        if cols < target_cols || rows < target_rows {
+            let mut out = stdout();
+            let _ = execute!(out, SetSize(target_cols, target_rows));
+            let _ = write!(out, "\x1b[8;{};{}t", target_rows, target_cols);
+            let _ = out.flush();
+        }
+    }
+}
+
 async fn run_tui() -> Result<u8, Box<dyn std::error::Error>> {
     install_panic_hook();
+    ensure_terminal_size();
 
     enable_raw_mode()?;
     let mut stdout_handle = stdout();
