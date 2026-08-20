@@ -106,6 +106,35 @@ impl App {
         }
     }
 
+    pub fn first_issue(&mut self) {
+        let indices = self.filtered_issue_indices();
+        if !indices.is_empty() {
+            self.selected_filtered_index = 0;
+        }
+    }
+
+    pub fn last_issue(&mut self) {
+        let indices = self.filtered_issue_indices();
+        if !indices.is_empty() {
+            self.selected_filtered_index = indices.len() - 1;
+        }
+    }
+
+    pub fn page_up_issue(&mut self, step: usize) {
+        let indices = self.filtered_issue_indices();
+        if !indices.is_empty() {
+            self.selected_filtered_index = self.selected_filtered_index.saturating_sub(step);
+        }
+    }
+
+    pub fn page_down_issue(&mut self, step: usize) {
+        let indices = self.filtered_issue_indices();
+        if !indices.is_empty() {
+            self.selected_filtered_index =
+                (self.selected_filtered_index + step).min(indices.len() - 1);
+        }
+    }
+
     pub fn toggle_severity_filter(&mut self, sev: Severity) {
         if self.severity_filter == Some(sev) {
             self.severity_filter = None;
@@ -348,5 +377,29 @@ mod tests {
         assert!(app.has_active_filters());
         app.clear_filters();
         assert!(!app.has_active_filters());
+    }
+
+    #[test]
+    fn paging_and_boundary_jumps() {
+        let mut app = app_with_issues();
+        assert_eq!(app.selected_filtered_index, 0);
+
+        app.last_issue();
+        assert_eq!(app.selected_filtered_index, 2);
+
+        app.first_issue();
+        assert_eq!(app.selected_filtered_index, 0);
+
+        app.page_down_issue(1);
+        assert_eq!(app.selected_filtered_index, 1);
+
+        app.page_down_issue(10);
+        assert_eq!(app.selected_filtered_index, 2);
+
+        app.page_up_issue(1);
+        assert_eq!(app.selected_filtered_index, 1);
+
+        app.page_up_issue(10);
+        assert_eq!(app.selected_filtered_index, 0);
     }
 }

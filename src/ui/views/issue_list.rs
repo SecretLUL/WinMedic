@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 
 pub struct IssueListViewState<'a> {
     pub issues: &'a [Issue],
@@ -174,7 +174,9 @@ pub fn render_issue_list(f: &mut Frame, area: Rect, state: &IssueListViewState) 
                 .title(list_title),
         );
 
-        f.render_widget(issue_list, main_split[0]);
+        let mut list_state = ListState::default();
+        list_state.select(Some(state.selected_filtered_index));
+        f.render_stateful_widget(issue_list, main_split[0], &mut list_state);
     }
 
     // Right Pane: Detailed Issue View

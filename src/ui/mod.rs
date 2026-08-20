@@ -319,4 +319,36 @@ mod tests {
 
         assert!(!screen(&app, 160, 45).contains("Last action:"));
     }
+
+    #[test]
+    fn triage_scrolls_down_when_navigating_to_lower_issues() {
+        let mut app = App::new();
+        app.pending_confirm = None;
+        app.active_tab = TAB_TRIAGE;
+        for i in 0..30 {
+            app.issues.push(crate::engine::issue::Issue::new(
+                format!("issue_{i}"),
+                "system_integrity",
+                format!("Issue #{i:02} Finding Title"),
+                "System & Integrity",
+                crate::engine::issue::Severity::Warning,
+                crate::engine::issue::RiskScore::Low,
+                "Description",
+                "Technical details",
+                "Fix step",
+                vec![],
+            ));
+        }
+
+        // At index 0, Issue #00 is visible and Issue #25 is off-screen
+        app.selected_filtered_index = 0;
+        let rendered_top = screen(&app, 120, 24);
+        assert!(rendered_top.contains("Issue #00 Finding Title"));
+        assert!(!rendered_top.contains("Issue #25 Finding Title"));
+
+        // When navigating down to index 25, the list must scroll down and display Issue #25
+        app.selected_filtered_index = 25;
+        let rendered_bottom = screen(&app, 120, 24);
+        assert!(rendered_bottom.contains("Issue #25 Finding Title"));
+    }
 }
