@@ -123,6 +123,8 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
         KeyCode::Char('a') | KeyCode::Char('A') => {
             if app.active_tab == TAB_DASHBOARD {
                 app.start_scan();
+            } else if app.active_tab == TAB_TRIAGE {
+                app.toggle_select_all_issues();
             } else {
                 app.select_all_issues();
             }

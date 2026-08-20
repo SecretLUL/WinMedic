@@ -65,7 +65,28 @@ impl App {
             && !issue.is_fixed
         {
             issue.is_selected = !issue.is_selected;
+            self.save_scan_state();
         }
+    }
+
+    pub fn toggle_select_all_issues(&mut self) {
+        let indices = self.filtered_issue_indices();
+        let any_unselected = indices.iter().any(|&idx| {
+            if let Some(issue) = self.issues.get(idx) {
+                !issue.is_fixed && !issue.is_selected
+            } else {
+                false
+            }
+        });
+
+        for &orig_idx in &indices {
+            if let Some(issue) = self.issues.get_mut(orig_idx)
+                && !issue.is_fixed
+            {
+                issue.is_selected = any_unselected;
+            }
+        }
+        self.save_scan_state();
     }
 
     pub fn select_all_issues(&mut self) {
@@ -77,6 +98,7 @@ impl App {
                 issue.is_selected = true;
             }
         }
+        self.save_scan_state();
     }
 
     pub fn deselect_all_issues(&mut self) {
@@ -86,6 +108,7 @@ impl App {
                 issue.is_selected = false;
             }
         }
+        self.save_scan_state();
     }
 
     pub fn next_issue(&mut self) {
