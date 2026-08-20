@@ -52,7 +52,6 @@ pub fn render_app(f: &mut Frame, app: &App) {
                 app.health_score,
                 &app.issues,
                 &app.module_statuses,
-                &app.audit_entries,
             );
         }
         TAB_SCANNER => {
@@ -298,26 +297,14 @@ mod tests {
     }
 
     #[test]
-    fn the_dashboard_links_back_to_the_audit_trail_it_no_longer_owns() {
+    fn the_dashboard_renders_cleanly_without_quick_access_box() {
         let mut app = populated_app();
         app.active_tab = TAB_DASHBOARD;
 
         let rendered = screen(&app, 160, 45);
-        assert!(rendered.contains("Last action:"));
-        assert!(rendered.contains("Disabled a startup entry"));
-        assert!(
-            rendered.contains("[5] Full log, backups & rollback"),
-            "and points at the tab that now holds it"
-        );
-    }
-
-    #[test]
-    fn a_machine_with_no_audit_trail_shows_no_empty_last_action_row() {
-        let mut app = populated_app();
-        app.active_tab = TAB_DASHBOARD;
-        app.audit_entries.clear();
-
-        assert!(!screen(&app, 160, 45).contains("Last action:"));
+        assert!(rendered.contains("SYSTEM HEALTH INDEX"));
+        assert!(rendered.contains("SYSTEM SPECIFICATION"));
+        assert!(!rendered.contains("QUICK ACCESS"));
     }
 
     #[test]
