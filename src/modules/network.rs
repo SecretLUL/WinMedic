@@ -8,6 +8,20 @@ use tokio::time::sleep;
 use winreg::RegKey;
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
 
+/// Names the resolver check asks for, in order.
+///
+/// Two of them, from two different operators, because one name failing is not
+/// evidence that name resolution is broken — a single domain can be blocked,
+/// blackholed by a filtering resolver, or simply have a bad day. The check only
+/// reports a failure when *no* probe resolves.
+const DNS_PROBE_NAMES: &[&str] = &["dns.google", "www.microsoft.com"];
+
+/// What one resolver probe did.
+struct DnsProbe {
+    resolved: bool,
+    detail: String,
+}
+
 pub struct NetworkModule {
     runner: Arc<dyn CommandRunner>,
 }
@@ -25,6 +39,80 @@ impl NetworkModule {
 
     pub fn with_runner(runner: Arc<dyn CommandRunner>) -> Self {
         Self { runner }
+    }
+
+    /// Whether an `nslookup` run actually returned an answer record.
+    ///
+    /// Substring checks against the raw output do not work here: nslookup
+    /// echoes the resolver it used as a `Server:` / `Address:` header *before*
+    /// it reports anything, so both the server's name and the word `Address`
+    /// are present even when the lookup failed outright. An answer section is
+    /// what distinguishes the two, and it is introduced by a `Name:` line —
+    /// on English and German Windows alike. Failure output ("can't find",
+    /// "Non-existent domain", "DNS request timed out") never carries one.
+    fn nslookup_resolved(stdout: &str) -> bool {
+        stdout.lines().any(|line| {
+            line.trim_start()
+                .strip_prefix("Name:")
+                .is_some_and(|name| !name.trim().is_empty())
+        })
+    }
+
+    /// Ask the machine's own resolver for one name.
+    ///
+    /// Deliberately *without* a server argument. Passing one (`nslookup name
+    /// 8.8.8.8`) bypasses the configured resolver and queries that server
+    /// directly over port 53, which corporate networks, filtering routers,
+    /// VPN split-DNS setups and DNS-over-HTTPS-only configurations all block
+    /// as a matter of policy. On such a machine the probe failed while name
+    /// resolution was perfectly healthy, and the resulting critical finding
+    /// came back on every scan — `ipconfig /flushdns` cannot unblock somebody
+    /// else's firewall.
+    async fn probe_name(&self, name: &str) -> DnsProbe {
+        match self
+            .runner
+            .run("nslookup.exe", &[name], Duration::from_secs(10))
+            .await
+        {
+            Ok(out) if Self::nslookup_resolved(&out.stdout) => DnsProbe {
+                resolved: true,
+                detail: format!("nslookup {} resolved", name),
+            },
+            Ok(out) => {
+                let reason = out
+                    .stdout
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| line.starts_with("***") || line.contains("timed out"))
+                    .map(str::to_string)
+                    .unwrap_or_else(|| "no answer record returned".to_string());
+                DnsProbe {
+                    resolved: false,
+                    detail: format!("nslookup {}: {}", name, reason),
+                }
+            }
+            Err(err) => DnsProbe {
+                resolved: false,
+                detail: format!("nslookup {} could not be run: {}", name, err),
+            },
+        }
+    }
+
+    /// Whether the system resolver answers at all, with the per-probe log.
+    ///
+    /// The log is returned either way: it is what the finding's technical
+    /// details show, and what the repair uses to say whether it changed
+    /// anything.
+    async fn resolver_works(&self) -> (bool, Vec<String>) {
+        let mut log = Vec::new();
+        for name in DNS_PROBE_NAMES {
+            let probe = self.probe_name(name).await;
+            log.push(probe.detail);
+            if probe.resolved {
+                return (true, log);
+            }
+        }
+        (false, log)
     }
 
     async fn send_progress(
@@ -75,25 +163,12 @@ impl DiagnosticModule for NetworkModule {
             &progress_tx,
             20,
             "Testing DNS name resolution...",
-            Some("Looking up Google & Cloudflare DNS..."),
+            Some("Asking the machine's own resolver for two independent names..."),
         )
         .await;
         sleep(Duration::from_millis(150)).await;
 
-        let dns_lookup = self
-            .runner
-            .run(
-                "nslookup.exe",
-                &["dns.google", "8.8.8.8"],
-                Duration::from_secs(6),
-            )
-            .await;
-        let mut dns_healthy = false;
-        if let Ok(out) = dns_lookup
-            && (out.stdout.contains("8.8.8.8") || out.stdout.contains("Address"))
-        {
-            dns_healthy = true;
-        }
+        let (dns_healthy, probe_log) = self.resolver_works().await;
 
         if !dns_healthy {
             let ping_test = self
@@ -109,6 +184,8 @@ impl DiagnosticModule for NetworkModule {
                 Err(_) => false,
             };
 
+            let evidence = probe_log.join("\n");
+
             if ip_reachable {
                 issues.push(Issue::new(
                     "net_dns_failure",
@@ -118,11 +195,12 @@ impl DiagnosticModule for NetworkModule {
                     Severity::Critical,
                     RiskScore::Low,
                     "Websites cannot be resolved by domain name even though IP connectivity to the internet works. The usual cause is a stale DNS cache or broken resolver settings.",
-                    "nslookup failed, ping 1.1.1.1 succeeded",
+                    format!("{}\nping 1.1.1.1 succeeded", evidence),
                     "Flush the DNS cache (ipconfig /flushdns) and re-register the DNS resolver",
                     vec![
                         "Run ipconfig /flushdns".to_string(),
                         "Run ipconfig /registerdns".to_string(),
+                        "Confirm that name resolution works again".to_string(),
                     ],
                 ));
             } else {
@@ -134,7 +212,7 @@ impl DiagnosticModule for NetworkModule {
                     Severity::Warning,
                     RiskScore::Low,
                     "The system can reach neither external IP addresses nor DNS servers. Check the router, the Wi-Fi/LAN cable or any VPN connection.",
-                    "No response to ping / nslookup",
+                    format!("{}\nping 1.1.1.1 got no reply", evidence),
                     "Reset the network adapter and the Winsock / IP stack",
                     vec![
                         "netsh winsock reset".to_string(),
@@ -262,7 +340,21 @@ impl DiagnosticModule for NetworkModule {
                     .runner
                     .run("ipconfig.exe", &["/registerdns"], Duration::from_secs(8))
                     .await;
-                Ok("DNS cache flushed and DNS resolver re-registered successfully.".to_string())
+
+                // Neither command reports whether resolution actually recovered,
+                // and both exit zero on a machine whose resolver is still dead.
+                // Reporting success there marked the issue fixed, and the next
+                // scan raised the identical critical finding - the loop the user
+                // sees. Asking the resolver again is the only honest answer.
+                let (resolves, probe_log) = self.resolver_works().await;
+                if resolves {
+                    Ok("DNS cache flushed and the resolver re-registered - name resolution is working again.".to_string())
+                } else {
+                    Err(format!(
+                        "The DNS cache was flushed and the resolver re-registered, but names still do not resolve: {}. The fault is outside what WinMedic can reset - check the DNS servers configured on the adapter, the router, or an active VPN.",
+                        probe_log.join("; ")
+                    ))
+                }
             }
             "net_offline_warning" | "net_winsock_corrupt" => {
                 let _ = self
@@ -313,6 +405,99 @@ impl DiagnosticModule for NetworkModule {
 mod tests {
     use super::*;
     use crate::utils::cmd::{CmdOutput, MockCommandRunner};
+
+    /// What `nslookup dns.google` prints when the resolver answers.
+    const RESOLVED_OUTPUT: &str = "Server:  fritz.box\r\n\
+         Address:  192.168.178.1\r\n\
+         \r\n\
+         Nicht autorisierende Antwort:\r\n\
+         Name:    dns.google\r\n\
+         Addresses:  8.8.8.8\r\n\
+         \t  8.8.4.4\r\n";
+
+    /// What it prints when the query reached a server that had no answer.
+    const REFUSED_OUTPUT: &str = "Server:  fritz.box\r\n\
+         Address:  192.168.178.1\r\n\
+         \r\n\
+         *** fritz.box can't find dns.google: Non-existent domain\r\n";
+
+    /// What it prints when the queried server never answered at all - the shape
+    /// a pinned public resolver produces on a network that blocks port 53.
+    const TIMED_OUT_OUTPUT: &str = "DNS request timed out.\r\n\
+         \ttimeout was 2 seconds.\r\n\
+         Server:  UnKnown\r\n\
+         Address:  8.8.8.8\r\n\
+         \r\n\
+         *** Request to UnKnown timed-out\r\n";
+
+    #[test]
+    fn only_an_answer_record_counts_as_resolved() {
+        assert!(NetworkModule::nslookup_resolved(RESOLVED_OUTPUT));
+
+        // Both of these carry the words "Address" and the queried server, which
+        // is why a substring check reported a working resolver here.
+        assert!(!NetworkModule::nslookup_resolved(REFUSED_OUTPUT));
+        assert!(!NetworkModule::nslookup_resolved(TIMED_OUT_OUTPUT));
+        assert!(!NetworkModule::nslookup_resolved(""));
+    }
+
+    #[tokio::test]
+    async fn the_resolver_check_never_pins_a_public_dns_server() {
+        // A machine whose own resolver works, on a network that blocks outbound
+        // queries to 8.8.8.8. Pinning that server reported a critical DNS
+        // failure here that no repair could ever clear.
+        let mock = MockCommandRunner::new();
+        mock.add_response("nslookup.exe", CmdOutput::ok(RESOLVED_OUTPUT));
+        mock.add_response(
+            "netsh.exe",
+            CmdOutput::ok("Winsock Catalog Provider: MSAFD Tcpip"),
+        );
+
+        let module = NetworkModule::with_runner(Arc::new(mock.clone()));
+        let issues = module.scan(None).await.unwrap();
+
+        assert!(
+            !issues.iter().any(|i| i.id == "net_dns_failure"),
+            "a working resolver must not be reported"
+        );
+        let lookup = mock
+            .executed()
+            .into_iter()
+            .find(|c| c.contains("nslookup"))
+            .expect("the scan must ask the resolver");
+        assert_eq!(
+            lookup, "nslookup.exe dns.google",
+            "no server argument - the query has to go through the configured resolver"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_repair_that_did_not_restore_resolution_reports_a_failure() {
+        let mock = MockCommandRunner::new();
+        mock.add_response("nslookup.exe", CmdOutput::ok(REFUSED_OUTPUT));
+        mock.add_response("ipconfig.exe", CmdOutput::ok(""));
+
+        let module = NetworkModule::with_runner(Arc::new(mock));
+        let err = module.fix("net_dns_failure", None).await.unwrap_err();
+
+        assert!(err.contains("still do not resolve"));
+        assert!(
+            err.contains("dns.google"),
+            "the message has to say what was tried"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_repair_that_restored_resolution_reports_success() {
+        let mock = MockCommandRunner::new();
+        mock.add_response("nslookup.exe", CmdOutput::ok(RESOLVED_OUTPUT));
+        mock.add_response("ipconfig.exe", CmdOutput::ok(""));
+
+        let module = NetworkModule::with_runner(Arc::new(mock));
+        let msg = module.fix("net_dns_failure", None).await.unwrap();
+
+        assert!(msg.contains("working again"));
+    }
 
     #[tokio::test]
     async fn test_network_detects_dns_failure() {

@@ -101,10 +101,19 @@ pub fn cleanup_result(label: &str, stats: CleanStats) -> Result<String, String> 
 
 /// Clean files and subdirectories within a path, safely skipping locked files.
 pub fn clean_path_contents(path: &Path) -> CleanStats {
+    clean_filtered(path, |_| false)
+}
+
+/// The sweep behind [`clean_path_contents`], leaving alone whatever `skip`
+/// claims.
+fn clean_filtered(path: &Path, skip: fn(&Path) -> bool) -> CleanStats {
     let mut stats = CleanStats::default();
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
             let p = entry.path();
+            if skip(&p) {
+                continue;
+            }
             if let Ok(meta) = p.symlink_metadata() {
                 if meta.is_file() || meta.is_symlink() {
                     let len = meta.len();
@@ -116,7 +125,7 @@ pub fn clean_path_contents(path: &Path) -> CleanStats {
                         stats.locked_bytes += len;
                     }
                 } else if meta.is_dir() {
-                    let sub = clean_path_contents(&p);
+                    let sub = clean_filtered(&p, skip);
                     stats.freed_bytes += sub.freed_bytes;
                     stats.deleted_files += sub.deleted_files;
                     stats.skipped_locked += sub.skipped_locked;
@@ -270,6 +279,88 @@ pub fn get_user_profile() -> PathBuf {
     std::env::var("USERPROFILE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(r"C:\Users\Default"))
+}
+
+/// The smallest amount of reclaimable data worth raising a cleanup finding for.
+///
+/// Every directory this module sweeps is one Windows refills by itself. A
+/// running service writes its next log line, Explorer rewrites a shell stub, a
+/// browser caches the next favicon — all within seconds of a repair finishing.
+/// Reporting on any non-zero byte therefore produced findings that came back on
+/// the very next scan no matter how well the repair had worked, which read as a
+/// broken repair rather than as a machine doing its job.
+///
+/// A floor is what separates "there is something here worth reclaiming" from
+/// "the system has started refilling an empty directory". Below it there is
+/// nothing for the user to decide.
+pub const MIN_REPORTABLE_CLEANUP_BYTES: u64 = 10 * 1024 * 1024;
+
+/// The same floor for browser caches, which refill faster than anything else
+/// here: a few minutes of ordinary browsing puts tens of megabytes back, and a
+/// running browser holds part of its cache open so a sweep can never empty it
+/// completely in the first place.
+pub const MIN_REPORTABLE_BROWSER_CACHE_BYTES: u64 = 50 * 1024 * 1024;
+
+/// Whether a finding is worth raising for the data actually found.
+///
+/// Byte count only: a directory holding a thousand empty placeholder files has
+/// nothing to reclaim, and every one of them would survive the sweep anyway.
+pub fn worth_reporting(stats: DirStats, floor_bytes: u64) -> bool {
+    stats.bytes >= floor_bytes
+}
+
+/// Files Windows writes back the moment they are removed.
+///
+/// `$Recycle.Bin\<SID>\desktop.ini` is the one that matters: it is a 129-byte
+/// shell stub carrying the folder's CLSID and localised name, Explorer
+/// recreates it as soon as the Recycle Bin is touched, and `Clear-RecycleBin`
+/// never removes it. Counting it made an empty Recycle Bin report "129 B, 1
+/// files" on every scan, forever — a finding whose repair could not possibly
+/// clear it.
+fn is_recreated_shell_stub(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("desktop.ini"))
+}
+
+/// Measure a tree, leaving out whatever `skip` claims.
+fn dir_stats_filtered(path: &Path, skip: fn(&Path) -> bool) -> DirStats {
+    let mut stats = DirStats::default();
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return stats;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if skip(&p) {
+            continue;
+        }
+        let Ok(meta) = p.symlink_metadata() else {
+            continue;
+        };
+        if meta.is_file() || meta.is_symlink() {
+            stats.bytes += meta.len();
+            stats.files += 1;
+        } else if meta.is_dir() {
+            let sub = dir_stats_filtered(&p, skip);
+            stats.bytes += sub.bytes;
+            stats.files += sub.files;
+        }
+    }
+    stats
+}
+
+/// What the Recycle Bin is really holding, ignoring the stubs Windows owns.
+pub fn scan_recycle_bin_contents(path: &Path) -> DirStats {
+    dir_stats_filtered(path, is_recreated_shell_stub)
+}
+
+/// Empty the Recycle Bin directories, leaving the stubs Windows owns in place.
+///
+/// Deleting `desktop.ini` here frees 129 bytes, costs the Recycle Bin its
+/// localised name until Explorer notices, and changes nothing about the next
+/// scan — since the scan no longer counts it either.
+pub fn clean_recycle_bin_contents(path: &Path) -> CleanStats {
+    clean_filtered(path, is_recreated_shell_stub)
 }
 
 pub fn discover_delivery_optimization_dirs(sys_root: &Path) -> Vec<PathBuf> {
@@ -525,10 +616,15 @@ impl SystemCleanerModule {
     /// a Tokio worker for minutes, and — having no await point — would make the
     /// scan task un-abortable, so `[Esc]` could not cancel it.
     async fn scan_dirs(dirs: Vec<PathBuf>) -> DirStats {
+        Self::scan_dirs_with(dirs, scan_path_recursive).await
+    }
+
+    /// Like [`Self::scan_dirs`], but measuring each directory with `measure`.
+    async fn scan_dirs_with(dirs: Vec<PathBuf>, measure: fn(&Path) -> DirStats) -> DirStats {
         tokio::task::spawn_blocking(move || {
             let mut total = DirStats::default();
             for dir in &dirs {
-                let stats = scan_path_recursive(dir);
+                let stats = measure(dir);
                 total.bytes += stats.bytes;
                 total.files += stats.files;
             }
@@ -762,7 +858,7 @@ impl DiagnosticModule for SystemCleanerModule {
         let wudo_dirs = discover_delivery_optimization_dirs(&sys_root);
         let wudo_stats = Self::scan_dirs(wudo_dirs).await;
 
-        if wudo_stats.bytes > 0 || wudo_stats.files > 0 {
+        if worth_reporting(wudo_stats, MIN_REPORTABLE_CLEANUP_BYTES) {
             issues.push(Issue::new(
                 "sys_clean_delivery_optimization",
                 self.id(),
@@ -801,7 +897,7 @@ impl DiagnosticModule for SystemCleanerModule {
         let pkg_cache_dir = prog_data.join("Package Cache");
         let pkg_stats = Self::scan_dirs(vec![pkg_cache_dir]).await;
 
-        if pkg_stats.bytes > 0 || pkg_stats.files > 0 {
+        if worth_reporting(pkg_stats, MIN_REPORTABLE_CLEANUP_BYTES) {
             let mut pkg_issue = Issue::new(
                 "sys_clean_package_cache",
                 self.id(),
@@ -847,7 +943,7 @@ impl DiagnosticModule for SystemCleanerModule {
         let browser_dirs = discover_browser_cache_dirs(&local_app_data, &app_data);
         let browser_stats = Self::scan_dirs(browser_dirs).await;
 
-        if browser_stats.bytes > 0 || browser_stats.files > 0 {
+        if worth_reporting(browser_stats, MIN_REPORTABLE_BROWSER_CACHE_BYTES) {
             issues.push(Issue::new(
                 "sys_clean_browser_cache",
                 self.id(),
@@ -882,7 +978,7 @@ impl DiagnosticModule for SystemCleanerModule {
         let setup_log_dirs = discover_setup_log_dirs(&sys_root);
         let setup_log_stats = Self::scan_log_dirs(setup_log_dirs).await;
 
-        if setup_log_stats.bytes > 0 || setup_log_stats.files > 0 {
+        if worth_reporting(setup_log_stats, MIN_REPORTABLE_CLEANUP_BYTES) {
             issues.push(Issue::new(
                 "sys_clean_setup_logs",
                 self.id(),
@@ -917,7 +1013,7 @@ impl DiagnosticModule for SystemCleanerModule {
         let wer_dirs = discover_wer_and_dump_dirs(&local_app_data, &prog_data);
         let wer_stats = Self::scan_dirs(wer_dirs).await;
 
-        if wer_stats.bytes > 0 || wer_stats.files > 0 {
+        if worth_reporting(wer_stats, MIN_REPORTABLE_CLEANUP_BYTES) {
             issues.push(Issue::new(
                 "sys_clean_error_reporting",
                 self.id(),
@@ -953,7 +1049,7 @@ impl DiagnosticModule for SystemCleanerModule {
         let shader_dirs = discover_shader_and_cert_dirs(&local_app_data, &user_profile);
         let shader_stats = Self::scan_dirs(shader_dirs).await;
 
-        if shader_stats.bytes > 0 || shader_stats.files > 0 {
+        if worth_reporting(shader_stats, MIN_REPORTABLE_CLEANUP_BYTES) {
             issues.push(Issue::new(
                 "sys_clean_shader_certs",
                 self.id(),
@@ -986,9 +1082,9 @@ impl DiagnosticModule for SystemCleanerModule {
         .await;
 
         let recycle_dirs = self.paths.recycle_bins.clone();
-        let recycle_stats = Self::scan_dirs(recycle_dirs).await;
+        let recycle_stats = Self::scan_dirs_with(recycle_dirs, scan_recycle_bin_contents).await;
 
-        if recycle_stats.bytes > 0 || recycle_stats.files > 0 {
+        if worth_reporting(recycle_stats, MIN_REPORTABLE_CLEANUP_BYTES) {
             let mut recycle_issue = Issue::new(
                 "sys_clean_recycle_bin",
                 self.id(),
@@ -1030,7 +1126,7 @@ impl DiagnosticModule for SystemCleanerModule {
         let system_temp_dirs = discover_system_temp_dirs(&sys_root);
         let system_temp_stats = Self::scan_dirs(system_temp_dirs).await;
 
-        if system_temp_stats.bytes > 0 || system_temp_stats.files > 0 {
+        if worth_reporting(system_temp_stats, MIN_REPORTABLE_CLEANUP_BYTES) {
             issues.push(Issue::new(
                 "sys_clean_system_temp",
                 self.id(),
@@ -1216,7 +1312,7 @@ impl DiagnosticModule for SystemCleanerModule {
                 .await;
                 let leftovers = Self::clean_dirs_reporting(
                     self.paths.recycle_bins.clone(),
-                    clean_path_contents,
+                    clean_recycle_bin_contents,
                     &dbg,
                 )
                 .await;
@@ -1794,15 +1890,100 @@ The operation completed successfully.";
         assert!(RecycleBinReport::parse("DRIVE\nDRIVE C").drives.is_empty());
     }
 
+    /// A payload large enough to clear [`MIN_REPORTABLE_CLEANUP_BYTES`].
+    fn reportable_payload() -> Vec<u8> {
+        vec![0u8; MIN_REPORTABLE_CLEANUP_BYTES as usize + 1]
+    }
+
+    #[tokio::test]
+    async fn residue_the_system_refills_on_its_own_is_not_reported() {
+        // The sizes from a machine that had just been repaired: a few kilobytes
+        // Windows and the browsers wrote back within seconds. Reporting these
+        // made every cleanup finding reappear on the next scan no matter how
+        // well the repair had worked.
+        let td = TestDir::new("refill_residue");
+        td.create_file(
+            "AppData/Local/Google/Chrome/User Data/Default/Cache/f_00001",
+            &[7u8; 548 * 1024],
+        );
+        td.create_file("Windows/Logs/CBS/CBS.log", &[7u8; 287 * 1024]);
+        td.create_file("AppData/Local/D3DSCache/shader.bin", &[7u8; 288 * 1024]);
+        td.create_file("Windows/SystemTemp/svc.tmp", &[7u8; 5 * 1024]);
+
+        let module = sandboxed(&td, Arc::new(MockCommandRunner::new()));
+        let issues = module.scan(None).await.unwrap();
+
+        assert!(
+            issues.is_empty(),
+            "sub-threshold residue must not be raised as findings: {:?}",
+            issues.iter().map(|i| &i.id).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cache_worth_reclaiming_is_still_reported() {
+        let td = TestDir::new("reportable_cache");
+        td.create_file(
+            "AppData/Local/D3DSCache/shader.bin",
+            &vec![0u8; MIN_REPORTABLE_CLEANUP_BYTES as usize],
+        );
+
+        let module = sandboxed(&td, Arc::new(MockCommandRunner::new()));
+        let issues = module.scan(None).await.unwrap();
+
+        assert!(
+            issues.iter().any(|i| i.id == "sys_clean_shader_certs"),
+            "the floor must not hide a cache that is actually holding space"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_recycle_bin_shell_stub_is_never_counted() {
+        // 129 bytes, exactly what Explorer writes back into an emptied bin.
+        const DESKTOP_INI: &[u8] = &[b'x'; 129];
+
+        let td = TestDir::new("recycle_stub");
+        let stub = td.create_file("$Recycle.Bin/S-1-5-21/desktop.ini", DESKTOP_INI);
+
+        let module = sandboxed(&td, Arc::new(MockCommandRunner::new()));
+        assert!(
+            !module
+                .scan(None)
+                .await
+                .unwrap()
+                .iter()
+                .any(|i| i.id == "sys_clean_recycle_bin"),
+            "an empty Recycle Bin holding only the shell stub is not a finding"
+        );
+
+        // And the sweep leaves it where it is, rather than deleting a file
+        // Windows recreates immediately.
+        let swept = clean_recycle_bin_contents(&td.path.join("$Recycle.Bin"));
+        assert_eq!(swept.deleted_files, 0);
+        assert!(stub.exists(), "the stub must survive the sweep");
+    }
+
+    #[test]
+    fn a_real_deleted_file_next_to_the_stub_still_counts() {
+        let td = TestDir::new("recycle_real_entry");
+        td.create_file("$Recycle.Bin/S-1-5-21/desktop.ini", &[1u8; 129]);
+        td.create_file("$Recycle.Bin/S-1-5-21/$RABCDEF.docx", &[2u8; 4096]);
+
+        let stats = scan_recycle_bin_contents(&td.path.join("$Recycle.Bin"));
+        assert_eq!(stats.files, 1, "only the deleted document counts");
+        assert_eq!(stats.bytes, 4096);
+    }
+
     #[tokio::test]
     async fn test_destructive_issues_are_not_auto_selected() {
         let mock = MockCommandRunner::new();
         let td = TestDir::new("auto_select_guard");
-        // Both destructive locations get content so the issues are raised.
-        td.create_file("$Recycle.Bin/S-1-5-21/deleted.docx", b"user document");
+        // Both destructive locations get enough content to clear the reporting
+        // floor, so the issues are raised.
+        td.create_file("$Recycle.Bin/S-1-5-21/deleted.docx", &reportable_payload());
         td.create_file(
             "ProgramData/Package Cache/vs/setup.msi",
-            b"installer payload",
+            &reportable_payload(),
         );
 
         let module = sandboxed(&td, Arc::new(mock));

@@ -54,6 +54,15 @@ const BENIGN_TASK_RESULTS: &[i64] = &[
 /// Stands in for a PowerShell failure that carried no stderr of its own.
 const NO_DETAIL: &str = "PowerShell reported no detail";
 
+/// Prefix the disable script uses to report the task's state back to WinMedic.
+///
+/// `Disable-ScheduledTask` succeeding is not the same as the task being off.
+/// A task the machine protects can swallow the change and still exit zero, and
+/// reporting that as a repaired issue is what left the user fixing the same
+/// finding over and over. Reading the state back turns that into an honest
+/// failure the user can act on.
+const STATE_MARKER: &str = "WINMEDIC_TASK_STATE=";
+
 /// A task as the inventory script reported it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ScheduledTask {
@@ -79,6 +88,19 @@ impl ScheduledTask {
             Some(code) => !BENIGN_TASK_RESULTS.contains(&code),
             None => false,
         }
+    }
+
+    /// Whether Task Scheduler currently refuses to run this task at all.
+    ///
+    /// This is exactly the state [`ScheduledTasksModule::fix`] leaves a task
+    /// in, and it is what makes a repair stick: a disabled task fires on no
+    /// trigger, so neither a deleted target nor a stale `LastTaskResult` can
+    /// cause anything further. Without this check the scan re-raised every
+    /// task it had just switched off — Windows never resets `LastTaskResult`,
+    /// and disabling a task obviously does not restore its missing program —
+    /// so the same findings came back on every run, repair after repair.
+    fn is_disabled(&self) -> bool {
+        self.state.trim().eq_ignore_ascii_case("Disabled")
     }
 }
 
@@ -290,6 +312,17 @@ impl ScheduledTasksModule {
         }
     }
 
+    /// The state the disable script read back, if it got that far and the
+    /// service answered.
+    fn parse_reported_state(stdout: &str) -> Option<String> {
+        stdout
+            .lines()
+            .find_map(|line| line.trim().strip_prefix(STATE_MARKER))
+            .map(str::trim)
+            .filter(|state| !state.is_empty())
+            .map(str::to_string)
+    }
+
     fn lookup(&self, issue_id: &str) -> Option<TaskRef> {
         self.known_tasks.lock().ok()?.get(issue_id).cloned()
     }
@@ -369,7 +402,11 @@ impl ScheduledTasksModule {
                 "icacls.exe $taskFile /grant \"*S-1-5-32-544:F\" | Out-Null; ",
                 "Disable-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop | Out-Null ",
                 "}} else {{ throw $_ }} ",
-                "}}"
+                "}} ",
+                // Read the state back from the service rather than trusting the
+                // cmdlet's exit code. Runs only when the disable did not throw.
+                "$state = (Get-ScheduledTask -TaskPath {0} -TaskName {1} -ErrorAction SilentlyContinue).State; ",
+                "Write-Output \"WINMEDIC_TASK_STATE=$state\""
             ),
             ps_single_quoted(&task.path),
             ps_single_quoted(&task.name),
@@ -381,6 +418,17 @@ impl ScheduledTasksModule {
             .await?;
 
         if out.success {
+            // A state the service would not report at all (the task was removed
+            // meanwhile, or is unreadable from here) is not evidence of failure,
+            // so only a state that positively contradicts the repair fails it.
+            if let Some(state) = Self::parse_reported_state(&out.stdout)
+                && !state.eq_ignore_ascii_case("Disabled")
+            {
+                return Err(format!(
+                    "'{}{}' still reports state '{}' after Disable-ScheduledTask. Windows accepted the command without applying it, which happens on tasks owned by TrustedInstaller — disable it from Task Scheduler, or leave it alone.",
+                    task.path, task.name, state
+                ));
+            }
             return Ok(format!(
                 "Scheduled task '{}{}' disabled. Re-enable it at any time with 'Enable-ScheduledTask'.",
                 task.path, task.name
@@ -462,8 +510,20 @@ impl DiagnosticModule for ScheduledTasksModule {
         sleep(Duration::from_millis(150)).await;
 
         // 1. Tasks whose program no longer exists.
+        //
+        // Tasks that are already switched off are skipped in both checks below.
+        // Disabling is the only thing a repair here does, so re-reporting a
+        // disabled task means reporting a finding the user has already dealt
+        // with — and one no repair could ever clear, since neither the missing
+        // program nor the recorded `LastTaskResult` changes by switching a task
+        // off. That is what made these findings return on every single scan.
+        let mut already_disabled = 0;
         let mut orphaned = 0;
         for task in &tasks {
+            if task.is_disabled() {
+                already_disabled += 1;
+                continue;
+            }
             let Some(missing) = Self::missing_target(&task.execute) else {
                 continue;
             };
@@ -517,6 +577,9 @@ impl DiagnosticModule for ScheduledTasksModule {
         //    something the user wants repaired rather than switched off.
         let mut failing = 0;
         for task in &tasks {
+            if task.is_disabled() {
+                continue;
+            }
             if !task.last_run_failed() {
                 continue;
             }
@@ -578,10 +641,11 @@ impl DiagnosticModule for ScheduledTasksModule {
             100,
             "Scheduled task diagnostics complete",
             Some(&format!(
-                "{} tasks checked: {} with a missing target, {} with a failed last run.",
+                "{} tasks checked: {} with a missing target, {} with a failed last run, {} already disabled (skipped).",
                 tasks.len(),
                 orphaned,
-                failing
+                failing,
+                already_disabled
             )),
         )
         .await;
@@ -879,6 +943,102 @@ mod tests {
             .unwrap();
         // Every embedded quote is doubled, so the name never stops being data.
         assert!(disable.contains(r"'Evil''; Remove-Item -Recurse C:\Windows; '''"));
+    }
+
+    #[tokio::test]
+    async fn a_task_that_was_already_disabled_is_not_reported_again() {
+        // Exactly the state `fix` leaves a task in. Re-reporting it here is what
+        // made repaired findings come back on every scan.
+        let module = module_with(vec![
+            format!(r"\Vendor\|Ghost Updater|Disabled|0|0|{}", MISSING_EXE),
+            format!(r"\Vendor\|Flaky Sync|Disabled|2147942402|3|{}", live_exe()),
+        ]);
+
+        assert!(
+            module.scan(None).await.unwrap().is_empty(),
+            "a disabled task fires on no trigger - neither check has anything left to report"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_same_task_stops_being_reported_once_it_is_disabled() {
+        let before = module_with(vec![format!(
+            r"\Vendor\|Ghost Updater|Ready|0|0|{}",
+            MISSING_EXE
+        )]);
+        assert_eq!(before.scan(None).await.unwrap().len(), 1);
+
+        // The identical inventory line as the system reports it after a repair.
+        let after = module_with(vec![format!(
+            r"\Vendor\|Ghost Updater|Disabled|0|0|{}",
+            MISSING_EXE
+        )]);
+        assert!(after.scan(None).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_disable_windows_swallows_is_reported_as_a_failure() {
+        let mock = MockCommandRunner::new();
+        // Exit code zero, but the task is still armed - what a TrustedInstaller
+        // owned task such as the UpdateOrchestrator brokers does.
+        mock.add_response(
+            "Disable-ScheduledTask",
+            CmdOutput::ok("WINMEDIC_TASK_STATE=Ready"),
+        );
+        mock.add_response(
+            "Get-ScheduledTask",
+            inventory(vec![format!(
+                r"\Vendor\|Ghost Updater|Ready|0|0|{}",
+                MISSING_EXE
+            )]),
+        );
+        let module = ScheduledTasksModule::with_runner(Arc::new(mock));
+
+        let issues = module.scan(None).await.unwrap();
+        let err = module.fix(&issues[0].id, None).await.unwrap_err();
+
+        assert!(err.contains("still reports state 'Ready'"));
+        assert!(err.contains("Ghost Updater"));
+    }
+
+    #[tokio::test]
+    async fn a_disable_the_service_confirms_succeeds() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "Disable-ScheduledTask",
+            CmdOutput::ok("WINMEDIC_TASK_STATE=Disabled"),
+        );
+        mock.add_response(
+            "Get-ScheduledTask",
+            inventory(vec![format!(
+                r"\Vendor\|Ghost Updater|Ready|0|0|{}",
+                MISSING_EXE
+            )]),
+        );
+        let module = ScheduledTasksModule::with_runner(Arc::new(mock));
+
+        let issues = module.scan(None).await.unwrap();
+        assert!(
+            module
+                .fix(&issues[0].id, None)
+                .await
+                .unwrap()
+                .contains("disabled")
+        );
+    }
+
+    #[test]
+    fn a_state_the_service_would_not_report_is_not_read_as_a_failure() {
+        // `$state` on a task that vanished renders as the empty string.
+        assert_eq!(
+            ScheduledTasksModule::parse_reported_state("WINMEDIC_TASK_STATE="),
+            None
+        );
+        assert_eq!(ScheduledTasksModule::parse_reported_state(""), None);
+        assert_eq!(
+            ScheduledTasksModule::parse_reported_state("noise\r\nWINMEDIC_TASK_STATE=Disabled\r\n"),
+            Some("Disabled".to_string())
+        );
     }
 
     #[tokio::test]
