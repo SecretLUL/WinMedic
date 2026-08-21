@@ -761,10 +761,12 @@ pub fn extract_driver_names(bytes: &[u8]) -> Vec<String> {
     }
     flush_driver_token(&current, &mut found);
 
-    // UTF-16LE runs
+    // UTF-16LE runs. Manual stepping instead of chunks_exact(2): the exact
+    // API differs between toolchain versions and index pairs sidestep that.
     let mut current = String::new();
-    for chunk in bytes.chunks_exact(2) {
-        let unit = u16::from_le_bytes([chunk[0], chunk[1]]);
+    let pairs = bytes.len() / 2 * 2;
+    for i in (0..pairs).step_by(2) {
+        let unit = u16::from_le_bytes([bytes[i], bytes[i + 1]]);
         let c = u32::from(unit);
         if (0x20..=0x7E).contains(&c) {
             current.push(char::from_u32(c).unwrap_or('?'));
