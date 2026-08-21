@@ -80,7 +80,7 @@ async fn test_scenario_1_full_system_scan_and_dry_run_triage() {
     }
 
     let mut issues = scan_handle.await.unwrap();
-    assert_eq!(finished_modules, 10);
+    assert_eq!(finished_modules, 11);
     assert!(!issues.is_empty());
 
     // 2. Triage state: verify issues present and select all

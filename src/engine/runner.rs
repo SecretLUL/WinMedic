@@ -887,7 +887,7 @@ mod tests {
     /// Deliberately a literal rather than `get_all_modules().len()`: derived
     /// from the registry these assertions would be tautologies, and would stop
     /// noticing a module that quietly fell out of it.
-    const MODULE_COUNT: usize = 10;
+    const MODULE_COUNT: usize = 11;
 
     fn sample_issues() -> Vec<Issue> {
         vec![

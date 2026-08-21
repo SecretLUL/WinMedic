@@ -222,7 +222,7 @@ async fn test_tier3_multi_module_scan_parallelism() {
     }
 
     let _issues = scan_handle.await.unwrap();
-    assert_eq!(finished_modules, 10);
+    assert_eq!(finished_modules, 11);
 }
 
 /// `create_vss: true` used to run `Checkpoint-Computer` on the machine running

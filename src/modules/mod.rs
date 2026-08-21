@@ -1,3 +1,4 @@
+pub mod crash_analysis;
 pub mod event_log;
 pub mod network;
 pub mod page_file;
@@ -127,6 +128,10 @@ pub fn get_all_modules_with_runner(
         )),
         Arc::new(page_file::PageFileModule::with_runner(runner.clone())),
         Arc::new(whea_logger::WheaLoggerModule::with_runner(
+            cfg.clone(),
+            runner.clone(),
+        )),
+        Arc::new(crash_analysis::CrashAnalysisModule::with_runner(
             cfg.clone(),
             runner,
         )),
