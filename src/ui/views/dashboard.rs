@@ -1,8 +1,6 @@
 use crate::engine::issue::{Issue, Severity};
 use crate::modules::ModuleStatus;
-use crate::safety::audit::AuditEntry;
 use crate::ui::theme::Theme;
-use crate::ui::widgets::safety_panel::latest_action_line;
 use crate::utils::hardware::SystemTelemetry;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -28,12 +26,7 @@ pub fn render_dashboard(
     health_score: u8,
     issues: &[Issue],
     module_statuses: &[(String, String, String, ModuleStatus)],
-    audit_entries: &[AuditEntry],
 ) {
-    // The summary bar grows by a line once there is an audit trail to show, so
-    // an untouched machine does not reserve space for an empty row.
-    let summary_height = if audit_entries.is_empty() { 5 } else { 6 };
-
     // The card grid follows the module list rather than a fixed slot count, so
     // registering a module cannot silently drop it off the dashboard.
     let row_count = module_statuses.len().div_ceil(CARDS_PER_ROW).max(1);
@@ -43,9 +36,8 @@ pub fn render_dashboard(
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(7),              // Health Score & Telemetry Gauges
-            Constraint::Min(cards_height),      // Module Status Cards
-            Constraint::Length(summary_height), // Quick Action & Status Summary
+            Constraint::Length(7),         // Health Score & Telemetry Gauges
+            Constraint::Min(cards_height), // Module Status Cards
         ])
         .split(area);
 
@@ -53,9 +45,9 @@ pub fn render_dashboard(
     let top_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(33), // Health Score
-            Constraint::Percentage(33), // CPU & RAM Gauges
-            Constraint::Percentage(34), // System & Hardware Specs
+            Constraint::Percentage(28), // Health Score
+            Constraint::Percentage(28), // CPU & RAM Gauges
+            Constraint::Percentage(44), // System & Hardware Specs
         ])
         .split(main_chunks[0]);
 
@@ -68,16 +60,6 @@ pub fn render_dashboard(
         Theme::CORAL
     };
 
-    let health_status_text = if health_score == 100 {
-        "OPTIMAL - all systems healthy"
-    } else if health_score >= 80 {
-        "GOOD - minor optimisations possible"
-    } else if health_score >= 50 {
-        "WARNING - action needed"
-    } else {
-        "CRITICAL - immediate repair recommended"
-    };
-
     let critical_count = issues
         .iter()
         .filter(|i| i.severity == Severity::Critical && !i.is_fixed)
@@ -86,15 +68,25 @@ pub fn render_dashboard(
         .iter()
         .filter(|i| i.severity == Severity::Warning && !i.is_fixed)
         .count();
+    let reboot_pending_count = issues.iter().filter(|i| i.is_reboot_pending).count();
+
+    let health_label = if reboot_pending_count > 0 {
+        format!(
+            " {}/100 ({} critical, {} warnings, {} reboot pending) ",
+            health_score, critical_count, warning_count, reboot_pending_count
+        )
+    } else {
+        format!(
+            " {}/100 ({} critical, {} warnings) ",
+            health_score, critical_count, warning_count
+        )
+    };
 
     let health_gauge = Gauge::default()
         .block(Theme::card_block("SYSTEM HEALTH INDEX"))
         .gauge_style(Style::default().fg(health_color).bg(Theme::BG_DEEP))
         .percent(health_score as u16)
-        .label(format!(
-            " {}/100 ({} critical, {} warnings) ",
-            health_score, critical_count, warning_count
-        ));
+        .label(health_label);
 
     f.render_widget(health_gauge, top_chunks[0]);
 
@@ -144,7 +136,7 @@ pub fn render_dashboard(
     f.render_widget(ram_gauge, telem_chunks[1]);
 
     // 3. System Specs Card
-    let sys_lines = if let Some(t) = telemetry {
+    let mut sys_lines = if let Some(t) = telemetry {
         let uptime_h = t.uptime_secs / 3600;
         let uptime_m = (t.uptime_secs % 3600) / 60;
         vec![
@@ -175,6 +167,18 @@ pub fn render_dashboard(
     } else {
         vec![Line::from("Loading system data...")]
     };
+
+    if reboot_pending_count > 0 {
+        sys_lines.push(Line::from(vec![
+            Span::styled("Reboot:  ", Style::default().fg(Theme::MUTED)),
+            Span::styled(
+                "PENDING (restart required)",
+                Style::default()
+                    .fg(Theme::AMBER)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    }
 
     let sys_card = Paragraph::new(sys_lines).block(Theme::card_block("SYSTEM SPECIFICATION"));
     f.render_widget(sys_card, top_chunks[2]);
@@ -268,86 +272,4 @@ pub fn render_dashboard(
             f.render_widget(card, slot_rect);
         }
     }
-
-    // Bottom Section: Quick Action Bar
-    let mut bottom_content = vec![
-        Line::from(vec![
-            Span::styled(
-                "  Quick actions: ",
-                Style::default()
-                    .fg(Theme::CYAN)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                " [S] ",
-                Style::default()
-                    .fg(Theme::AMBER)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "Start a full health scan   ",
-                Style::default().fg(Theme::TEXT_WHITE),
-            ),
-            Span::styled(
-                " [A] ",
-                Style::default()
-                    .fg(Theme::AMBER)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "One-click auto-fix all   ",
-                Style::default().fg(Theme::TEXT_WHITE),
-            ),
-            Span::styled(
-                " [3] ",
-                Style::default()
-                    .fg(Theme::AMBER)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "Open issue triage   ",
-                Style::default().fg(Theme::TEXT_WHITE),
-            ),
-            Span::styled(
-                " [5] ",
-                Style::default()
-                    .fg(Theme::AMBER)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "Settings & safety   ",
-                Style::default().fg(Theme::TEXT_WHITE),
-            ),
-            Span::styled(
-                " [?] ",
-                Style::default()
-                    .fg(Theme::AMBER)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("Help", Style::default().fg(Theme::TEXT_WHITE)),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                format!("  Safety status: {}", health_status_text),
-                Style::default()
-                    .fg(health_color)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "  │  VSS restore points are created automatically before every change.",
-                Style::default().fg(Theme::MUTED),
-            ),
-        ]),
-    ];
-
-    // The audit trail moved onto tab 5 when "Backups & Logs" was merged into
-    // Settings. This one line keeps the most recent action where the user
-    // already is, and points at the tab that holds the rest of it.
-    if let Some(line) = latest_action_line(audit_entries) {
-        bottom_content.push(line);
-    }
-
-    let bottom_bar =
-        Paragraph::new(bottom_content).block(Theme::card_block("QUICK ACCESS & RECOMMENDATIONS"));
-    f.render_widget(bottom_bar, main_chunks[2]);
 }

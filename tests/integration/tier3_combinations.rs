@@ -1,6 +1,6 @@
 #![allow(dead_code, unused_imports)]
 
-mod common;
+use crate::common;
 
 use std::fs::{self, File};
 use std::io::Write;
@@ -222,7 +222,7 @@ async fn test_tier3_multi_module_scan_parallelism() {
     }
 
     let _issues = scan_handle.await.unwrap();
-    assert_eq!(finished_modules, 9);
+    assert_eq!(finished_modules, 11);
 }
 
 /// `create_vss: true` used to run `Checkpoint-Computer` on the machine running
@@ -470,6 +470,7 @@ fn test_tier3_audit_logger_records_system_cleaner_fixes() {
 #[tokio::test]
 async fn test_tier3_triage_search_filtering_by_system_cleaner_title() {
     let mut app = App::new();
+    app.issues.clear();
     app.issues.push(Issue::new(
         "sys_clean_winsxs",
         "system_cleaner",
@@ -504,6 +505,7 @@ async fn test_tier3_triage_search_filtering_by_system_cleaner_title() {
 #[tokio::test]
 async fn test_tier3_triage_module_filtering_cycle() {
     let mut app = App::new();
+    app.issues.clear();
     app.issues.push(Issue::new(
         "sys_clean_winsxs",
         "system_cleaner",

@@ -43,6 +43,7 @@ pub fn render_footer(
                 ("←/→", "Tabs"),
                 ("↑/↓", "Select"),
                 ("Space", "On/Off"),
+                ("A", "All"),
                 ("C/W/I", "Filter"),
                 ("/", "Search"),
                 ("F", "Repair"),

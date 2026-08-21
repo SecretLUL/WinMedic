@@ -1,6 +1,6 @@
 [package]
 name = "winmedic"
-version = "0.3.4"
+version = "0.4.0"
 edition = "2024"
 # Verified against the locked dependency tree: edition 2024 itself needs 1.85,
 # but ratatui -> instability -> darling raises the floor to 1.88. CI enforces

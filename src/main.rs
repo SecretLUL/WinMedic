@@ -9,12 +9,13 @@ use crossterm::cursor::Show;
 use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    EnterAlternateScreen, LeaveAlternateScreen, SetSize, disable_raw_mode, enable_raw_mode, size,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use std::io::stdout;
+use std::io::{Write, stdout};
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;
@@ -179,7 +180,8 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         }
     });
 
-    let engine = DiagnosticEngine::new(&config);
+    let engine =
+        Arc::new(DiagnosticEngine::new(&config).with_restore_points(RestorePointService::real()));
     let (tx, mut rx) = channel::<ScanEvent>(100);
 
     if !quiet {
@@ -191,7 +193,9 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     }
 
     let scan_cancel = cancel.clone();
-    let engine_handle = tokio::spawn(async move { engine.run_scan(tx, scan_cancel).await });
+    let engine_for_scan = engine.clone();
+    let engine_handle =
+        tokio::spawn(async move { engine_for_scan.run_scan(tx, scan_cancel).await });
 
     let mut scan_cancelled = false;
     while let Some(evt) = rx.recv().await {
@@ -270,11 +274,6 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
             );
         }
 
-        // The other half of the seam described in `run_tui`: repairs from the
-        // command line protect the machine the same way the TUI does, and this
-        // is the only other place that says so.
-        let engine =
-            DiagnosticEngine::new(&config).with_restore_points(RestorePointService::real());
         let (fix_tx, mut fix_rx) = channel(100);
         let options = RepairOptions {
             create_vss: !args.no_vss && config.create_vss_before_repair,
@@ -283,9 +282,10 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         };
 
         let fix_cancel = cancel.clone();
+        let engine_for_fix = engine.clone();
         let mut issues_for_fix = std::mem::take(&mut issues);
         let fix_handle = tokio::spawn(async move {
-            let result = engine
+            let result = engine_for_fix
                 .run_repairs(&mut issues_for_fix, options, fix_tx, fix_cancel)
                 .await;
             (issues_for_fix, result)
@@ -398,8 +398,24 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
 
 // --------------------------------------------------------------------- TUI
 
+/// Ensure a comfortable minimum terminal size (165 columns x 42 rows)
+/// so that multi-column diagnostic cards and hardware specs render cleanly without clipping.
+fn ensure_terminal_size() {
+    if let Ok((cols, rows)) = size() {
+        let target_cols = cols.max(165);
+        let target_rows = rows.max(42);
+        if cols < target_cols || rows < target_rows {
+            let mut out = stdout();
+            let _ = execute!(out, SetSize(target_cols, target_rows));
+            let _ = write!(out, "\x1b[8;{};{}t", target_rows, target_cols);
+            let _ = out.flush();
+        }
+    }
+}
+
 async fn run_tui() -> Result<u8, Box<dyn std::error::Error>> {
     install_panic_hook();
+    ensure_terminal_size();
 
     enable_raw_mode()?;
     let mut stdout_handle = stdout();

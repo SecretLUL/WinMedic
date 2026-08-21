@@ -63,9 +63,32 @@ impl App {
         if let Some(&orig_idx) = indices.get(self.selected_filtered_index)
             && let Some(issue) = self.issues.get_mut(orig_idx)
             && !issue.is_fixed
+            && !issue.is_reboot_pending
         {
             issue.is_selected = !issue.is_selected;
+            self.save_scan_state();
         }
+    }
+
+    pub fn toggle_select_all_issues(&mut self) {
+        let indices = self.filtered_issue_indices();
+        let any_unselected = indices.iter().any(|&idx| {
+            if let Some(issue) = self.issues.get(idx) {
+                !issue.is_fixed && !issue.is_reboot_pending && !issue.is_selected
+            } else {
+                false
+            }
+        });
+
+        for &orig_idx in &indices {
+            if let Some(issue) = self.issues.get_mut(orig_idx)
+                && !issue.is_fixed
+                && !issue.is_reboot_pending
+            {
+                issue.is_selected = any_unselected;
+            }
+        }
+        self.save_scan_state();
     }
 
     pub fn select_all_issues(&mut self) {
@@ -73,10 +96,12 @@ impl App {
         for &orig_idx in &indices {
             if let Some(issue) = self.issues.get_mut(orig_idx)
                 && !issue.is_fixed
+                && !issue.is_reboot_pending
             {
                 issue.is_selected = true;
             }
         }
+        self.save_scan_state();
     }
 
     pub fn deselect_all_issues(&mut self) {
@@ -86,6 +111,7 @@ impl App {
                 issue.is_selected = false;
             }
         }
+        self.save_scan_state();
     }
 
     pub fn next_issue(&mut self) {
@@ -103,6 +129,35 @@ impl App {
             } else {
                 self.selected_filtered_index -= 1;
             }
+        }
+    }
+
+    pub fn first_issue(&mut self) {
+        let indices = self.filtered_issue_indices();
+        if !indices.is_empty() {
+            self.selected_filtered_index = 0;
+        }
+    }
+
+    pub fn last_issue(&mut self) {
+        let indices = self.filtered_issue_indices();
+        if !indices.is_empty() {
+            self.selected_filtered_index = indices.len() - 1;
+        }
+    }
+
+    pub fn page_up_issue(&mut self, step: usize) {
+        let indices = self.filtered_issue_indices();
+        if !indices.is_empty() {
+            self.selected_filtered_index = self.selected_filtered_index.saturating_sub(step);
+        }
+    }
+
+    pub fn page_down_issue(&mut self, step: usize) {
+        let indices = self.filtered_issue_indices();
+        if !indices.is_empty() {
+            self.selected_filtered_index =
+                (self.selected_filtered_index + step).min(indices.len() - 1);
         }
     }
 
@@ -348,5 +403,29 @@ mod tests {
         assert!(app.has_active_filters());
         app.clear_filters();
         assert!(!app.has_active_filters());
+    }
+
+    #[test]
+    fn paging_and_boundary_jumps() {
+        let mut app = app_with_issues();
+        assert_eq!(app.selected_filtered_index, 0);
+
+        app.last_issue();
+        assert_eq!(app.selected_filtered_index, 2);
+
+        app.first_issue();
+        assert_eq!(app.selected_filtered_index, 0);
+
+        app.page_down_issue(1);
+        assert_eq!(app.selected_filtered_index, 1);
+
+        app.page_down_issue(10);
+        assert_eq!(app.selected_filtered_index, 2);
+
+        app.page_up_issue(1);
+        assert_eq!(app.selected_filtered_index, 1);
+
+        app.page_up_issue(10);
+        assert_eq!(app.selected_filtered_index, 0);
     }
 }

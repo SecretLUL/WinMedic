@@ -182,7 +182,7 @@ pub fn render_fix_progress(
         .constraints([
             Constraint::Length(5), // Repair Progress Gauge & VSS Badge
             Constraint::Min(10),   // Live Repair Console Output
-            Constraint::Length(5), // Execution Summary & Reboot Alert
+            Constraint::Length(4), // Execution Summary & Reboot Alert
         ])
         .split(area);
 
@@ -293,65 +293,56 @@ pub fn render_fix_progress(
     f.render_widget(console_box, chunks[1]);
 
     // Bottom: Summary & Next Steps
-    let summary_lines = vec![
-        Line::from(vec![
-            Span::styled(
-                " Status: ",
-                Style::default()
-                    .fg(Theme::CYAN)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                if dry_run {
-                    format!("{} repair(s) planned", fixed_count)
+    let summary_lines = vec![Line::from(vec![
+        Span::styled(
+            " Status: ",
+            Style::default()
+                .fg(Theme::CYAN)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            if dry_run {
+                format!("{} repair(s) planned", fixed_count)
+            } else {
+                format!("{} fixed successfully", fixed_count)
+            },
+            Style::default()
+                .fg(if dry_run {
+                    Theme::AMBER
                 } else {
-                    format!("{} fixed successfully", fixed_count)
-                },
-                Style::default()
-                    .fg(if dry_run {
-                        Theme::AMBER
-                    } else {
-                        Theme::EMERALD
-                    })
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" │ ", Style::default().fg(Theme::BORDER)),
-            Span::styled(
-                format!("{} failed", failed_count),
-                Style::default()
-                    .fg(if failed_count > 0 {
-                        Theme::CORAL
-                    } else {
-                        Theme::TEXT_WHITE
-                    })
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" │ ", Style::default().fg(Theme::BORDER)),
-            Span::styled(
-                if dry_run {
-                    " Press [D] to run repairs for real "
-                } else if progress_percent >= 100 && failed_count == 0 {
-                    " All repairs completed successfully. "
-                } else if progress_percent >= 100 {
-                    " Some repairs need a system restart. "
-                } else if is_fixing {
-                    " Working through the repair scripts... "
+                    Theme::EMERALD
+                })
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" │ ", Style::default().fg(Theme::BORDER)),
+        Span::styled(
+            format!("{} failed", failed_count),
+            Style::default()
+                .fg(if failed_count > 0 {
+                    Theme::CORAL
                 } else {
-                    " Press [F] to start repairs, [D] to simulate "
-                },
-                Style::default()
-                    .fg(Theme::TEXT_WHITE)
-                    .add_modifier(Modifier::ITALIC),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(" Keys: ", Style::default().fg(Theme::MUTED)),
-            Span::styled(
-                "[PgUp/PgDn] Scroll log  [Home/End] Top/Live  [F] Start  [D] Simulate  [E] Report",
-                Style::default().fg(Theme::CYAN),
-            ),
-        ]),
-    ];
+                    Theme::TEXT_WHITE
+                })
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" │ ", Style::default().fg(Theme::BORDER)),
+        Span::styled(
+            if dry_run {
+                " Press [D] to run repairs for real "
+            } else if progress_percent >= 100 && failed_count == 0 {
+                " All repairs completed successfully. "
+            } else if progress_percent >= 100 {
+                " Some repairs need a system restart. "
+            } else if is_fixing {
+                " Working through the repair scripts... "
+            } else {
+                " Press [F] to start repairs, [D] to simulate "
+            },
+            Style::default()
+                .fg(Theme::TEXT_WHITE)
+                .add_modifier(Modifier::ITALIC),
+        ),
+    ])];
 
     let summary_box = Paragraph::new(summary_lines).block(Theme::card_block("SUMMARY & NOTES"));
     f.render_widget(summary_box, chunks[2]);

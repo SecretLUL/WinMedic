@@ -24,12 +24,13 @@
 
 **WinMedic** is a state-of-the-art terminal application (TUI) designed to autonomously diagnose, categorize, and safely repair Windows operating system errors, performance bottlenecks, update stalls, and broken configurations.
 
-Unlike opaque one-click cleanup tools, **WinMedic** is built on five fundamental principles:
+Unlike opaque one-click cleanup tools, **WinMedic** is built on six fundamental principles:
 1. **Zero Runtime Dependencies**: Single, compact, portable native `.exe` binary without .NET, Python, or external runtime requirements.
 2. **True Parallel Diagnostics**: All diagnostic modules execute concurrently via Tokio `JoinSet` for blazing-fast hardware and OS analysis.
-3. **Safety First**: Automatic **Windows System Restore Points (VSS)** and **Registry Snapshots** are taken prior to any modification — and every snapshot can be rolled back from inside the app.
+3. **Safety First**: Automatic **Windows System Restore Points (VSS)** (with a 3-minute creation window) and **Registry Snapshots** are taken prior to any modification — and every snapshot can be rolled back from inside the app.
 4. **Full Transparency & Live Triage**: Every issue is explained with technical logs, severity levels, risk scores, and step-by-step fix previews. A **dry-run mode** shows planned steps without changing anything, with instant live search and severity filtering.
-5. **Always Interruptible & Bounded**: Any running scan or repair can be aborted with `[Esc]` (or `Ctrl+C` headless) terminating child processes. Memory usage is bounded via a 2000-line ring-buffer.
+5. **Scan State Persistence & Reboot Reconciliation**: The entire diagnostic state is saved to `%APPDATA%\WinMedic\last_scan.json`. When restarting, WinMedic immediately restores your open issues without re-scanning, detects system restarts, and automatically reconciles pending update reboots.
+6. **Always Interruptible & Bounded**: Any running scan or repair can be aborted with `[Esc]` (or `Ctrl+C` headless) terminating child processes. Memory usage is bounded via a 2000-line ring-buffer.
 
 ---
 
@@ -39,15 +40,24 @@ Unlike opaque one-click cleanup tools, **WinMedic** is built on five fundamental
 | :--- | :--- | :--- |
 | **🛡 System Integrity** | DISM Component Store corruption, SFC system file integrity, CBS logs, VSS shadow copy health | Runs `DISM /RestoreHealth`, `sfc /scannow`, repairs Volume Shadow Copy services |
 | **🔄 Windows Update & Services** | `wuauserv`, `bits`, `cryptsvc`, `trustedinstaller`, bloated `SoftwareDistribution\Download` cache, stuck reboot flags | Gracefully resets update queues, purges corrupted download caches, re-registers update DLLs |
-| **🌐 Network & DNS** | DNS name resolution, gateway ping reachability, Winsock catalog integrity, rogue proxy settings | `ipconfig /flushdns`, `ipconfig /registerdns`, `netsh winsock reset`, `netsh int ip reset`, proxy cleanup |
+| **🌐 Network & DNS** | DNS name resolution through the machine's *own* resolver (two independent names, never a pinned public server), gateway ping reachability, Winsock catalog integrity, rogue proxy settings | `ipconfig /flushdns`, `ipconfig /registerdns`, `netsh winsock reset`, `netsh int ip reset`, proxy cleanup — the DNS repair re-queries the resolver afterwards and fails honestly if names still do not resolve |
 | **📋 Event Log & Crash Analysis** | Critical/Error event bursts in last 24h, WHEA hardware error architecture logs, `%SystemRoot%\Minidump` BSOD crash dumps | Corrupted log channel cleanup, crash dump analysis, hardware diagnostic recommendations |
 | **💾 Storage & Filesystem** | Dirty Bit detection (`fsutil dirty query C:`), SMART drive health, `%TEMP%` & `C:\Windows\Temp` junk accumulation, bloated `IconCache.db` | Triggers online `chkdsk C: /scan`, cleans temp files, resets icon/thumbnail cache & restarts Explorer |
 | **⚡ Registry & Autostart** | Orphaned `Run`/`RunOnce` startup keys, broken User Startup folder shortcuts, broken COM/Shell extension keys | Backs up target registry keys to `.reg` and safely removes invalid startup entries |
-| **🧹 System & Cache Cleaner** | WinSxS component store bloat (`DISM /AnalyzeComponentStore`), Delivery Optimization cache, Installer package cache, browser caches (Chrome, Edge, Firefox, Brave, Opera — all profiles), setup & CBS logs, WER crash archives, D3D shader & certificate caches, Recycle Bin, system temp | Runs `StartComponentCleanup`, purges the caches you select, and skips locked files instead of aborting the sweep |
-| **📅 Scheduled Tasks** | Tasks whose action points at a deleted program (`Get-ScheduledTask`), tasks whose last run failed with a real error code rather than a `SCHED_S_*` status, tasks with missed runs | Disables the task with `Disable-ScheduledTask` — reversible with `Enable-ScheduledTask`; nothing is deleted |
+| **🧹 System & Cache Cleaner** | WinSxS component store bloat (`DISM /AnalyzeComponentStore`), Delivery Optimization cache, Installer package cache, browser caches (Chrome, Edge, Brave, every installed Opera flavour incl. GX, Firefox — all profiles), setup & CBS logs, WER crash archives, D3D shader & certificate caches, Recycle Bin, system temp | Runs `StartComponentCleanup`, purges the caches you select, and skips locked files instead of aborting the sweep. Only raises a finding once a target actually holds something worth reclaiming (10 MB, 50 MB for browser caches), so a directory Windows has begun refilling is not reported as an unfixed issue |
+| **📅 Scheduled Tasks** | Tasks whose action points at a deleted program (`Get-ScheduledTask`), tasks whose last run failed with a real error code rather than a `SCHED_S_*` status, tasks with missed runs — tasks that are already disabled are skipped, since they fire on no trigger | Disables the task with `Disable-ScheduledTask`, with dynamic task resolution and automated ACL escalation (`takeown` / `icacls`) for protected system tasks — reversible with `Enable-ScheduledTask`; nothing is deleted. The task's state is read back afterwards, so a disable Windows accepts without applying is reported as a failure rather than as a repair |
 | **🧠 Page File & Memory** | Page file disabled with automatic management off (`Win32_PageFileUsage`), page file on a volume with under 10 % or 2 GB free, manually fixed limits below RAM/8 or with an inverted min/max range | Hands the page file back to Windows (system managed) or re-enables automatic management; the nearly-full-drive finding is advisory and changes nothing |
+| **🩺 WHEA Hardware Logger** | Windows Hardware Error Architecture (WHEA) physical faults: CPU Cache Hierarchy (Event 19), Fatal Machine Checks (Event 18), PCIe Root Port bus errors (Event 17), RAM/Memory controller parity errors (Event 47), Storage CPER records (Event 1) | Automatic PCIe ASPM power management optimization (`powercfg`) to prevent bus dropouts, schedules Windows Memory Diagnostic (`mdsched.exe`), provides exact hardware core/APIC-ID and bus:device:function triangulation and BIOS tuning guidance |
 
 Package Cache and Recycle Bin are classified `RiskScore::High` and are **deselected by default**, so `--auto-fix` never empties them unattended. Every Page File & Memory finding is `RiskScore::High` for the same reason — each one needs a restart before it takes effect — and is likewise deselected. A scheduled task that merely *fails*, rather than pointing at a deleted program, is deselected too: switching it off is a judgement call, so it is left for you to tick.
+
+### A repaired finding stays repaired
+
+A scan must not re-raise what a repair has already dealt with, and must not raise anything a repair could never clear. Three rules enforce that:
+
+- **A disabled scheduled task is not a finding.** Disabling is the only thing the repair does, and Windows never resets a task's `LastTaskResult` or restores its deleted program — so a task the scan reported again after it had been switched off could never be cleared, no matter how often you repaired it.
+- **Cleanup targets have a floor.** Every directory the cleaner sweeps is one the system refills by itself: a service writes its next log line, Explorer rewrites the Recycle Bin's `desktop.ini` shell stub, a browser caches the next favicon. Below the floor there is nothing to decide, so nothing is reported.
+- **DNS is tested through your resolver, and verified after the repair.** The check never pins a public DNS server, because networks that block outbound port 53 would otherwise produce a permanent critical finding that `ipconfig /flushdns` cannot possibly fix. After the repair the resolver is asked again, and the fix fails with the reason if names still do not resolve.
 
 ---
 
@@ -119,15 +129,15 @@ If you installed WinMedic through WinGet, prefer `winget upgrade SecretLUL.WinMe
 | **`[m]`** | Filter issues by diagnostic module (cycle through modules) in Triage tab |
 | **`[/]`** | Fulltext live search across findings, details & descriptions |
 | **`[x]`** | Reset all active filters and search queries |
-| **`[A]`** | Select all visible detected issues (1-Click Auto-Fix) |
+| **`[A]`** | Toggle select / deselect all visible detected issues (1-Click Auto-Fix) |
 | **`[N]`** | Deselect all issues |
 | **`[F]`** | Proceed to Repair Center / Execute repairs |
 | **`[D]`** | Toggle dry-run mode — repairs are shown, not executed |
 | **`[E]`** | Export diagnostic & repair report as self-contained HTML |
 | **`[B]`** | Settings & Safety tab: move `[↑]`/`[↓]` between the settings list and the registry snapshot list |
 | **`[U]`** | Settings & Safety tab: restore the selected registry snapshot — elsewhere: open the pending "update available" notice, which can download, verify and install the new version |
-| **`[PgUp]` / `[PgDn]`** | Scroll live log console (Scan and Repair tabs) |
-| **`[Home]` / `[End]`** | Jump to earliest log line / return to live tail follow mode |
+| **`[PgUp]` / `[PgDn]`** | Scroll live log console (Scan & Repair) or scroll issue list by page (Triage) |
+| **`[Home]` / `[End]`** | Jump to earliest log line / return to live tail (or jump to top / bottom in Triage) |
 | **`[←]` / `[→]` or `[h]` / `[l]`** | Switch tabs (BIOS-style, wraps around) |
 | **`[+]` / `[-]` or `[[` / `]]`** | Adjust the highlighted numeric setting (Settings & Safety tab) |
 | **`[↑]` / `[↓]` or `[j]` / `[k]`** | Navigate list items and scroll logs |
@@ -219,8 +229,8 @@ WinMedic is **not code-signed**, so Windows SmartScreen will warn you on first l
 
 ```powershell
 # Compare the published checksum against the file you downloaded
-$expected = (Get-Content .\winmedic-v0.3.4.exe.sha256).Split(' ')[0]
-$actual   = (Get-FileHash .\winmedic-v0.3.4.exe -Algorithm SHA256).Hash.ToLower()
+$expected = (Get-Content .\winmedic-v0.4.0.exe.sha256).Split(' ')[0]
+$actual   = (Get-FileHash .\winmedic-v0.4.0.exe -Algorithm SHA256).Hash.ToLower()
 if ($expected -eq $actual) { "OK - checksum matches" } else { "MISMATCH - do not run this file" }
 ```
 

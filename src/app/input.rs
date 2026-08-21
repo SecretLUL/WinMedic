@@ -123,6 +123,8 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
         KeyCode::Char('a') | KeyCode::Char('A') => {
             if app.active_tab == TAB_DASHBOARD {
                 app.start_scan();
+            } else if app.active_tab == TAB_TRIAGE {
+                app.toggle_select_all_issues();
             } else {
                 app.select_all_issues();
             }
@@ -179,18 +181,22 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
         },
         KeyCode::PageUp => match app.active_tab {
             TAB_SCANNER | TAB_REPAIR => app.scroll_log_up(10),
+            TAB_TRIAGE => app.page_up_issue(10),
             _ => {}
         },
         KeyCode::PageDown => match app.active_tab {
             TAB_SCANNER | TAB_REPAIR => app.scroll_log_down(10),
+            TAB_TRIAGE => app.page_down_issue(10),
             _ => {}
         },
         KeyCode::Home => match app.active_tab {
             TAB_SCANNER | TAB_REPAIR => app.scroll_log_top(),
+            TAB_TRIAGE => app.first_issue(),
             _ => {}
         },
         KeyCode::End => match app.active_tab {
             TAB_SCANNER | TAB_REPAIR => app.scroll_log_bottom(),
+            TAB_TRIAGE => app.last_issue(),
             _ => {}
         },
 
@@ -266,6 +272,7 @@ mod tests {
     fn app() -> App {
         let mut app = App::new();
         app.pending_confirm = None;
+        app.issues.clear();
         app
     }
 
@@ -689,5 +696,57 @@ mod tests {
         handle_key(&mut app, KeyCode::Esc);
         assert!(app.setting_input.is_none());
         assert_eq!(app.config.temp_clean_threshold_mb, 800);
+    }
+
+    #[test]
+    fn triage_navigation_keys() {
+        let mut app = app();
+        app.active_tab = TAB_TRIAGE;
+        for i in 0..15 {
+            app.issues.push(Issue::new(
+                format!("iss_{i}"),
+                "sys",
+                format!("Issue {i}"),
+                "Category",
+                Severity::Info,
+                RiskScore::Low,
+                "Desc",
+                "Details",
+                "Fix",
+                vec![],
+            ));
+        }
+
+        assert_eq!(app.selected_filtered_index, 0);
+
+        handle_key(&mut app, KeyCode::Down);
+        assert_eq!(app.selected_filtered_index, 1);
+
+        handle_key(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.selected_filtered_index, 2);
+
+        handle_key(&mut app, KeyCode::Up);
+        assert_eq!(app.selected_filtered_index, 1);
+
+        handle_key(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.selected_filtered_index, 0);
+
+        handle_key(&mut app, KeyCode::End);
+        assert_eq!(app.selected_filtered_index, 14);
+
+        handle_key(&mut app, KeyCode::Home);
+        assert_eq!(app.selected_filtered_index, 0);
+
+        handle_key(&mut app, KeyCode::PageDown);
+        assert_eq!(app.selected_filtered_index, 10);
+
+        handle_key(&mut app, KeyCode::PageDown);
+        assert_eq!(app.selected_filtered_index, 14);
+
+        handle_key(&mut app, KeyCode::PageUp);
+        assert_eq!(app.selected_filtered_index, 4);
+
+        handle_key(&mut app, KeyCode::PageUp);
+        assert_eq!(app.selected_filtered_index, 0);
     }
 }

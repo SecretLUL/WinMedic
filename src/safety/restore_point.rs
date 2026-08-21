@@ -158,7 +158,7 @@ fn checkpoint_script(description: &str) -> String {
 async fn create_system_restore_point(description: &str) -> RestorePointResult {
     let script = checkpoint_script(description);
 
-    match run_powershell(&script, Duration::from_secs(60)).await {
+    match run_powershell(&script, Duration::from_secs(180)).await {
         Ok(out) => {
             let combined = format!("{}\n{}", out.stdout, out.stderr);
             RestorePointResult::from_outcome(description, parse_checkpoint_output(&combined))
@@ -245,7 +245,7 @@ pub async fn list_restore_points() -> Vec<String> {
         }
     "#;
 
-    match run_powershell(script, Duration::from_secs(15)).await {
+    match run_powershell(script, Duration::from_secs(30)).await {
         Ok(out) => out
             .stdout
             .lines()

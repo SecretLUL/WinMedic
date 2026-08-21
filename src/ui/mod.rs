@@ -39,6 +39,7 @@ pub fn render_app(f: &mut Frame, app: &App) {
         app.issues.iter().filter(|i| !i.is_fixed).count(),
         app.is_scanning,
         app.dry_run,
+        app.has_pending_reboot(),
     );
 
     // 2. Render Active Tab View
@@ -52,7 +53,6 @@ pub fn render_app(f: &mut Frame, app: &App) {
                 app.health_score,
                 &app.issues,
                 &app.module_statuses,
-                &app.audit_entries,
             );
         }
         TAB_SCANNER => {
@@ -298,25 +298,96 @@ mod tests {
     }
 
     #[test]
-    fn the_dashboard_links_back_to_the_audit_trail_it_no_longer_owns() {
+    fn the_dashboard_renders_cleanly_without_quick_access_box() {
         let mut app = populated_app();
         app.active_tab = TAB_DASHBOARD;
 
         let rendered = screen(&app, 160, 45);
-        assert!(rendered.contains("Last action:"));
-        assert!(rendered.contains("Disabled a startup entry"));
-        assert!(
-            rendered.contains("[5] Full log, backups & rollback"),
-            "and points at the tab that now holds it"
-        );
+        assert!(rendered.contains("SYSTEM HEALTH INDEX"));
+        assert!(rendered.contains("SYSTEM SPECIFICATION"));
+        assert!(!rendered.contains("QUICK ACCESS"));
     }
 
     #[test]
-    fn a_machine_with_no_audit_trail_shows_no_empty_last_action_row() {
-        let mut app = populated_app();
-        app.active_tab = TAB_DASHBOARD;
-        app.audit_entries.clear();
+    fn triage_scrolls_down_when_navigating_to_lower_issues() {
+        let mut app = App::new();
+        app.pending_confirm = None;
+        app.active_tab = TAB_TRIAGE;
+        app.issues.clear();
+        for i in 0..30 {
+            app.issues.push(crate::engine::issue::Issue::new(
+                format!("issue_{i}"),
+                "system_integrity",
+                format!("Issue #{i:02} Finding Title"),
+                "System & Integrity",
+                crate::engine::issue::Severity::Warning,
+                crate::engine::issue::RiskScore::Low,
+                "Description",
+                "Technical details",
+                "Fix step",
+                vec![],
+            ));
+        }
 
-        assert!(!screen(&app, 160, 45).contains("Last action:"));
+        // At index 0, Issue #00 is visible and Issue #25 is off-screen
+        app.selected_filtered_index = 0;
+        let rendered_top = screen(&app, 120, 24);
+        assert!(rendered_top.contains("Issue #00 Finding Title"));
+        assert!(!rendered_top.contains("Issue #25 Finding Title"));
+
+        // When navigating down to index 25, the list must scroll down and display Issue #25
+        app.selected_filtered_index = 25;
+        let rendered_bottom = screen(&app, 120, 24);
+        assert!(rendered_bottom.contains("Issue #25 Finding Title"));
+    }
+
+    #[test]
+    fn header_shows_reboot_pending_badge_when_restart_is_pending() {
+        let mut app = populated_app();
+        app.issues.clear();
+        let mut issue = crate::engine::issue::Issue::new(
+            "wu_reboot_pending",
+            "windows_updates",
+            "System reboot pending after updates",
+            "Windows Update",
+            crate::engine::issue::Severity::Info,
+            crate::engine::issue::RiskScore::Low,
+            "Description",
+            "Details",
+            "Fix",
+            vec![],
+        );
+        issue.is_reboot_pending = true;
+        app.issues.push(issue);
+
+        assert!(app.has_pending_reboot());
+        let rendered = screen(&app, 160, 45);
+        assert!(rendered.contains("[!] REBOOT PENDING"));
+    }
+
+    #[test]
+    fn triage_view_shows_reboot_badge_for_pending_reboot_issues() {
+        let mut app = App::new();
+        app.pending_confirm = None;
+        app.active_tab = TAB_TRIAGE;
+        app.issues.clear();
+        let mut issue = crate::engine::issue::Issue::new(
+            "wu_reboot_pending",
+            "windows_updates",
+            "System reboot pending after updates",
+            "Windows Update",
+            crate::engine::issue::Severity::Info,
+            crate::engine::issue::RiskScore::Low,
+            "Description",
+            "Details",
+            "Fix",
+            vec![],
+        );
+        issue.is_reboot_pending = true;
+        app.issues.push(issue);
+
+        let rendered = screen(&app, 120, 24);
+        assert!(rendered.contains("[REBOOT]"));
+        assert!(rendered.contains("System restart pending:"));
     }
 }

@@ -26,11 +26,13 @@ pub mod filters;
 pub mod input;
 pub mod run_control;
 pub mod safety;
+pub mod scan_state;
 pub mod settings;
 pub mod state;
 
 pub use confirm::{ConfirmRequest, SystemActions};
 pub use input::handle_key;
+pub use scan_state::ScanState;
 pub use state::{App, SafetyFocus, SettingInput};
 
 /// Maximum number of log lines kept in memory for scan and repair terminal buffers.
