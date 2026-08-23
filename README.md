@@ -272,3 +272,12 @@ This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) 
 <div align="center">
 Built with ❤️ for Windows Power Users and System Administrators.
 </div>
+
+
+## Screenshots
+
+_Add a short demo GIF or screenshots of the main window here (see issue tracker)._
+
+Suggested captures:
+- Main dashboard after a scan
+- Repair / fix flow confirmation

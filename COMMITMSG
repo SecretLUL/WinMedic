@@ -1,0 +1,7 @@
+fix: Add screenshots or a demo GIF to the README
+
+- README.md: screenshots section placeholder for demo assets
+
+Fixes #19
+
+Signed-off-by: Vedant Madane <6527493+VedantMadane@users.noreply.github.com>
