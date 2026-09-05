@@ -25,7 +25,7 @@ use crate::app::{
 use eframe::egui::{self, RichText};
 use std::time::{Duration, Instant};
 
-/// The tab strip, in order. The indices are the `TAB_*` constants.
+/// Navigation destinations, in the order of the `TAB_*` constants.
 const TABS: [&str; 5] = [
     "Dashboard",
     "Health Scan",
@@ -42,7 +42,7 @@ const BUSY_REPAINT: Duration = Duration::from_millis(40);
 
 /// How often to redraw when nothing is running.
 ///
-/// Not zero, because the header carries live CPU and memory figures that would
+/// Not zero, because the dashboard carries live CPU and memory figures that would
 /// otherwise freeze until the user moved the mouse.
 const IDLE_REPAINT: Duration = Duration::from_millis(500);
 
@@ -51,7 +51,7 @@ pub struct WinMedicApp {
     last_telemetry_tick: Instant,
 }
 
-/// Draw the whole frame: header, tab strip, body, status bar and overlays.
+/// Draw the navigation, page header, body, status bar and overlays.
 ///
 /// Separate from [`WinMedicApp::ui`], which owns the parts a test has no use
 /// for — reading the keyboard and closing the window — so that a test can put
@@ -61,18 +61,22 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
     // context rather than nested inside a `Ui`.
     let ctx = ui.ctx().clone();
 
-    egui::Panel::top("header").show(ui, |ui| {
-        header(ui, app);
-        tab_bar(ui, app);
-    });
+    egui::Panel::left("navigation")
+        .exact_size(216.0)
+        .resizable(false)
+        .frame(egui::Frame::NONE.fill(theme::BG_SUNKEN).inner_margin(16))
+        .show(ui, |ui| sidebar(ui, app));
 
     egui::Panel::bottom("footer").show(ui, |ui| {
         footer(ui, app);
     });
 
-    egui::CentralPanel::default().show(ui, |ui| {
-        body(ui, app);
-    });
+    egui::CentralPanel::default()
+        .frame(egui::Frame::NONE.fill(theme::BG_DEEP).inner_margin(24))
+        .show(ui, |ui| {
+            header(ui, app);
+            body(ui, app);
+        });
 
     // Overlays, in the order the terminal front end stacked them: a pending
     // confirmation outranks a setting being edited, which outranks help.
@@ -98,106 +102,134 @@ impl WinMedicApp {
     }
 }
 
-fn header(ui: &mut egui::Ui, app: &mut App) {
-    ui.add_space(4.0);
+fn sidebar(ui: &mut egui::Ui, app: &mut App) {
+    ui.add_space(14.0);
     ui.horizontal(|ui| {
-        ui.label(
-            RichText::new(format!("WinMedic v{}", env!("CARGO_PKG_VERSION")))
-                .color(theme::CYAN)
-                .strong()
-                .size(16.0),
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 10, theme::SELECTED);
+        theme::icon(ui, rect.shrink(6.0), 1, theme::CYAN);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 1.0;
+            ui.label(RichText::new("WinMedic").size(21.0).strong());
+            ui.label(theme::muted("WINDOWS CARE").size(10.0));
+        });
+    });
+    ui.add_space(36.0);
+    ui.label(theme::muted("WORKSPACE").size(10.0).strong());
+    ui.add_space(8.0);
+    let open_issues = app.issues.iter().filter(|i| !i.is_fixed).count();
+    for (index, title) in TABS.iter().enumerate() {
+        let selected = app.active_tab == index;
+        let color = if selected { theme::CYAN } else { theme::MUTED };
+        let response = ui.add_sized(
+            [ui.available_width(), 46.0],
+            egui::Button::new("")
+                .selected(selected)
+                .fill(if selected {
+                    theme::SELECTED
+                } else {
+                    egui::Color32::TRANSPARENT
+                })
+                .stroke(egui::Stroke::NONE),
         );
-        ui.label(theme::muted("Windows Self-Healing Engine"));
-
-        if app.dry_run {
-            theme::badge(ui, "SIMULATION", theme::AMBER);
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, *title)
+        });
+        ui.painter().text(
+            egui::pos2(response.rect.left() + 38.0, response.rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            *title,
+            egui::FontId::proportional(13.0),
+            color,
+        );
+        // The button owns keyboard focus and its accessible label; the icon is decorative.
+        theme::icon(
+            ui,
+            egui::Rect::from_center_size(
+                egui::pos2(response.rect.left() + 16.0, response.rect.center().y),
+                egui::vec2(17.0, 17.0),
+            ),
+            index,
+            color,
+        );
+        if selected {
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(
+                    response.rect.left_top() + egui::vec2(0.0, 13.0),
+                    egui::vec2(3.0, 20.0),
+                ),
+                2,
+                theme::CYAN,
+            );
         }
-
-        // A repair that has done its half of the work and is waiting on the
-        // machine. Saying so beside the brand keeps it visible from every tab,
-        // which is the point: the findings behind it read as unfixed until the
-        // restart happens.
-        if app.has_pending_reboot() {
-            theme::badge(ui, "REBOOT PENDING", theme::AMBER);
+        if response
+            .on_hover_text(format!("{title} · {}", index + 1))
+            .clicked()
+        {
+            app.goto_tab(index);
         }
+    }
+    ui.add_space(16.0);
+    if app.is_scanning {
+        theme::badge(ui, "Scan in progress", theme::CYAN);
+    } else if open_issues > 0 {
+        theme::badge(ui, &format!("{open_issues} open findings"), theme::AMBER);
+    }
+    ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+        ui.add_space(8.0);
+        ui.label(theme::muted(format!("Version {}", env!("CARGO_PKG_VERSION"))).size(11.0));
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(12.0);
+        ui.label(theme::muted("Preview repair steps before applying changes.").size(12.0));
+        let mut dry_run = app.dry_run;
+        if ui.checkbox(&mut dry_run, "Simulation mode").changed() {
+            app.toggle_dry_run();
+        }
+    });
+}
 
-        // Right-aligned, so the system readout sits opposite the brand and
-        // does not shift as the numbers change width.
+fn header(ui: &mut egui::Ui, app: &mut App) {
+    let (title, description) = match app.active_tab {
+        TAB_SCANNER => (
+            "Scan your system",
+            "Follow each diagnostic check as it runs.",
+        ),
+        TAB_TRIAGE => (
+            "Review findings",
+            "Understand each issue and choose what to repair.",
+        ),
+        TAB_REPAIR => (
+            "Repair workspace",
+            "Track repairs, safeguards and command output.",
+        ),
+        TAB_SETTINGS => (
+            "Preferences & protection",
+            "Configure your checks and manage recovery options.",
+        ),
+        _ => ("System overview", "A clearer picture of your PC's health."),
+    };
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.label(RichText::new(title).size(28.0).strong());
+            ui.label(theme::muted(description));
+        });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if app.is_admin {
-                theme::badge(ui, "ADMIN", theme::EMERALD);
+                theme::badge(ui, "Administrator", theme::EMERALD);
             } else {
-                theme::badge(ui, "NO ADMIN", theme::CORAL);
+                theme::badge(ui, "Standard access", theme::MUTED);
             }
-
-            match app.telemetry.as_ref() {
-                Some(telemetry) => {
-                    ui.label(theme::muted(format!(
-                        "{} {}",
-                        telemetry.os_name, telemetry.os_version
-                    )));
-                    ui.separator();
-                    ui.label(format!(
-                        "RAM {:.1}/{:.1} GB",
-                        telemetry.ram_used_mb as f32 / 1024.0,
-                        telemetry.ram_total_mb as f32 / 1024.0
-                    ));
-                    ui.separator();
-                    ui.label(format!("CPU {:.1}%", telemetry.cpu_usage));
-                }
-                None => {
-                    ui.label(theme::muted("Reading system telemetry..."));
-                }
+            if app.has_pending_reboot() {
+                theme::badge(ui, "Restart pending", theme::AMBER);
             }
         });
     });
-    ui.add_space(4.0);
+    ui.add_space(22.0);
 }
-
-fn tab_bar(ui: &mut egui::Ui, app: &mut App) {
-    let open_issues = app.issues.iter().filter(|i| !i.is_fixed).count();
-
-    ui.horizontal(|ui| {
-        for (index, title) in TABS.iter().enumerate() {
-            // The two tabs that carry live information say so in the strip,
-            // so a user watching another tab still sees a scan finish.
-            let label = match index {
-                TAB_SCANNER if app.is_scanning => format!("{title}  (running)"),
-                TAB_TRIAGE if open_issues > 0 => format!("{title}  [{open_issues}]"),
-                _ => (*title).to_string(),
-            };
-
-            let selected = app.active_tab == index;
-            let text = if selected {
-                RichText::new(label).color(theme::CYAN).strong()
-            } else {
-                RichText::new(label).color(theme::MUTED)
-            };
-
-            if ui.selectable_label(selected, text).clicked() {
-                app.goto_tab(index);
-            }
-        }
-    });
-    ui.add_space(2.0);
-}
-
 fn footer(ui: &mut egui::Ui, app: &mut App) {
     ui.add_space(3.0);
     ui.horizontal(|ui| {
-        if app.dry_run {
-            theme::badge(ui, "SIMULATION", theme::AMBER);
-        }
-
-        match app.status_message.as_deref() {
-            Some(message) => {
-                ui.label(RichText::new(message).color(theme::EMERALD));
-            }
-            None => {
-                ui.label(theme::muted("Ready"));
-            }
-        }
-
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.button("Help").clicked() {
                 app.show_help = true;
@@ -205,11 +237,28 @@ fn footer(ui: &mut egui::Ui, app: &mut App) {
             if app.is_busy() && ui.button("Cancel").clicked() {
                 app.cancel_current_operation();
             }
+            if app.dry_run {
+                theme::badge(ui, "SIMULATION", theme::AMBER);
+            }
+            let message = app.status_message.as_deref().unwrap_or("Ready");
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(6.0, 6.0), egui::Sense::hover());
+                ui.painter().circle_filled(
+                    rect.center(),
+                    3.0,
+                    if app.is_busy() {
+                        theme::CYAN
+                    } else {
+                        theme::MUTED
+                    },
+                );
+                ui.add(egui::Label::new(theme::muted(message).size(12.0)).truncate())
+                    .on_hover_text(message);
+            });
         });
     });
     ui.add_space(3.0);
 }
-
 fn body(ui: &mut egui::Ui, app: &mut App) {
     match app.active_tab {
         TAB_DASHBOARD => views::dashboard::show(ui, app),
@@ -280,6 +329,7 @@ mod tests {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(1400.0, 900.0))
             .build_ui_state(|ui, app: &mut App| show(ui, app), app);
+        theme::apply(&harness.ctx);
         harness.run();
         harness
     }
@@ -357,7 +407,16 @@ mod tests {
                 let mut harness = Harness::builder()
                     .with_size(egui::vec2(size.0, size.1))
                     .build_ui_state(|ui, app: &mut App| show(ui, app), app);
+                theme::apply(&harness.ctx);
                 harness.run();
+
+                let help_rect = harness.get_by_label("Help").rect();
+                assert!(
+                    help_rect.top() > size.1 - 70.0 && help_rect.height() < 40.0,
+                    "tab {tab}: the status bar consumed the page at {}x{}: {help_rect:?}",
+                    size.0,
+                    size.1,
+                );
 
                 assert!(
                     harness.query_by_label_contains(title).is_some(),
@@ -388,6 +447,49 @@ mod tests {
         // The sixth tab was merged into Settings & Safety and must not come
         // back as a label the user can look for.
         assert!(harness.query_by_label_contains("Backups & Logs").is_none());
+    }
+
+    #[test]
+    fn sidebar_buttons_open_their_destination() {
+        let mut harness = window(populated_app());
+        for (index, title) in TABS.iter().enumerate() {
+            harness.get_by_label(title).click();
+            harness.run();
+            assert_eq!(harness.state().active_tab, index);
+        }
+    }
+
+    #[test]
+    fn dashboard_severity_link_opens_findings_without_stale_filters() {
+        let mut app = populated_app();
+        app.search_query = "old search".into();
+        app.module_filter = Some("storage".into());
+        let mut harness = window(app);
+        harness.get_by_label("Warnings").click();
+        harness.run();
+        assert_eq!(harness.state().active_tab, TAB_TRIAGE);
+        assert_eq!(
+            harness.state().severity_filter,
+            Some(crate::engine::issue::Severity::Warning)
+        );
+        assert!(harness.state().search_query.is_empty());
+        assert!(harness.state().module_filter.is_none());
+    }
+
+    #[test]
+    fn confirmation_blocks_clicks_on_the_navigation() {
+        let mut app = populated_app();
+        app.pending_confirm = Some(ConfirmRequest::Elevate);
+        let mut harness = window(app);
+        harness.get_by_label("Health Scan").click();
+        harness.run();
+        assert_eq!(harness.state().active_tab, TAB_DASHBOARD);
+        assert!(harness.state().pending_confirm.is_some());
+        harness
+            .get_by_label("Continue without Administrator")
+            .click();
+        harness.run();
+        assert!(harness.state().pending_confirm.is_none());
     }
 
     /// The whole point of that merge: none of the safety surface may go missing.

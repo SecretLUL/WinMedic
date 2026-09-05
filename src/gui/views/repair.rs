@@ -34,8 +34,8 @@ fn status(ui: &mut egui::Ui, app: &mut App) {
                 } else {
                     if ui
                         .add_enabled(
-                            selected > 0,
-                            egui::Button::new(if app.dry_run {
+                            selected > 0 && !app.is_busy(),
+                            theme::primary_button(if app.dry_run {
                                 "Simulate repairs"
                             } else {
                                 "Start repairs"
@@ -67,11 +67,14 @@ fn status(ui: &mut egui::Ui, app: &mut App) {
                     } else {
                         theme::EMERALD
                     })
-                    .text(format!("{done} / {}", app.total_to_fix)),
+                    .desired_height(8.0),
             );
 
             ui.add_space(6.0);
             ui.horizontal(|ui| {
+                ui.label(
+                    theme::muted(format!("{done} / {} completed", app.total_to_fix)).size(12.0),
+                );
                 theme::badge(ui, &format!("{} repaired", app.fixed_count), theme::EMERALD);
                 if app.failed_count > 0 {
                     theme::badge(ui, &format!("{} failed", app.failed_count), theme::CORAL);
@@ -98,6 +101,11 @@ fn console(ui: &mut egui::Ui, app: &mut App) {
             .stick_to_bottom(true)
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                if app.repair_console_lines.is_empty() {
+                    ui.label(theme::muted(
+                        "Repair output will appear here. Every step is recorded in your audit log.",
+                    ));
+                }
                 for line in &app.repair_console_lines {
                     // The engine already marks its own outcomes in the text, so
                     // colouring on those markers keeps a long run scannable

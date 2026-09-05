@@ -29,18 +29,17 @@ fn controls(ui: &mut egui::Ui, app: &mut App) {
             if ui.button("Cancel scan").clicked() {
                 app.cancel_current_operation();
             }
-        } else if ui.button("Start health scan").clicked() {
+        } else if ui
+            .add_enabled(!app.is_busy(), theme::primary_button("Start health scan"))
+            .clicked()
+        {
             app.start_scan();
         }
 
         ui.add_space(12.0);
 
-        let progress = app.scan_overall_progress as f32 / 100.0;
-        ui.add(
-            egui::ProgressBar::new(progress)
-                .fill(theme::CYAN)
-                .desired_width(260.0)
-                .text(format!("{}%", app.scan_overall_progress)),
+        ui.label(
+            RichText::new(format!("{}% complete", app.scan_overall_progress)).color(theme::CYAN),
         );
 
         if let Some(elapsed) = app.scan_elapsed() {
@@ -58,42 +57,59 @@ fn controls(ui: &mut egui::Ui, app: &mut App) {
 }
 
 fn modules(ui: &mut egui::Ui, app: &mut App) {
+    ui.add(
+        egui::ProgressBar::new(app.scan_overall_progress as f32 / 100.0)
+            .fill(theme::CYAN)
+            .desired_height(6.0),
+    );
+    ui.add_space(8.0);
     egui::ScrollArea::vertical()
         .id_salt("scan_modules")
         .show(ui, |ui| {
-            for module in &app.module_progress_list {
-                theme::card(ui, &format!("{} {}", module.icon, module.name), |ui| {
-                    let color = if module.failure.is_some() {
-                        theme::CORAL
-                    } else if module.is_done {
-                        theme::EMERALD
-                    } else {
-                        theme::CYAN
-                    };
+            for pair in app.module_progress_list.chunks(2) {
+                ui.columns(2, |columns| {
+                    for (index, module) in pair.iter().enumerate() {
+                        theme::card(&mut columns[index], &module.name, |ui| {
+                            let color = if module.failure.is_some() {
+                                theme::CORAL
+                            } else if module.is_done {
+                                theme::EMERALD
+                            } else {
+                                theme::CYAN
+                            };
 
-                    ui.add(
-                        egui::ProgressBar::new(module.percent as f32 / 100.0)
-                            .fill(color)
-                            .desired_height(8.0),
-                    );
+                            ui.set_min_height(42.0);
+                            ui.add(
+                                egui::ProgressBar::new(module.percent as f32 / 100.0)
+                                    .fill(color)
+                                    .desired_height(5.0),
+                            );
 
-                    ui.horizontal(|ui| {
-                        let step = if module.step.is_empty() {
-                            "Waiting..."
-                        } else {
-                            &module.step
-                        };
-                        ui.label(RichText::new(step).color(color));
+                            ui.horizontal(|ui| {
+                                let step = if module.step.is_empty() {
+                                    "Waiting..."
+                                } else {
+                                    &module.step
+                                };
+                                ui.add(
+                                    egui::Label::new(RichText::new(step).color(color).size(12.0))
+                                        .wrap(),
+                                );
 
-                        // How long the current step has been running is the
-                        // difference between "working" and "hung" for a module
-                        // sitting on a slow DISM call with nothing to report.
-                        if let Some(elapsed) = module.step_elapsed()
-                            && elapsed >= Duration::from_secs(3)
-                        {
-                            ui.label(theme::muted(format!("({})", format_duration(elapsed))));
-                        }
-                    });
+                                // How long the current step has been running is the
+                                // difference between "working" and "hung" for a module
+                                // sitting on a slow DISM call with nothing to report.
+                                if let Some(elapsed) = module.step_elapsed()
+                                    && elapsed >= Duration::from_secs(3)
+                                {
+                                    ui.label(theme::muted(format!(
+                                        "({})",
+                                        format_duration(elapsed)
+                                    )));
+                                }
+                            });
+                        });
+                    }
                 });
             }
         });
@@ -106,6 +122,11 @@ fn log(ui: &mut egui::Ui, app: &mut App) {
             .stick_to_bottom(true)
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                if app.scan_log_messages.is_empty() {
+                    ui.label(theme::muted(
+                        "Diagnostic activity will appear here when you start a scan.",
+                    ));
+                }
                 for line in &app.scan_log_messages {
                     ui.label(RichText::new(line).monospace().color(theme::MUTED));
                 }

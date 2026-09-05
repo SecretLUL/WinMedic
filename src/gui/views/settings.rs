@@ -40,10 +40,11 @@ fn settings(ui: &mut egui::Ui, app: &mut App) {
 
                     egui::Frame::NONE
                         .fill(fill)
-                        .inner_margin(egui::Margin::symmetric(6, 4))
+                        .corner_radius(10)
+                        .inner_margin(egui::Margin::symmetric(12, 12))
                         .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new(label).strong());
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
@@ -51,7 +52,21 @@ fn settings(ui: &mut egui::Ui, app: &mut App) {
                                         // dialog; the rest are booleans a click
                                         // can flip outright.
                                         let numeric = matches!(index, 4 | 5);
-                                        if ui.button(&value).clicked() {
+                                        let button = egui::Button::new(
+                                            RichText::new(&value).size(12.0).strong().color(
+                                                if value == "ON" {
+                                                    theme::CYAN
+                                                } else {
+                                                    theme::TEXT_WHITE
+                                                },
+                                            ),
+                                        )
+                                        .fill(if value == "ON" {
+                                            theme::SELECTED
+                                        } else {
+                                            theme::HOVER
+                                        });
+                                        if ui.add(button).on_hover_text(label).clicked() {
                                             app.safety_focus = SafetyFocus::Settings;
                                             app.selected_setting_index = index;
                                             if numeric {
@@ -60,10 +75,23 @@ fn settings(ui: &mut egui::Ui, app: &mut App) {
                                                 app.toggle_current_setting();
                                             }
                                         }
+                                        ui.with_layout(
+                                            egui::Layout::left_to_right(egui::Align::Center),
+                                            |ui| {
+                                                ui.add(
+                                                    egui::Label::new(RichText::new(label).strong())
+                                                        .wrap(),
+                                                );
+                                            },
+                                        );
                                     },
                                 );
                             });
-                            ui.label(theme::muted(explanation));
+                            // Keyboard hints stay available on hover without repeating
+                            // terminal instructions in every settings description.
+                            let description = explanation.split(" [").next().unwrap_or(explanation);
+                            ui.label(theme::muted(description).size(12.0))
+                                .on_hover_text(explanation);
                         });
                     ui.add_space(4.0);
                 }
