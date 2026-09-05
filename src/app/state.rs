@@ -2,10 +2,7 @@
 //! export. Behaviour that belongs to a specific feature lives in the sibling
 //! modules listed in [`crate::app`].
 
-use super::{
-    BackgroundEvent, TAB_COUNT, TAB_DASHBOARD, TAB_REPAIR, TAB_SCANNER, TAB_SETTINGS,
-    push_bounded_log,
-};
+use super::{BackgroundEvent, TAB_COUNT, TAB_DASHBOARD, TAB_SETTINGS, push_bounded_log};
 use crate::config::AppConfig;
 use crate::engine::issue::{Issue, Severity};
 use crate::engine::reporter::DiagnosticReporter;
@@ -132,7 +129,14 @@ pub struct App {
     pub severity_filter: Option<Severity>,
     pub module_filter: Option<String>,
     pub search_query: String,
-    pub is_searching: bool,
+    /// A one-shot request from the `/` binding: put the caret in the triage
+    /// search box.
+    ///
+    /// The terminal front end had to capture every keystroke itself and append
+    /// it to [`Self::search_query`]. A window has a real text field bound to
+    /// that same string, so the only thing `/` still has to do is say where the
+    /// keyboard should go. The front end clears the flag as it honours it.
+    pub focus_search: bool,
     pub selected_filtered_index: usize,
 
     // Live Scanner State
@@ -146,7 +150,6 @@ pub struct App {
     pub module_progress_list: Vec<ModuleScanProgress>,
     pub module_statuses: Vec<(String, String, String, ModuleStatus)>,
     pub scan_log_messages: VecDeque<String>,
-    pub scan_log_scroll: usize,
 
     // Live Repair State
     pub is_fixing: bool,
@@ -158,7 +161,6 @@ pub struct App {
     pub total_to_fix: usize,
     pub vss_status: String,
     pub repair_console_lines: VecDeque<String>,
-    pub repair_log_scroll: usize,
 
     // Safety: audit log, registry backups, VSS restore points
     pub audit_logger: AuditLogger,
@@ -189,7 +191,7 @@ pub struct App {
     /// windows, UAC prompts, restore points.
     ///
     /// Inert unless the caller opts in through
-    /// [`App::enable_real_system_actions`], which only the TUI entry point
+    /// [`App::enable_real_system_actions`], which only the desktop front end
     /// does — see [`SystemActions`].
     pub system_actions: SystemActions,
     pub should_quit: bool,
@@ -240,7 +242,7 @@ impl App {
             severity_filter: None,
             module_filter: None,
             search_query: String::new(),
-            is_searching: false,
+            focus_search: false,
             selected_filtered_index: 0,
             is_scanning: false,
             scan_overall_progress: 0,
@@ -251,7 +253,6 @@ impl App {
             scan_log_messages: VecDeque::from([String::from(
                 "WinMedic initialised. Ready to diagnose.",
             )]),
-            scan_log_scroll: 0,
             is_fixing: false,
             dry_run: false,
             current_fix_title: String::new(),
@@ -260,7 +261,6 @@ impl App {
             total_to_fix: 0,
             vss_status: "Ready".to_string(),
             repair_console_lines: VecDeque::from([String::from("Repair centre ready.")]),
-            repair_log_scroll: 0,
             audit_logger,
             reg_backup_mgr,
             audit_entries,
@@ -305,8 +305,8 @@ impl App {
     /// [`App::new`] builds an app that cannot touch it: confirming a dialog
     /// opens no browser and raises no UAC prompt, and a repair run asks Windows
     /// for no restore point. That default is what keeps `cargo test` — which
-    /// builds dozens of `App`s — off the developer's own desktop. The TUI entry
-    /// point is the one caller that wants the real thing, so it is the one
+    /// builds dozens of `App`s — off the developer's own desktop. The desktop
+    /// front end is the one caller that wants the real thing, so it is the one
     /// caller that opts in.
     ///
     /// The engine is rebuilt because it reads
@@ -328,8 +328,8 @@ impl App {
     ///
     /// Deliberately *not* part of [`App::new`]: constructing an `App` must stay
     /// free of network I/O so the test suite — which builds dozens of them
-    /// inside `#[tokio::test]` — never reaches out to api.github.com. The TUI
-    /// entry point calls this once, right after construction.
+    /// inside `#[tokio::test]` — never reaches out to api.github.com. The
+    /// desktop front end calls this once, right after construction.
     pub fn start_update_check(&mut self) {
         if !self.config.check_for_updates {
             return;
@@ -442,56 +442,6 @@ impl App {
         push_bounded_log(&mut self.repair_console_lines, line);
     }
 
-    pub fn scroll_log_up(&mut self, amount: usize) {
-        match self.active_tab {
-            TAB_SCANNER => {
-                let max_scroll = self.scan_log_messages.len().saturating_sub(1);
-                self.scan_log_scroll = (self.scan_log_scroll + amount).min(max_scroll);
-            }
-            TAB_REPAIR => {
-                let max_scroll = self.repair_console_lines.len().saturating_sub(1);
-                self.repair_log_scroll = (self.repair_log_scroll + amount).min(max_scroll);
-            }
-            _ => {}
-        }
-    }
-
-    pub fn scroll_log_down(&mut self, amount: usize) {
-        match self.active_tab {
-            TAB_SCANNER => {
-                self.scan_log_scroll = self.scan_log_scroll.saturating_sub(amount);
-            }
-            TAB_REPAIR => {
-                self.repair_log_scroll = self.repair_log_scroll.saturating_sub(amount);
-            }
-            _ => {}
-        }
-    }
-
-    pub fn scroll_log_top(&mut self) {
-        match self.active_tab {
-            TAB_SCANNER => {
-                self.scan_log_scroll = self.scan_log_messages.len().saturating_sub(1);
-            }
-            TAB_REPAIR => {
-                self.repair_log_scroll = self.repair_console_lines.len().saturating_sub(1);
-            }
-            _ => {}
-        }
-    }
-
-    pub fn scroll_log_bottom(&mut self) {
-        match self.active_tab {
-            TAB_SCANNER => {
-                self.scan_log_scroll = 0;
-            }
-            TAB_REPAIR => {
-                self.repair_log_scroll = 0;
-            }
-            _ => {}
-        }
-    }
-
     /// Export the current scan/repair report as an HTML file in the reports directory.
     pub fn export_report(&mut self) -> Result<std::path::PathBuf, String> {
         let base = dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
@@ -527,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn test_app_log_ring_buffer_and_scrolling() {
+    fn the_scan_log_evicts_its_oldest_lines_once_it_is_full() {
         let mut app = App::new();
         app.scan_log_messages.clear();
 
@@ -546,22 +496,6 @@ mod tests {
             app.scan_log_messages.back(),
             Some(&"Log line 2099".to_string())
         );
-
-        // Test scrolling
-        app.active_tab = TAB_SCANNER;
-        assert_eq!(app.scan_log_scroll, 0);
-
-        app.scroll_log_up(15);
-        assert_eq!(app.scan_log_scroll, 15);
-
-        app.scroll_log_down(5);
-        assert_eq!(app.scan_log_scroll, 10);
-
-        app.scroll_log_top();
-        assert_eq!(app.scan_log_scroll, MAX_LOG_LINES - 1);
-
-        app.scroll_log_bottom();
-        assert_eq!(app.scan_log_scroll, 0);
     }
 
     #[test]

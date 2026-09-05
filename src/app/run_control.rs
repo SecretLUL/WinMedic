@@ -23,7 +23,6 @@ impl App {
         self.issues.clear();
         self.selected_issue_index = 0;
         self.selected_filtered_index = 0;
-        self.scan_log_scroll = 0;
         self.scan_log_messages.clear();
         self.push_scan_log("Starting a full system health scan...");
 
@@ -74,7 +73,6 @@ impl App {
         self.fixed_count = 0;
         self.failed_count = 0;
         self.total_to_fix = selected_count;
-        self.repair_log_scroll = 0;
         self.vss_status = if self.dry_run {
             "Simulation".to_string()
         } else {

@@ -150,7 +150,7 @@ impl App {
         self.severity_filter = None;
         self.module_filter = None;
         self.search_query.clear();
-        self.is_searching = false;
+        self.focus_search = false;
         self.clamp_filtered_selection();
     }
 

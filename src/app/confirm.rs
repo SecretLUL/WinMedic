@@ -29,8 +29,8 @@ const UPDATE_TRANSFER_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 ///
 /// [`Default`] is deliberately the *inert* set, so an [`App`] built anywhere —
 /// a test, a future tool, a benchmark — cannot reach the desktop by accident.
-/// The real actions are installed once, explicitly, by the TUI entry point via
-/// [`App::enable_real_system_actions`].
+/// The real actions are installed once, explicitly, by the desktop front end
+/// via [`App::enable_real_system_actions`].
 #[derive(Debug, Clone, Copy)]
 pub struct SystemActions {
     /// Hand a release URL to the OS so it opens in the default browser.
@@ -274,7 +274,7 @@ impl App {
     ///
     /// Returns immediately: the work runs on the Tokio runtime and reports back
     /// through [`BackgroundEvent::UpdateInstallStep`] and
-    /// [`BackgroundEvent::UpdateInstallFinished`], so the TUI keeps drawing
+    /// [`BackgroundEvent::UpdateInstallFinished`], so the window keeps drawing
     /// while a multi-megabyte download is in flight.
     fn start_update_install(
         &mut self,
@@ -387,7 +387,7 @@ mod tests {
     /// A default-built [`App`] must not be able to reach the desktop. Accepting
     /// a dialog used to open a browser window and raise a UAC prompt on whoever
     /// ran the suite — several times per run, since more than one test accepts
-    /// one. The real actions are opt-in, and only the TUI opts in.
+    /// one. The real actions are opt-in, and only the desktop front end opts in.
     #[test]
     fn a_default_app_cannot_reach_the_desktop() {
         let actions = App::new().system_actions;

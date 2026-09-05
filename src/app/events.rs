@@ -1,8 +1,9 @@
 //! Draining the scan, repair and background channels into application state.
 //!
-//! Called once per frame from the TUI loop. Everything here is non-blocking:
-//! `try_recv` until empty, never awaiting, so a slow producer cannot stall
-//! rendering.
+//! Called once per frame from the front end, out of `eframe::App::logic` —
+//! which runs even while the window is hidden, so a scan does not appear to
+//! stall when it is minimised. Everything here is non-blocking: `try_recv`
+//! until empty, never awaiting, so a slow producer cannot stall rendering.
 
 use super::state::{App, ModuleScanProgress};
 use super::{BackgroundEvent, push_bounded_log};

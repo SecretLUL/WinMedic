@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod cmd;
+pub mod console;
 pub mod debug_log;
 pub mod fs_stats;
 pub mod hardware;

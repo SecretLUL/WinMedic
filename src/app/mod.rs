@@ -1,4 +1,4 @@
-//! Application state and behaviour for the interactive TUI.
+//! Application state and behaviour for the interactive front end.
 //!
 //! This used to be one 1400-line file holding UI state, key dispatch, filtering,
 //! run orchestration, backup listing and the update notice together. The split
@@ -30,7 +30,7 @@ pub mod settings;
 pub mod state;
 
 pub use confirm::{ConfirmRequest, SystemActions};
-pub use input::handle_key;
+pub use input::{Key, handle_key};
 pub use state::{App, SafetyFocus, SettingInput};
 
 /// Maximum number of log lines kept in memory for scan and repair terminal buffers.

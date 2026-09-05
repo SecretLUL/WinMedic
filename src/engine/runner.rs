@@ -244,8 +244,8 @@ impl DiagnosticEngine {
     /// Choose where `run_repairs` gets its restore point from.
     ///
     /// Only the two entry points that repair a real machine pass
-    /// [`RestorePointService::real`] here — the TUI (through
-    /// [`crate::app::SystemActions`]) and the `--fix` command line.
+    /// [`RestorePointService::real`] here — the desktop front end (through
+    /// [`crate::app::SystemActions`]) and the `--auto-fix` command line.
     pub fn with_restore_points(mut self, service: RestorePointService) -> Self {
         self.restore_point = service;
         self
