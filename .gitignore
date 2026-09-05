@@ -7,4 +7,5 @@ Thumbs.db
 *.exe
 .idea/
 .vscode/
+.zcode/
 implementation_plan.md

@@ -2,24 +2,14 @@
 // also what the integration tests link against. The binary is a thin front end
 // over it — declaring `mod app; mod config; …` here again would compile every
 // module a second time into a separate, untested set of types.
-use winmedic::{app, config, engine, safety, ui, utils};
+use winmedic::{config, engine, gui, safety, utils};
 
 use clap::Parser;
-use crossterm::cursor::Show;
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
-use crossterm::execute;
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
-use std::io::stdout;
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;
 
-use app::{App, handle_key};
 use config::AppConfig;
 use engine::exit_code;
 use engine::reporter::DiagnosticReporter;
@@ -31,8 +21,10 @@ use utils::admin::{is_admin, relaunch_as_admin};
 #[command(
     name = "WinMedic",
     version,
-    about = "WinMedic - Advanced Windows Self-Healing & Diagnostic TUI in Rust",
-    long_about = "A high-performance terminal utility that automatically diagnoses, categorizes, and safely repairs Windows errors, update stalls, registry bloat, and network issues.
+    about = "WinMedic - Advanced Windows Self-Healing & Diagnostic GUI in Rust",
+    long_about = "A high-performance Windows utility that automatically diagnoses, categorizes, and safely repairs Windows errors, update stalls, registry bloat, and network issues.
+
+Started with no arguments it opens its desktop window. Every flag below runs headless instead, reporting to the console it was started from.
 
 Exit codes (headless mode):
   0  no open issues above info level
@@ -74,7 +66,7 @@ struct CliArgs {
 }
 
 impl CliArgs {
-    /// Anything that runs without the interactive TUI.
+    /// Anything that runs without opening the window.
     fn is_headless(&self) -> bool {
         self.scan || self.auto_fix || self.json || self.dry_run || self.output.is_some()
     }
@@ -85,23 +77,26 @@ impl CliArgs {
     }
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
     let args = CliArgs::parse();
 
-    match run(args).await {
+    match run(args) {
         Ok(code) => ExitCode::from(code),
         Err(err) => {
-            // The TUI path may have died mid-frame; make sure the terminal is
-            // usable before the error reaches the user.
-            restore_terminal();
             eprintln!("WinMedic: {}", err);
             ExitCode::from(exit_code::INTERNAL_ERROR)
         }
     }
 }
 
-async fn run(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
+/// Decide which of the two front ends this invocation wants, and give it a
+/// runtime.
+///
+/// Deliberately not `#[tokio::main]`. That attribute would put `main` itself
+/// inside a runtime, and `run_gui` has to build one it can hold open for the
+/// life of the window — building a runtime from inside another one panics.
+/// Each branch therefore owns its own.
+fn run(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     // A binary replaced by an in-place update is still mapped by the process
     // that replaced it, so it cannot delete itself; the next start is the first
     // moment it can go. Best-effort and silent: leftover junk beside the
@@ -118,32 +113,11 @@ async fn run(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     }
 
     if args.is_headless() {
-        run_headless(args).await
+        let runtime = tokio::runtime::Runtime::new()?;
+        runtime.block_on(run_headless(args))
     } else {
-        run_tui().await
+        run_gui()
     }
-}
-
-/// Put the terminal back into a usable state.
-///
-/// Safe to call more than once and safe to call when the TUI never started —
-/// which is what makes it usable from the panic hook.
-fn restore_terminal() {
-    let _ = disable_raw_mode();
-    let _ = execute!(stdout(), LeaveAlternateScreen, DisableMouseCapture, Show);
-}
-
-/// Install a panic hook that hands the terminal back before printing.
-///
-/// Without this a panic inside the draw loop leaves the user with a terminal
-/// stuck in raw mode on the alternate screen: no echo, no cursor, no output.
-fn install_panic_hook() {
-    let default_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        restore_terminal();
-        eprintln!("\nWinMedic crashed unexpectedly. The terminal has been restored.");
-        default_hook(info);
-    }));
 }
 
 // ---------------------------------------------------------------- headless
@@ -179,7 +153,12 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         }
     });
 
-    let engine = DiagnosticEngine::new(&config);
+    // The other half of the seam described in `run_gui`: a run started from the
+    // command line protects the machine the same way the window does, and this
+    // is the only other place that says so. Scan and repairs share the one
+    // engine, so the restore point covers both.
+    let engine =
+        Arc::new(DiagnosticEngine::new(&config).with_restore_points(RestorePointService::real()));
     let (tx, mut rx) = channel::<ScanEvent>(100);
 
     if !quiet {
@@ -191,7 +170,9 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     }
 
     let scan_cancel = cancel.clone();
-    let engine_handle = tokio::spawn(async move { engine.run_scan(tx, scan_cancel).await });
+    let engine_for_scan = engine.clone();
+    let engine_handle =
+        tokio::spawn(async move { engine_for_scan.run_scan(tx, scan_cancel).await });
 
     let mut scan_cancelled = false;
     while let Some(evt) = rx.recv().await {
@@ -270,11 +251,6 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
             );
         }
 
-        // The other half of the seam described in `run_tui`: repairs from the
-        // command line protect the machine the same way the TUI does, and this
-        // is the only other place that says so.
-        let engine =
-            DiagnosticEngine::new(&config).with_restore_points(RestorePointService::real());
         let (fix_tx, mut fix_rx) = channel(100);
         let options = RepairOptions {
             create_vss: !args.no_vss && config.create_vss_before_repair,
@@ -283,9 +259,10 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         };
 
         let fix_cancel = cancel.clone();
+        let engine_for_fix = engine.clone();
         let mut issues_for_fix = std::mem::take(&mut issues);
         let fix_handle = tokio::spawn(async move {
-            let result = engine
+            let result = engine_for_fix
                 .run_repairs(&mut issues_for_fix, options, fix_tx, fix_cancel)
                 .await;
             (issues_for_fix, result)
@@ -396,56 +373,50 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     Ok(code)
 }
 
-// --------------------------------------------------------------------- TUI
+// --------------------------------------------------------------------- GUI
 
-async fn run_tui() -> Result<u8, Box<dyn std::error::Error>> {
-    install_panic_hook();
+fn run_gui() -> Result<u8, Box<dyn std::error::Error>> {
+    // WinMedic links into the console subsystem so that its headless mode keeps
+    // its exit codes and its pipes; see `utils::console` for the whole argument.
+    // The window has no use for the console that came with it.
+    utils::console::release_console_if_owned();
 
-    enable_raw_mode()?;
-    let mut stdout_handle = stdout();
-    execute!(stdout_handle, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout_handle);
-    let mut terminal = Terminal::new(backend)?;
+    // The engine is spawned onto tokio from inside the draw loop —
+    // `App::start_scan` calls `tokio::spawn` directly — so a runtime has to be
+    // current on the thread eframe draws from.
+    let runtime = tokio::runtime::Runtime::new()?;
 
-    let mut app = App::new();
-    // `App::new` builds an app that cannot touch the desktop. This is the one
-    // place that wants it to: accepting the update dialog should really open a
-    // browser here, accepting the elevation dialog should really raise UAC, and
-    // a repair run should really leave a restore point behind.
-    app.enable_real_system_actions();
-    app.start_update_check();
-    let mut last_telemetry_tick = Instant::now();
+    let mut viewport = eframe::egui::ViewportBuilder::default()
+        .with_title("WinMedic")
+        .with_inner_size([1280.0, 820.0])
+        .with_min_inner_size([960.0, 640.0]);
 
-    let loop_result = (|| -> Result<(), Box<dyn std::error::Error>> {
-        loop {
-            terminal.draw(|f| {
-                ui::render_app(f, &app);
-            })?;
+    // The same mark the executable carries in its PE resources, so the title
+    // bar and the taskbar agree with Explorer. A window with no icon still
+    // works, which is why a decode failure is not worth refusing to start over.
+    if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/logo.png")) {
+        viewport = viewport.with_icon(icon);
+    }
 
-            // `event::read()` only runs when `poll` said something is waiting,
-            // so short-circuiting keeps it from blocking the draw loop.
-            if event::poll(Duration::from_millis(40))?
-                && let Event::Key(key) = event::read()?
-                && key.kind == KeyEventKind::Press
-            {
-                handle_key(&mut app, key.code);
-            }
+    let options = eframe::NativeOptions {
+        viewport,
+        ..Default::default()
+    };
 
-            app.process_background_events();
+    let result = {
+        let _guard = runtime.enter();
+        eframe::run_native(
+            "WinMedic",
+            options,
+            Box::new(|cc| Ok(Box::new(gui::WinMedicApp::new(cc)))),
+        )
+    };
 
-            if last_telemetry_tick.elapsed() >= Duration::from_secs(1) {
-                app.refresh_telemetry();
-                last_telemetry_tick = Instant::now();
-            }
+    // Shut down rather than drop: a scan can still be in flight when the window
+    // closes, and dropping the runtime would block on it. Closing the window
+    // should not wait for a DISM call that has not come back yet.
+    runtime.shutdown_background();
 
-            if app.should_quit {
-                return Ok(());
-            }
-        }
-    })();
-
-    restore_terminal();
-    loop_result?;
-
+    result?;
     Ok(exit_code::OK)
 }

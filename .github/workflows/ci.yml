@@ -100,11 +100,14 @@ jobs:
       - uses: taiki-e/install-action@cargo-audit
 
       # Plain `cargo audit` fails on a vulnerability and passes on an
-      # informational warning, which is the policy we want: the three warnings
-      # open today (RUSTSEC-2024-0436 paste, RUSTSEC-2026-0002 and
-      # RUSTSEC-2026-0253 lru) all arrive through ratatui and cannot be
-      # resolved here. A gate that is red for reasons nobody can act on is a
-      # gate people learn to ignore. Warnings still show up in the job log.
+      # informational warning, which is the policy we want: a gate that goes red
+      # for reasons nobody can act on is a gate people learn to ignore, and the
+      # warnings still show up in the job log either way.
+      #
+      # The three this comment used to enumerate (RUSTSEC-2024-0436 `paste`,
+      # RUSTSEC-2026-0002 and RUSTSEC-2026-0253 `lru`) all arrived through
+      # ratatui and left with it when the terminal front end was replaced by
+      # egui. The tree audits clean as of that change.
       - name: Audit Dependencies
         run: cargo audit
 

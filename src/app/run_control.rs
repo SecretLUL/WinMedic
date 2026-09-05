@@ -23,7 +23,6 @@ impl App {
         self.issues.clear();
         self.selected_issue_index = 0;
         self.selected_filtered_index = 0;
-        self.scan_log_scroll = 0;
         self.scan_log_messages.clear();
         self.push_scan_log("Starting a full system health scan...");
 
@@ -62,7 +61,7 @@ impl App {
         let selected_count = self
             .issues
             .iter()
-            .filter(|i| i.is_selected && !i.is_fixed)
+            .filter(|i| i.is_selected && !i.is_fixed && !i.is_reboot_pending)
             .count();
         if selected_count == 0 {
             self.status_message = Some("No open issues selected for repair.".to_string());
@@ -74,9 +73,10 @@ impl App {
         self.fixed_count = 0;
         self.failed_count = 0;
         self.total_to_fix = selected_count;
-        self.repair_log_scroll = 0;
         self.vss_status = if self.dry_run {
             "Simulation".to_string()
+        } else if !self.config.create_vss_before_repair {
+            "Skipped".to_string()
         } else {
             "Initialising...".to_string()
         };

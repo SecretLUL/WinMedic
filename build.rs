@@ -8,7 +8,7 @@ fn main() {
     res.set("ProductName", "WinMedic");
     res.set(
         "FileDescription",
-        "WinMedic – Windows Self-Healing & Diagnostic TUI",
+        "WinMedic – Windows Self-Healing & Diagnostic GUI",
     );
     res.set("CompanyName", "SecretLUL");
     res.set("LegalCopyright", "Copyright (c) 2026 SecretLUL");

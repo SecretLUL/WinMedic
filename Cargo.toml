@@ -1,18 +1,18 @@
 [package]
 name = "winmedic"
-version = "0.3.4"
+version = "0.4.0"
 edition = "2024"
 # Verified against the locked dependency tree: edition 2024 itself needs 1.85,
-# but ratatui -> instability -> darling raises the floor to 1.88. CI enforces
-# this exact version in the `msrv` job so the two can never drift apart.
-rust-version = "1.88"
+# but egui/eframe raises the floor to 1.95. CI enforces this exact version in
+# the `msrv` job so the two can never drift apart.
+rust-version = "1.95"
 build = "build.rs"
 authors = ["Ammar <https://github.com/SecretLUL>"]
-description = "High-performance Windows Self-Healing & Diagnostic TUI in Rust"
+description = "High-performance Windows Self-Healing & Diagnostic GUI in Rust"
 readme = "README.md"
 license = "MIT"
-keywords = ["windows", "diagnostics", "repair", "tui", "ratatui"]
-categories = ["command-line-utilities", "system-administration"]
+keywords = ["windows", "diagnostics", "repair", "gui", "egui"]
+categories = ["gui", "system-administration"]
 
 [lib]
 name = "winmedic"
@@ -24,8 +24,6 @@ path = "src/main.rs"
 
 [dependencies]
 async-trait = "0.1"
-ratatui = "0.30"
-crossterm = "0.29"
 tokio = { version = "1.40", features = ["full"] }
 tokio-util = "0.7"
 clap = { version = "4.5", features = ["derive"] }
@@ -43,7 +41,21 @@ dirs = "6.0"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_System_Console",
 ] }
+
+# The desktop front end. Default features are off because most of them are for
+# platforms WinMedic does not target: `wayland` and `x11` are Linux display
+# servers, `web_screen_reader` is for the wasm build. What is left is the glow
+# (OpenGL) renderer, the bundled fonts, AccessKit for screen readers, and
+# `persistence` so the window comes back where the user left it.
+eframe = { version = "0.36", default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "glow",
+    "persistence",
+] }
+egui_extras = "0.36"
 
 [build-dependencies]
 winres = "0.1"
@@ -53,3 +65,6 @@ opt-level = 3
 lto = true
 codegen-units = 1
 panic = "abort"
+
+[dev-dependencies]
+egui_kittest = "0.36.1"

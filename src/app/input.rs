@@ -6,24 +6,67 @@
 //! moved somewhere it can be exercised.
 //!
 //! Dispatch is layered, and the order matters: a pending confirmation swallows
-//! everything, then the help overlay, then search input capture, and only then
-//! the normal bindings.
+//! everything, then the help overlay, and only then the normal bindings.
+//!
+//! Text entry is deliberately absent from that list. It used to be a layer of
+//! its own, because a terminal has no text fields and the search box and the
+//! numeric setting editor had to be assembled a keystroke at a time. The window
+//! has real fields bound to the same state, and while one of them holds focus
+//! the front end sends nothing here at all.
 
 use super::state::App;
 use super::{TAB_DASHBOARD, TAB_REPAIR, TAB_SCANNER, TAB_SETTINGS, TAB_TRIAGE};
 use crate::engine::issue::Severity;
-use crossterm::event::KeyCode;
 
-pub fn handle_key(app: &mut App, code: KeyCode) {
+/// A keystroke, expressed independently of any UI toolkit.
+///
+/// Dispatch used to take `crossterm::event::KeyCode` directly, which made this
+/// module — the single largest piece of interaction logic in the crate — a
+/// dependent of whichever library happened to be drawing the screen. It is the
+/// only thing in `app` that ever was. Naming the keys ourselves keeps the
+/// dispatch table and its tests intact across a change of front end; the front
+/// end's job is to translate its own key events into these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Key {
+    Char(char),
+    Enter,
+    Esc,
+    Backspace,
+    Tab,
+    /// Shift+Tab.
+    BackTab,
+    Up,
+    Down,
+    Left,
+    Right,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+    /// Everything the front end recognises but this table does not bind.
+    ///
+    /// Mapping the unbound keys onto one variant rather than dropping them at
+    /// the front end keeps "this key does nothing" a statement the dispatch
+    /// table makes, and therefore one a test can check.
+    Unbound,
+}
+
+/// How far Page Up and Page Down move the triage selection.
+///
+/// The terminal build derived this from the height of the visible list. A
+/// window resizes freely, so a fixed step is both simpler and steadier: the
+/// same keypress moves the same distance whatever the user has done to the
+/// window.
+const PAGE_STEP: usize = 10;
+
+pub fn handle_key(app: &mut App, code: Key) {
     // A pending confirmation swallows every other key.
     if app.pending_confirm.is_some() {
         match code {
-            KeyCode::Char('y')
-            | KeyCode::Char('Y')
-            | KeyCode::Char('j')
-            | KeyCode::Char('J')
-            | KeyCode::Enter => app.confirm_pending_action(),
-            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => app.dismiss_confirm(),
+            Key::Char('y') | Key::Char('Y') | Key::Char('j') | Key::Char('J') | Key::Enter => {
+                app.confirm_pending_action()
+            }
+            Key::Char('n') | Key::Char('N') | Key::Esc => app.dismiss_confirm(),
             _ => {}
         }
         return;
@@ -32,20 +75,20 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
     // A pending setting numeric input modal captures typing until saved or cancelled.
     if let Some(input) = app.setting_input.as_mut() {
         match code {
-            KeyCode::Char(c) if c.is_ascii_digit() => {
+            Key::Char(c) if c.is_ascii_digit() => {
                 if input.buffer.len() < 10 {
                     input.buffer.push(c);
                     input.error_msg = None;
                 }
             }
-            KeyCode::Backspace => {
+            Key::Backspace => {
                 input.buffer.pop();
                 input.error_msg = None;
             }
-            KeyCode::Enter => {
+            Key::Enter => {
                 app.submit_setting_input();
             }
-            KeyCode::Esc => {
+            Key::Esc => {
                 app.cancel_setting_input();
             }
             _ => {}
@@ -55,7 +98,7 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
 
     if app.show_help {
         match code {
-            KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+            Key::Char('?') | Key::Esc | Key::Char('q') | Key::Char('Q') => {
                 app.show_help = false;
             }
             _ => {}
@@ -63,39 +106,21 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
         return;
     }
 
-    if app.active_tab == TAB_TRIAGE && app.is_searching {
-        match code {
-            KeyCode::Esc | KeyCode::Enter => {
-                app.is_searching = false;
-            }
-            KeyCode::Backspace => {
-                app.search_query.pop();
-                app.clamp_filtered_selection();
-            }
-            KeyCode::Char(c) => {
-                app.search_query.push(c);
-                app.clamp_filtered_selection();
-            }
-            _ => {}
-        }
-        return;
-    }
-
     match code {
-        KeyCode::Char('q') | KeyCode::Char('Q') => app.should_quit = true,
-        KeyCode::Char('?') => app.show_help = true,
+        Key::Char('q') | Key::Char('Q') => app.should_quit = true,
+        Key::Char('?') => app.show_help = true,
 
-        KeyCode::Char('1') => app.goto_tab(TAB_DASHBOARD),
-        KeyCode::Char('2') => app.goto_tab(TAB_SCANNER),
-        KeyCode::Char('3') => app.goto_tab(TAB_TRIAGE),
-        KeyCode::Char('4') => app.goto_tab(TAB_REPAIR),
-        KeyCode::Char('5') => app.goto_tab(TAB_SETTINGS),
+        Key::Char('1') => app.goto_tab(TAB_DASHBOARD),
+        Key::Char('2') => app.goto_tab(TAB_SCANNER),
+        Key::Char('3') => app.goto_tab(TAB_TRIAGE),
+        Key::Char('4') => app.goto_tab(TAB_REPAIR),
+        Key::Char('5') => app.goto_tab(TAB_SETTINGS),
 
-        KeyCode::Tab => app.next_tab(),
-        KeyCode::BackTab => app.prev_tab(),
+        Key::Tab => app.next_tab(),
+        Key::BackTab => app.prev_tab(),
 
-        KeyCode::Char('s') | KeyCode::Char('S') => app.start_scan(),
-        KeyCode::Char('r') | KeyCode::Char('R') => {
+        Key::Char('s') | Key::Char('S') => app.start_scan(),
+        Key::Char('r') | Key::Char('R') => {
             if app.active_tab == TAB_SETTINGS {
                 app.load_safety_data();
                 app.refresh_restore_points();
@@ -106,13 +131,13 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
 
         // Hands the arrow keys to the backup list and back, so one tab can carry
         // both the settings list and the rollback target selection.
-        KeyCode::Char('b') | KeyCode::Char('B') if app.active_tab == TAB_SETTINGS => {
+        Key::Char('b') | Key::Char('B') if app.active_tab == TAB_SETTINGS => {
             app.toggle_safety_focus();
         }
 
-        KeyCode::Char('d') | KeyCode::Char('D') => app.toggle_dry_run(),
+        Key::Char('d') | Key::Char('D') => app.toggle_dry_run(),
 
-        KeyCode::Char('f') | KeyCode::Char('F') => {
+        Key::Char('f') | Key::Char('F') => {
             if app.active_tab == TAB_TRIAGE || app.active_tab == TAB_REPAIR {
                 app.start_repairs();
             } else {
@@ -120,16 +145,18 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
             }
         }
 
-        KeyCode::Char('a') | KeyCode::Char('A') => {
+        Key::Char('a') | Key::Char('A') => {
             if app.active_tab == TAB_DASHBOARD {
                 app.start_scan();
+            } else if app.active_tab == TAB_TRIAGE {
+                app.toggle_select_all_issues();
             } else {
                 app.select_all_issues();
             }
         }
-        KeyCode::Char('n') | KeyCode::Char('N') => app.deselect_all_issues(),
+        Key::Char('n') | Key::Char('N') => app.deselect_all_issues(),
 
-        KeyCode::Char('u') | KeyCode::Char('U') => {
+        Key::Char('u') | Key::Char('U') => {
             if app.active_tab == TAB_SETTINGS {
                 app.request_rollback();
             } else {
@@ -138,7 +165,7 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
             }
         }
 
-        KeyCode::Char('e') | KeyCode::Char('E') => match app.export_report() {
+        Key::Char('e') | Key::Char('E') => match app.export_report() {
             Ok(path) => {
                 app.status_message = Some(format!("Report exported: {}", path.display()));
             }
@@ -151,75 +178,68 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
         // list holds focus — there is nothing on that side to toggle, and
         // silently editing the hidden selection would be worse than doing
         // nothing.
-        KeyCode::Enter => match app.active_tab {
+        Key::Enter => match app.active_tab {
             TAB_TRIAGE => app.toggle_selected_issue(),
             TAB_SETTINGS if !app.backups_focused() => app.open_setting_input(),
             _ => {}
         },
 
-        KeyCode::Char(' ') => match app.active_tab {
+        Key::Char(' ') => match app.active_tab {
             TAB_TRIAGE => app.toggle_selected_issue(),
             TAB_SETTINGS if !app.backups_focused() => app.toggle_current_setting(),
             _ => {}
         },
 
-        KeyCode::Up | KeyCode::Char('k') => match app.active_tab {
+        // The scan and repair logs used to be scrolled from here. They are
+        // scroll areas now, which the mouse wheel and their own scrollbars
+        // drive, so there is nothing left for these keys to move.
+        Key::Up | Key::Char('k') => match app.active_tab {
             TAB_TRIAGE => app.prev_issue(),
             TAB_SETTINGS if app.backups_focused() => app.prev_backup(),
             TAB_SETTINGS => app.prev_setting(),
-            TAB_SCANNER | TAB_REPAIR => app.scroll_log_up(1),
             _ => {}
         },
-        KeyCode::Down | KeyCode::Char('j') => match app.active_tab {
+        Key::Down | Key::Char('j') => match app.active_tab {
             TAB_TRIAGE => app.next_issue(),
             TAB_SETTINGS if app.backups_focused() => app.next_backup(),
             TAB_SETTINGS => app.next_setting(),
-            TAB_SCANNER | TAB_REPAIR => app.scroll_log_down(1),
-            _ => {}
-        },
-        KeyCode::PageUp => match app.active_tab {
-            TAB_SCANNER | TAB_REPAIR => app.scroll_log_up(10),
-            _ => {}
-        },
-        KeyCode::PageDown => match app.active_tab {
-            TAB_SCANNER | TAB_REPAIR => app.scroll_log_down(10),
-            _ => {}
-        },
-        KeyCode::Home => match app.active_tab {
-            TAB_SCANNER | TAB_REPAIR => app.scroll_log_top(),
-            _ => {}
-        },
-        KeyCode::End => match app.active_tab {
-            TAB_SCANNER | TAB_REPAIR => app.scroll_log_bottom(),
             _ => {}
         },
 
-        KeyCode::Char('/') if app.active_tab == TAB_TRIAGE => app.is_searching = true,
-        KeyCode::Char('c') | KeyCode::Char('C') if app.active_tab == TAB_TRIAGE => {
+        // Jumping through the triage list, on the other hand, is still ours.
+        // The list is a scroll area too, but the mouse only moves the viewport;
+        // these keys move the selection, which is what Enter and Space act on.
+        Key::PageUp if app.active_tab == TAB_TRIAGE => app.page_up_issue(PAGE_STEP),
+        Key::PageDown if app.active_tab == TAB_TRIAGE => app.page_down_issue(PAGE_STEP),
+        Key::Home if app.active_tab == TAB_TRIAGE => app.first_issue(),
+        Key::End if app.active_tab == TAB_TRIAGE => app.last_issue(),
+
+        Key::Char('/') if app.active_tab == TAB_TRIAGE => app.focus_search = true,
+        Key::Char('c') | Key::Char('C') if app.active_tab == TAB_TRIAGE => {
             app.toggle_severity_filter(Severity::Critical);
         }
-        KeyCode::Char('w') | KeyCode::Char('W') if app.active_tab == TAB_TRIAGE => {
+        Key::Char('w') | Key::Char('W') if app.active_tab == TAB_TRIAGE => {
             app.toggle_severity_filter(Severity::Warning);
         }
-        KeyCode::Char('i') | KeyCode::Char('I') if app.active_tab == TAB_TRIAGE => {
+        Key::Char('i') | Key::Char('I') if app.active_tab == TAB_TRIAGE => {
             app.toggle_severity_filter(Severity::Info);
         }
-        KeyCode::Char('m') | KeyCode::Char('M') if app.active_tab == TAB_TRIAGE => {
+        Key::Char('m') | Key::Char('M') if app.active_tab == TAB_TRIAGE => {
             app.cycle_module_filter();
         }
-        KeyCode::Char('x') | KeyCode::Char('X') if app.active_tab == TAB_TRIAGE => {
+        Key::Char('x') | Key::Char('X') if app.active_tab == TAB_TRIAGE => {
             app.clear_filters();
         }
 
-        KeyCode::Left | KeyCode::Char('h') => app.prev_tab(),
-        KeyCode::Right | KeyCode::Char('l') => app.next_tab(),
+        Key::Left | Key::Char('h') => app.prev_tab(),
+        Key::Right | Key::Char('l') => app.next_tab(),
 
-        KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char(']')
+        Key::Char('+') | Key::Char('=') | Key::Char(']')
             if app.active_tab == TAB_SETTINGS && !app.backups_focused() =>
         {
             app.adjust_current_setting(true);
         }
-        KeyCode::Char('-') | KeyCode::Char('_') | KeyCode::Char('[')
+        Key::Char('-') | Key::Char('_') | Key::Char('[')
             if app.active_tab == TAB_SETTINGS && !app.backups_focused() =>
         {
             app.adjust_current_setting(false);
@@ -227,7 +247,7 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
 
         // Esc unwinds one layer at a time: filters, then backup focus, then a
         // running operation, then the tab itself.
-        KeyCode::Esc => {
+        Key::Esc => {
             if app.active_tab == TAB_TRIAGE && app.has_active_filters() {
                 app.clear_filters();
             } else if app.active_tab == TAB_SETTINGS && app.backups_focused() {
@@ -266,6 +286,7 @@ mod tests {
     fn app() -> App {
         let mut app = App::new();
         app.pending_confirm = None;
+        app.issues.clear();
         app
     }
 
@@ -306,7 +327,7 @@ mod tests {
         app.pending_confirm = Some(ConfirmRequest::Elevate);
 
         // 'q' or other arbitrary keys would normally trigger actions, but must be swallowed without dismissing.
-        handle_key(&mut app, KeyCode::Char('q'));
+        handle_key(&mut app, Key::Char('q'));
         assert!(!app.should_quit, "the modal must absorb the keystroke");
         assert!(
             app.pending_confirm.is_some(),
@@ -314,7 +335,7 @@ mod tests {
         );
 
         // 'n' or Esc dismisses the confirmation.
-        handle_key(&mut app, KeyCode::Esc);
+        handle_key(&mut app, Key::Esc);
         assert!(app.pending_confirm.is_none(), "Esc dismisses the modal");
     }
 
@@ -324,14 +345,14 @@ mod tests {
 
         // Dismiss via 'n'
         app.pending_confirm = Some(ConfirmRequest::Elevate);
-        handle_key(&mut app, KeyCode::Char(' '));
+        handle_key(&mut app, Key::Char(' '));
         assert!(app.pending_confirm.is_some(), "Space ignored");
-        handle_key(&mut app, KeyCode::Char('n'));
+        handle_key(&mut app, Key::Char('n'));
         assert!(app.pending_confirm.is_none(), "'n' dismisses");
 
         // Dismiss via 'N'
         app.pending_confirm = Some(ConfirmRequest::Elevate);
-        handle_key(&mut app, KeyCode::Char('N'));
+        handle_key(&mut app, Key::Char('N'));
         assert!(app.pending_confirm.is_none(), "'N' dismisses");
 
         // Confirm via 'y'
@@ -341,7 +362,7 @@ mod tests {
             release_url: "https://example.com".into(),
             download: None,
         });
-        handle_key(&mut app, KeyCode::Char('y'));
+        handle_key(&mut app, Key::Char('y'));
         assert!(app.pending_confirm.is_none(), "'y' confirms");
 
         // Confirm via 'Enter'
@@ -351,7 +372,7 @@ mod tests {
             release_url: "https://example.com".into(),
             download: None,
         });
-        handle_key(&mut app, KeyCode::Enter);
+        handle_key(&mut app, Key::Enter);
         assert!(app.pending_confirm.is_none(), "'Enter' confirms");
     }
 
@@ -361,35 +382,27 @@ mod tests {
         app.show_help = true;
         app.active_tab = TAB_DASHBOARD;
 
-        handle_key(&mut app, KeyCode::Char('3'));
+        handle_key(&mut app, Key::Char('3'));
         assert!(app.show_help, "still open");
         assert_eq!(app.active_tab, TAB_DASHBOARD, "tab switch was swallowed");
 
-        handle_key(&mut app, KeyCode::Esc);
+        handle_key(&mut app, Key::Esc);
         assert!(!app.show_help);
     }
 
+    /// `/` asks for the search box; it does not start capturing text itself.
     #[test]
-    fn search_mode_captures_letters_instead_of_triggering_bindings() {
+    fn slash_requests_the_search_box_only_on_the_triage_tab() {
         let mut app = app_with_issues();
+
+        app.active_tab = TAB_DASHBOARD;
+        handle_key(&mut app, Key::Char('/'));
+        assert!(!app.focus_search, "nothing to focus outside triage");
+
         app.active_tab = TAB_TRIAGE;
-        app.is_searching = true;
-
-        // 'q' and 's' are quit and scan outside search mode.
-        for c in "qs".chars() {
-            handle_key(&mut app, KeyCode::Char(c));
-        }
-
-        assert_eq!(app.search_query, "qs");
-        assert!(!app.should_quit);
-        assert!(!app.is_scanning);
-
-        handle_key(&mut app, KeyCode::Backspace);
-        assert_eq!(app.search_query, "q");
-
-        handle_key(&mut app, KeyCode::Enter);
-        assert!(!app.is_searching, "Enter leaves search mode");
-        assert_eq!(app.search_query, "q", "and keeps the query");
+        handle_key(&mut app, Key::Char('/'));
+        assert!(app.focus_search);
+        assert_eq!(app.search_query, "", "and types nothing by itself");
     }
 
     #[test]
@@ -397,10 +410,10 @@ mod tests {
         let mut app = app();
         app.active_tab = TAB_COUNT - 1;
 
-        handle_key(&mut app, KeyCode::Tab);
+        handle_key(&mut app, Key::Tab);
         assert_eq!(app.active_tab, 0);
 
-        handle_key(&mut app, KeyCode::BackTab);
+        handle_key(&mut app, Key::BackTab);
         assert_eq!(app.active_tab, TAB_COUNT - 1);
     }
 
@@ -410,27 +423,27 @@ mod tests {
         app.active_tab = 0;
 
         // Right arrow advances tab
-        handle_key(&mut app, KeyCode::Right);
+        handle_key(&mut app, Key::Right);
         assert_eq!(app.active_tab, 1);
 
         // 'l' advances tab
-        handle_key(&mut app, KeyCode::Char('l'));
+        handle_key(&mut app, Key::Char('l'));
         assert_eq!(app.active_tab, 2);
 
         // Left arrow goes back
-        handle_key(&mut app, KeyCode::Left);
+        handle_key(&mut app, Key::Left);
         assert_eq!(app.active_tab, 1);
 
         // 'h' goes back
-        handle_key(&mut app, KeyCode::Char('h'));
+        handle_key(&mut app, Key::Char('h'));
         assert_eq!(app.active_tab, 0);
 
         // Left arrow wraps to last tab
-        handle_key(&mut app, KeyCode::Left);
+        handle_key(&mut app, Key::Left);
         assert_eq!(app.active_tab, TAB_COUNT - 1);
 
         // Right arrow wraps back to first tab
-        handle_key(&mut app, KeyCode::Right);
+        handle_key(&mut app, Key::Right);
         assert_eq!(app.active_tab, 0);
     }
 
@@ -441,16 +454,16 @@ mod tests {
         app.selected_setting_index = 4; // temp_clean_threshold_mb (default 500)
         let initial = app.config.temp_clean_threshold_mb;
 
-        handle_key(&mut app, KeyCode::Char('+'));
+        handle_key(&mut app, Key::Char('+'));
         assert_eq!(app.config.temp_clean_threshold_mb, initial + 100);
 
-        handle_key(&mut app, KeyCode::Char('-'));
+        handle_key(&mut app, Key::Char('-'));
         assert_eq!(app.config.temp_clean_threshold_mb, initial);
 
-        handle_key(&mut app, KeyCode::Char(']'));
+        handle_key(&mut app, Key::Char(']'));
         assert_eq!(app.config.temp_clean_threshold_mb, initial + 100);
 
-        handle_key(&mut app, KeyCode::Char('['));
+        handle_key(&mut app, Key::Char('['));
         assert_eq!(app.config.temp_clean_threshold_mb, initial);
     }
 
@@ -459,15 +472,15 @@ mod tests {
         let mut app = app_with_issues();
 
         app.active_tab = TAB_DASHBOARD;
-        handle_key(&mut app, KeyCode::Char('c'));
+        handle_key(&mut app, Key::Char('c'));
         assert_eq!(app.severity_filter, None, "no filtering outside triage");
 
         app.active_tab = TAB_TRIAGE;
-        handle_key(&mut app, KeyCode::Char('c'));
+        handle_key(&mut app, Key::Char('c'));
         assert_eq!(app.severity_filter, Some(Severity::Critical));
 
         // Pressing it again clears it.
-        handle_key(&mut app, KeyCode::Char('c'));
+        handle_key(&mut app, Key::Char('c'));
         assert_eq!(app.severity_filter, None);
     }
 
@@ -477,11 +490,11 @@ mod tests {
         app.active_tab = TAB_TRIAGE;
         app.toggle_severity_filter(Severity::Critical);
 
-        handle_key(&mut app, KeyCode::Esc);
+        handle_key(&mut app, Key::Esc);
         assert!(!app.has_active_filters(), "first Esc clears the filter");
         assert_eq!(app.active_tab, TAB_TRIAGE, "and stays put");
 
-        handle_key(&mut app, KeyCode::Esc);
+        handle_key(&mut app, Key::Esc);
         assert_eq!(app.active_tab, TAB_DASHBOARD, "second Esc navigates back");
     }
 
@@ -492,12 +505,12 @@ mod tests {
         app.available_update = None;
 
         // Nothing parked, so this is a no-op rather than a modal.
-        handle_key(&mut app, KeyCode::Char('u'));
+        handle_key(&mut app, Key::Char('u'));
         assert!(app.pending_confirm.is_none());
 
         app.active_tab = TAB_SETTINGS;
         app.backup_records.clear();
-        handle_key(&mut app, KeyCode::Char('u'));
+        handle_key(&mut app, Key::Char('u'));
         // No backups to roll back, so it explains itself instead.
         assert!(app.pending_confirm.is_none());
         assert!(app.status_message.is_some());
@@ -511,12 +524,12 @@ mod tests {
         app.selected_setting_index = 0;
 
         // Focus starts on the settings list.
-        handle_key(&mut app, KeyCode::Down);
+        handle_key(&mut app, Key::Down);
         assert_eq!(app.selected_setting_index, 1);
         assert_eq!(app.selected_backup_index, 0, "the backup list stayed put");
 
-        handle_key(&mut app, KeyCode::Char('b'));
-        handle_key(&mut app, KeyCode::Down);
+        handle_key(&mut app, Key::Char('b'));
+        handle_key(&mut app, Key::Down);
         assert_eq!(app.selected_backup_index, 1);
         assert_eq!(
             app.selected_setting_index, 1,
@@ -526,17 +539,17 @@ mod tests {
         // While backups hold focus, the setting editors are inert.
         let before = app.config.temp_clean_threshold_mb;
         app.selected_setting_index = 4; // temp_clean_threshold_mb
-        handle_key(&mut app, KeyCode::Char('+'));
+        handle_key(&mut app, Key::Char('+'));
         assert_eq!(app.config.temp_clean_threshold_mb, before);
-        handle_key(&mut app, KeyCode::Enter);
+        handle_key(&mut app, Key::Enter);
         assert!(app.setting_input.is_none(), "Enter opens no input dialog");
 
         // Esc gives the arrow keys back before it navigates anywhere.
-        handle_key(&mut app, KeyCode::Esc);
+        handle_key(&mut app, Key::Esc);
         assert!(!app.backups_focused());
         assert_eq!(app.active_tab, TAB_SETTINGS, "and stays on the tab");
 
-        handle_key(&mut app, KeyCode::Esc);
+        handle_key(&mut app, Key::Esc);
         assert_eq!(app.active_tab, TAB_DASHBOARD);
     }
 
@@ -545,7 +558,7 @@ mod tests {
         let mut app = app();
         app.active_tab = TAB_TRIAGE;
 
-        handle_key(&mut app, KeyCode::Char('b'));
+        handle_key(&mut app, Key::Char('b'));
         assert!(!app.backups_focused());
     }
 
@@ -560,7 +573,7 @@ mod tests {
             ('4', TAB_REPAIR),
             ('5', TAB_SETTINGS),
         ] {
-            handle_key(&mut app, KeyCode::Char(key));
+            handle_key(&mut app, Key::Char(key));
             assert_eq!(
                 app.active_tab, expected,
                 "'{key}' should open tab {expected}"
@@ -569,7 +582,7 @@ mod tests {
 
         // '6' used to be Settings. It now points past the last tab and must not
         // move the user anywhere.
-        handle_key(&mut app, KeyCode::Char('6'));
+        handle_key(&mut app, Key::Char('6'));
         assert_eq!(app.active_tab, TAB_SETTINGS, "'6' is no longer bound");
     }
 
@@ -580,30 +593,11 @@ mod tests {
         app.selected_filtered_index = 0;
         assert!(app.issues[0].is_selected, "issues start selected");
 
-        handle_key(&mut app, KeyCode::Char(' '));
+        handle_key(&mut app, Key::Char(' '));
         assert!(!app.issues[0].is_selected);
 
-        handle_key(&mut app, KeyCode::Char(' '));
+        handle_key(&mut app, Key::Char(' '));
         assert!(app.issues[0].is_selected);
-    }
-
-    #[test]
-    fn arrow_keys_scroll_logs_on_the_scanner_tab() {
-        let mut app = app();
-        app.active_tab = TAB_SCANNER;
-        app.scan_log_messages.clear();
-        for i in 0..50 {
-            app.push_scan_log(format!("line {i}"));
-        }
-
-        handle_key(&mut app, KeyCode::PageUp);
-        assert_eq!(app.scan_log_scroll, 10);
-
-        handle_key(&mut app, KeyCode::Up);
-        assert_eq!(app.scan_log_scroll, 11);
-
-        handle_key(&mut app, KeyCode::End);
-        assert_eq!(app.scan_log_scroll, 0, "End returns to live");
     }
 
     #[test]
@@ -611,11 +605,11 @@ mod tests {
         let mut app = app();
         assert!(!app.dry_run);
 
-        handle_key(&mut app, KeyCode::Char('d'));
+        handle_key(&mut app, Key::Char('d'));
         assert!(app.dry_run);
         assert!(app.status_message.is_some());
 
-        handle_key(&mut app, KeyCode::Char('D'));
+        handle_key(&mut app, Key::Char('D'));
         assert!(!app.dry_run);
     }
 
@@ -623,7 +617,7 @@ mod tests {
     fn quit_is_bound_in_both_cases() {
         for c in ['q', 'Q'] {
             let mut app = app();
-            handle_key(&mut app, KeyCode::Char(c));
+            handle_key(&mut app, Key::Char(c));
             assert!(app.should_quit, "'{c}' should quit");
         }
     }
@@ -633,12 +627,7 @@ mod tests {
         let mut app = app();
         let before = app.active_tab;
 
-        for code in [
-            KeyCode::F(5),
-            KeyCode::Insert,
-            KeyCode::Delete,
-            KeyCode::Char('§'),
-        ] {
+        for code in [Key::Unbound, Key::Char('§')] {
             handle_key(&mut app, code);
         }
 
@@ -656,38 +645,90 @@ mod tests {
         assert_eq!(app.config.temp_clean_threshold_mb, 500);
 
         // Enter opens input modal
-        handle_key(&mut app, KeyCode::Enter);
+        handle_key(&mut app, Key::Enter);
         assert!(app.setting_input.is_some());
 
         // Backspace 3 times
-        handle_key(&mut app, KeyCode::Backspace);
-        handle_key(&mut app, KeyCode::Backspace);
-        handle_key(&mut app, KeyCode::Backspace);
+        handle_key(&mut app, Key::Backspace);
+        handle_key(&mut app, Key::Backspace);
+        handle_key(&mut app, Key::Backspace);
         assert_eq!(app.setting_input.as_ref().unwrap().buffer, "");
 
         // Type '8', '0', '0'
-        handle_key(&mut app, KeyCode::Char('8'));
-        handle_key(&mut app, KeyCode::Char('0'));
-        handle_key(&mut app, KeyCode::Char('0'));
+        handle_key(&mut app, Key::Char('8'));
+        handle_key(&mut app, Key::Char('0'));
+        handle_key(&mut app, Key::Char('0'));
         assert_eq!(app.setting_input.as_ref().unwrap().buffer, "800");
 
         // Non-digits are ignored
-        handle_key(&mut app, KeyCode::Char('a'));
-        handle_key(&mut app, KeyCode::Char('q'));
+        handle_key(&mut app, Key::Char('a'));
+        handle_key(&mut app, Key::Char('q'));
         assert_eq!(app.setting_input.as_ref().unwrap().buffer, "800");
         assert!(!app.should_quit, "modal swallows 'q'");
 
         // Enter submits and saves
-        handle_key(&mut app, KeyCode::Enter);
+        handle_key(&mut app, Key::Enter);
         assert!(app.setting_input.is_none());
         assert_eq!(app.config.temp_clean_threshold_mb, 800);
 
         // Esc cancels without saving
-        handle_key(&mut app, KeyCode::Enter);
+        handle_key(&mut app, Key::Enter);
         assert!(app.setting_input.is_some());
-        handle_key(&mut app, KeyCode::Char('9'));
-        handle_key(&mut app, KeyCode::Esc);
+        handle_key(&mut app, Key::Char('9'));
+        handle_key(&mut app, Key::Esc);
         assert!(app.setting_input.is_none());
         assert_eq!(app.config.temp_clean_threshold_mb, 800);
+    }
+
+    #[test]
+    fn triage_navigation_keys() {
+        let mut app = app();
+        app.active_tab = TAB_TRIAGE;
+        for i in 0..15 {
+            app.issues.push(Issue::new(
+                format!("iss_{i}"),
+                "sys",
+                format!("Issue {i}"),
+                "Category",
+                Severity::Info,
+                RiskScore::Low,
+                "Desc",
+                "Details",
+                "Fix",
+                vec![],
+            ));
+        }
+
+        assert_eq!(app.selected_filtered_index, 0);
+
+        handle_key(&mut app, Key::Down);
+        assert_eq!(app.selected_filtered_index, 1);
+
+        handle_key(&mut app, Key::Char('j'));
+        assert_eq!(app.selected_filtered_index, 2);
+
+        handle_key(&mut app, Key::Up);
+        assert_eq!(app.selected_filtered_index, 1);
+
+        handle_key(&mut app, Key::Char('k'));
+        assert_eq!(app.selected_filtered_index, 0);
+
+        handle_key(&mut app, Key::End);
+        assert_eq!(app.selected_filtered_index, 14);
+
+        handle_key(&mut app, Key::Home);
+        assert_eq!(app.selected_filtered_index, 0);
+
+        handle_key(&mut app, Key::PageDown);
+        assert_eq!(app.selected_filtered_index, 10);
+
+        handle_key(&mut app, Key::PageDown);
+        assert_eq!(app.selected_filtered_index, 14);
+
+        handle_key(&mut app, Key::PageUp);
+        assert_eq!(app.selected_filtered_index, 4);
+
+        handle_key(&mut app, Key::PageUp);
+        assert_eq!(app.selected_filtered_index, 0);
     }
 }

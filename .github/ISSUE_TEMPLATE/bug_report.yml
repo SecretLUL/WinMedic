@@ -70,10 +70,10 @@ body:
     attributes:
       label: How was it running?
       options:
-        - Interactive TUI
+        - Desktop window (GUI)
         - Headless (--scan)
         - Headless with repairs (--auto-fix)
-        - Simulation (--dry-run, or [D] in the TUI)
+        - Simulation (--dry-run, or the simulation switch in the window)
     validations:
       required: true
 

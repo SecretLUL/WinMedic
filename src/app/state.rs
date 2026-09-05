@@ -2,10 +2,7 @@
 //! export. Behaviour that belongs to a specific feature lives in the sibling
 //! modules listed in [`crate::app`].
 
-use super::{
-    BackgroundEvent, TAB_COUNT, TAB_DASHBOARD, TAB_REPAIR, TAB_SCANNER, TAB_SETTINGS,
-    push_bounded_log,
-};
+use super::{BackgroundEvent, ScanState, TAB_COUNT, TAB_DASHBOARD, TAB_SETTINGS, push_bounded_log};
 use crate::config::AppConfig;
 use crate::engine::issue::{Issue, Severity};
 use crate::engine::reporter::DiagnosticReporter;
@@ -132,7 +129,14 @@ pub struct App {
     pub severity_filter: Option<Severity>,
     pub module_filter: Option<String>,
     pub search_query: String,
-    pub is_searching: bool,
+    /// A one-shot request from the `/` binding: put the caret in the triage
+    /// search box.
+    ///
+    /// The terminal front end had to capture every keystroke itself and append
+    /// it to [`Self::search_query`]. A window has a real text field bound to
+    /// that same string, so the only thing `/` still has to do is say where the
+    /// keyboard should go. The front end clears the flag as it honours it.
+    pub focus_search: bool,
     pub selected_filtered_index: usize,
 
     // Live Scanner State
@@ -146,7 +150,6 @@ pub struct App {
     pub module_progress_list: Vec<ModuleScanProgress>,
     pub module_statuses: Vec<(String, String, String, ModuleStatus)>,
     pub scan_log_messages: VecDeque<String>,
-    pub scan_log_scroll: usize,
 
     // Live Repair State
     pub is_fixing: bool,
@@ -158,7 +161,6 @@ pub struct App {
     pub total_to_fix: usize,
     pub vss_status: String,
     pub repair_console_lines: VecDeque<String>,
-    pub repair_log_scroll: usize,
 
     // Safety: audit log, registry backups, VSS restore points
     pub audit_logger: AuditLogger,
@@ -189,7 +191,7 @@ pub struct App {
     /// windows, UAC prompts, restore points.
     ///
     /// Inert unless the caller opts in through
-    /// [`App::enable_real_system_actions`], which only the TUI entry point
+    /// [`App::enable_real_system_actions`], which only the desktop front end
     /// does — see [`SystemActions`].
     pub system_actions: SystemActions,
     pub should_quit: bool,
@@ -225,7 +227,62 @@ impl App {
         let backup_records = reg_backup_mgr.list_backups();
         let (bg_tx, bg_rx) = tokio::sync::mpsc::unbounded_channel();
 
-        let (module_progress_list, module_statuses) = Self::module_lists(&engine);
+        let (module_progress_list, default_module_statuses) = Self::module_lists(&engine);
+        let (saved_issues, saved_health, module_statuses, saved_duration, init_msg) = if let Some(
+            mut saved,
+        ) =
+            ScanState::load()
+        {
+            let current_boot = sysinfo::System::boot_time();
+            let rebooted = saved.boot_time_secs.is_some_and(|b| current_boot > b);
+            if rebooted {
+                for issue in &mut saved.issues {
+                    if issue.is_reboot_pending {
+                        issue.is_reboot_pending = false;
+                        issue.is_fixed = true;
+                    }
+                }
+            }
+            let health = DiagnosticEngine::calculate_health_score(&saved.issues);
+            let open_count = saved.issues.iter().filter(|i| !i.is_fixed).count();
+            let msg = format!(
+                "WinMedic initialised. Loaded previous scan from {} ({} open issues, health: {}/100).",
+                saved.timestamp, open_count, health
+            );
+
+            // Reconcile saved module statuses with current engine modules so newly added modules appear
+            let mut reconciled_statuses = Vec::new();
+            for (id, name, icon, def_status) in &default_module_statuses {
+                if let Some((_, _, _, st)) =
+                    saved.module_statuses.iter().find(|(s_id, ..)| s_id == id)
+                {
+                    reconciled_statuses.push((id.clone(), name.clone(), icon.clone(), st.clone()));
+                } else {
+                    reconciled_statuses.push((
+                        id.clone(),
+                        name.clone(),
+                        icon.clone(),
+                        def_status.clone(),
+                    ));
+                }
+            }
+
+            (
+                saved.issues,
+                health,
+                reconciled_statuses,
+                saved.scan_duration_secs.map(Duration::from_secs),
+                msg,
+            )
+        } else {
+            (
+                Vec::new(),
+                100,
+                default_module_statuses,
+                None,
+                "WinMedic initialised. Ready to diagnose.".to_string(),
+            )
+        };
 
         Self {
             active_tab: TAB_DASHBOARD,
@@ -234,24 +291,21 @@ impl App {
             telemetry_collector,
             telemetry,
             engine,
-            issues: Vec::new(),
+            issues: saved_issues,
             selected_issue_index: 0,
-            health_score: 100,
+            health_score: saved_health,
             severity_filter: None,
             module_filter: None,
             search_query: String::new(),
-            is_searching: false,
+            focus_search: false,
             selected_filtered_index: 0,
             is_scanning: false,
             scan_overall_progress: 0,
             scan_started_at: None,
-            scan_duration: None,
+            scan_duration: saved_duration,
             module_progress_list,
             module_statuses,
-            scan_log_messages: VecDeque::from([String::from(
-                "WinMedic initialised. Ready to diagnose.",
-            )]),
-            scan_log_scroll: 0,
+            scan_log_messages: VecDeque::from([init_msg]),
             is_fixing: false,
             dry_run: false,
             current_fix_title: String::new(),
@@ -260,7 +314,6 @@ impl App {
             total_to_fix: 0,
             vss_status: "Ready".to_string(),
             repair_console_lines: VecDeque::from([String::from("Repair centre ready.")]),
-            repair_log_scroll: 0,
             audit_logger,
             reg_backup_mgr,
             audit_entries,
@@ -305,8 +358,8 @@ impl App {
     /// [`App::new`] builds an app that cannot touch it: confirming a dialog
     /// opens no browser and raises no UAC prompt, and a repair run asks Windows
     /// for no restore point. That default is what keeps `cargo test` — which
-    /// builds dozens of `App`s — off the developer's own desktop. The TUI entry
-    /// point is the one caller that wants the real thing, so it is the one
+    /// builds dozens of `App`s — off the developer's own desktop. The desktop
+    /// front end is the one caller that wants the real thing, so it is the one
     /// caller that opts in.
     ///
     /// The engine is rebuilt because it reads
@@ -328,8 +381,8 @@ impl App {
     ///
     /// Deliberately *not* part of [`App::new`]: constructing an `App` must stay
     /// free of network I/O so the test suite — which builds dozens of them
-    /// inside `#[tokio::test]` — never reaches out to api.github.com. The TUI
-    /// entry point calls this once, right after construction.
+    /// inside `#[tokio::test]` — never reaches out to api.github.com. The
+    /// desktop front end calls this once, right after construction.
     pub fn start_update_check(&mut self) {
         if !self.config.check_for_updates {
             return;
@@ -348,6 +401,29 @@ impl App {
             .await;
             let _ = tx.send(BackgroundEvent::UpdateChecked(update_info));
         });
+    }
+
+    /// Whether any repaired issue currently requires a system restart.
+    pub fn has_pending_reboot(&self) -> bool {
+        self.issues.iter().any(|i| i.is_reboot_pending)
+    }
+
+    /// Open the restart confirmation dialog if there are issues pending a reboot.
+    pub fn show_reboot_notice(&mut self) {
+        if self.pending_confirm.is_some() || self.is_fixing || self.is_scanning {
+            return;
+        }
+        let reboot_issues: Vec<String> = self
+            .issues
+            .iter()
+            .filter(|i| i.is_reboot_pending)
+            .map(|i| i.title.clone())
+            .collect();
+        if !reboot_issues.is_empty() {
+            self.pending_confirm = Some(ConfirmRequest::RestartRequired {
+                issues: reboot_issues,
+            });
+        }
     }
 
     #[allow(clippy::type_complexity)]
@@ -442,56 +518,6 @@ impl App {
         push_bounded_log(&mut self.repair_console_lines, line);
     }
 
-    pub fn scroll_log_up(&mut self, amount: usize) {
-        match self.active_tab {
-            TAB_SCANNER => {
-                let max_scroll = self.scan_log_messages.len().saturating_sub(1);
-                self.scan_log_scroll = (self.scan_log_scroll + amount).min(max_scroll);
-            }
-            TAB_REPAIR => {
-                let max_scroll = self.repair_console_lines.len().saturating_sub(1);
-                self.repair_log_scroll = (self.repair_log_scroll + amount).min(max_scroll);
-            }
-            _ => {}
-        }
-    }
-
-    pub fn scroll_log_down(&mut self, amount: usize) {
-        match self.active_tab {
-            TAB_SCANNER => {
-                self.scan_log_scroll = self.scan_log_scroll.saturating_sub(amount);
-            }
-            TAB_REPAIR => {
-                self.repair_log_scroll = self.repair_log_scroll.saturating_sub(amount);
-            }
-            _ => {}
-        }
-    }
-
-    pub fn scroll_log_top(&mut self) {
-        match self.active_tab {
-            TAB_SCANNER => {
-                self.scan_log_scroll = self.scan_log_messages.len().saturating_sub(1);
-            }
-            TAB_REPAIR => {
-                self.repair_log_scroll = self.repair_console_lines.len().saturating_sub(1);
-            }
-            _ => {}
-        }
-    }
-
-    pub fn scroll_log_bottom(&mut self) {
-        match self.active_tab {
-            TAB_SCANNER => {
-                self.scan_log_scroll = 0;
-            }
-            TAB_REPAIR => {
-                self.repair_log_scroll = 0;
-            }
-            _ => {}
-        }
-    }
-
     /// Export the current scan/repair report as an HTML file in the reports directory.
     pub fn export_report(&mut self) -> Result<std::path::PathBuf, String> {
         let base = dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
@@ -507,12 +533,24 @@ impl App {
             .map(|_| path)
             .map_err(|e| format!("Export failed: {}", e))
     }
+
+    /// Persist the latest scan results, health score, and module statuses to disk.
+    pub fn save_scan_state(&self) {
+        let state = ScanState::new(
+            self.health_score,
+            self.issues.clone(),
+            self.module_statuses.clone(),
+            self.scan_duration.map(|d| d.as_secs()),
+        );
+        let _ = state.save();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::MAX_LOG_LINES;
+    use crate::engine::issue::RiskScore;
 
     #[test]
     fn test_app_export_report() {
@@ -527,7 +565,7 @@ mod tests {
     }
 
     #[test]
-    fn test_app_log_ring_buffer_and_scrolling() {
+    fn the_scan_log_evicts_its_oldest_lines_once_it_is_full() {
         let mut app = App::new();
         app.scan_log_messages.clear();
 
@@ -546,22 +584,6 @@ mod tests {
             app.scan_log_messages.back(),
             Some(&"Log line 2099".to_string())
         );
-
-        // Test scrolling
-        app.active_tab = TAB_SCANNER;
-        assert_eq!(app.scan_log_scroll, 0);
-
-        app.scroll_log_up(15);
-        assert_eq!(app.scan_log_scroll, 15);
-
-        app.scroll_log_down(5);
-        assert_eq!(app.scan_log_scroll, 10);
-
-        app.scroll_log_top();
-        assert_eq!(app.scan_log_scroll, MAX_LOG_LINES - 1);
-
-        app.scroll_log_bottom();
-        assert_eq!(app.scan_log_scroll, 0);
     }
 
     #[test]
@@ -577,5 +599,41 @@ mod tests {
 
         app.next_tab();
         assert_eq!(app.active_tab, 1);
+    }
+
+    #[test]
+    fn test_app_persists_and_restores_scan_state() {
+        let tmp =
+            std::env::temp_dir().join(format!("winmedic_state_test_{}.json", std::process::id()));
+        let mut app = App::new();
+        app.issues = vec![Issue::new(
+            "iss_1",
+            "storage",
+            "Low Disk Space",
+            "Storage",
+            Severity::Warning,
+            RiskScore::Low,
+            "Temp files are taking up too much space",
+            "5 GB in temp directory",
+            "Clean temp files",
+            vec!["Delete temp files".to_string()],
+        )];
+        app.health_score = 85;
+
+        let state = ScanState::new(
+            app.health_score,
+            app.issues.clone(),
+            app.module_statuses.clone(),
+            Some(5),
+        );
+        state.save_to(&tmp).unwrap();
+
+        let loaded = ScanState::load_from(&tmp).expect("should load scan state");
+        assert_eq!(loaded.health_score, 85);
+        assert_eq!(loaded.issues.len(), 1);
+        assert_eq!(loaded.issues[0].title, "Low Disk Space");
+        assert_eq!(loaded.scan_duration_secs, Some(5));
+
+        let _ = std::fs::remove_file(tmp);
     }
 }

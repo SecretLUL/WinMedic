@@ -645,7 +645,7 @@ pub fn clean_leftovers_beside_current_exe() -> usize {
 /// Same shape and same reason as
 /// [`crate::safety::restore_point::RestorePointService`]: [`Self::inert`] is the
 /// default, so an [`crate::app::App`] built in a test cannot download or install
-/// anything, and only the TUI entry point installs the real one.
+/// anything, and only the desktop front end installs the real one.
 pub type InstallFuture =
     Pin<Box<dyn Future<Output = Result<InstalledUpdate, UpdateFailure>> + Send>>;
 
