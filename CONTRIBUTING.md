@@ -10,9 +10,9 @@ where the risky parts of the codebase are.
 - **Windows.** The crate is Windows-only and does not cross-compile for
   development — `winreg` refuses to build on other platforms with a
   `compile_error!`. A Windows VM works fine.
-- **Rust 1.88 or newer.** This is the MSRV declared in `Cargo.toml` and
+- **Rust 1.95 or newer.** This is the MSRV declared in `Cargo.toml` and
   enforced by the `msrv` CI job. Edition 2024 alone would only need 1.85; the
-  floor comes from `ratatui → instability → darling`.
+  floor comes from `egui`/`eframe`.
 - **Administrator rights** to exercise the repair paths by hand. The test
   suite itself does not need them.
 
