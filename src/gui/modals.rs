@@ -20,11 +20,10 @@ pub fn show(ctx: &egui::Context, app: &mut App) {
 }
 
 /// The frame every overlay shares: modal, centred, not resizable.
-fn modal_window<'a>(title: &'a str) -> egui::Window<'a> {
-    egui::Window::new(title)
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+fn modal_window(title: &str) -> egui::Modal {
+    egui::Modal::new(egui::Id::new(title))
+        .frame(theme::surface().inner_margin(24))
+        .backdrop_color(egui::Color32::from_black_alpha(150))
 }
 
 fn confirm(ctx: &egui::Context, app: &mut App) {
@@ -44,6 +43,8 @@ fn confirm(ctx: &egui::Context, app: &mut App) {
 
     modal_window(title).show(ctx, |ui| {
         ui.set_max_width(560.0);
+        ui.label(RichText::new(title).size(18.0).strong());
+        ui.add_space(12.0);
 
         for line in &body {
             if line.is_empty() {
@@ -58,13 +59,7 @@ fn confirm(ctx: &egui::Context, app: &mut App) {
         ui.add_space(6.0);
 
         ui.horizontal(|ui| {
-            if ui
-                .add(
-                    egui::Button::new(RichText::new(confirm_label).color(theme::BG_DEEP).strong())
-                        .fill(theme::CYAN),
-                )
-                .clicked()
-            {
+            if ui.add(theme::primary_button(confirm_label)).clicked() {
                 confirmed = true;
             }
             if ui.button(dismiss_label).clicked() {
@@ -97,6 +92,8 @@ fn setting_input(ctx: &egui::Context, app: &mut App) {
 
     modal_window("Edit setting").show(ctx, |ui| {
         ui.set_max_width(420.0);
+        ui.label(RichText::new("Edit setting").size(20.0).strong());
+        ui.add_space(12.0);
 
         ui.label(RichText::new(&title).color(theme::CYAN).strong());
         ui.label(theme::muted(format!("Allowed: {min}–{max} {unit}")));
@@ -143,6 +140,8 @@ fn help(ctx: &egui::Context, app: &mut App) {
 
     modal_window("Keyboard shortcuts").show(ctx, |ui| {
         ui.set_max_width(520.0);
+        ui.label(RichText::new("Keyboard shortcuts").size(20.0).strong());
+        ui.add_space(12.0);
         ui.label(theme::muted(
             "Every action below is also a button in the window; these are the shortcuts.",
         ));

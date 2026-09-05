@@ -10,7 +10,7 @@ use eframe::egui::{self, RichText};
 
 pub fn show(ui: &mut egui::Ui, app: &mut App) {
     filters(ui, app);
-    ui.add_space(6.0);
+    ui.add_space(16.0);
 
     let indices = app.filtered_issue_indices();
 
@@ -41,11 +41,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
 
 fn filters(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal_wrapped(|ui| {
-        ui.label(theme::muted("Search"));
         let field = ui.add(
             egui::TextEdit::singleline(&mut app.search_query)
-                .desired_width(200.0)
-                .hint_text("title, module or category"),
+                .desired_width(220.0)
+                .margin(egui::vec2(12.0, 10.0))
+                .hint_text("Search findings..."),
         );
         // `[/]` asks for this field; honouring the request here is what keeps
         // the shortcut from having to know anything about widgets.
@@ -61,11 +61,7 @@ fn filters(ui: &mut egui::Ui, app: &mut App) {
 
         for severity in [Severity::Critical, Severity::Warning, Severity::Info] {
             let active = app.severity_filter == Some(severity);
-            let text = RichText::new(severity.short_label()).color(if active {
-                theme::BG_DEEP
-            } else {
-                theme::severity_color(severity)
-            });
+            let text = RichText::new(severity.short_label()).color(theme::severity_color(severity));
             if ui.selectable_label(active, text).clicked() {
                 app.toggle_severity_filter(severity);
             }
@@ -84,7 +80,11 @@ fn filters(ui: &mut egui::Ui, app: &mut App) {
         if app.has_active_filters() && ui.button("Clear filters").clicked() {
             app.clear_filters();
         }
-
+    });
+    ui.horizontal(|ui| {
+        ui.label(
+            theme::muted(format!("{} findings", app.filtered_issue_indices().len())).size(12.0),
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let selected = app
                 .issues
@@ -94,7 +94,7 @@ fn filters(ui: &mut egui::Ui, app: &mut App) {
             if ui
                 .add_enabled(
                     selected > 0 && !app.is_busy(),
-                    egui::Button::new(if app.dry_run {
+                    theme::primary_button(if app.dry_run {
                         format!("Simulate {selected} repairs")
                     } else {
                         format!("Repair {selected} issues")
@@ -128,15 +128,25 @@ fn list(ui: &mut egui::Ui, app: &mut App, indices: &[usize]) {
 
 fn row(ui: &mut egui::Ui, app: &mut App, issue_index: usize, highlighted: bool, position: usize) {
     let fill = if highlighted {
-        theme::CARD_SURFACE
+        theme::SELECTED
     } else {
-        egui::Color32::TRANSPARENT
+        theme::CARD_SURFACE
     };
 
     let response = egui::Frame::NONE
         .fill(fill)
-        .inner_margin(egui::Margin::symmetric(6, 4))
+        .corner_radius(10)
+        .stroke(egui::Stroke::new(
+            1.0,
+            if highlighted {
+                theme::CYAN.gamma_multiply(0.5)
+            } else {
+                theme::BORDER
+            },
+        ))
+        .inner_margin(egui::Margin::symmetric(12, 12))
         .show(ui, |ui| {
+            ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 let issue = &mut app.issues[issue_index];
 
@@ -159,15 +169,18 @@ fn row(ui: &mut egui::Ui, app: &mut App, issue_index: usize, highlighted: bool, 
                         .strong()
                         .size(11.0),
                 );
-                ui.label(RichText::new(&issue.title).strong());
+                ui.add(egui::Label::new(RichText::new(&issue.title).strong()).wrap());
             });
             ui.horizontal(|ui| {
                 ui.add_space(28.0);
                 let issue = &app.issues[issue_index];
-                ui.label(theme::muted(format!(
-                    "{} · {}",
-                    issue.category, issue.module_id
-                )));
+                ui.add(
+                    egui::Label::new(
+                        theme::muted(format!("{} · {}", issue.category, issue.module_id))
+                            .size(11.0),
+                    )
+                    .truncate(),
+                );
             });
         })
         .response;
@@ -233,13 +246,17 @@ fn detail(ui: &mut egui::Ui, app: &mut App, indices: &[usize]) {
 
 fn empty(ui: &mut egui::Ui, app: &mut App, headline: &str, hint: &str) {
     ui.vertical_centered(|ui| {
-        ui.add_space(60.0);
-        ui.label(RichText::new(headline).size(15.0));
+        ui.add_space(70.0);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(64.0, 64.0), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 18, theme::SELECTED);
+        theme::icon(ui, rect.shrink(17.0), 2, theme::CYAN);
+        ui.add_space(16.0);
+        ui.label(RichText::new(headline).size(21.0).strong());
         ui.label(theme::muted(hint));
         ui.add_space(12.0);
         if app.issues.is_empty() {
             if ui
-                .add_enabled(!app.is_busy(), egui::Button::new("Start health scan"))
+                .add_enabled(!app.is_busy(), theme::primary_button("Start health scan"))
                 .clicked()
             {
                 app.start_scan();
