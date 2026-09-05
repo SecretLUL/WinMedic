@@ -61,7 +61,7 @@ impl App {
         let selected_count = self
             .issues
             .iter()
-            .filter(|i| i.is_selected && !i.is_fixed)
+            .filter(|i| i.is_selected && !i.is_fixed && !i.is_reboot_pending)
             .count();
         if selected_count == 0 {
             self.status_message = Some("No open issues selected for repair.".to_string());
@@ -75,6 +75,8 @@ impl App {
         self.total_to_fix = selected_count;
         self.vss_status = if self.dry_run {
             "Simulation".to_string()
+        } else if !self.config.create_vss_before_repair {
+            "Skipped".to_string()
         } else {
             "Initialising...".to_string()
         };

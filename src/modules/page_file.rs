@@ -463,7 +463,8 @@ impl DiagnosticModule for PageFileModule {
                     "Set Win32_ComputerSystem.AutomaticManagedPagefile to $true".to_string(),
                     "Restart Windows so the page file is created".to_string(),
                 ],
-            );
+            )
+            .with_requires_reboot(true);
             issue.is_selected = false;
             issues.push(issue);
         }
@@ -617,7 +618,8 @@ impl DiagnosticModule for PageFileModule {
                     ),
                     "Restart Windows so the new size applies".to_string(),
                 ],
-            );
+            )
+            .with_requires_reboot(true);
             issue.is_selected = false;
             issues.push(issue);
         }

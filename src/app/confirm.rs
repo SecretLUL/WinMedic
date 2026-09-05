@@ -47,17 +47,34 @@ pub struct SystemActions {
     /// [`App::enable_real_system_actions`] exists instead of a plain
     /// assignment.
     pub restore_point: RestorePointService,
+    /// Reboot the machine to finalize repairs that require a system restart.
+    pub restart_system: fn() -> Result<(), String>,
+}
+
+fn real_restart_system() -> Result<(), String> {
+    std::process::Command::new("shutdown.exe")
+        .args([
+            "/r",
+            "/t",
+            "0",
+            "/c",
+            "WinMedic: Restarting to apply system repairs",
+        ])
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Could not initiate restart: {}", e))
 }
 
 impl SystemActions {
     /// The real thing: opens a browser window, raises a UAC prompt, runs
-    /// `Checkpoint-Computer`.
+    /// `Checkpoint-Computer`, reboots the system.
     pub fn real() -> Self {
         Self {
             open_release_page: updater::launch_browser,
             relaunch_elevated: relaunch_as_admin,
             self_update: SelfUpdateService::real(),
             restore_point: RestorePointService::real(),
+            restart_system: real_restart_system,
         }
     }
 
@@ -68,6 +85,7 @@ impl SystemActions {
             relaunch_elevated: || Ok(()),
             self_update: SelfUpdateService::inert(),
             restore_point: RestorePointService::inert(),
+            restart_system: || Ok(()),
         }
     }
 }
@@ -98,6 +116,9 @@ pub enum ConfirmRequest {
         /// cannot verify is never installed in place.
         download: Option<UpdateDownload>,
     },
+    RestartRequired {
+        issues: Vec<String>,
+    },
 }
 
 impl ConfirmRequest {
@@ -106,6 +127,7 @@ impl ConfirmRequest {
             ConfirmRequest::Rollback { .. } => "RESTORE REGISTRY BACKUP?",
             ConfirmRequest::Elevate => "ADMINISTRATOR PRIVILEGES REQUIRED",
             ConfirmRequest::UpdateAvailable { .. } => "NEW WINMEDIC UPDATE AVAILABLE",
+            ConfirmRequest::RestartRequired { .. } => "SYSTEM RESTART REQUIRED",
         }
     }
 
@@ -119,6 +141,7 @@ impl ConfirmRequest {
             ConfirmRequest::UpdateAvailable { download: None, .. } => {
                 "Open the release page in a browser"
             }
+            ConfirmRequest::RestartRequired { .. } => "Restart now",
         }
     }
 
@@ -127,6 +150,7 @@ impl ConfirmRequest {
             ConfirmRequest::Rollback { .. } => "Cancel",
             ConfirmRequest::Elevate => "Continue without Administrator",
             ConfirmRequest::UpdateAvailable { .. } => "Remind me later",
+            ConfirmRequest::RestartRequired { .. } => "Later",
         }
     }
 
@@ -200,6 +224,19 @@ impl ConfirmRequest {
 
                 body
             }
+            ConfirmRequest::RestartRequired { issues } => {
+                let mut body = vec![
+                    "One or more applied repairs require a system restart to take effect:"
+                        .to_string(),
+                    String::new(),
+                ];
+                for issue_title in issues {
+                    body.push(format!("  • {}", issue_title));
+                }
+                body.push(String::new());
+                body.push("Restart the system now to complete these repairs?".to_string());
+                body
+            }
         }
     }
 }
@@ -222,6 +259,12 @@ impl App {
                     // `available_update` so [U] can bring it back.
                     self.status_message =
                         Some("Update notice dismissed - [U] reopens it.".to_string());
+                }
+                ConfirmRequest::RestartRequired { .. } => {
+                    self.status_message = Some(
+                        "Restart postponed. A system restart is pending to finalize repairs."
+                            .to_string(),
+                    );
                 }
             }
         }
@@ -376,6 +419,13 @@ impl App {
                     self.available_update = None;
                 }
             },
+            ConfirmRequest::RestartRequired { .. } => {
+                if let Err(e) = (self.system_actions.restart_system)() {
+                    self.status_message = Some(format!("System restart failed: {}", e));
+                } else {
+                    self.should_quit = true;
+                }
+            }
         }
     }
 }
@@ -623,5 +673,53 @@ mod tests {
         assert!(body.contains("v0.1.0"));
         assert!(body.contains("v0.2.0"));
         assert!(body.contains("https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0"));
+    }
+
+    #[test]
+    fn test_confirm_request_restart_required() {
+        let req = ConfirmRequest::RestartRequired {
+            issues: vec![
+                "System reboot pending after updates".to_string(),
+                "Page file disabled on every drive".to_string(),
+            ],
+        };
+        assert_eq!(req.title(), "SYSTEM RESTART REQUIRED");
+        assert_eq!(req.confirm_label(), "Restart now");
+        assert_eq!(req.dismiss_label(), "Later");
+        let body = req.body().join("\n");
+        assert!(body.contains("System reboot pending after updates"));
+        assert!(body.contains("Page file disabled on every drive"));
+        assert!(body.contains("Restart the system now"));
+    }
+
+    #[test]
+    fn test_confirm_restart_action_in_inert_mode() {
+        let mut app = App::new();
+        app.pending_confirm = Some(ConfirmRequest::RestartRequired {
+            issues: vec!["System reboot pending after updates".to_string()],
+        });
+
+        app.confirm_pending_action();
+
+        assert!(app.pending_confirm.is_none());
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_dismiss_restart_action_leaves_status_message() {
+        let mut app = App::new();
+        app.pending_confirm = Some(ConfirmRequest::RestartRequired {
+            issues: vec!["System reboot pending after updates".to_string()],
+        });
+
+        app.dismiss_confirm();
+
+        assert!(app.pending_confirm.is_none());
+        assert!(!app.should_quit);
+        assert!(
+            app.status_message
+                .as_deref()
+                .is_some_and(|m| m.contains("Restart postponed"))
+        );
     }
 }

@@ -113,6 +113,14 @@ fn header(ui: &mut egui::Ui, app: &mut App) {
             theme::badge(ui, "SIMULATION", theme::AMBER);
         }
 
+        // A repair that has done its half of the work and is waiting on the
+        // machine. Saying so beside the brand keeps it visible from every tab,
+        // which is the point: the findings behind it read as unfixed until the
+        // restart happens.
+        if app.has_pending_reboot() {
+            theme::badge(ui, "REBOOT PENDING", theme::AMBER);
+        }
+
         // Right-aligned, so the system readout sits opposite the brand and
         // does not shift as the numbers change width.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -281,6 +289,13 @@ mod tests {
         // `App::new` raises the elevation prompt when WinMedic is not running
         // as Administrator, and that modal covers the tab it is asked about.
         app.pending_confirm = None;
+        // It also restores the last scan from `%APPDATA%`, which on a machine
+        // that has actually run WinMedic is a real one — and these tests
+        // describe the findings they want to draw. Start from nothing scanned;
+        // the tests that need issues add their own.
+        app.issues.clear();
+        app.health_score = 100;
+        app.selected_filtered_index = 0;
         app.backup_records = vec![BackupRecord {
             id: "b1".to_string(),
             timestamp: "2026-01-01 12:00:00".to_string(),

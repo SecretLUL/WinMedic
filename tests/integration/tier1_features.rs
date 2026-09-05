@@ -1,6 +1,6 @@
 #![allow(dead_code, unused_imports)]
 
-mod common;
+use crate::common;
 
 use std::fs::File;
 use std::io::Write;
@@ -861,6 +861,7 @@ fn test_tier1_f11_recursive_directory_size_sum() {
 #[tokio::test]
 async fn test_tier1_f11_triage_issue_toggle_in_app() {
     let mut app = App::new();
+    app.issues.clear();
     let issue = winmedic::engine::issue::Issue::new(
         "sys_clean_browser_cache",
         "system_cleaner",
@@ -887,6 +888,7 @@ async fn test_tier1_f11_triage_issue_toggle_in_app() {
 #[tokio::test]
 async fn test_tier1_f11_triage_select_and_deselect_all() {
     let mut app = App::new();
+    app.issues.clear();
     for i in 0..5 {
         app.issues.push(winmedic::engine::issue::Issue::new(
             format!("issue_{}", i),
@@ -916,6 +918,7 @@ async fn test_tier1_f11_triage_select_and_deselect_all() {
 #[tokio::test]
 async fn test_tier1_f11_triage_navigation_bounds() {
     let mut app = App::new();
+    app.issues.clear();
     for i in 0..3 {
         app.issues.push(winmedic::engine::issue::Issue::new(
             format!("issue_{}", i),
@@ -947,11 +950,11 @@ async fn test_tier1_f11_triage_navigation_bounds() {
 // ============================================================================
 
 #[test]
-fn test_tier1_f12_all_modules_count_equals_nine() {
+fn test_tier1_f12_all_modules_count_equals_eleven() {
     let cfg = ModuleConfig::default();
     let runner = Arc::new(ProgrammableMockRunner::new());
     let modules = get_all_modules_with_runner(&cfg, runner);
-    assert_eq!(modules.len(), 9);
+    assert_eq!(modules.len(), 11);
 }
 
 #[test]
@@ -983,6 +986,20 @@ fn test_tier1_f12_page_file_metadata() {
 }
 
 #[test]
+fn test_tier1_f12_whea_logger_metadata() {
+    let cfg = ModuleConfig::default();
+    let runner = Arc::new(ProgrammableMockRunner::new());
+    let modules = get_all_modules_with_runner(&cfg, runner);
+
+    let whea = modules
+        .iter()
+        .find(|m| m.id() == "whea_logger")
+        .expect("the whea_logger module must be registered");
+    assert_eq!(whea.name(), "WHEA Hardware Error Logger");
+    assert_eq!(whea.icon(), "[WHEA]");
+}
+
+#[test]
 fn test_tier1_f12_system_cleaner_metadata() {
     let cfg = ModuleConfig::default();
     let runner = Arc::new(ProgrammableMockRunner::new());
@@ -996,20 +1013,25 @@ fn test_tier1_f12_system_cleaner_metadata() {
 }
 
 #[test]
-fn test_tier1_f12_diagnostic_engine_contains_all_nine_modules() {
+fn test_tier1_f12_diagnostic_engine_contains_all_eleven_modules() {
     let config = AppConfig::default();
     let engine = DiagnosticEngine::new(&config);
-    assert_eq!(engine.modules().len(), 9);
+    assert_eq!(engine.modules().len(), 11);
 }
 
 #[tokio::test]
-async fn test_tier1_f12_app_initializes_with_nine_module_statuses() {
+async fn test_tier1_f12_app_initializes_with_eleven_module_statuses() {
     let app = App::new();
-    assert_eq!(app.module_statuses.len(), 9);
+    assert_eq!(app.module_statuses.len(), 11);
     assert!(
         app.module_statuses
             .iter()
             .any(|(id, ..)| id == "system_cleaner")
+    );
+    assert!(
+        app.module_statuses
+            .iter()
+            .any(|(id, ..)| id == "whea_logger")
     );
 }
 
@@ -1021,6 +1043,101 @@ fn test_tier1_f12_all_module_ids_unique() {
     for m in &modules {
         assert!(ids.insert(m.id()), "Duplicate module id found: {}", m.id());
     }
+}
+
+#[tokio::test]
+async fn test_tier1_f12_whea_logger_scan_and_repair_integration() {
+    use winmedic::engine::runner::{DiagnosticEngine, RepairOptions};
+
+    let runner = Arc::new(ProgrammableMockRunner::new());
+    runner.set_response(
+        "wevtutil.exe",
+        CmdOutput::ok(
+            r#"Event[0]:
+  Source: Microsoft-Windows-WHEA-Logger
+  Event ID: 17
+  Level: Warning
+  Component: PCI Express Root Port
+  Primary Bus:Device:Function: 0x0:0x1:0x1
+  Primary Device Name: PCI\VEN_1022&DEV_1453"#,
+        ),
+    );
+    runner.set_response("powercfg.exe", CmdOutput::ok(""));
+
+    let cfg = ModuleConfig::default();
+    let module = winmedic::modules::whea_logger::WheaLoggerModule::with_runner(cfg, runner.clone());
+
+    let issues = module.scan(None).await.expect("scan failed");
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].id, "whea_pcie_bus_error");
+    assert_eq!(issues[0].category, "Hardware & Stability");
+
+    let fix_res = module.fix("whea_pcie_bus_error", None).await;
+    assert!(fix_res.is_ok());
+    assert!(
+        fix_res
+            .unwrap()
+            .contains("PCIe Link State Power Management")
+    );
+
+    let powercfg_calls = runner.calls_for("powercfg.exe");
+    assert!(!powercfg_calls.is_empty());
+}
+
+#[test]
+fn test_tier1_f12_crash_analysis_metadata() {
+    let cfg = ModuleConfig::default();
+    let runner = Arc::new(ProgrammableMockRunner::new());
+    let modules = get_all_modules_with_runner(&cfg, runner);
+
+    let crash = modules
+        .iter()
+        .find(|m| m.id() == "crash_analysis")
+        .expect("the crash_analysis module must be registered");
+    assert_eq!(crash.name(), "Crash Dump & BSOD Analyzer");
+    assert_eq!(crash.icon(), "[DMP]");
+}
+
+#[tokio::test]
+async fn test_tier1_f12_crash_analysis_scan_and_repair_integration() {
+    let runner = Arc::new(ProgrammableMockRunner::new());
+    runner.set_response(
+        "wevtutil.exe",
+        CmdOutput::ok(
+            r#"Event[0]:
+  Source: BugCheck
+  Event ID: 1001
+  Description:
+The computer has rebooted from a bugcheck.  The bugcheck was: 0x00000116 (0xffffc8073e4a3010, 0xfffff8024a123456)."#,
+        ),
+    );
+    runner.set_response("cmd.exe", CmdOutput::ok(""));
+
+    let dump_dir = std::env::temp_dir().join(format!("winmedic_dmp_it_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dump_dir);
+    std::fs::create_dir_all(&dump_dir).expect("temp dump dir");
+
+    let cfg = ModuleConfig::default();
+    let module = winmedic::modules::crash_analysis::CrashAnalysisModule::with_runner_and_dump_dir(
+        cfg,
+        runner.clone(),
+        &dump_dir,
+    );
+
+    let issues = module.scan(None).await.expect("scan failed");
+    let tdr = issues
+        .iter()
+        .find(|i| i.id == "crash_video_tdr")
+        .expect("video TDR issue from Event 1001");
+    assert_eq!(tdr.category, "Hardware & Stability");
+
+    let fix_res = module.fix("crash_video_tdr", None).await;
+    assert!(fix_res.is_ok());
+    assert!(fix_res.unwrap().contains("Device Manager"));
+
+    assert!(!runner.calls_for("cmd.exe").is_empty());
+
+    let _ = std::fs::remove_dir_all(&dump_dir);
 }
 
 // ============================================================================

@@ -48,6 +48,10 @@ fn named_key(key: egui::Key, modifiers: egui::Modifiers) -> Option<Key> {
         egui::Key::ArrowDown => Key::Down,
         egui::Key::ArrowLeft => Key::Left,
         egui::Key::ArrowRight => Key::Right,
+        egui::Key::PageUp => Key::PageUp,
+        egui::Key::PageDown => Key::PageDown,
+        egui::Key::Home => Key::Home,
+        egui::Key::End => Key::End,
         // Bare Tab belongs to egui, which moves focus between widgets with it —
         // taking it away would strip the window of keyboard navigation. Ctrl+Tab
         // is free, and is what Windows applications cycle views with anyway.

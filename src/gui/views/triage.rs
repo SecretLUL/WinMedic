@@ -141,9 +141,13 @@ fn row(ui: &mut egui::Ui, app: &mut App, issue_index: usize, highlighted: bool, 
                 let issue = &mut app.issues[issue_index];
 
                 // A fixed issue is history: it cannot be selected for another
-                // repair run, so the checkbox stops offering.
+                // repair run, so the checkbox stops offering. One waiting on a
+                // restart is in the same position for the same reason, and
+                // `toggle_select_all_issues` passes over both.
                 if issue.is_fixed {
                     ui.label(RichText::new("done").color(theme::EMERALD).size(11.0));
+                } else if issue.is_reboot_pending {
+                    ui.label(RichText::new("reboot").color(theme::AMBER).size(11.0));
                 } else {
                     ui.checkbox(&mut issue.is_selected, "");
                 }

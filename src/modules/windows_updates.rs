@@ -189,18 +189,21 @@ impl DiagnosticModule for WindowsUpdatesModule {
         for p_key in pending_keys {
             if hklm.open_subkey_with_flags(p_key, KEY_READ).is_ok() {
                 reboot_found = true;
-                issues.push(Issue::new(
-                    "wu_reboot_pending",
-                    self.id(),
-                    "System reboot pending after updates",
-                    "Windows Update & Services",
-                    Severity::Info,
-                    RiskScore::Low,
-                    "Windows reports a reboot pending from a previously installed update or driver package. Some updates cannot continue until the machine restarts.",
-                    format!("Found in the registry: HKLM\\{}", p_key),
-                    "Restart Windows after the repairs to finish the pending installations",
-                    vec!["Record the pending reboot in the repair report".to_string()],
-                ));
+                issues.push(
+                    Issue::new(
+                        "wu_reboot_pending",
+                        self.id(),
+                        "System reboot pending after updates",
+                        "Windows Update & Services",
+                        Severity::Info,
+                        RiskScore::Low,
+                        "Windows reports a reboot pending from a previously installed update or driver package. Some updates cannot continue until the machine restarts.",
+                        format!("Found in the registry: HKLM\\{}", p_key),
+                        "Restart Windows after the repairs to finish the pending installations",
+                        vec!["Record the pending reboot in the repair report".to_string()],
+                    )
+                    .with_requires_reboot(true),
+                );
                 break;
             }
         }

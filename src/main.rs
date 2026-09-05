@@ -6,6 +6,7 @@ use winmedic::{config, engine, gui, safety, utils};
 
 use clap::Parser;
 use std::process::ExitCode;
+use std::sync::Arc;
 use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;
 
@@ -152,7 +153,12 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         }
     });
 
-    let engine = DiagnosticEngine::new(&config);
+    // The other half of the seam described in `run_gui`: a run started from the
+    // command line protects the machine the same way the window does, and this
+    // is the only other place that says so. Scan and repairs share the one
+    // engine, so the restore point covers both.
+    let engine =
+        Arc::new(DiagnosticEngine::new(&config).with_restore_points(RestorePointService::real()));
     let (tx, mut rx) = channel::<ScanEvent>(100);
 
     if !quiet {
@@ -164,7 +170,9 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     }
 
     let scan_cancel = cancel.clone();
-    let engine_handle = tokio::spawn(async move { engine.run_scan(tx, scan_cancel).await });
+    let engine_for_scan = engine.clone();
+    let engine_handle =
+        tokio::spawn(async move { engine_for_scan.run_scan(tx, scan_cancel).await });
 
     let mut scan_cancelled = false;
     while let Some(evt) = rx.recv().await {
@@ -243,11 +251,6 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
             );
         }
 
-        // The other half of the seam described in `run_gui`: repairs from the
-        // command line protect the machine the same way the window does, and
-        // this is the only other place that says so.
-        let engine =
-            DiagnosticEngine::new(&config).with_restore_points(RestorePointService::real());
         let (fix_tx, mut fix_rx) = channel(100);
         let options = RepairOptions {
             create_vss: !args.no_vss && config.create_vss_before_repair,
@@ -256,9 +259,10 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         };
 
         let fix_cancel = cancel.clone();
+        let engine_for_fix = engine.clone();
         let mut issues_for_fix = std::mem::take(&mut issues);
         let fix_handle = tokio::spawn(async move {
-            let result = engine
+            let result = engine_for_fix
                 .run_repairs(&mut issues_for_fix, options, fix_tx, fix_cancel)
                 .await;
             (issues_for_fix, result)

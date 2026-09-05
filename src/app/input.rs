@@ -39,6 +39,10 @@ pub enum Key {
     Down,
     Left,
     Right,
+    PageUp,
+    PageDown,
+    Home,
+    End,
     /// Everything the front end recognises but this table does not bind.
     ///
     /// Mapping the unbound keys onto one variant rather than dropping them at
@@ -46,6 +50,14 @@ pub enum Key {
     /// table makes, and therefore one a test can check.
     Unbound,
 }
+
+/// How far Page Up and Page Down move the triage selection.
+///
+/// The terminal build derived this from the height of the visible list. A
+/// window resizes freely, so a fixed step is both simpler and steadier: the
+/// same keypress moves the same distance whatever the user has done to the
+/// window.
+const PAGE_STEP: usize = 10;
 
 pub fn handle_key(app: &mut App, code: Key) {
     // A pending confirmation swallows every other key.
@@ -136,6 +148,8 @@ pub fn handle_key(app: &mut App, code: Key) {
         Key::Char('a') | Key::Char('A') => {
             if app.active_tab == TAB_DASHBOARD {
                 app.start_scan();
+            } else if app.active_tab == TAB_TRIAGE {
+                app.toggle_select_all_issues();
             } else {
                 app.select_all_issues();
             }
@@ -191,6 +205,14 @@ pub fn handle_key(app: &mut App, code: Key) {
             TAB_SETTINGS => app.next_setting(),
             _ => {}
         },
+
+        // Jumping through the triage list, on the other hand, is still ours.
+        // The list is a scroll area too, but the mouse only moves the viewport;
+        // these keys move the selection, which is what Enter and Space act on.
+        Key::PageUp if app.active_tab == TAB_TRIAGE => app.page_up_issue(PAGE_STEP),
+        Key::PageDown if app.active_tab == TAB_TRIAGE => app.page_down_issue(PAGE_STEP),
+        Key::Home if app.active_tab == TAB_TRIAGE => app.first_issue(),
+        Key::End if app.active_tab == TAB_TRIAGE => app.last_issue(),
 
         Key::Char('/') if app.active_tab == TAB_TRIAGE => app.focus_search = true,
         Key::Char('c') | Key::Char('C') if app.active_tab == TAB_TRIAGE => {
@@ -264,6 +286,7 @@ mod tests {
     fn app() -> App {
         let mut app = App::new();
         app.pending_confirm = None;
+        app.issues.clear();
         app
     }
 
@@ -655,5 +678,57 @@ mod tests {
         handle_key(&mut app, Key::Esc);
         assert!(app.setting_input.is_none());
         assert_eq!(app.config.temp_clean_threshold_mb, 800);
+    }
+
+    #[test]
+    fn triage_navigation_keys() {
+        let mut app = app();
+        app.active_tab = TAB_TRIAGE;
+        for i in 0..15 {
+            app.issues.push(Issue::new(
+                format!("iss_{i}"),
+                "sys",
+                format!("Issue {i}"),
+                "Category",
+                Severity::Info,
+                RiskScore::Low,
+                "Desc",
+                "Details",
+                "Fix",
+                vec![],
+            ));
+        }
+
+        assert_eq!(app.selected_filtered_index, 0);
+
+        handle_key(&mut app, Key::Down);
+        assert_eq!(app.selected_filtered_index, 1);
+
+        handle_key(&mut app, Key::Char('j'));
+        assert_eq!(app.selected_filtered_index, 2);
+
+        handle_key(&mut app, Key::Up);
+        assert_eq!(app.selected_filtered_index, 1);
+
+        handle_key(&mut app, Key::Char('k'));
+        assert_eq!(app.selected_filtered_index, 0);
+
+        handle_key(&mut app, Key::End);
+        assert_eq!(app.selected_filtered_index, 14);
+
+        handle_key(&mut app, Key::Home);
+        assert_eq!(app.selected_filtered_index, 0);
+
+        handle_key(&mut app, Key::PageDown);
+        assert_eq!(app.selected_filtered_index, 10);
+
+        handle_key(&mut app, Key::PageDown);
+        assert_eq!(app.selected_filtered_index, 14);
+
+        handle_key(&mut app, Key::PageUp);
+        assert_eq!(app.selected_filtered_index, 4);
+
+        handle_key(&mut app, Key::PageUp);
+        assert_eq!(app.selected_filtered_index, 0);
     }
 }
