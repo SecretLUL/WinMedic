@@ -14,6 +14,116 @@ pub struct WindowsUpdatesModule {
     runner: Arc<dyn CommandRunner>,
 }
 
+/// Where Component Based Servicing parks the work a restart has to finish.
+const CBS_REBOOT_PENDING_KEY: &str =
+    r"SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending";
+
+/// Windows Update's own restart flag.
+const WU_REBOOT_REQUIRED_KEY: &str =
+    r"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired";
+
+/// Holds `PendingFileRenameOperations`, the queue the Session Manager runs
+/// before anything else starts at boot.
+const SESSION_MANAGER_KEY: &str = r"SYSTEM\CurrentControlSet\Control\Session Manager";
+
+/// What the registry says about a restart Windows is still waiting for.
+///
+/// Collected apart from the verdict so [`pending_reboot_reason`] can be tested
+/// against every combination without a registry to write into.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RebootSignals {
+    /// Entries (values plus subkeys) under the CBS `RebootPending` key, or
+    /// `None` when the key does not exist at all.
+    pub cbs_pending_entries: Option<u32>,
+    /// Whether Windows Update's `RebootRequired` key exists.
+    pub wu_reboot_required: bool,
+    /// Non-empty entries queued in `PendingFileRenameOperations`.
+    pub pending_file_renames: usize,
+}
+
+/// Why a restart is outstanding, or `None` when nothing actually is.
+///
+/// The subtlety is the CBS key. Windows creates
+/// `Component Based Servicing\RebootPending` while it services the machine and
+/// files the work underneath it; the restart consumes that work and clears the
+/// entries, but the key itself is routinely left behind — empty and permanent.
+/// Treating its bare existence as evidence, which is what every "is a reboot
+/// pending" snippet on the internet does, reports a restart that no restart can
+/// ever clear: the user reboots, scans again, and WinMedic says the same thing.
+/// So the key counts only when it still holds something.
+///
+/// The other two signals are cleared properly by the boot that acts on them and
+/// are read as they stand.
+pub fn pending_reboot_reason(signals: &RebootSignals) -> Option<String> {
+    let mut evidence = Vec::new();
+
+    if let Some(entries) = signals.cbs_pending_entries
+        && entries > 0
+    {
+        evidence.push(format!(
+            "HKLM\\{} holds {} queued entr{}",
+            CBS_REBOOT_PENDING_KEY,
+            entries,
+            if entries == 1 { "y" } else { "ies" }
+        ));
+    }
+
+    if signals.wu_reboot_required {
+        evidence.push(format!("HKLM\\{} exists", WU_REBOOT_REQUIRED_KEY));
+    }
+
+    if signals.pending_file_renames > 0 {
+        evidence.push(format!(
+            "PendingFileRenameOperations lists {} entr{} to be executed at the next boot",
+            signals.pending_file_renames,
+            if signals.pending_file_renames == 1 {
+                "y"
+            } else {
+                "ies"
+            }
+        ));
+    }
+
+    (!evidence.is_empty()).then(|| evidence.join(" | "))
+}
+
+/// Read the three restart signals out of the registry.
+fn read_reboot_signals() -> RebootSignals {
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+
+    let cbs_pending_entries = hklm
+        .open_subkey_with_flags(CBS_REBOOT_PENDING_KEY, KEY_READ)
+        .ok()
+        .map(|key| match key.query_info() {
+            Ok(info) => info.sub_keys + info.values,
+            // The key opened but refuses to be counted. That is evidence of
+            // something rather than of nothing, so treat it as pending.
+            Err(_) => 1,
+        });
+
+    let wu_reboot_required = hklm
+        .open_subkey_with_flags(WU_REBOOT_REQUIRED_KEY, KEY_READ)
+        .is_ok();
+
+    // The value is a REG_MULTI_SZ of source/destination pairs, and a stale one
+    // can sit there holding nothing but empty strings — those queue no work.
+    let pending_file_renames = hklm
+        .open_subkey_with_flags(SESSION_MANAGER_KEY, KEY_READ)
+        .ok()
+        .and_then(|key| {
+            key.get_value::<Vec<String>, _>("PendingFileRenameOperations")
+                .ok()
+        })
+        .map(|ops| ops.iter().filter(|op| !op.trim().is_empty()).count())
+        .unwrap_or(0);
+
+    RebootSignals {
+        cbs_pending_entries,
+        wu_reboot_required,
+        pending_file_renames,
+    }
+}
+
 impl WindowsUpdatesModule {
     pub fn new(config: ModuleConfig) -> Self {
         Self::with_runner(config, Arc::new(SystemCommandRunner::new()))
@@ -179,43 +289,36 @@ impl DiagnosticModule for WindowsUpdatesModule {
         .await;
         sleep(Duration::from_millis(150)).await;
 
-        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-        let pending_keys = [
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending",
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired",
-        ];
-
-        let mut reboot_found = false;
-        for p_key in pending_keys {
-            if hklm.open_subkey_with_flags(p_key, KEY_READ).is_ok() {
-                reboot_found = true;
-                issues.push(
-                    Issue::new(
-                        "wu_reboot_pending",
-                        self.id(),
-                        "System reboot pending after updates",
-                        "Windows Update & Services",
-                        Severity::Info,
-                        RiskScore::Low,
-                        "Windows reports a reboot pending from a previously installed update or driver package. Some updates cannot continue until the machine restarts.",
-                        format!("Found in the registry: HKLM\\{}", p_key),
-                        "Restart Windows after the repairs to finish the pending installations",
-                        vec!["Record the pending reboot in the repair report".to_string()],
-                    )
-                    .with_requires_reboot(true),
-                );
-                break;
+        let signals = read_reboot_signals();
+        match pending_reboot_reason(&signals) {
+            Some(evidence) => issues.push(
+                Issue::new(
+                    "wu_reboot_pending",
+                    self.id(),
+                    "System reboot pending after updates",
+                    "Windows Update & Services",
+                    Severity::Info,
+                    RiskScore::Low,
+                    "Windows reports a reboot pending from a previously installed update or driver package. Some updates cannot continue until the machine restarts.",
+                    format!("Found in the registry: {}", evidence),
+                    "Restart Windows after the repairs to finish the pending installations",
+                    vec!["Record the pending reboot in the repair report".to_string()],
+                )
+                .with_requires_reboot(true),
+            ),
+            None => {
+                Self::send_progress(
+                    &progress_tx,
+                    95,
+                    "No pending update reboots",
+                    Some(if signals.cbs_pending_entries == Some(0) {
+                        "No queued restart work found. The empty CBS RebootPending key is a leftover Windows never removes and does not count."
+                    } else {
+                        "No queued restart work found."
+                    }),
+                )
+                .await;
             }
-        }
-
-        if !reboot_found {
-            Self::send_progress(
-                &progress_tx,
-                95,
-                "No pending update reboots",
-                Some("No blocking reboot-pending keys found."),
-            )
-            .await;
         }
 
         Self::send_progress(
@@ -383,5 +486,57 @@ mod tests {
         let disabled_wu = issues.iter().find(|i| i.id == "wu_svc_disabled_wuauserv");
         assert!(disabled_wu.is_some());
         assert_eq!(disabled_wu.unwrap().severity, Severity::Critical);
+    }
+
+    /// The false positive this detection was rewritten for. Windows leaves the
+    /// CBS `RebootPending` key behind after the very restart that emptied it,
+    /// so testing for the key's existence reports a pending reboot that no
+    /// reboot can ever clear: the user restarts, scans again, and WinMedic says
+    /// the same thing.
+    #[test]
+    fn an_empty_cbs_reboot_pending_key_is_not_a_pending_reboot() {
+        let signals = RebootSignals {
+            cbs_pending_entries: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(pending_reboot_reason(&signals), None);
+    }
+
+    #[test]
+    fn a_cbs_key_still_holding_work_is_a_pending_reboot() {
+        let signals = RebootSignals {
+            cbs_pending_entries: Some(2),
+            ..Default::default()
+        };
+        let reason = pending_reboot_reason(&signals).expect("2 queued entries are evidence");
+        assert!(reason.contains("2 queued entries"), "{}", reason);
+    }
+
+    #[test]
+    fn windows_update_and_queued_renames_are_both_reported() {
+        let signals = RebootSignals {
+            cbs_pending_entries: None,
+            wu_reboot_required: true,
+            pending_file_renames: 1,
+        };
+        let reason = pending_reboot_reason(&signals).expect("either signal is enough on its own");
+        assert!(reason.contains("RebootRequired"), "{}", reason);
+        assert!(reason.contains("1 entry"), "{}", reason);
+    }
+
+    #[test]
+    fn a_machine_with_nothing_queued_reports_nothing() {
+        assert_eq!(pending_reboot_reason(&RebootSignals::default()), None);
+    }
+
+    /// Reading the live registry must work on any machine and say something
+    /// consistent; which signals it finds is the machine's business.
+    #[test]
+    fn reading_the_registry_agrees_with_the_verdict() {
+        let signals = read_reboot_signals();
+        let expected = signals.cbs_pending_entries.is_some_and(|n| n > 0)
+            || signals.wu_reboot_required
+            || signals.pending_file_renames > 0;
+        assert_eq!(pending_reboot_reason(&signals).is_some(), expected);
     }
 }

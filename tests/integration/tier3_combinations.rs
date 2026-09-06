@@ -36,7 +36,7 @@ use winmedic::utils::updater::{UpdateInfo, check_for_update};
 async fn test_tier3_scan_cleaner_and_updater_startup_flow() {
     let runner = Arc::new(ProgrammableMockRunner::new());
     runner.set_response_for_cmd_and_args(
-        "dism.exe /Online /Cleanup-Image /AnalyzeComponentStore",
+        "dism.exe /Online /Cleanup-Image /AnalyzeComponentStore /English",
         CmdOutput::ok(DISM_ANALYZE_ENGLISH_RECLAIMABLE),
     );
     runner.set_response("curl.exe", CmdOutput::ok(GITHUB_RELEASE_NEWER_JSON));
@@ -203,7 +203,7 @@ async fn test_tier3_triage_selection_logs_temp_with_real_fix() {
 async fn test_tier3_multi_module_scan_parallelism() {
     let runner = Arc::new(ProgrammableMockRunner::new());
     runner.set_response_for_cmd_and_args(
-        "dism.exe /Online /Cleanup-Image /AnalyzeComponentStore",
+        "dism.exe /Online /Cleanup-Image /AnalyzeComponentStore /English",
         CmdOutput::ok(DISM_ANALYZE_CLEAN),
     );
 

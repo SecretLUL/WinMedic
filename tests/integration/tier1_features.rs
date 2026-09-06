@@ -163,7 +163,7 @@ fn test_tier1_f02_winsxs_analyze_german_parser() {
 async fn test_tier1_f02_winsxs_scan_creates_issue_when_recommended() {
     let runner = Arc::new(ProgrammableMockRunner::new());
     runner.set_response_for_cmd_and_args(
-        "dism.exe /Online /Cleanup-Image /AnalyzeComponentStore",
+        "dism.exe /Online /Cleanup-Image /AnalyzeComponentStore /English",
         CmdOutput::ok(DISM_ANALYZE_ENGLISH_RECLAIMABLE),
     );
 
@@ -183,7 +183,7 @@ async fn test_tier1_f02_winsxs_scan_creates_issue_when_recommended() {
 async fn test_tier1_f02_winsxs_scan_clean_when_not_recommended() {
     let runner = Arc::new(ProgrammableMockRunner::new());
     runner.set_response_for_cmd_and_args(
-        "dism.exe /Online /Cleanup-Image /AnalyzeComponentStore",
+        "dism.exe /Online /Cleanup-Image /AnalyzeComponentStore /English",
         CmdOutput::ok(DISM_ANALYZE_CLEAN),
     );
 
@@ -198,7 +198,7 @@ async fn test_tier1_f02_winsxs_scan_clean_when_not_recommended() {
 async fn test_tier1_f02_winsxs_fix_executes_start_component_cleanup() {
     let runner = Arc::new(ProgrammableMockRunner::new());
     runner.set_response_for_cmd_and_args(
-        "dism.exe /Online /Cleanup-Image /StartComponentCleanup",
+        "dism.exe /Online /Cleanup-Image /StartComponentCleanup /English",
         CmdOutput::ok("The operation completed successfully."),
     );
 
@@ -207,10 +207,26 @@ async fn test_tier1_f02_winsxs_fix_executes_start_component_cleanup() {
 
     assert!(res.is_ok());
     assert!(res.unwrap().contains("StartComponentCleanup finished"));
-    assert_eq!(runner.calls_for("dism.exe").len(), 1);
+    // The cleanup itself, then the analysis that reads the store back to see
+    // whether the cleanup actually removed anything.
+    assert_eq!(runner.calls_for("dism.exe").len(), 2);
     assert_eq!(
         runner.calls_for("dism.exe")[0],
-        vec!["/Online", "/Cleanup-Image", "/StartComponentCleanup"]
+        vec![
+            "/Online",
+            "/Cleanup-Image",
+            "/StartComponentCleanup",
+            "/English"
+        ]
+    );
+    assert_eq!(
+        runner.calls_for("dism.exe")[1],
+        vec![
+            "/Online",
+            "/Cleanup-Image",
+            "/AnalyzeComponentStore",
+            "/English"
+        ]
     );
 }
 

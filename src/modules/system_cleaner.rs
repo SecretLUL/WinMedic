@@ -138,7 +138,58 @@ fn clean_filtered(path: &Path, skip: fn(&Path) -> bool) -> CleanStats {
     stats
 }
 
-/// Scan a directory for log and diagnostic archive files (.log, .cab, .bak, .etl, .txt).
+/// The archive extensions this module treats as removable log data.
+const LOG_ARCHIVE_EXTENSIONS: &[&str] = &["log", "cab", "bak", "etl", "txt"];
+
+/// Whether the file name marks `path` as a log or diagnostic archive.
+fn has_log_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .is_some_and(|e| LOG_ARCHIVE_EXTENSIONS.contains(&e.as_str()))
+}
+
+/// Whether this process could delete `path` right now.
+///
+/// Windows checks a delete against the share modes of every handle already open
+/// on the file, so asking for `DELETE` access answers exactly the question
+/// `remove_file` will ask later — without touching the file. The share mode
+/// requested here is fully permissive, so the probe never blocks the service
+/// that holds the log.
+///
+/// This is what separates a reclaimable archive from a live one. The servicing
+/// stack keeps its own logs open for as long as it runs: `CBS.log` belongs to
+/// TrustedInstaller, `dism.log` to DISM — which WinMedic's own component store
+/// analysis writes to on every single scan — and MoSetup's `UpdateAgent.log` to
+/// the update stack. Counting those produced a finding of "13.2 MB, 2 files"
+/// whose repair reported success while both files were still sitting there, and
+/// the very next scan raised it again, unchanged.
+fn is_deletable(path: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    /// The access right `remove_file` asks for.
+    const DELETE: u32 = 0x0001_0000;
+    /// `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`.
+    const FILE_SHARE_ALL: u32 = 0x0000_0007;
+
+    std::fs::OpenOptions::new()
+        .access_mode(DELETE)
+        .share_mode(FILE_SHARE_ALL)
+        .open(path)
+        .is_ok()
+}
+
+/// A log file the sweep can both count and actually remove.
+fn is_reclaimable_log(path: &Path) -> bool {
+    has_log_extension(path) && is_deletable(path)
+}
+
+/// Scan a directory for reclaimable log and diagnostic archive files.
+///
+/// Counts `.log`, `.cab`, `.bak`, `.etl` and `.txt` files that this process
+/// could delete. Logs a running service holds open are left out of the total
+/// on purpose: measuring them reports space the repair cannot free, which is a
+/// finding that survives its own repair forever. [`clean_log_dir_files`] skips
+/// exactly the same files, so what is measured is what gets removed.
 pub fn scan_log_dir_files(path: &Path) -> DirStats {
     let mut stats = DirStats::default();
     if let Ok(entries) = std::fs::read_dir(path) {
@@ -146,12 +197,7 @@ pub fn scan_log_dir_files(path: &Path) -> DirStats {
             let p = entry.path();
             if let Ok(meta) = p.symlink_metadata() {
                 if meta.is_file() {
-                    let ext = p
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .map(|s| s.to_ascii_lowercase())
-                        .unwrap_or_default();
-                    if matches!(ext.as_str(), "log" | "cab" | "bak" | "etl" | "txt") {
+                    if is_reclaimable_log(&p) {
                         stats.bytes += meta.len();
                         stats.files += 1;
                     }
@@ -166,7 +212,8 @@ pub fn scan_log_dir_files(path: &Path) -> DirStats {
     stats
 }
 
-/// Clean log and diagnostic archive files in a directory, safely skipping locked active logs.
+/// Clean log and diagnostic archive files in a directory, leaving the active
+/// system logs alone.
 pub fn clean_log_dir_files(path: &Path) -> CleanStats {
     let mut stats = CleanStats::default();
     if let Ok(entries) = std::fs::read_dir(path) {
@@ -174,17 +221,15 @@ pub fn clean_log_dir_files(path: &Path) -> CleanStats {
             let p = entry.path();
             if let Ok(meta) = p.symlink_metadata() {
                 if meta.is_file() {
-                    let ext = p
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .map(|s| s.to_ascii_lowercase())
-                        .unwrap_or_default();
-                    if matches!(ext.as_str(), "log" | "cab" | "bak" | "etl" | "txt") {
+                    if is_reclaimable_log(&p) {
                         let len = meta.len();
                         if std::fs::remove_file(&p).is_ok() {
                             stats.freed_bytes += len;
                             stats.deleted_files += 1;
                         } else {
+                            // The probe said yes and the delete still failed:
+                            // a service opened the file in between. Rare, and
+                            // genuinely worth reporting as locked.
                             stats.skipped_locked += 1;
                             stats.locked_bytes += len;
                         }
@@ -201,6 +246,30 @@ pub fn clean_log_dir_files(path: &Path) -> CleanStats {
     }
     stats
 }
+
+/// Read the component store without changing it.
+///
+/// `/English` is not cosmetic. DISM prints in the Windows display language and
+/// in the console code page, which [`String::from_utf8_lossy`] turns into
+/// replacement characters — on a German machine that alone cost the parser the
+/// store size and cache lines, because "Größe" and "temporäre" no longer match
+/// anything. Pinning the output language leaves the parser one set of labels to
+/// know, whatever locale it runs on. The localised labels below stay as a
+/// fallback for a DISM build that ignores the switch.
+const DISM_ANALYZE_ARGS: &[&str] = &[
+    "/Online",
+    "/Cleanup-Image",
+    "/AnalyzeComponentStore",
+    "/English",
+];
+
+/// Remove the superseded packages the analysis above counted.
+const DISM_CLEANUP_ARGS: &[&str] = &[
+    "/Online",
+    "/Cleanup-Image",
+    "/StartComponentCleanup",
+    "/English",
+];
 
 /// Parse DISM `/AnalyzeComponentStore` output supporting English and German outputs.
 pub fn parse_winsxs_analysis(output: &str) -> WinSxSAnalysis {
@@ -758,6 +827,45 @@ impl SystemCleanerModule {
         total
     }
 
+    /// Read the component store back after a cleanup and say what is left.
+    ///
+    /// DISM answers "The operation completed successfully" whether it removed
+    /// twelve packages or none at all, so reporting its exit status alone told
+    /// the user the store had been cleaned in exactly the cases where nothing
+    /// had happened. Windows also keeps superseded components for a 30-day
+    /// grace period so an installed update can still be uninstalled, which is a
+    /// legitimate reason for packages to survive the run — but the user has to
+    /// be told, or the finding coming back on the next scan looks like a repair
+    /// that silently failed.
+    ///
+    /// Returns a sentence to append to the repair result, or an empty string
+    /// when the store could not be re-read; a failed verification must never
+    /// turn a successful cleanup into a failed repair.
+    async fn recount_reclaimable_packages(&self, dbg: &DebugTrace) -> String {
+        let verified = dbg
+            .run(
+                &self.runner,
+                "dism.exe",
+                DISM_ANALYZE_ARGS,
+                Duration::from_secs(120),
+            )
+            .await
+            .ok()
+            .filter(|out| out.success);
+
+        let Some(out) = verified else {
+            return String::new();
+        };
+
+        match parse_winsxs_analysis(&out.stdout).reclaimable_packages {
+            0 => " The store now reports 0 reclaimable packages.".to_string(),
+            left => format!(
+                " The store still reports {} reclaimable package(s): Windows holds superseded components for a 30-day grace period so installed updates can still be uninstalled, and drops them once it expires.",
+                left
+            ),
+        }
+    }
+
     async fn send_progress(
         progress_tx: &Option<Sender<ModuleProgress>>,
         percent: u8,
@@ -821,17 +929,13 @@ impl DiagnosticModule for SystemCleanerModule {
             &progress_tx,
             10,
             "Analysing the WinSxS component store (DISM, 1-2 min)...",
-            Some("dism.exe /Online /Cleanup-Image /AnalyzeComponentStore"),
+            Some("dism.exe /Online /Cleanup-Image /AnalyzeComponentStore /English"),
         )
         .await;
 
         let dism_check = self
             .runner
-            .run(
-                "dism.exe",
-                &["/Online", "/Cleanup-Image", "/AnalyzeComponentStore"],
-                Duration::from_secs(120),
-            )
+            .run("dism.exe", DISM_ANALYZE_ARGS, Duration::from_secs(120))
             .await;
 
         // A non-zero exit still yields `Ok(CmdOutput { success: false, .. })`, and
@@ -840,15 +944,21 @@ impl DiagnosticModule for SystemCleanerModule {
         // "elevated permissions required") gets reported as real analysis.
         if let Some(out) = dism_check.ok().filter(|out| out.success) {
             let analysis = parse_winsxs_analysis(&out.stdout);
-            if analysis.cleanup_recommended || analysis.reclaimable_packages > 0 {
-                let title = if analysis.reclaimable_packages > 0 {
-                    format!(
-                        "WinSxS component store cleanup recommended ({} reclaimable packages)",
-                        analysis.reclaimable_packages
-                    )
-                } else {
-                    "WinSxS component store cleanup recommended".to_string()
-                };
+            // The reclaimable package count, not DISM's own recommendation, is
+            // what decides this. `StartComponentCleanup` — the one repair
+            // offered here — removes superseded packages and nothing else,
+            // while the "cleanup recommended" verdict also weighs backups and
+            // disabled features, which only `/ResetBase` can shrink and which
+            // WinMedic deliberately never touches. On a machine carrying 4.43 GB
+            // of backups and zero reclaimable packages the flag therefore stays
+            // "Yes" however often the repair runs: DISM reported success, the
+            // audit log recorded a clean WinSxS store, and the next scan raised
+            // the identical finding. Report only what the repair can reclaim.
+            if analysis.reclaimable_packages > 0 {
+                let title = format!(
+                    "WinSxS component store cleanup recommended ({} reclaimable packages)",
+                    analysis.reclaimable_packages
+                );
 
                 let mut details = Vec::new();
                 if let Some(size) = &analysis.reported_size {
@@ -878,6 +988,21 @@ impl DiagnosticModule for SystemCleanerModule {
                     "Clean the WinSxS component store via DISM (dism.exe /Online /Cleanup-Image /StartComponentCleanup)",
                     vec!["Run dism.exe /Online /Cleanup-Image /StartComponentCleanup (may take several minutes)".to_string()],
                 ));
+            } else if analysis.cleanup_recommended {
+                Self::send_progress(
+                    &progress_tx,
+                    18,
+                    "Component store cleanup has nothing to reclaim",
+                    Some(&format!(
+                        "DISM recommends a component store cleanup but reports 0 reclaimable packages{}. StartComponentCleanup has nothing to remove; that size sits in backups and disabled features, which only '/ResetBase' reclaims - at the price of no longer being able to uninstall any installed update. No finding raised.",
+                        analysis
+                            .backups_size
+                            .as_ref()
+                            .map(|b| format!(" ({} in backups and disabled features)", b))
+                            .unwrap_or_default()
+                    )),
+                )
+                .await;
             }
         }
 
@@ -1214,12 +1339,15 @@ impl DiagnosticModule for SystemCleanerModule {
                     .run(
                         &self.runner,
                         "dism.exe",
-                        &["/Online", "/Cleanup-Image", "/StartComponentCleanup"],
+                        DISM_CLEANUP_ARGS,
                         Duration::from_secs(300),
                     )
                     .await?;
                 if out.success {
-                    Ok("WinSxS component store cleaned successfully (StartComponentCleanup finished).".to_string())
+                    Ok(format!(
+                        "WinSxS component store cleaned successfully (StartComponentCleanup finished).{}",
+                        self.recount_reclaimable_packages(&dbg).await
+                    ))
                 } else {
                     let err = if out.stderr.trim().is_empty() {
                         out.stdout
@@ -1708,6 +1836,46 @@ The operation completed successfully.";
         assert!(!td.path.join("setupact.log").exists());
     }
 
+    /// The finding that outlived every repair. `CBS.log` belongs to
+    /// TrustedInstaller and `dism.log` to DISM — which this module's own
+    /// component store analysis writes to on every scan — so both are open for
+    /// as long as Windows runs. Counting them reported megabytes the sweep
+    /// could never free, the repair announced success, and the next scan raised
+    /// the identical issue.
+    #[test]
+    fn a_log_held_open_by_a_service_is_neither_counted_nor_swept() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let td = TestDir::new("log_active_held");
+        let active = td.create_file("CBS.log", &[0u8; 4096]);
+        let archive = td.create_file("CbsPersist_2026.log", &[0u8; 2048]);
+
+        // FILE_SHARE_NONE is how the servicing stack holds its live log: no
+        // other process may delete it while that handle is open.
+        let _held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&active)
+            .expect("failed to hold CBS.log open");
+
+        let stats = scan_log_dir_files(&td.path);
+        assert_eq!(stats.files, 1, "only the rotated archive is reclaimable");
+        assert_eq!(stats.bytes, 2048);
+
+        let clean = clean_log_dir_files(&td.path);
+        assert_eq!(clean.deleted_files, 1);
+        assert_eq!(clean.freed_bytes, 2048);
+        assert_eq!(
+            clean.skipped_locked, 0,
+            "a log deliberately left alone is not a failed deletion"
+        );
+        assert!(!archive.exists());
+        assert!(active.exists());
+
+        // And the scan after the repair has nothing left to raise.
+        assert_eq!(scan_log_dir_files(&td.path), DirStats::default());
+    }
+
     #[test]
     fn test_browser_cache_discovery() {
         let td = TestDir::new("browser_discovery");
@@ -1850,6 +2018,78 @@ The operation completed successfully.";
                 .iter()
                 .any(|cmd| cmd.contains("StartComponentCleanup"))
         );
+    }
+
+    /// DISM keeps recommending a cleanup for the size of the backups and
+    /// disabled features long after the last superseded package is gone — and
+    /// `StartComponentCleanup`, the only repair offered here, removes exactly
+    /// those packages and nothing else. Raising a finding on the recommendation
+    /// alone gave the user a repair that reported success, an audit entry
+    /// saying the store was cleaned, and the same issue back on the next scan.
+    #[tokio::test]
+    async fn a_recommended_cleanup_with_nothing_reclaimable_raises_no_issue() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "AnalyzeComponentStore",
+            CmdOutput::ok(
+                "Explorer Reported Size of Component Store : 10.24 GB\n\
+                 Backups and Disabled Features : 4.43 GB\n\
+                 Number of Reclaimable Packages : 0\n\
+                 Component Store Cleanup Recommended : Yes\n",
+            ),
+        );
+
+        let td = TestDir::new("winsxs_nothing_to_reclaim");
+        let module = sandboxed(&td, Arc::new(mock));
+        let issues = module.scan(None).await.unwrap();
+
+        assert!(issues.iter().all(|i| i.id != "sys_clean_winsxs"));
+    }
+
+    /// DISM says "the operation completed successfully" whether it removed
+    /// twelve packages or none, so the repair reads the store back before it
+    /// claims anything.
+    #[tokio::test]
+    async fn a_cleanup_that_reclaimed_nothing_says_so() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "StartComponentCleanup",
+            CmdOutput::ok("The operation completed successfully."),
+        );
+        mock.add_response(
+            "AnalyzeComponentStore",
+            CmdOutput::ok("Number of Reclaimable Packages : 4\n"),
+        );
+
+        let td = TestDir::new("winsxs_recount_unchanged");
+        let module = sandboxed(&td, Arc::new(mock));
+        let message = module.fix("sys_clean_winsxs", None).await.unwrap();
+
+        assert!(message.contains("StartComponentCleanup finished"));
+        assert!(
+            message.contains("still reports 4 reclaimable package"),
+            "the result must not read as a clean store: {}",
+            message
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cleanup_that_emptied_the_store_reports_the_zero() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "StartComponentCleanup",
+            CmdOutput::ok("The operation completed successfully."),
+        );
+        mock.add_response(
+            "AnalyzeComponentStore",
+            CmdOutput::ok("Number of Reclaimable Packages : 0\n"),
+        );
+
+        let td = TestDir::new("winsxs_recount_zero");
+        let module = sandboxed(&td, Arc::new(mock));
+        let message = module.fix("sys_clean_winsxs", None).await.unwrap();
+
+        assert!(message.contains("0 reclaimable packages"));
     }
 
     #[tokio::test]
