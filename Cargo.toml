@@ -1,6 +1,6 @@
 [package]
 name = "winmedic"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 # Verified against the locked dependency tree: edition 2024 itself needs 1.85,
 # but egui/eframe raises the floor to 1.95. CI enforces this exact version in
