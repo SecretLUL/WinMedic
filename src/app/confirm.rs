@@ -49,6 +49,12 @@ pub struct SystemActions {
     pub restore_point: RestorePointService,
     /// Reboot the machine to finalize repairs that require a system restart.
     pub restart_system: fn() -> Result<(), String>,
+    /// Whether the latest scan may be written back to `%APPDATA%`.
+    ///
+    /// Off by default for the same reason as everything above it: `cargo test`
+    /// builds dozens of `App`s and ticks their checkboxes, and none of that may
+    /// overwrite the scan the developer's own WinMedic left behind.
+    pub persist_scan_state: bool,
 }
 
 fn real_restart_system() -> Result<(), String> {
@@ -75,6 +81,7 @@ impl SystemActions {
             self_update: SelfUpdateService::real(),
             restore_point: RestorePointService::real(),
             restart_system: real_restart_system,
+            persist_scan_state: true,
         }
     }
 
@@ -86,6 +93,7 @@ impl SystemActions {
             self_update: SelfUpdateService::inert(),
             restore_point: RestorePointService::inert(),
             restart_system: || Ok(()),
+            persist_scan_state: false,
         }
     }
 }
@@ -461,6 +469,23 @@ mod tests {
             "App::new installed the real self-updater: accepting the update \
              dialog would download and replace an executable on this machine"
         );
+        assert!(
+            !actions.persist_scan_state,
+            "App::new was allowed to write to %APPDATA%: ticking a checkbox in \
+             a test would overwrite the developer's own last scan"
+        );
+    }
+
+    /// And the front end that does opt in gets all of it, persistence
+    /// included: a real run has to remember its findings across restarts.
+    #[test]
+    fn the_desktop_front_end_gets_the_real_machine() {
+        let mut app = App::new();
+        app.enable_real_system_actions();
+
+        assert!(app.system_actions.restore_point.is_live());
+        assert!(app.system_actions.self_update.is_live());
+        assert!(app.system_actions.persist_scan_state);
     }
 
     /// The engine an [`App`] hands a repair run must inherit that inertness —

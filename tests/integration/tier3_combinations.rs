@@ -703,6 +703,10 @@ async fn test_tier3_update_check_with_subsequent_triage_cleanup() {
 
     // 3. User switches to Triage and toggles issue
     app.active_tab = TAB_TRIAGE;
+    // `App::new` restores the last scan from `%APPDATA%`, so on a machine that
+    // has actually run WinMedic `issues[0]` is a real finding rather than the
+    // one this test is about.
+    app.issues.clear();
     app.issues.push(Issue::new(
         "sys_clean_recycle_bin",
         "system_cleaner",
