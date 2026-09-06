@@ -160,11 +160,8 @@ impl DiagnosticReporter {
             md.push_str("**No issues found.** The system is in excellent shape.\n\n");
         } else {
             for (idx, issue) in issues.iter().enumerate() {
-                let sev_str = match issue.severity {
-                    Severity::Critical => "[!] CRITICAL",
-                    Severity::Warning => "[!] WARNING",
-                    Severity::Info => "[i] INFO",
-                };
+                // The same three strings the GUI once carried a copy of.
+                let sev_str = issue.severity.badge();
                 let status_str = if issue.is_fixed {
                     "[FIXED]"
                 } else if issue.fix_error.is_some() {
