@@ -67,12 +67,12 @@ $targets = @(
         Pattern     = '(?m)^(name = "winmedic"\r?\nversion = )"[^"]*"'
         Replacement = "`${1}`"$Version`""
     }
-    @{
-        Path        = 'README.md'
-        Purpose     = 'the checksum-verification example'
-        Pattern     = 'winmedic-v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\.exe'
-        Replacement = "winmedic-v$Version.exe"
-    }
+    # README.md is deliberately absent. Its checksum example used to name
+    # `winmedic-v<version>.exe` twice and was rewritten here every release; it
+    # now globs `winmedic-v*.exe` out of the download directory instead, so it
+    # states no version and there is nothing to keep in step. Do not add it back
+    # without first re-introducing a literal version into the file — a target
+    # whose pattern never matches makes this script throw.
     @{
         Path        = '.github/ISSUE_TEMPLATE/bug_report.yml'
         Purpose     = 'the "WinMedic version" placeholder'

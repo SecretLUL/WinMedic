@@ -228,8 +228,9 @@ WinMedic is **not code-signed**, so Windows SmartScreen will warn you on first l
 
 ```powershell
 # Compare the published checksum against the file you downloaded
-$expected = (Get-Content .\winmedic-v0.4.1.exe.sha256).Split(' ')[0]
-$actual   = (Get-FileHash .\winmedic-v0.4.1.exe -Algorithm SHA256).Hash.ToLower()
+$exe      = Get-Item .\winmedic-v*.exe | Select-Object -First 1
+$expected = (Get-Content "$($exe.FullName).sha256").Split(' ')[0]
+$actual   = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower()
 if ($expected -eq $actual) { "OK - checksum matches" } else { "MISMATCH - do not run this file" }
 ```
 

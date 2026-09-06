@@ -90,23 +90,45 @@ string. Use `utils::cmd::ps_single_quoted` — see the module documentation ther
 
 ## Cutting a release
 
-Releases are cut from the **Run workflow** button on the
-[Release workflow](../../actions/workflows/release.yml) — type the version
-(`0.3.3`) and nothing else is needed. The workflow writes that version into
-every file that states one, commits it, tags the commit, builds from the tag,
-refuses to publish if the binary does not introduce itself as that version, and
-then brings `main` up to date.
+A release is two steps: land the version bump on `main`, then run the workflow.
 
-Do not edit `Cargo.toml` by hand to bump the version. `Cargo.lock`, the README
-checksum example and the issue-template placeholder all repeat it, and the one
-place the number actually matters — `env!("CARGO_PKG_VERSION")`, which feeds the
-header, the help popup, `--version`, the HTML report and the update check — is
-the one nobody remembers to check. Use the script the workflow uses:
+```powershell
+./scripts/prepare-release.ps1 0.3.3   # opens the "chore(release): v0.3.3" pull request
+# merge it, wait for CI on main, then:
+gh workflow run release.yml --ref main -f version=0.3.3
+```
+
+The bump goes through a pull request rather than being pushed to `main` by the
+workflow because `main` is protected and `GITHUB_TOKEN` is not allowed through
+its four required checks. The workflow does try — a direct push, then a pull
+request as a fallback — and the fallback needs a repository setting that is
+deliberately off, so the attempt fails and the run's last step goes red. Giving
+CI a token that bypasses branch protection would fix the symptom by removing the
+protection; sending the bump down the same reviewed, CI-gated road as every
+other change costs one merge and removes nothing. v0.4.0 is the release that
+shipped correctly and still went red this way.
+
+Preparing first also makes the workflow's own bump step a no-op: it finds every
+version site already correct, tags `HEAD` unchanged, and its "did the bump reach
+the branch" check passes. Everything else it does is unchanged — it builds from
+the tag it just made and refuses to publish a binary that does not introduce
+itself as that version.
+
+Do not edit `Cargo.toml` by hand to bump the version. `Cargo.lock` and the
+issue-template placeholder repeat it, and the one place the number actually
+matters — `env!("CARGO_PKG_VERSION")`, which feeds the header, the help popup,
+`--version`, the HTML report and the update check — is the one nobody remembers
+to check. `prepare-release.ps1` calls the script that owns all of them, and it
+can be run on its own:
 
 ```powershell
 ./scripts/set-version.ps1 0.3.3          # rewrite every version site
 ./scripts/set-version.ps1 0.3.3 -Check   # report what disagrees, change nothing
 ```
+
+The README's checksum example is deliberately not on that list: it globs
+`winmedic-v*.exe` out of the download directory instead of naming a version, so
+it never goes stale.
 
 Pushing a `v*` tag by hand still builds and publishes, but a tag is immutable,
 so that path can only run the `-Check` pass: if the tagged tree states a

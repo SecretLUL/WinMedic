@@ -253,20 +253,27 @@ jobs:
       # inferred from the commands that were supposed to make it land.
       #
       # `main` is protected (one approving review, four strict status checks),
-      # and GITHUB_TOKEN is not allowed through branch protection. There are two
-      # ways to give this step a path that works, and it fails until one of them
-      # exists:
+      # and GITHUB_TOKEN is not allowed through branch protection. Three things
+      # make this step pass, and it fails until one of them is true:
       #
+      #   * run `./scripts/prepare-release.ps1 <version>` and merge what it
+      #     opens *before* releasing. The bump is then already on the branch,
+      #     "Write the version into the tree" finds nothing to write, this step
+      #     confirms what is already true, and no credential anywhere is allowed
+      #     past branch protection. This is the supported path — see
+      #     CONTRIBUTING.md, "Cutting a release"; or
       #   * set a RELEASE_TOKEN secret — a PAT with `contents: write` owned by
       #     an account with admin rights, which "Do not allow bypassing" leaves
-      #     unblocked — and the bump lands on the branch directly; or
+      #     unblocked — and the bump lands on the branch directly. Convenient,
+      #     and a long-lived token that can write to a protected branch is
+      #     exactly the credential worth not having; or
       #   * turn on Settings → Actions → General → Workflow permissions →
       #     "Allow GitHub Actions to create and approve pull requests", and it
       #     arrives as a pull request for review instead.
       #
-      # Only the first of those makes this step green. The branch is the sole
-      # measure: an open pull request is a path to the branch being correct, not
-      # a substitute for it, and a run that has not updated the branch is red
+      # Only the first two make this step green. The branch is the sole measure:
+      # an open pull request is a path to the branch being correct, not a
+      # substitute for it, and a run that has not updated the branch is red
       # whatever the reason. That is deliberate — v0.3.4 went unnoticed for two
       # releases precisely because a run that left the branch stale was allowed
       # to pass.
@@ -370,7 +377,7 @@ jobs:
             $summary += ""
             $summary += "Until that is merged, a build from ``$env:BRANCH`` reports the previous version through CARGO_PKG_VERSION — the header, ``--version``, the HTML report and the update check all read it, so the tool will offer its own release as an available update."
             $summary += ""
-            $summary += "This run stays red once it is merged, as the record that the branch was not updated automatically; re-running it will not help, because ``Resolve version`` refuses a tag that already exists. **To make this step pass by itself in future,** set a ``RELEASE_TOKEN`` secret so the bump lands on the branch directly."
+            $summary += "This run stays red once it is merged, as the record that the branch was not updated automatically; re-running it will not help, because ``Resolve version`` refuses a tag that already exists. **To avoid this next time,** run ``./scripts/prepare-release.ps1 <version>`` and merge its pull request *before* starting the release, so the bump is already on the branch when this step checks."
           } else {
             Write-Host "::error::$env:BRANCH was not brought up to $env:TAG and no pull request carries the bump."
             $summary += "### The branch was not brought up to ``$env:TAG``"
@@ -383,7 +390,7 @@ jobs:
             $summary += ""
             $summary += "**To recover this release:** open a pull request from ``$head`` (it was pushed and still holds the bump), or run ``./scripts/set-version.ps1 $($env:TAG.TrimStart('v'))`` on a branch and merge that."
             $summary += ""
-            $summary += "**To stop it happening again:** set a ``RELEASE_TOKEN`` secret, or turn on Settings -> Actions -> General -> Workflow permissions -> 'Allow GitHub Actions to create and approve pull requests'."
+            $summary += "**To stop it happening again:** run ``./scripts/prepare-release.ps1 <version>`` and merge its pull request before starting the release, so the bump reaches the branch the same reviewed way every other change does. The alternatives are a ``RELEASE_TOKEN`` secret, or Settings -> Actions -> General -> Workflow permissions -> 'Allow GitHub Actions to create and approve pull requests'."
           }
 
           if ($env:GITHUB_STEP_SUMMARY) {
