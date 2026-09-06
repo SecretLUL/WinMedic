@@ -17,6 +17,18 @@ impl Severity {
         }
     }
 
+    /// The severity on its own, for surfaces that draw their own mark.
+    ///
+    /// [`Self::badge`] is the same thing for surfaces that cannot: a report
+    /// file or a terminal has no way to paint an octagon.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Severity::Critical => "CRITICAL",
+            Severity::Warning => "WARNING",
+            Severity::Info => "INFO",
+        }
+    }
+
     pub fn short_label(&self) -> &'static str {
         match self {
             Severity::Critical => "CRIT",

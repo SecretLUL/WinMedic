@@ -536,6 +536,11 @@ impl App {
 
     /// Persist the latest scan results, health score, and module statuses to disk.
     pub fn save_scan_state(&self) {
+        // Guarded by the same seam as the browser and the UAC prompt: an `App`
+        // that was never handed the real machine does not write to it.
+        if !self.system_actions.persist_scan_state {
+            return;
+        }
         let state = ScanState::new(
             self.health_score,
             self.issues.clone(),

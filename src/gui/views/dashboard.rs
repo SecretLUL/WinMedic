@@ -177,6 +177,7 @@ fn findings(ui: &mut egui::Ui, app: &mut App) {
                 .show(&mut columns[index], |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
+                        theme::severity_mark(ui, *severity, 20.0);
                         ui.label(
                             RichText::new(counts[index].to_string())
                                 .size(27.0)
