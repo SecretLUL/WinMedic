@@ -118,7 +118,7 @@ jobs:
       # github-actions ecosystem and updates commit pins too.
       - name: Submit the manifest to microsoft/winget-pkgs
         if: steps.gate.outputs.publish == 'true'
-        uses: vedantmgoyal9/winget-releaser@b3a5dae0047c6180023acba3f548c55fdf6b7193 # main as of 2026-07-28
+        uses: vedantmgoyal9/winget-releaser@a8fff44b123f115ce4c21543edf8b677376fc7e0 # main as of 2026-07-28
         with:
           identifier: SecretLUL.WinMedic
           release-tag: ${{ inputs.tag }}
