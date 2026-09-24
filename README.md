@@ -1,331 +1,121 @@
 <div align="center">
 
-# 🩺 WinMedic – Windows Self-Healing & Diagnostic GUI
+![WinMedic: healing Windows at 1 HP. Fast. Reliable. Easy.](assets/banner.svg)
 
-**A high-performance, modular Windows diagnostic and auto-repair utility written in 100% Rust.**
-
-[![Rust](https://img.shields.io/badge/Language-Rust%202024-orange.svg?style=for-the-badge&logo=rust)](https://www.rust-lang.org/)
-[![CI](https://img.shields.io/github/actions/workflow/status/SecretLUL/WinMedic/ci.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=white&label=CI)](https://github.com/SecretLUL/WinMedic/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011%20(x64)-0078D6.svg?style=for-the-badge&logo=windows)](https://www.microsoft.com/windows)
-[![egui](https://img.shields.io/badge/GUI-egui%200.36-00D2FF.svg?style=for-the-badge)](https://www.egui.rs/)
-[![Release](https://img.shields.io/github/v/release/SecretLUL/WinMedic?style=for-the-badge&label=Version&color=10B981)](https://github.com/SecretLUL/WinMedic/releases/latest)
-[![MSRV](https://img.shields.io/badge/MSRV-1.95-B7410E.svg?style=for-the-badge&logo=rust)](https://www.rust-lang.org/)
-
-<br/>
-
-![WinMedic: scan and repair Windows without reinstalling it](assets/banner.svg)
+[![CI](https://img.shields.io/github/actions/workflow/status/SecretLUL/WinMedic/ci.yml?branch=main&label=CI)](https://github.com/SecretLUL/WinMedic/actions/workflows/ci.yml)
+[![Version](https://img.shields.io/github/v/release/SecretLUL/WinMedic?label=Version&color=0F7B0F)](https://github.com/SecretLUL/WinMedic/releases/latest)
+[![Windows 10 / 11](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D6)](https://www.microsoft.com/windows)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 
 </div>
 
----
+**Windows acting up?** Updates that fail, no internet, a slow or crashing PC:
+WinMedic finds out why and repairs it, so you do not have to reinstall Windows.
 
-## 🌟 Overview
+It is a single program. Nothing to install, nothing else to download. It only
+looks until you click **Repair**, and it creates a restore point first, so every
+change can be undone.
 
-**WinMedic** is a state-of-the-art native desktop application designed to autonomously diagnose, categorize, and safely repair Windows operating system errors, performance bottlenecks, update stalls, and broken configurations.
+## Download
 
-Unlike opaque one-click cleanup tools, **WinMedic** is built on six fundamental principles:
-1. **Zero Runtime Dependencies**: Single, compact, portable native `.exe` binary without .NET, Python, or external runtime requirements.
-2. **True Parallel Diagnostics**: All diagnostic modules execute concurrently via Tokio `JoinSet` for blazing-fast hardware and OS analysis.
-3. **Safety First**: Automatic **Windows System Restore Points (VSS)** (with a 3-minute creation window) and **Registry Snapshots** are taken prior to any modification — and every snapshot can be rolled back from inside the app.
-4. **Full Transparency & Live Triage**: Every issue is explained with technical logs, severity levels, risk scores, and step-by-step fix previews. A **dry-run mode** shows planned steps without changing anything, with instant live search and severity filtering.
-5. **Scan State Persistence & Reboot Reconciliation**: The entire diagnostic state is saved to `%APPDATA%\WinMedic\last_scan.json`. When restarting, WinMedic immediately restores your open issues without re-scanning, detects system restarts, and automatically reconciles pending update reboots.
-6. **Always Interruptible & Bounded**: Any running scan or repair can be aborted with `[Esc]` (or `Ctrl+C` headless) terminating child processes. Memory usage is bounded via a 2000-line ring-buffer.
+WinMedic runs on 64-bit Windows 10 and 11.
 
----
-
-## ⚡ Core Diagnostic & Healing Modules
-
-| Module | What It Checks | What It Fixes |
-| :--- | :--- | :--- |
-| **🛡 System Integrity** | DISM Component Store corruption, SFC system file integrity, CBS logs, VSS shadow copy health, a switched-off Windows Recovery Environment (`InstallState` in `ReAgent.xml`), WMI classes that fail to answer | Runs `DISM /RestoreHealth`, `sfc /scannow`, repairs Volume Shadow Copy services, `reagentc /enable`, `winmgmt /salvagerepository` — the last two read the state back afterwards |
-| **🔄 Windows Update & Services** | `wuauserv`, `bits`, `cryptsvc`, `trustedinstaller`, bloated `SoftwareDistribution\Download` cache, stuck reboot flags | Gracefully resets update queues, purges corrupted download caches, re-registers update DLLs |
-| **🌐 Network & DNS** | Physical adapters that asked for a DHCP address and got only a 169.254.x.x stand-in, DNS name resolution through the machine's *own* resolver (two independent names, never a pinned public server), gateway ping reachability, Winsock catalog integrity, rogue proxy settings, a WinHTTP proxy (the one Windows Update and the Store use) that nothing answers at | `ipconfig /renew <adapter>`, `ipconfig /flushdns`, `ipconfig /registerdns`, `netsh winsock reset`, `netsh int ip reset`, proxy cleanup, `netsh winhttp reset proxy` — each repair reads the result back (the address, the resolver, the WinHTTP value) and fails honestly if nothing changed; the WinHTTP repair names the command that restores the old proxy |
-| **📋 Event Log & Crash Analysis** | Critical/Error event bursts in last 24h, WHEA hardware error architecture logs, `%SystemRoot%\Minidump` BSOD crash dumps, the result of the last Windows Memory Diagnostic (90 days) | Corrupted log channel cleanup, crash dump analysis, hardware diagnostic recommendations; a failed memory test is reported unticked, since no software repair fixes RAM |
-| **💾 Storage & Filesystem** | Dirty Bit detection (`fsutil dirty query C:`), SMART drive health, `%TEMP%` & `C:\Windows\Temp` junk accumulation, bloated `IconCache.db` | Triggers online `chkdsk C: /scan`, cleans temp files, resets icon/thumbnail cache & restarts Explorer |
-| **⚡ Registry & Autostart** | Orphaned `Run`/`RunOnce` startup keys, broken User Startup folder shortcuts, broken COM/Shell extension keys | Backs up target registry keys to `.reg` and safely removes invalid startup entries |
-| **🧹 System & Cache Cleaner** | WinSxS component store bloat (`DISM /AnalyzeComponentStore`), Delivery Optimization cache, Installer package cache, browser caches (Chrome, Edge, Brave, every installed Opera flavour incl. GX, Firefox — all profiles), setup & CBS logs, WER crash archives, D3D shader & certificate caches, Recycle Bin, system temp | Runs `StartComponentCleanup`, purges the caches you select, and skips locked files instead of aborting the sweep. Only raises a finding once a target actually holds something worth reclaiming (10 MB, 50 MB for browser caches), so a directory Windows has begun refilling is not reported as an unfixed issue |
-| **📅 Scheduled Tasks** | Tasks whose action points at a deleted program (`Get-ScheduledTask`), tasks whose last run failed with a real error code rather than a `SCHED_S_*` status, tasks with missed runs — tasks that are already disabled are skipped, since they fire on no trigger | Disables the task with `Disable-ScheduledTask`, with dynamic task resolution and automated ACL escalation (`takeown` / `icacls`) for protected system tasks — reversible with `Enable-ScheduledTask`; nothing is deleted. The task's state is read back afterwards, so a disable Windows accepts without applying is reported as a failure rather than as a repair |
-| **🧠 Page File & Memory** | Page file disabled with automatic management off (`Win32_PageFileUsage`), page file on a volume with under 10 % or 2 GB free, manually fixed limits below RAM/8 or with an inverted min/max range | Hands the page file back to Windows (system managed) or re-enables automatic management; the nearly-full-drive finding is advisory and changes nothing |
-| **🩺 WHEA Hardware Logger** | Windows Hardware Error Architecture (WHEA) physical faults: CPU Cache Hierarchy (Event 19), Fatal Machine Checks (Event 18), PCIe Root Port bus errors (Event 17), RAM/Memory controller parity errors (Event 47), Storage CPER records (Event 1) | Automatic PCIe ASPM power management optimization (`powercfg`) to prevent bus dropouts, schedules Windows Memory Diagnostic (`mdsched.exe`), provides exact hardware core/APIC-ID and bus:device:function triangulation and BIOS tuning guidance |
-| **🔧 Tweaks & Policies** | What tweak and debloat tools leave behind: 24 core services disabled (DHCP, DNS, Event Log, WMI, audio, update, Store, sign-in, time, search …), Windows Update and Store policies on a PC outside a domain, hosts entries that block update, Store, activation, sign-in or certificate-revocation endpoints (telemetry blocks are left alone) | Sets the service back to Automatic or Manual and reads the start type back; backs up and deletes exactly the policy values named (never ones from the local Group Policy); backs up the hosts file and comments out only the blocking names |
-| **🕒 Clock & Restart** | Clock offset against `time.windows.com` (`w32tm /stripchart`, 1 min = warning, 1 h = critical), Windows running 14 days or more without a restart — counting sleep and Fast Startup "shutdowns", which do not end it | `w32tm /resync /force` and a new measurement; with Fast Startup on, turns it off (registry backup, read back) so "Shut down" starts Windows fresh, then asks for one restart |
-
-Package Cache and Recycle Bin are classified `RiskScore::High` and are **deselected by default**, so `--auto-fix` never empties them unattended. Every Page File & Memory finding is `RiskScore::High` for the same reason — each one needs a restart before it takes effect — and is likewise deselected. A scheduled task that merely *fails*, rather than pointing at a deleted program, is deselected too: switching it off is a judgement call, so it is left for you to tick. So is the overdue restart: turning Fast Startup off trades boot speed for a clean start, which is yours to decide.
-
-### A repaired finding stays repaired
-
-A scan must not re-raise what a repair has already dealt with, and must not raise anything a repair could never clear. Three rules enforce that:
-
-- **A disabled scheduled task is not a finding.** Disabling is the only thing the repair does, and Windows never resets a task's `LastTaskResult` or restores its deleted program — so a task the scan reported again after it had been switched off could never be cleared, no matter how often you repaired it.
-- **Cleanup targets have a floor.** Every directory the cleaner sweeps is one the system refills by itself: a service writes its next log line, Explorer rewrites the Recycle Bin's `desktop.ini` shell stub, a browser caches the next favicon. Below the floor there is nothing to decide, so nothing is reported.
-- **DNS is tested through your resolver, and verified after the repair.** The check never pins a public DNS server, because networks that block outbound port 53 would otherwise produce a permanent critical finding that `ipconfig /flushdns` cannot possibly fix. After the repair the resolver is asked again, and the fix fails with the reason if names still do not resolve.
-- **A service repair is read back.** After setting a disabled service to start on demand, WinMedic asks Windows for the start type again; a group policy that silently keeps the service disabled turns the repair into a failure with that reason, not into a "fixed" that the next scan contradicts.
-
-### Every display language, not just English
-
-The tools WinMedic asks — DISM, `sc`, `wevtutil`, `netsh`, `fsutil` — answer in the Windows display language, and each writes into a pipe in its own encoding: the OEM code page, UTF-16 or UTF-8. WinMedic therefore:
-
-- reads **language-neutral values** wherever one exists: `sc qc`'s numeric start type, DISM run with `/English`, event records as XML, WMI booleans, file paths and GUIDs;
-- **decodes each tool's encoding** instead of assuming UTF-8, so an umlaut is an umlaut and a streamed repair log does not stop at the first one;
-- treats a command that was **refused** — DISM without elevation, a rejected query — as "not checked", never as "healthy".
-
-Where Windows offers nothing but a translated sentence, only the English and German wordings are known, and any other language yields a missed finding rather than an invented one. The parsers are tested against output captured from real Windows installations ([tests/fixtures](tests/fixtures/README.md)), and CI runs a real scan on every change.
-
----
-
-## 🛡️ Safety & Backup Architecture
-
-Before WinMedic touches your system:
-1. **Windows System Restore Point (VSS)**: A checkpoint named `"WinMedic Auto-Restore Point (Vor Reparatur)"` is automatically triggered via WMI / PowerShell. WinMedic then **verifies** that a new restore point actually appeared instead of trusting the exit status — Windows silently declines to create one if another was made within the last 24 hours (`SystemRestorePointCreationFrequency`), and reports that refusal as a warning rather than an error. A throttled run is surfaced as a warning, never as success.
-2. **Registry Snapshotting**: Every modified registry key is exported into `%APPDATA%\WinMedic\backups\reg_<timestamp>.reg` prior to modification. If the export fails, the fix is aborted instead of applied. The backup index is written atomically, and an index that cannot be parsed is moved aside as `index.json.corrupt-<timestamp>` rather than overwritten, so previously recorded backups are never lost.
-3. **One-Key Rollback**: Any stored snapshot can be restored directly from the **`[2]` Settings & Safety** view — `[B]` moves the arrow keys onto the snapshot list, `[U]` restores the highlighted one after an explicit confirmation prompt.
-4. **Dry-Run First**: the simulation switch in the window or `--dry-run` on the CLI lists every command a repair would execute, without executing any of it.
-5. **High-Performance Audit Logging**: Every scan, fix, simulation, rollback, and cancellation is appended in $O(1)$ to `%APPDATA%\WinMedic\logs\history.jsonl` (with automatic 5 MB log rotation) and formatted human-readable `%APPDATA%\WinMedic\logs\audit.log`.
-6. **Self-Contained Report Export**: Complete diagnostic findings can be exported at any time with `[E]` or `--output <file>` as responsive, standalone HTML, Markdown, or JSON reports.
-
----
-
-## ⚙️ Configuration
-
-Settings live in the **`[2]` Settings & Safety** view and are persisted to `%APPDATA%\WinMedic\config.json` immediately on change. The same view carries the safety surface — VSS restore points, registry snapshots, recent activity from the audit trail and the `[U]` rollback — with `[B]` switching the arrow keys between the settings list and the snapshot list.
-
-| Setting | Default | Effect |
-| :--- | :--- | :--- |
-| VSS restore point before repair | `on` | Creates a system checkpoint before the first fix of a run |
-| Back up registry before change | `on` | Exports affected keys to `.reg`; when off, registry fixes run unprotected |
-| Restart services automatically | `on` | Allows fixes to stop/start Windows services; when off, those fixes are skipped rather than half-applied |
-| Check for updates automatically | `on` | Queries the latest GitHub release on startup and flags a newer version with `[U]`, which can then install it in place after verifying its checksum |
-| Temp file threshold | `500 MB` | Size at which junk files are reported as an issue |
-| Event log window | `24 h` | How far back the event log module searches for critical events |
-
----
-
-## 🔄 Update Check & In-Place Update
-
-On startup WinMedic asks GitHub for the latest release and, if a newer version exists, announces it in the status line. Nothing happens until you press **`[U]`**, which opens a dialog describing exactly what it is about to do; nothing is ever downloaded or installed without that explicit yes.
-
-When the release publishes both the binary and its `.sha256` — every release cut by the release workflow does — the dialog offers to **download, verify and install it in place**:
-
-1. `winmedic-<tag>.exe` is downloaded to a staging file *next to the current executable*
-2. the `.sha256` published with the release is downloaded as well
-3. the staged file is hashed and must match that checksum exactly
-4. if the download carries an Authenticode signature Windows rejects, it is refused
-5. only then is the running binary renamed aside and the new one moved into its place
-
-The old binary stays parked as `winmedic.exe.old-<tag>` until the next start — a running image cannot delete itself — and is swept up automatically then. **The running process is still the old version**; restart WinMedic to actually run the new one, which is what the confirmation message says.
-
-If *any* of that fails — the download never arrives, the checksum does not match, the file cannot be replaced — nothing is touched, the release page opens in your browser instead, and the status line states the reason. Successful and refused updates are both written to `%APPDATA%\WinMedic\logs\history.jsonl`.
-
-### What the verification is and is not worth
-
-The checksum is fetched over the same channel, from the same host, as the binary. It proves the download is intact and is the file the release says it is; it does **not** independently prove the release itself is trustworthy. Since WinMedic ships unsigned (see *Install* below), step 4 can today only reject a *broken* signature — once the project has a code-signing certificate, that step becomes the check that closes the gap. The dialog and the audit entry say which of the two you got rather than implying a guarantee that is not there.
-
-Releases without a checksum are still announced, but are never installed in place: `[U]` offers only the browser download for them, because there would be nothing to hold the downloaded bytes to.
-
-The check itself is deliberately conservative: release *and* asset URLs must start with `https://github.com/` and may not contain shell metacharacters, downloads additionally have to come from `https://github.com/SecretLUL/WinMedic/releases/download/`, curl is pinned to HTTPS across redirects, asset names may not contain path separators, the browser is launched via `explorer.exe` rather than a shell, and draft and pre-releases are skipped. Version comparison is full SemVer including pre-release ordering, so `1.0.0-beta` correctly sorts below `1.0.0`. Disable the whole thing with the *Check for updates automatically* setting.
-
-If you installed WinMedic through WinGet, prefer `winget upgrade SecretLUL.WinMedic`. The in-place update works there too, but WinGet keeps believing the version it installed is the one on disk.
-
----
-
-## 🖥️ The Window
-
-The window has two views, and everything you need for a checkup is on the first one:
-
-- **Scan & Repair** — the top of the page says what state the PC is in and offers the one step that makes sense next: *Scan now* on a machine that has never been checked, *Repair N findings* once there are any, *Cancel* while something runs. Below it you see the checks while a scan runs, and afterwards the findings: tick what you want fixed, read the details on the right, repair. Each finding shows its outcome (*Fixed*, *Repair failed*, *Restart*) as the run lands, and the scan log and the repair output are one click away under *Show log*.
-- **Settings & Safety** — what WinMedic is allowed to do, plus everything to undo it: registry snapshots with rollback, system restore points, recent activity, the log folder, and *Remove WinMedic from Windows* for before you delete it.
-
-The window follows the Windows light / dark app theme.
-
-The window needs a graphics driver with OpenGL 2.0 or newer. On a PC whose driver has crashed back to the *Microsoft Basic Display Adapter*, and in some virtual machines and remote sessions, it cannot open; WinMedic then says so in a message box instead of silently doing nothing, and points to the command line below, where every check and repair still runs.
-
----
-
-## ⌨️ Keyboard Navigation & Shortcuts
-
-Every shortcut is also a button in the window; `[?]` lists them.
-
-| Shortcut | Action |
-| :--- | :--- |
-| **`[1]` / `[2]`** | Switch views (Scan & Repair, Settings & Safety) |
-| **`[Ctrl+Tab]` / `[Ctrl+Shift+Tab]`** | Cycle through the views (plain `[Tab]` moves focus between controls) |
-| **`[S]`** | Start full system health scan |
-| **`[R]`** | Re-run scan / refresh current view |
-| **`[Space]`** | Toggle checkbox selection for highlighted issue (toggles a switch in Settings) |
-| **`[c]` / `[w]` / `[i]`** | Filter findings by severity (Critical / Warning / Info) |
-| **`[m]`** | Filter findings by diagnostic module (cycle through modules) |
-| **`[/]`** | Fulltext live search across findings, details & descriptions |
-| **`[x]`** | Reset all active filters and search queries |
-| **`[A]`** | Toggle select / deselect all visible detected issues (1-Click Auto-Fix) |
-| **`[N]`** | Deselect all issues |
-| **`[F]`** | Repair the ticked findings |
-| **`[D]`** | Toggle dry-run mode — repairs are shown, not executed |
-| **`[E]`** | Export diagnostic & repair report as self-contained HTML |
-| **`[B]`** | Settings & Safety: move `[↑]`/`[↓]` between the settings list and the registry snapshot list |
-| **`[U]`** | Settings & Safety: restore the selected registry snapshot — elsewhere: open the pending "update available" notice, which can download, verify and install the new version |
-| **`[PgUp]` / `[PgDn]` / `[Home]` / `[End]`** | Move the findings selection by a page, or to the first / last finding (the logs scroll with the mouse wheel and their own scrollbars) |
-| **`[←]` / `[→]` or `[h]` / `[l]`** | Switch views (wraps around) |
-| **`[+]` / `[-]` or `[[` / `]]`** | Adjust the highlighted numeric setting (Settings & Safety) |
-| **`[↑]` / `[↓]` or `[j]` / `[k]`** | Navigate list items |
-| **`[?]`** | Open interactive Help Modal overlay |
-| **`[Esc]`** | Clear filters / abort a running operation / close modal / return to Scan & Repair |
-| **`[Q]`** | Exit WinMedic safely |
-
----
-
-## 🚀 CLI Headless Automation Mode
-
-WinMedic can also run without opening its window, for automated scripts, CI/CD, or batch IT deployments. Every flag below keeps the console it was started from, so exit codes, pipes and redirects behave exactly as a script expects:
-
-```bash
-# Run headless system scan and output styled summary
-winmedic.exe --scan
-
-# Run scan and export self-contained HTML report for clients / archiving
-winmedic.exe --scan --output report.html
-
-# Export report in Markdown or JSON format
-winmedic.exe --scan --output report.md
-winmedic.exe --scan --output report.json
-
-# Run scan and automatically repair all safe detected issues
-winmedic.exe --auto-fix
-
-# Run fixes and export updated report with audit history
-winmedic.exe --auto-fix --output final_report.html
-
-# Show exactly which commands a repair run would execute, without executing them
-winmedic.exe --dry-run
-
-# Output diagnostic findings as structured JSON for automation
-winmedic.exe --json
-
-# Run fixes without creating a VSS restore point (e.g. for speed in VM testing)
-winmedic.exe --auto-fix --no-vss
-
-# Request Windows Administrator elevation
-winmedic.exe --elevate
-
-# Before deleting winmedic.exe: remove the background task and the "Start with Windows" entry
-winmedic.exe --uninstall
-
-# ...and delete settings, logs, reports and registry backups as well
-winmedic.exe --uninstall --purge
-```
-
-A running headless job can be aborted with `Ctrl+C`; WinMedic terminates the child process it is currently waiting on instead of leaving an orphaned `DISM` or `chkdsk` behind.
-
-### Exit Codes
-
-Headless runs report their outcome through `%ERRORLEVEL%`, so scripts and monitoring agents can branch on the result:
-
-| Code | Meaning |
-| :---: | :--- |
-| `0` | No open issues above informational level |
-| `1` | Open warnings |
-| `2` | Open critical issues |
-| `3` | At least one repair failed |
-| `4` | `--auto-fix` requested without Administrator privileges |
-| `5` | Internal WinMedic error |
-| `6` | Run aborted with `Ctrl+C`; findings are incomplete |
-
-```powershell
-winmedic.exe --scan
-if ($LASTEXITCODE -ge 2) { Write-Host "Kritische Befunde – Ticket eroeffnen" }
-```
-
----
-
-## 📥 Install
-
-### Windows Package Manager (recommended)
+**With WinGet**, which comes with Windows 10 and 11:
 
 ```powershell
 winget install SecretLUL.WinMedic
 ```
 
-WinGet verifies the download against the checksum published with the release,
-puts `winmedic` on your `PATH`, and `winget upgrade SecretLUL.WinMedic` moves
-you to the next version. Because WinGet installs it for you, there is no
-SmartScreen prompt to click past.
+**Or by hand:** download `winmedic-<version>.exe` from the
+[latest release](https://github.com/SecretLUL/WinMedic/releases/latest) and
+start it. WinMedic is not code-signed yet, so Windows may warn you the first
+time: click *More info*, then *Run anyway*.
+[How to check the download first](docs/how-it-works.md#verify-a-download-by-hand)
 
-Diagnostics run fine unelevated; the repairs need Administrator rights, so start
-WinMedic from an elevated terminal or run `winmedic --elevate` to raise a UAC
-prompt. How releases get to WinGet is described in [docs/winget.md](docs/winget.md).
+## How to use it
 
-### Download & verify by hand
+1. **Start WinMedic.** Repairs need administrator rights; WinMedic offers to
+   restart itself with them.
+2. **Click Scan now.** It takes a minute or two and changes nothing.
+3. **Click Repair.** WinMedic fixes what it can and tells you if Windows needs
+   a restart.
 
-Grab `winmedic-<version>.exe` from the [latest release](https://github.com/SecretLUL/WinMedic/releases/latest).
+WinMedic opens in **Easy mode**: how your PC is doing, what Repair will do (for
+example "Frees about 8.4 GB of disk space") and two big buttons. Press **F7**,
+or click *Advanced mode* top right, for **Advanced mode**:
+every detail, filters, the logs, and a simulation that shows what a repair would
+do without doing it.
 
-WinMedic is **not code-signed**, so Windows SmartScreen will warn you on first launch ("Windows protected your PC" → *More info* → *Run anyway*). Because of that, every release ships a `.sha256` file next to the binary — verify the download before running it with Administrator rights:
+## What it checks
+
+| Area | What WinMedic looks for |
+| :--- | :--- |
+| **System files** | Damaged Windows files, the recovery environment, WMI |
+| **Windows Update** | Stuck update services and download caches |
+| **Internet** | No IP address, name resolution (DNS), the router, Winsock, broken proxies |
+| **Crashes** | Blue screens, critical errors in the event log, the last memory test |
+| **Hardware** | Processor, memory and PCIe errors Windows has logged |
+| **Disk** | File system errors, drive health, temporary files |
+| **Startup** | Autostart entries and scheduled tasks that point at deleted programs or keep failing |
+| **Cleanup** | Caches and leftovers that take up space |
+| **Memory** | A switched-off or too small page file |
+| **Tweaks** | Services and policies that "tweak" and debloat tools switched off |
+| **Clock and restart** | A wrong clock, a PC that has not been restarted for weeks |
+
+Exactly what each check looks at and runs is in
+[How WinMedic works](docs/how-it-works.md).
+
+## Is it safe?
+
+- Scanning only reads. Nothing changes until you click **Repair**.
+- Before a repair, WinMedic creates a Windows restore point and backs up every
+  registry key it changes. Registry changes can be rolled back under
+  **Settings**.
+- Repairs that delete something you may want to keep, or need a restart, are
+  never picked for you. You decide on those in Advanced mode.
+- WinMedic is open source. Its checks are tested against output captured from
+  real Windows installations, and every change runs a real scan in CI.
+
+## For IT admins
+
+WinMedic also runs without its window, for scripts and remote support:
 
 ```powershell
-# Compare the published checksum against the file you downloaded
-$exe      = Get-Item .\winmedic-v*.exe | Select-Object -First 1
-$expected = (Get-Content "$($exe.FullName).sha256").Split(' ')[0]
-$actual   = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower()
-if ($expected -eq $actual) { "OK - checksum matches" } else { "MISMATCH - do not run this file" }
+winmedic --scan                        # check and print the findings
+winmedic --scan --output report.html   # ... and save a report (.html, .md or .json)
+winmedic --auto-fix                    # check and repair what is safe to repair
+winmedic --dry-run                     # show what a repair would run, run nothing
 ```
 
-The checksum is generated by the release workflow from the exact binary it publishes, and release builds run with `--locked` so the published artifact is reproducible from the tagged source tree. WinMedic's own in-place updater runs this same comparison for you — see *Update Check & In-Place Update* above.
+The exit code tells a script how it went: `0` fine, `1` warnings, `2` critical
+problems, `3` a repair failed. Every flag and code is listed in
+[How WinMedic works](docs/how-it-works.md#cli-headless-automation-mode).
 
-### Uninstall
+## Uninstall
 
-WinMedic is one file with no installer, and it stays that way: it runs from a USB stick on a PC that is already in trouble, and it does not depend on the Windows Installer service, which can be broken too. What it does register with Windows — the background scan task and the *Start with Windows* entry, when you turn them on — has to be removed before the file goes, or both keep pointing at a program that no longer exists:
+First click *Settings → Remove WinMedic from Windows*, or run
+`winmedic --uninstall`. That removes the background scan and the *Start with
+Windows* entry, if you turned them on. Then delete `winmedic.exe`, or run
+`winget uninstall SecretLUL.WinMedic` if you installed it with WinGet.
 
-```powershell
-winmedic --uninstall          # removes both and turns the settings off; data stays
-winmedic --uninstall --purge  # also deletes %APPDATA%\WinMedic (settings, logs, registry backups)
-winget uninstall SecretLUL.WinMedic   # or just delete the .exe
-```
+Your settings, logs and backups stay in `%APPDATA%\WinMedic`;
+`winmedic --uninstall --purge` deletes them too.
 
-The window offers the first step as *Settings & Safety → Remove WinMedic from Windows*.
+## For developers
 
----
-
-## 🛠️ Building From Source
-
-### Prerequisites
-* **Windows 10 / 11** (64-bit)
-* **Rust 1.95+** (`cargo` and `rustc`) — the MSRV is declared as `rust-version` in `Cargo.toml` and enforced by CI
-* **MSVC build tools** — the Windows SDK supplies the `rc.exe` that `build.rs` uses to embed the icon and version resources
-
-### Build Steps
+WinMedic is written in Rust. You need Windows 10 or 11, Rust 1.95 or newer and
+the MSVC build tools:
 
 ```powershell
-# 1. Clone the repository
 git clone https://github.com/SecretLUL/WinMedic.git
 cd WinMedic
-
-# 2. Build optimized release binary (--locked mirrors how releases are built)
-cargo build --locked --release
-
-# 3. The executable is located at:
-.\target\release\winmedic.exe
+cargo build --locked --release   # creates target\release\winmedic.exe
 ```
 
----
+[CONTRIBUTING.md](CONTRIBUTING.md) explains what CI checks and which parts need
+extra care. Please report security problems privately, as described in
+[SECURITY.md](SECURITY.md).
 
-## 🤝 Contributing
+## License
 
-Pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers the build
-prerequisites, what CI enforces (`cargo fmt`, `cargo clippy -D warnings`,
-`cargo test`, and the MSRV gate) and which parts of the codebase need extra
-care — the safety layer and the repair paths that actually change the system.
-
-Found a security problem? WinMedic runs elevated and writes to the registry, so
-please report it privately rather than as a public issue —
-see [SECURITY.md](SECURITY.md).
-
----
-
-## 📄 License
-
-This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
-
----
-
-<div align="center">
-Built with ❤️ for Windows Power Users and System Administrators.
-</div>
+MIT, see [LICENSE](LICENSE).

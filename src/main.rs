@@ -561,7 +561,7 @@ fn run_gui(autostart: bool) -> Result<u8, Box<dyn std::error::Error>> {
     let mut viewport = eframe::egui::ViewportBuilder::default()
         .with_title("WinMedic")
         .with_inner_size([1280.0, 820.0])
-        .with_min_inner_size([960.0, 640.0]);
+        .with_min_inner_size(gui::window::MIN_SIZE);
 
     if autostart {
         viewport = viewport.with_active(false);

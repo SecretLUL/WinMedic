@@ -43,6 +43,9 @@ pub enum Key {
     PageDown,
     Home,
     End,
+    /// Switches between Easy and Advanced mode, as it does in a BIOS setup
+    /// screen.
+    F7,
     /// Everything the front end recognises but this table does not bind.
     ///
     /// Mapping the unbound keys onto one variant rather than dropping them at
@@ -58,6 +61,30 @@ pub enum Key {
 /// same keypress moves the same distance whatever the user has done to the
 /// window.
 const PAGE_STEP: usize = 10;
+
+/// Whether `code` drives a control that only Advanced mode draws: the ticks,
+/// the list cursor, the filters and the simulation switch.
+///
+/// Easy mode leaves those keys inert. Bound, they would change what the page
+/// does without anything on it showing why — one stray `n` would untick every
+/// finding and leave the Repair button greyed out for no visible reason.
+fn needs_advanced_mode(app: &App, code: Key) -> bool {
+    let on_home = app.active_tab == TAB_HOME;
+    match code {
+        Key::Char('a' | 'A' | 'n' | 'N' | 'd' | 'D') => true,
+        Key::Char(
+            ' ' | '/' | 'c' | 'C' | 'w' | 'W' | 'i' | 'I' | 'm' | 'M' | 'x' | 'X' | 'j' | 'k',
+        )
+        | Key::Enter
+        | Key::Up
+        | Key::Down
+        | Key::PageUp
+        | Key::PageDown
+        | Key::Home
+        | Key::End => on_home,
+        _ => false,
+    }
+}
 
 pub fn handle_key(app: &mut App, code: Key) {
     // A pending confirmation swallows every other key.
@@ -106,9 +133,14 @@ pub fn handle_key(app: &mut App, code: Key) {
         return;
     }
 
+    if !app.config.advanced_mode && needs_advanced_mode(app, code) {
+        return;
+    }
+
     match code {
         Key::Char('q') | Key::Char('Q') => app.should_quit = true,
         Key::Char('?') => app.show_help = true,
+        Key::F7 => app.toggle_advanced_mode(),
 
         Key::Char('1') => app.goto_tab(TAB_HOME),
         Key::Char('2') => app.goto_tab(TAB_SETTINGS),
@@ -241,9 +273,10 @@ pub fn handle_key(app: &mut App, code: Key) {
         }
 
         // Esc unwinds one layer at a time: filters, then backup focus, then a
-        // running operation, then the settings view itself.
+        // running operation, then the settings view itself. Easy mode draws
+        // no filters, so there it has none to clear.
         Key::Esc => {
-            if app.active_tab == TAB_HOME && app.has_active_filters() {
+            if app.active_tab == TAB_HOME && app.config.advanced_mode && app.has_active_filters() {
                 app.clear_filters();
             } else if app.active_tab == TAB_SETTINGS && app.backups_focused() {
                 app.toggle_safety_focus();
@@ -273,15 +306,18 @@ mod tests {
         }
     }
 
-    /// An `App` with no modal in the way.
+    /// An `App` with no modal in the way, in Advanced mode.
     ///
     /// `App::new` raises the elevation prompt when WinMedic is not running as
     /// Administrator, and that modal swallows every key — so a dispatch test
-    /// that skipped this would be testing the modal, not the binding.
+    /// that skipped this would be testing the modal, not the binding. The mode
+    /// is set rather than read from the developer's own config, because Easy
+    /// mode leaves most of the bindings below inert.
     fn app() -> App {
         let mut app = App::new();
         app.pending_confirm = None;
         app.issues.clear();
+        app.config.advanced_mode = true;
         app
     }
 
@@ -615,6 +651,77 @@ mod tests {
             handle_key(&mut app, Key::Char(c));
             assert!(app.should_quit, "'{c}' should quit");
         }
+    }
+
+    #[test]
+    fn f7_switches_modes_from_either_view() {
+        let mut app = app();
+        for tab in [TAB_HOME, TAB_SETTINGS] {
+            app.active_tab = tab;
+            handle_key(&mut app, Key::F7);
+            assert!(
+                !app.config.advanced_mode,
+                "F7 on view {tab} leaves Advanced"
+            );
+            handle_key(&mut app, Key::F7);
+            assert!(app.config.advanced_mode, "F7 on view {tab} comes back");
+            assert_eq!(app.active_tab, tab);
+        }
+    }
+
+    /// A question on screen outranks the mode, like every other key.
+    #[test]
+    fn f7_waits_while_a_dialog_is_open() {
+        let mut app = app();
+        app.pending_confirm = Some(ConfirmRequest::Elevate);
+        handle_key(&mut app, Key::F7);
+        assert!(app.config.advanced_mode);
+
+        app.pending_confirm = None;
+        app.show_help = true;
+        handle_key(&mut app, Key::F7);
+        assert!(app.config.advanced_mode);
+    }
+
+    /// Easy mode draws no ticks, no filters and no simulation switch, so the
+    /// keys for them must not change anything behind the user's back.
+    #[test]
+    fn easy_mode_leaves_the_keys_for_hidden_controls_inert() {
+        let mut app = app_with_issues();
+        app.config.advanced_mode = false;
+        app.active_tab = TAB_HOME;
+
+        for key in ['n', 'N', 'c', 'w', 'i', 'm', '/', ' ', 'd', 'j'] {
+            handle_key(&mut app, Key::Char(key));
+        }
+        handle_key(&mut app, Key::Enter);
+        handle_key(&mut app, Key::End);
+
+        assert!(app.issues.iter().all(|i| i.is_selected), "nothing unticked");
+        assert!(!app.has_active_filters(), "nothing filtered");
+        assert!(!app.focus_search, "no search box to focus");
+        assert!(!app.dry_run, "simulation untouched");
+        assert_eq!(app.selected_filtered_index, 0, "the cursor did not move");
+
+        // What the page does show still answers.
+        handle_key(&mut app, Key::Char('2'));
+        assert_eq!(app.active_tab, TAB_SETTINGS);
+        handle_key(&mut app, Key::Char('?'));
+        assert!(app.show_help);
+    }
+
+    /// The settings view looks the same in both modes, so it keys the same.
+    #[test]
+    fn easy_mode_keeps_the_settings_view_keys() {
+        let mut app = app();
+        app.config.advanced_mode = false;
+        app.active_tab = TAB_SETTINGS;
+        app.selected_setting_index = 0;
+
+        handle_key(&mut app, Key::Down);
+        assert_eq!(app.selected_setting_index, 1);
+        handle_key(&mut app, Key::Char('b'));
+        assert!(app.backups_focused());
     }
 
     #[test]

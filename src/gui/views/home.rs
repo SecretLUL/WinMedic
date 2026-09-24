@@ -5,8 +5,10 @@
 //! action that answers the second one. The body shows whatever that state has
 //! to show: the checks while a scan runs, the findings once there are any, and
 //! the list of checks when there is nothing to report.
+//!
+//! That is Advanced mode. Easy mode draws its own page, [`super::easy`].
 
-use super::findings;
+use super::{easy, findings};
 use crate::app::{App, ConfirmRequest};
 use crate::engine::issue::Severity;
 use crate::gui::theme;
@@ -16,6 +18,11 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 pub fn show(ui: &mut egui::Ui, app: &mut App) {
+    if !app.config.advanced_mode {
+        easy::show(ui, app);
+        return;
+    }
+
     header(ui, app);
     ui.add_space(6.0);
     ui.separator();
@@ -34,14 +41,23 @@ fn open_findings(app: &App) -> usize {
     app.issues.iter().filter(|i| !i.is_fixed).count()
 }
 
-fn selected_for_repair(app: &App) -> usize {
+pub(super) fn selected_for_repair(app: &App) -> usize {
     app.issues
         .iter()
         .filter(|i| i.is_selected && !i.is_fixed && !i.is_reboot_pending)
         .count()
 }
 
-fn has_scanned(app: &App) -> bool {
+/// What the repair button says: how many, and whether it only simulates.
+pub(super) fn repair_label(dry_run: bool, selected: usize, noun: &str) -> String {
+    match (dry_run, selected) {
+        (_, 0) => "Repair".to_string(),
+        (true, n) => format!("Simulate {}", plural(n, "repair")),
+        (false, n) => format!("Repair {}", plural(n, noun)),
+    }
+}
+
+pub(super) fn has_scanned(app: &App) -> bool {
     app.scan_duration.is_some() || app.last_scan_timestamp.is_some() || !app.issues.is_empty()
 }
 
@@ -209,12 +225,7 @@ fn actions(ui: &mut egui::Ui, app: &mut App, open: usize) {
     ui.horizontal(|ui| {
         if open > 0 {
             let selected = selected_for_repair(app);
-            let label = match (app.dry_run, selected) {
-                (_, 0) => "Repair".to_string(),
-                (true, n) => format!("Simulate {n} repairs"),
-                (false, 1) => "Repair 1 finding".to_string(),
-                (false, n) => format!("Repair {n} findings"),
-            };
+            let label = repair_label(app.dry_run, selected, "finding");
             let response = primary(ui, selected > 0, &label);
             let response = if selected == 0 {
                 response.on_disabled_hover_text("Tick at least one finding below first")
@@ -270,10 +281,7 @@ fn notices(ui: &mut egui::Ui, app: &mut App) {
     if restarts > 0 {
         ui.colored_label(
             palette.amber,
-            format!(
-                "Restart Windows to finish {restarts} {}.",
-                if restarts == 1 { "repair" } else { "repairs" }
-            ),
+            format!("Restart Windows to finish {}.", plural(restarts, "repair")),
         );
     }
 
@@ -383,7 +391,7 @@ fn checks(ui: &mut egui::Ui, app: &mut App) {
         });
 }
 
-fn plural(count: usize, noun: &str) -> String {
+pub(super) fn plural(count: usize, noun: &str) -> String {
     if count == 1 {
         format!("1 {noun}")
     } else {

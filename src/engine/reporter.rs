@@ -5,6 +5,9 @@ use std::path::Path;
 
 pub struct DiagnosticReporter;
 
+/// The app icon's source, drawn in the HTML report's header.
+const LOGO_SVG: &str = include_str!("../../assets/logo.svg");
+
 fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -25,7 +28,7 @@ impl DiagnosticReporter {
   ██║███╗██║██║██║╚██╗██║██║╚██╔╝██║██╔══╝  ██║  ██║██║██║     
   ╚███╔███╔╝██║██║ ╚████║██║ ╚═╝ ██║███████╗██████╔╝██║╚██████╗
    ╚══╝╚══╝ ╚═╝╚═╝  ╚═══╝╚═╝     ╚═╝╚══════╝╚═════╝ ╚═╝ ╚═════╝
-           ─── ADVANCED PC DIAGNOSTICS & AUTO-REPAIR ───
+          Healing Windows at 1 HP. Fast. Reliable. Easy.
 "#
             .cyan()
             .bold()
@@ -441,8 +444,10 @@ impl DiagnosticReporter {
             align-items: center;
             gap: 12px;
         }}
-        .logo-icon {{
-            font-size: 32px;
+        .logo-icon svg {{
+            display: block;
+            width: 44px;
+            height: 44px;
         }}
         h1 {{
             font-size: 26px;
@@ -683,7 +688,7 @@ impl DiagnosticReporter {
     <div class="container">
         <header>
             <div class="brand">
-                <div class="logo-icon">[+]</div>
+                <div class="logo-icon">{logo}</div>
                 <div>
                     <h1>WinMedic Diagnostic Report</h1>
                     <div class="meta-text">System: <strong>{hostname}</strong> │ Generated: {timestamp}</div>
@@ -731,6 +736,7 @@ impl DiagnosticReporter {
 </body>
 </html>
 "#,
+            logo = LOGO_SVG,
             hostname = escape_html(&hostname),
             timestamp = timestamp,
             health_color = health_color,
@@ -834,6 +840,16 @@ mod tests {
         assert!(html.contains("WinMedic Diagnostic Report"));
         assert!(html.contains("CRITICAL"));
         assert!(html.contains("Corrupted system files found"));
+    }
+
+    /// The header carries the app icon itself, not a text stand-in for it.
+    #[test]
+    fn the_html_report_header_draws_the_logo() {
+        let html = DiagnosticReporter::to_html(&sample_issues(), 80, &[]);
+        let header = &html[html.find("<header>").unwrap()..html.find("</header>").unwrap()];
+        assert!(header.contains("<svg"), "no logo in the header");
+        assert!(header.contains(r#"viewBox="0 0 256 256""#));
+        assert!(!header.contains("[+]"));
     }
 
     #[test]

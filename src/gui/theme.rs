@@ -247,6 +247,33 @@ pub fn severity_mark(ui: &mut egui::Ui, severity: Severity, size: f32) -> egui::
     response.on_hover_text(name)
 }
 
+/// A large button for Easy mode, where the next step should be impossible to
+/// miss. `primary` fills it with the accent colour.
+pub fn big_button(ui: &mut egui::Ui, text: &str, primary: bool, enabled: bool) -> egui::Response {
+    let visuals = ui.visuals();
+    let mut label = RichText::new(text).size(17.0).strong();
+    if primary {
+        label = label.color(visuals.strong_text_color());
+    }
+    let mut button = egui::Button::new(label).min_size(egui::vec2(210.0, 46.0));
+    if primary {
+        button = button.fill(visuals.selection.bg_fill);
+    }
+    ui.add_enabled(enabled, button)
+}
+
+/// A green tick, painted for the same reason as [`severity_icon`]: egui's
+/// fonts cannot be relied on to have one.
+pub fn check_mark(ui: &mut egui::Ui, size: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::hover());
+    let stroke = Stroke::new((size * 0.14).max(1.5), palette(ui).green);
+    let point = |x: f32, y: f32| rect.min + egui::vec2(x * size, y * size);
+    ui.painter()
+        .line_segment([point(0.15, 0.55), point(0.4, 0.8)], stroke);
+    ui.painter()
+        .line_segment([point(0.4, 0.8), point(0.88, 0.25)], stroke);
+}
+
 /// A usage bar that turns amber, then red, as it fills.
 pub fn usage_bar(ui: &mut egui::Ui, fraction: f32, width: f32) -> egui::Response {
     let fraction = fraction.clamp(0.0, 1.0);

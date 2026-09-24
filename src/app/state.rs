@@ -91,7 +91,7 @@ impl ModuleScanProgress {
     }
 }
 
-/// Which of the two lists on the Settings & Safety tab currently owns `↑`/`↓`.
+/// Which of the two lists on the Settings tab currently owns `↑`/`↓`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SafetyFocus {
     /// The configuration list. What the tab opens on.
@@ -176,7 +176,7 @@ pub struct App {
     // Settings
     pub selected_setting_index: usize,
     pub setting_input: Option<SettingInput>,
-    /// Which list on the Settings & Safety tab the arrow keys drive.
+    /// Which list on the Settings tab the arrow keys drive.
     pub safety_focus: SafetyFocus,
 
     // UI state
@@ -514,7 +514,7 @@ impl App {
 
     /// Per-tab work that has to happen however the tab was reached.
     ///
-    /// Only the Settings & Safety tab needs it: its audit log and backup list
+    /// Only the Settings tab needs it: its audit log and backup list
     /// are read off disk, and both go stale the moment a repair run writes to
     /// them. Routing every entry point through here is what stops `[Tab]` and
     /// `→` from showing a different list than `[5]` does.

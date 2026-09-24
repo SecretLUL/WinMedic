@@ -1,5 +1,5 @@
 //! Backups, restore points and rollback requests — the safety half of the
-//! "Settings & Safety" tab.
+//! "Settings" tab.
 
 use super::BackgroundEvent;
 use super::confirm::ConfirmRequest;
@@ -8,7 +8,7 @@ use crate::safety::reg_backup::BackupRecord;
 use crate::safety::restore_point::list_restore_points;
 
 impl App {
-    /// Refresh the audit log and backup list shown on the Settings & Safety tab.
+    /// Refresh the audit log and backup list shown on the Settings tab.
     ///
     /// Called whenever that tab is opened, from any direction — the direct `[5]`
     /// jump, `[Tab]`, or the `←`/`→` arrows.

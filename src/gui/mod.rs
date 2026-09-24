@@ -12,19 +12,21 @@
 //! | [`theme`] | Typography, spacing, status and severity colours |
 //! | [`keys`] | egui key events into the neutral [`crate::app::Key`] |
 //! | [`modals`] | Confirmation, setting entry and help overlays |
-//! | [`views`] | The two views and the findings list |
+//! | [`views`] | The two views, the findings list and Easy mode's short list |
+//! | [`window`] | Locking the window's size in Easy mode, and handing it back |
 
 pub mod keys;
 pub mod modals;
 pub mod theme;
 pub mod views;
+pub mod window;
 
 use crate::app::{App, TAB_SETTINGS, handle_key};
 use eframe::egui;
 use std::time::{Duration, Instant};
 
 /// Navigation destinations, in the order of the `TAB_*` constants.
-const TABS: [&str; 2] = ["Scan & Repair", "Settings & Safety"];
+const TABS: [&str; 2] = ["Scan & Repair", "Settings"];
 
 /// How often to redraw while a scan or repair run is in flight.
 ///
@@ -44,6 +46,7 @@ pub struct WinMedicApp {
     app: App,
     last_poll: Instant,
     initial_minimize: bool,
+    window: window::WindowLock,
 }
 
 /// Draw the navigation, the current view, the status bar and overlays.
@@ -97,6 +100,7 @@ impl WinMedicApp {
             app,
             last_poll: Instant::now(),
             initial_minimize: autostart,
+            window: window::WindowLock::default(),
         }
     }
 }
@@ -126,6 +130,18 @@ fn navigation(ui: &mut egui::Ui, app: &mut App) {
                     Ok(path) => format!("Report exported: {}", path.display()),
                     Err(error) => error,
                 });
+            }
+            // Named after where it goes, the way a BIOS labels the same key.
+            let (label, hover) = if app.config.advanced_mode {
+                ("Easy mode (F7)", "Show only what needs doing")
+            } else {
+                (
+                    "Advanced mode (F7)",
+                    "Show every finding with its details, the filters, the logs and simulation",
+                )
+            };
+            if ui.button(label).on_hover_text(hover).clicked() {
+                app.toggle_advanced_mode();
             }
         });
     });
@@ -188,6 +204,11 @@ impl eframe::App for WinMedicApp {
             handle_key(&mut self.app, key);
         }
 
+        let current = window::Geometry::of(ui.ctx());
+        for command in self.window.commands(self.app.config.advanced_mode, current) {
+            ui.ctx().send_viewport_cmd(command);
+        }
+
         show(ui, &mut self.app);
 
         if self.app.should_quit {
@@ -232,12 +253,21 @@ mod tests {
     }
 
     /// A machine that has never been scanned, with a little history in the
-    /// safety views.
+    /// safety views, in Advanced mode.
     fn fresh_app() -> App {
         let mut app = App::new();
         // `App::new` raises the elevation prompt when WinMedic is not running
         // as Administrator, and that modal covers the view it is asked about.
         app.pending_confirm = None;
+        // It also reads the mode from the developer's own config. Most of what
+        // these tests look for is only drawn in Advanced mode; the Easy mode
+        // tests below switch it off.
+        app.config.advanced_mode = true;
+        // And whether this process is elevated, which differs between a
+        // developer's terminal and the CI runner, and with it whether the
+        // page carries the administrator notice. Fixed, so a test draws the
+        // same page on both.
+        app.is_admin = true;
         // It also restores the last scan from `%APPDATA%`, which on a machine
         // that has actually run WinMedic is a real one — and these tests
         // describe the state they want to draw. Start from nothing scanned.
@@ -316,17 +346,50 @@ mod tests {
         app
     }
 
-    /// Both states the main view is built around: nothing scanned, and a run
-    /// with findings, a failure and a repair behind it.
-    const FIXTURES: [fn() -> App; 2] = [fresh_app, scanned_app];
+    fn easy(mut app: App) -> App {
+        app.config.advanced_mode = false;
+        app
+    }
+
+    fn easy_fresh_app() -> App {
+        easy(fresh_app())
+    }
+
+    fn easy_scanned_app() -> App {
+        easy(scanned_app())
+    }
+
+    /// Both states the main view is built around — nothing scanned, and a run
+    /// with findings, a failure and a repair behind it — in both modes.
+    const FIXTURES: [fn() -> App; 4] = [fresh_app, scanned_app, easy_fresh_app, easy_scanned_app];
+
+    /// A window that also reads the keyboard, the way [`WinMedicApp::ui`] does.
+    fn window_with_keys(app: App) -> Harness<'static, App> {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1400.0, 900.0))
+            .build_ui_state(
+                |ui, app: &mut App| {
+                    for key in keys::shortcuts(ui.ctx()) {
+                        handle_key(app, key);
+                    }
+                    show(ui, app);
+                },
+                app,
+            );
+        theme::apply(&harness.ctx);
+        harness.run_steps(3);
+        harness
+    }
 
     /// Layout only fails at draw time, so a view no window size can satisfy
-    /// fails here rather than in front of a user.
+    /// fails here rather than in front of a user. The smallest size is the
+    /// one Easy mode locks the window at, so every view has to fit it.
     #[test]
     fn every_view_draws_at_small_and_large_window_sizes() {
+        let smallest = (window::MIN_SIZE.x, window::MIN_SIZE.y);
         for tab in 0..TAB_COUNT {
             for fixture in FIXTURES {
-                for size in [(960.0, 640.0), (1400.0, 900.0), (1920.0, 1200.0)] {
+                for size in [smallest, (1400.0, 900.0), (1920.0, 1200.0)] {
                     let mut app = fixture();
                     app.active_tab = tab;
                     let harness = sized_window(app, size);
@@ -360,13 +423,14 @@ mod tests {
         }
 
         // The four tabs merged into one page must not come back as labels the
-        // user can look for.
+        // user can look for, and neither may the settings view's old name.
         for retired in [
             "Dashboard",
             "Health Scan",
             "Issue Triage",
             "Repair Center",
             "Backups & Logs",
+            "Settings & Safety",
         ] {
             assert!(
                 harness.query_by_label(retired).is_none(),
@@ -522,7 +586,7 @@ mod tests {
         let mut app = fresh_app();
         app.pending_confirm = Some(ConfirmRequest::Elevate);
         let mut harness = window(app);
-        harness.get_by_label("Settings & Safety").click();
+        harness.get_by_label("Settings").click();
         harness.run();
         assert_eq!(harness.state().active_tab, TAB_HOME);
         assert!(harness.state().pending_confirm.is_some());
@@ -596,8 +660,9 @@ mod tests {
             for fixture in FIXTURES {
                 let mut app = fixture();
                 app.active_tab = tab;
+                let advanced = app.config.advanced_mode;
                 let mut harness = window(app);
-                if tab == TAB_HOME {
+                if tab == TAB_HOME && advanced {
                     harness.get_by_label("Show log").click();
                     harness.run();
                 }
@@ -618,8 +683,11 @@ mod tests {
                     })
                     .count();
                 let drawn = drawn.into_inner();
+                // Easy mode before the first scan is the sparsest page the
+                // window draws, at 14 strings. Reading only the labels, the
+                // mistake this guards against, collects about six.
                 assert!(
-                    drawn.len() > 15,
+                    drawn.len() >= 10,
                     "view {tab} produced only {} strings, so this asserts on nothing",
                     drawn.len()
                 );
@@ -638,6 +706,277 @@ mod tests {
                 });
             }
         }
+    }
+
+    const GB: u64 = 1024 * 1024 * 1024;
+
+    /// A scan whose findings Easy mode can say something about: a cleanup
+    /// that measured its size, and a repair that fixes something you notice.
+    fn easy_forecast_app() -> App {
+        let mut app = easy_scanned_app();
+        app.issues[0].id = "net_dns_failure".to_string();
+        app.issues[1].id = "storage_temp_bloat".to_string();
+        app.issues[1].reclaimable_bytes = Some(7 * GB);
+        app
+    }
+
+    /// Easy mode is the page for someone who has never repaired Windows: how
+    /// the PC is doing, what Repair will do, two big buttons. Everything a
+    /// technician reaches for stays in Advanced mode.
+    #[test]
+    fn easy_mode_says_how_the_pc_is_and_what_repair_will_do() {
+        let harness = window(easy_forecast_app());
+
+        for expected in [
+            "2 problems found",
+            "Health 60 / 100",
+            "What Repair does",
+            "Frees about 7.0 GB of disk space",
+            "The internet connection is repaired",
+            "Health goes up to about 100 / 100",
+            "Repair 2 problems",
+            "Scan again",
+            "A restore point is created first, so everything can be undone.",
+        ] {
+            assert!(
+                harness.query_by_label(expected).is_some(),
+                "Easy mode does not say {expected:?}"
+            );
+        }
+
+        // No list of findings, and nothing a technician reaches for.
+        for advanced_only in [
+            "DNS cache full",
+            "Temp bloat files",
+            "Select none",
+            "All modules",
+            "Show log",
+            "Simulate only (change nothing)",
+            "Technical details",
+        ] {
+            assert!(
+                harness.query_by_label(advanced_only).is_none(),
+                "Easy mode draws {advanced_only:?}"
+            );
+        }
+        assert!(harness.query_by_role(Role::TextInput).is_none());
+        assert_eq!(harness.query_all_by_role(Role::CheckBox).count(), 0);
+
+        // A module that gave up is named, but its error text is not.
+        assert!(harness.query_by_label_contains("Could not check").is_some());
+        assert!(harness.query_by_label_contains("0x800f081f").is_none());
+    }
+
+    /// The next step should be impossible to miss.
+    #[test]
+    fn the_easy_buttons_are_big() {
+        let easy = window(easy_forecast_app());
+        let advanced = window(scanned_app());
+        let normal = advanced.get_by_label("Scan again").rect().height();
+
+        for label in ["Repair 2 problems", "Scan again"] {
+            let height = easy.get_by_label(label).rect().height();
+            assert!(
+                height >= 44.0 && height > normal + 10.0,
+                "{label} is {height} px tall, Advanced mode's buttons {normal} px"
+            );
+        }
+    }
+
+    /// Repair runs what the checks recommend; the rest is one line and one
+    /// link away.
+    #[test]
+    fn easy_mode_counts_what_it_leaves_alone_and_links_to_it() {
+        let mut app = easy_forecast_app();
+        app.issues[1].is_selected = false;
+        let mut harness = window(app);
+
+        assert!(harness.query_by_label("Repair 1 problem").is_some());
+        assert!(
+            harness
+                .query_by_label("Frees about 7.0 GB of disk space")
+                .is_none(),
+            "an unticked cleanup frees nothing"
+        );
+        assert!(
+            harness
+                .query_by_label("1 more needs your decision.")
+                .is_some()
+        );
+
+        harness.get_by_label("Show in Advanced mode (F7)").click();
+        harness.run();
+        assert!(harness.state().config.advanced_mode);
+    }
+
+    #[test]
+    fn easy_mode_with_nothing_repaired_automatically_offers_only_the_scan() {
+        let mut app = easy_forecast_app();
+        for issue in &mut app.issues {
+            issue.is_selected = false;
+        }
+        let harness = window(app);
+
+        assert!(
+            harness
+                .query_by_label("None of them is repaired automatically.")
+                .is_some()
+        );
+        assert!(harness.query_by_label("What Repair does").is_none());
+        assert!(harness.query_by_label("Scan again").is_some());
+        assert!(
+            harness
+                .query_by_label("2 more need your decision.")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn easy_mode_on_a_machine_never_scanned_offers_the_scan_and_nothing_else() {
+        let harness = window(easy_fresh_app());
+
+        assert!(
+            harness
+                .query_by_label("This PC has not been checked yet")
+                .is_some()
+        );
+        assert!(harness.query_by_label("Scan now").is_some());
+        assert!(
+            harness
+                .query_by_label_contains("What the scan checks")
+                .is_none(),
+            "the table of modules is Advanced mode's"
+        );
+        assert!(harness.query_by_label("Show log").is_none());
+    }
+
+    #[test]
+    fn easy_mode_on_a_healthy_pc_says_so() {
+        let mut app = easy_scanned_app();
+        app.issues.clear();
+        app.health_score = 100;
+        for status in &mut app.module_statuses {
+            status.3 = ModuleStatus::Passed;
+        }
+        let harness = window(app);
+
+        assert!(harness.query_by_label("Your PC is in good shape").is_some());
+        assert!(harness.query_by_label("Health 100 / 100").is_some());
+        assert!(harness.query_by_label("Scan again").is_some());
+    }
+
+    /// While a scan runs, Easy mode shows how far it got, not each module.
+    #[test]
+    fn a_running_scan_in_easy_mode_shows_progress_but_no_module_table() {
+        let mut app = easy_scanned_app();
+        app.is_scanning = true;
+        app.scan_overall_progress = 40;
+        let harness = window(app);
+
+        assert!(harness.query_by_label("Checking your PC...").is_some());
+        assert!(harness.query_by_label("Cancel").is_some());
+        assert!(
+            harness
+                .query_by_label("This takes a minute or two. Nothing is changed.")
+                .is_some()
+        );
+        assert!(
+            harness
+                .query_by_label("Failed - DISM returned 0x800f081f")
+                .is_none()
+        );
+    }
+
+    /// Once only restarts are left, that is the one thing the page asks for,
+    /// once, and it offers to do it.
+    #[test]
+    fn easy_mode_asks_for_the_restart_once_and_offers_it() {
+        let mut app = easy_scanned_app();
+        for issue in &mut app.issues {
+            issue.is_reboot_pending = true;
+        }
+        let mut harness = window(app);
+
+        assert!(harness.query_by_label("Almost done").is_some());
+        assert_eq!(
+            harness
+                .query_all_by_label_contains("Restart Windows to finish")
+                .count(),
+            1
+        );
+
+        harness.get_by_label("Restart now").click();
+        harness.run();
+        assert!(matches!(
+            harness.state().pending_confirm,
+            Some(ConfirmRequest::RestartRequired { .. })
+        ));
+    }
+
+    /// Where the user asked for it: top right, left of "Export report". It is
+    /// named after where it goes, the way a BIOS labels the same key.
+    #[test]
+    fn the_mode_button_sits_left_of_export_report_and_switches_modes() {
+        let mut harness = window(easy_fresh_app());
+
+        let export = harness.get_by_label("Export report").rect();
+        let mode = harness.get_by_label("Advanced mode (F7)").rect();
+        assert!(
+            mode.right() <= export.left() && (mode.center().y - export.center().y).abs() < 2.0,
+            "the button is not beside Export report: {mode:?} vs {export:?}"
+        );
+
+        harness.get_by_label("Advanced mode (F7)").click();
+        harness.run();
+        assert!(harness.state().config.advanced_mode);
+        assert!(harness.query_by_label("Show log").is_some());
+
+        harness.get_by_label("Easy mode (F7)").click();
+        harness.run();
+        assert!(!harness.state().config.advanced_mode);
+    }
+
+    /// F7 types nothing, so it works from inside the search box too — and
+    /// every other key still goes to the box while it has the caret.
+    #[test]
+    fn f7_switches_modes_even_while_typing_in_the_search_box() {
+        let mut harness = window_with_keys(scanned_app());
+
+        harness.get_by_role(Role::TextInput).click();
+        harness.run();
+        harness.event(egui::Event::Text("n".to_string()));
+        harness.run();
+        assert_eq!(harness.state().search_query, "n", "the letter was typed");
+        assert!(
+            harness.state().issues.iter().all(|i| i.is_selected),
+            "and did not untick everything"
+        );
+
+        harness.key_press(egui::Key::F7);
+        harness.run();
+        assert!(!harness.state().config.advanced_mode);
+        assert!(harness.query_by_role(Role::TextInput).is_none());
+
+        // The box is gone, and with it the caret: shortcuts answer again.
+        harness.event(egui::Event::Text("?".to_string()));
+        harness.run();
+        assert!(harness.state().show_help);
+    }
+
+    /// Help lists the keys the current mode binds, and no others.
+    #[test]
+    fn help_lists_only_the_keys_the_current_mode_binds() {
+        let mut app = easy_fresh_app();
+        app.show_help = true;
+        let harness = window(app);
+        assert!(harness.query_by_label("F7").is_some());
+        assert!(harness.query_by_label("Tick all or none").is_none());
+
+        let mut app = fresh_app();
+        app.show_help = true;
+        let harness = window(app);
+        assert!(harness.query_by_label("F7").is_some());
+        assert!(harness.query_by_label("Tick all or none").is_some());
     }
 
     /// An empty list has to say why it is empty once the user has filtered

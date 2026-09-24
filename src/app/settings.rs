@@ -135,6 +135,30 @@ impl App {
         self.setting_input = None;
     }
 
+    /// Switch between Easy and Advanced mode — F7, as in a BIOS setup screen
+    /// — and remember the choice for the next start.
+    ///
+    /// Only what the Scan & Repair page draws changes. The findings, their
+    /// ticks and the filters stay as they are, so switching back and forth
+    /// loses nothing.
+    pub fn toggle_advanced_mode(&mut self) {
+        self.config.advanced_mode = !self.config.advanced_mode;
+        let mode = if self.config.advanced_mode {
+            "Advanced mode: every finding with its details, the filters and the logs"
+        } else {
+            "Easy mode: only what needs doing"
+        };
+        let unsaved = if self.system_actions.persist_config {
+            self.config.save().err()
+        } else {
+            None
+        };
+        self.status_message = Some(match unsaved {
+            None => format!("{mode}. F7 switches back."),
+            Some(e) => format!("{mode}. The choice could not be saved: {e}"),
+        });
+    }
+
     /// Persist the config, bring Windows in line with the setting at `index`,
     /// and rebuild the engine so modules pick up new thresholds on the next
     /// scan.
@@ -185,6 +209,30 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_mode_switch_flips_and_says_so_without_touching_the_findings() {
+        let mut app = App::new();
+        app.config.advanced_mode = false;
+        let tab = app.active_tab;
+
+        app.toggle_advanced_mode();
+        assert!(app.config.advanced_mode);
+        assert!(
+            app.status_message
+                .as_deref()
+                .is_some_and(|m| m.starts_with("Advanced mode"))
+        );
+
+        app.toggle_advanced_mode();
+        assert!(!app.config.advanced_mode);
+        assert!(
+            app.status_message
+                .as_deref()
+                .is_some_and(|m| m.starts_with("Easy mode"))
+        );
+        assert_eq!(app.active_tab, tab, "switching modes is not navigation");
+    }
 
     #[test]
     fn setting_navigation_wraps_in_both_directions() {
