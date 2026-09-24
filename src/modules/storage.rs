@@ -237,7 +237,8 @@ impl DiagnosticModule for StorageModule {
                     "Clean the user temp directory (%TEMP%)".to_string(),
                     "Clean the Windows temp directory (C:\\Windows\\Temp)".to_string(),
                 ],
-            ));
+            )
+            .with_reclaimable_bytes(total_temp_mb * 1024 * 1024));
         } else {
             Self::send_progress(
                 &progress_tx,

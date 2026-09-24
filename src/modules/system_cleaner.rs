@@ -1040,7 +1040,7 @@ impl DiagnosticModule for SystemCleanerModule {
                     "Empty the Delivery Optimization cache directories".to_string(),
                     "Run PowerShell Delete-DeliveryOptimizationCache -Force".to_string(),
                 ],
-            ));
+            ).with_reclaimable_bytes(wudo_stats.bytes));
         }
 
         // 3. Package Cache Audit
@@ -1085,7 +1085,7 @@ impl DiagnosticModule for SystemCleanerModule {
             // Not reversible by the VSS checkpoint, so it never runs unattended
             // under `--auto-fix`; the user has to select it deliberately.
             pkg_issue.is_selected = false;
-            issues.push(pkg_issue);
+            issues.push(pkg_issue.with_reclaimable_bytes(pkg_stats.bytes));
         }
 
         // 4. Browser Caches
@@ -1124,7 +1124,7 @@ impl DiagnosticModule for SystemCleanerModule {
                 vec![
                     "Empty the Chrome / Edge / Brave / Opera / Firefox cache directories".to_string(),
                 ],
-            ));
+            ).with_reclaimable_bytes(browser_stats.bytes));
         }
 
         // 5. Windows Setup & System Logs
@@ -1159,7 +1159,7 @@ impl DiagnosticModule for SystemCleanerModule {
                 ),
                 "Remove archived setup, CBS and DISM logs (active system logs are left alone)",
                 vec!["Clean the Panther, CBS, DISM and MoSetup log directories".to_string()],
-            ));
+            ).with_reclaimable_bytes(setup_log_stats.bytes));
         }
 
         // 6. Error Reporting & Crash Dumps
@@ -1194,7 +1194,7 @@ impl DiagnosticModule for SystemCleanerModule {
                 ),
                 "Delete stored crash dumps and WER report archives",
                 vec!["Empty WER ReportArchive, ReportQueue and %LOCALAPPDATA%\\CrashDumps".to_string()],
-            ));
+            ).with_reclaimable_bytes(wer_stats.bytes));
         }
 
         // 7. DirectX Shader & Certificate Caches
@@ -1230,7 +1230,7 @@ impl DiagnosticModule for SystemCleanerModule {
                 ),
                 "Empty stale shader builds and the CRL cache",
                 vec!["Empty D3DSCache, DirectX ShaderCache and CryptnetUrlCache".to_string()],
-            ));
+            ).with_reclaimable_bytes(shader_stats.bytes));
         }
 
         // 8. Windows Recycle Bin
@@ -1272,7 +1272,7 @@ impl DiagnosticModule for SystemCleanerModule {
             // Never runs unattended under `--auto-fix` / [A] auto-fix all: the
             // user has to tick this one themselves.
             recycle_issue.is_selected = false;
-            issues.push(recycle_issue);
+            issues.push(recycle_issue.with_reclaimable_bytes(recycle_stats.bytes));
         }
 
         // 9. Extended System Temp Directories
@@ -1307,7 +1307,7 @@ impl DiagnosticModule for SystemCleanerModule {
                 ),
                 "Clean the extended system temp directories (locked files are skipped)",
                 vec!["Clean systemprofile\\AppData\\Local\\Temp and SystemTemp".to_string()],
-            ));
+            ).with_reclaimable_bytes(system_temp_stats.bytes));
         }
 
         Self::send_progress(

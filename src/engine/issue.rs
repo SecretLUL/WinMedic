@@ -75,6 +75,13 @@ pub struct Issue {
     pub is_reboot_pending: bool,
     pub fix_error: Option<String>,
     pub timestamp: String,
+    /// What the repair would free on disk, for a cleanup the scan measured.
+    ///
+    /// A number rather than something read back out of the title, so Easy
+    /// mode can add the findings up. `None` for everything that frees nothing
+    /// and for cleanups whose size is not known before they run.
+    #[serde(default)]
+    pub reclaimable_bytes: Option<u64>,
 }
 
 impl Issue {
@@ -112,11 +119,17 @@ impl Issue {
             is_reboot_pending: false,
             fix_error: None,
             timestamp: Local::now().format("%H:%M:%S").to_string(),
+            reclaimable_bytes: None,
         }
     }
 
     pub fn with_requires_reboot(mut self, requires_reboot: bool) -> Self {
         self.requires_reboot = requires_reboot;
+        self
+    }
+
+    pub fn with_reclaimable_bytes(mut self, bytes: u64) -> Self {
+        self.reclaimable_bytes = Some(bytes);
         self
     }
 }

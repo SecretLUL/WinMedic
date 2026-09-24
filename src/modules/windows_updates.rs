@@ -276,7 +276,8 @@ impl DiagnosticModule for WindowsUpdatesModule {
                         "Empty the temporary download cache".to_string(),
                         "Restart the services cleanly".to_string(),
                     ],
-                ));
+                )
+                .with_reclaimable_bytes(stats.bytes));
             } else {
                 Self::send_progress(
                     &progress_tx,
