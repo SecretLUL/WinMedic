@@ -13,11 +13,13 @@
 //! | [`keys`] | egui key events into the neutral [`crate::app::Key`] |
 //! | [`modals`] | Confirmation, setting entry and help overlays |
 //! | [`views`] | The two views, the findings list and Easy mode's short list |
+//! | [`window`] | Locking the window's size in Easy mode, and handing it back |
 
 pub mod keys;
 pub mod modals;
 pub mod theme;
 pub mod views;
+pub mod window;
 
 use crate::app::{App, TAB_SETTINGS, handle_key};
 use eframe::egui;
@@ -44,6 +46,7 @@ pub struct WinMedicApp {
     app: App,
     last_poll: Instant,
     initial_minimize: bool,
+    window: window::WindowLock,
 }
 
 /// Draw the navigation, the current view, the status bar and overlays.
@@ -97,6 +100,7 @@ impl WinMedicApp {
             app,
             last_poll: Instant::now(),
             initial_minimize: autostart,
+            window: window::WindowLock::default(),
         }
     }
 }
@@ -198,6 +202,11 @@ impl eframe::App for WinMedicApp {
 
         for key in keys::shortcuts(ui.ctx()) {
             handle_key(&mut self.app, key);
+        }
+
+        let current = window::Geometry::of(ui.ctx());
+        for command in self.window.commands(self.app.config.advanced_mode, current) {
+            ui.ctx().send_viewport_cmd(command);
         }
 
         show(ui, &mut self.app);
@@ -373,12 +382,14 @@ mod tests {
     }
 
     /// Layout only fails at draw time, so a view no window size can satisfy
-    /// fails here rather than in front of a user.
+    /// fails here rather than in front of a user. The smallest size is the
+    /// one Easy mode locks the window at, so every view has to fit it.
     #[test]
     fn every_view_draws_at_small_and_large_window_sizes() {
+        let smallest = (window::MIN_SIZE.x, window::MIN_SIZE.y);
         for tab in 0..TAB_COUNT {
             for fixture in FIXTURES {
-                for size in [(960.0, 640.0), (1400.0, 900.0), (1920.0, 1200.0)] {
+                for size in [smallest, (1400.0, 900.0), (1920.0, 1200.0)] {
                     let mut app = fixture();
                     app.active_tab = tab;
                     let harness = sized_window(app, size);
