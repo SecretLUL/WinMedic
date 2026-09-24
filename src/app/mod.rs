@@ -12,6 +12,7 @@
 //! | [`run_control`] | Starting, cancelling and simulating scans and repairs |
 //! | [`events`] | Draining scan, repair and background channels into state |
 //! | [`filters`] | Severity/module filtering, live search, issue selection |
+//! | [`preview`] | What a repair run will free and fix, for Easy mode |
 //! | [`safety`] | Registry backups, restore points, rollback requests |
 //! | [`confirm`] | The confirmation modal and the parked update notice |
 //! | [`settings`] | Settings navigation and persistence, the Easy / Advanced switch |
@@ -24,6 +25,7 @@ pub mod confirm;
 pub mod events;
 pub mod filters;
 pub mod input;
+pub mod preview;
 pub mod run_control;
 pub mod safety;
 pub mod scan_state;

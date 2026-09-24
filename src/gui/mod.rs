@@ -697,93 +697,126 @@ mod tests {
         }
     }
 
-    /// Easy mode is the page for someone who has never repaired Windows: what
-    /// is wrong, what WinMedic will do about it, one button. Everything a
+    const GB: u64 = 1024 * 1024 * 1024;
+
+    /// A scan whose findings Easy mode can say something about: a cleanup
+    /// that measured its size, and a repair that fixes something you notice.
+    fn easy_forecast_app() -> App {
+        let mut app = easy_scanned_app();
+        app.issues[0].id = "net_dns_failure".to_string();
+        app.issues[1].id = "storage_temp_bloat".to_string();
+        app.issues[1].reclaimable_bytes = Some(7 * GB);
+        app
+    }
+
+    /// Easy mode is the page for someone who has never repaired Windows: how
+    /// the PC is doing, what Repair will do, two big buttons. Everything a
     /// technician reaches for stays in Advanced mode.
     #[test]
-    fn easy_mode_shows_only_what_needs_doing() {
-        let harness = window(easy_scanned_app());
+    fn easy_mode_says_how_the_pc_is_and_what_repair_will_do() {
+        let harness = window(easy_forecast_app());
 
-        assert!(harness.query_by_label("2 problems found").is_some());
-        assert!(
-            harness
-                .query_by_label_contains("WinMedic can repair all of them")
-                .is_some()
-        );
-        assert!(harness.query_by_label("Repair 2 problems").is_some());
-        assert!(harness.query_by_label("Scan again").is_some());
-        assert!(
-            harness
-                .query_by_label_contains("WinMedic repairs these (2)")
-                .is_some()
-        );
-        assert!(harness.query_by_label("DNS cache full").is_some());
+        for expected in [
+            "2 problems found",
+            "Health 60 / 100",
+            "What Repair does",
+            "Frees about 7.0 GB of disk space",
+            "The internet connection is repaired",
+            "Health goes up to about 100 / 100",
+            "Repair 2 problems",
+            "Scan again",
+            "A restore point is created first, so everything can be undone.",
+        ] {
+            assert!(
+                harness.query_by_label(expected).is_some(),
+                "Easy mode does not say {expected:?}"
+            );
+        }
 
+        // No list of findings, and nothing a technician reaches for.
         for advanced_only in [
+            "DNS cache full",
+            "Temp bloat files",
             "Select none",
-            "Select all",
             "All modules",
             "Show log",
             "Simulate only (change nothing)",
             "Technical details",
-            "Recommended fix",
         ] {
             assert!(
                 harness.query_by_label(advanced_only).is_none(),
                 "Easy mode draws {advanced_only:?}"
             );
         }
-        assert!(
-            harness.query_by_role(Role::TextInput).is_none(),
-            "a search box"
-        );
-        assert_eq!(
-            harness.query_all_by_role(Role::CheckBox).count(),
-            0,
-            "ticks are Advanced mode's"
-        );
+        assert!(harness.query_by_role(Role::TextInput).is_none());
+        assert_eq!(harness.query_all_by_role(Role::CheckBox).count(), 0);
 
         // A module that gave up is named, but its error text is not.
         assert!(harness.query_by_label_contains("Could not check").is_some());
         assert!(harness.query_by_label_contains("0x800f081f").is_none());
     }
 
-    /// The one button repairs the recommended findings; the page says what
-    /// happens to the rest.
+    /// The next step should be impossible to miss.
     #[test]
-    fn easy_mode_says_what_it_repairs_and_what_it_leaves_alone() {
-        let mut app = easy_scanned_app();
+    fn the_easy_buttons_are_big() {
+        let easy = window(easy_forecast_app());
+        let advanced = window(scanned_app());
+        let normal = advanced.get_by_label("Scan again").rect().height();
+
+        for label in ["Repair 2 problems", "Scan again"] {
+            let height = easy.get_by_label(label).rect().height();
+            assert!(
+                height >= 44.0 && height > normal + 10.0,
+                "{label} is {height} px tall, Advanced mode's buttons {normal} px"
+            );
+        }
+    }
+
+    /// Repair runs what the checks recommend; the rest is one line and one
+    /// link away.
+    #[test]
+    fn easy_mode_counts_what_it_leaves_alone_and_links_to_it() {
+        let mut app = easy_forecast_app();
         app.issues[1].is_selected = false;
-        let mut repaired = issue("c", "Icon cache rebuilt", Severity::Info);
-        repaired.is_fixed = true;
-        app.issues.push(repaired);
+        let mut harness = window(app);
+
+        assert!(harness.query_by_label("Repair 1 problem").is_some());
+        assert!(
+            harness
+                .query_by_label("Frees about 7.0 GB of disk space")
+                .is_none(),
+            "an unticked cleanup frees nothing"
+        );
+        assert!(
+            harness
+                .query_by_label("1 more needs your decision.")
+                .is_some()
+        );
+
+        harness.get_by_label("Show in Advanced mode (F7)").click();
+        harness.run();
+        assert!(harness.state().config.advanced_mode);
+    }
+
+    #[test]
+    fn easy_mode_with_nothing_repaired_automatically_offers_only_the_scan() {
+        let mut app = easy_forecast_app();
+        for issue in &mut app.issues {
+            issue.is_selected = false;
+        }
         let harness = window(app);
 
         assert!(
-            harness.query_by_label("2 problems found").is_some(),
-            "a repaired finding is no longer a problem"
-        );
-        assert!(
             harness
-                .query_by_label_contains("WinMedic can repair 1 of them by itself")
+                .query_by_label("None of them is repaired automatically.")
                 .is_some()
         );
-        assert!(harness.query_by_label("Repair 1 problem").is_some());
-        for heading in [
-            "WinMedic repairs these (1)",
-            "Left for you to decide (1)",
-            "Repaired (1)",
-        ] {
-            assert!(
-                harness.query_by_label_contains(heading).is_some(),
-                "missing group: {heading}"
-            );
-        }
+        assert!(harness.query_by_label("What Repair does").is_none());
+        assert!(harness.query_by_label("Scan again").is_some());
         assert!(
             harness
-                .query_by_label_contains("unless you tick them in Advanced mode (F7)")
-                .is_some(),
-            "and the page says how to decide"
+                .query_by_label("2 more need your decision.")
+                .is_some()
         );
     }
 
@@ -791,6 +824,11 @@ mod tests {
     fn easy_mode_on_a_machine_never_scanned_offers_the_scan_and_nothing_else() {
         let harness = window(easy_fresh_app());
 
+        assert!(
+            harness
+                .query_by_label("This PC has not been checked yet")
+                .is_some()
+        );
         assert!(harness.query_by_label("Scan now").is_some());
         assert!(
             harness
@@ -801,6 +839,21 @@ mod tests {
         assert!(harness.query_by_label("Show log").is_none());
     }
 
+    #[test]
+    fn easy_mode_on_a_healthy_pc_says_so() {
+        let mut app = easy_scanned_app();
+        app.issues.clear();
+        app.health_score = 100;
+        for status in &mut app.module_statuses {
+            status.3 = ModuleStatus::Passed;
+        }
+        let harness = window(app);
+
+        assert!(harness.query_by_label("Your PC is in good shape").is_some());
+        assert!(harness.query_by_label("Health 100 / 100").is_some());
+        assert!(harness.query_by_label("Scan again").is_some());
+    }
+
     /// While a scan runs, Easy mode shows how far it got, not each module.
     #[test]
     fn a_running_scan_in_easy_mode_shows_progress_but_no_module_table() {
@@ -809,11 +862,11 @@ mod tests {
         app.scan_overall_progress = 40;
         let harness = window(app);
 
-        assert!(harness.query_by_label("Scanning this PC...").is_some());
-        assert!(harness.query_by_label("Cancel scan").is_some());
+        assert!(harness.query_by_label("Checking your PC...").is_some());
+        assert!(harness.query_by_label("Cancel").is_some());
         assert!(
             harness
-                .query_by_label_contains("nothing is changed")
+                .query_by_label("This takes a minute or two. Nothing is changed.")
                 .is_some()
         );
         assert!(
@@ -839,11 +892,6 @@ mod tests {
                 .query_all_by_label_contains("Restart Windows to finish")
                 .count(),
             1
-        );
-        assert!(
-            harness
-                .query_by_label_contains("Repaired, waiting for a restart (2)")
-                .is_some()
         );
 
         harness.get_by_label("Restart now").click();
