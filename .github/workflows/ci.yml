@@ -17,6 +17,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Full debug info makes target/ about a gigabyte of PDBs on Windows, which
+  # every run links, restores and saves. File and line numbers are all a
+  # failing test's backtrace needs. The test profile inherits this one.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 # Least privilege by default; the audit job widens this for itself.
 permissions:
@@ -38,8 +42,14 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # Saved from main only. A pull request restores main's cache, but
+      # uploading its own took over two minutes per run, and those
+      # gigabyte-sized per-PR entries pushed main's out of the 10 GB quota -
+      # after which main itself rebuilt clippy from scratch.
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Cheapest gate first: no build required, so a misformatted PR fails in
       # seconds instead of after a full compile.
@@ -104,6 +114,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: msrv-${{ steps.msrv.outputs.version }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Runs on every change, not only when the manifest moves: the MSRV breaks
       # just as easily by using a newer language feature in ordinary source as
