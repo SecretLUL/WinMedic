@@ -147,8 +147,112 @@ fn no_dhcp_issue_id(adapter: &str) -> String {
     format!("net_no_dhcp_{slug}")
 }
 
+const WINHTTP_KEY: &str =
+    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Connections";
+
+/// The proxy WinHTTP is set to, as `netsh winhttp set proxy` stored it.
+///
+/// WinHTTP is what Windows Update, BITS, the Store and most services connect
+/// through, and it keeps its own proxy apart from the browser's - so a
+/// leftover proxy here breaks updates while every browser works.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WinHttpProxy {
+    /// `proxy:8080`, or a list such as `http=proxy:8080;https=secure:8443`.
+    pub server: String,
+    pub bypass: Option<String>,
+}
+
+impl WinHttpProxy {
+    /// The command that sets this proxy again.
+    pub fn restore_command(&self) -> String {
+        match &self.bypass {
+            Some(bypass) => format!(
+                "netsh winhttp set proxy proxy-server=\"{}\" bypass-list=\"{bypass}\"",
+                self.server
+            ),
+            None => format!("netsh winhttp set proxy proxy-server=\"{}\"", self.server),
+        }
+    }
+}
+
+/// The proxy in the `WinHttpSettings` value as `reg` prints it, or `None` for
+/// a direct connection.
+///
+/// The value is a structure of little-endian DWORDs: size, a counter, the
+/// access type, then the proxy's length and name, then the bypass list's
+/// length and text. `netsh winhttp show proxy` prints the same, in the
+/// display language.
+pub fn winhttp_proxy(hex: &str) -> Option<WinHttpProxy> {
+    let bytes: Vec<u8> = (0..hex.len() / 2)
+        .filter_map(|i| u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok())
+        .collect();
+    let text_at = |offset: usize| -> Option<(String, usize)> {
+        let len = u32::from_le_bytes(bytes.get(offset..offset + 4)?.try_into().ok()?) as usize;
+        let text = String::from_utf8_lossy(bytes.get(offset + 4..offset + 4 + len)?)
+            .trim()
+            .to_string();
+        Some((text, offset + 4 + len))
+    };
+    let (server, end) = text_at(12)?;
+    if server.is_empty() {
+        return None;
+    }
+    let bypass = text_at(end)
+        .map(|(bypass, _)| bypass)
+        .filter(|b| !b.is_empty());
+    Some(WinHttpProxy { server, bypass })
+}
+
+/// Every `host:port` a WinHTTP proxy list names, without repeats.
+pub fn proxy_endpoints(server: &str) -> Vec<String> {
+    let mut endpoints: Vec<String> = Vec::new();
+    for entry in server.split([';', ' ']).filter(|p| !p.is_empty()) {
+        let host = entry.split_once('=').map_or(entry, |(_, host)| host);
+        let host = host
+            .trim_start_matches("http://")
+            .trim_start_matches("https://")
+            .trim_end_matches('/');
+        if host.is_empty() {
+            continue;
+        }
+        let endpoint = if host.contains(':') {
+            host.to_string()
+        } else {
+            format!("{host}:80")
+        };
+        if !endpoints.contains(&endpoint) {
+            endpoints.push(endpoint);
+        }
+    }
+    endpoints
+}
+
+/// Whether something accepts a TCP connection at `host:port`, and if not,
+/// why not.
+pub type ProxyProbe = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+
+fn real_proxy_probe() -> ProxyProbe {
+    Arc::new(|endpoint: &str| {
+        use std::net::{TcpStream, ToSocketAddrs};
+        let addrs: Vec<_> = endpoint
+            .to_socket_addrs()
+            .map_err(|e| format!("cannot be resolved ({e})"))?
+            .take(3)
+            .collect();
+        let mut last = "resolves to no address".to_string();
+        for addr in addrs {
+            match TcpStream::connect_timeout(&addr, Duration::from_secs(3)) {
+                Ok(_) => return Ok(()),
+                Err(e) => last = format!("{addr}: {e}"),
+            }
+        }
+        Err(last)
+    })
+}
+
 pub struct NetworkModule {
     runner: Arc<dyn CommandRunner>,
+    proxy_probe: ProxyProbe,
 }
 
 impl Default for NetworkModule {
@@ -163,7 +267,82 @@ impl NetworkModule {
     }
 
     pub fn with_runner(runner: Arc<dyn CommandRunner>) -> Self {
-        Self { runner }
+        Self {
+            runner,
+            proxy_probe: real_proxy_probe(),
+        }
+    }
+
+    /// For tests: decide whether a proxy answers without touching the network.
+    pub fn with_proxy_probe(mut self, probe: ProxyProbe) -> Self {
+        self.proxy_probe = probe;
+        self
+    }
+
+    async fn configured_winhttp_proxy(&self) -> Result<Option<WinHttpProxy>, String> {
+        let keys = crate::utils::registry::query(&*self.runner, WINHTTP_KEY, false)
+            .await?
+            .unwrap_or_default();
+        Ok(
+            crate::utils::registry::find(&keys, WINHTTP_KEY, "WinHttpSettings")
+                .and_then(|v| winhttp_proxy(&v.data)),
+        )
+    }
+
+    /// `Ok(())` as soon as one endpoint answers, otherwise what each one did.
+    /// A list that names no endpoint cannot be judged and counts as answering.
+    async fn proxy_answers(&self, proxy: &WinHttpProxy) -> Result<(), Vec<String>> {
+        let mut log = Vec::new();
+        for endpoint in proxy_endpoints(&proxy.server) {
+            let probe = self.proxy_probe.clone();
+            let target = endpoint.clone();
+            let result = tokio::task::spawn_blocking(move || probe(&target))
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()));
+            match result {
+                Ok(()) => return Ok(()),
+                Err(why) => log.push(format!("{endpoint}: {why}")),
+            }
+        }
+        if log.is_empty() { Ok(()) } else { Err(log) }
+    }
+
+    /// Switch WinHTTP back to a direct connection, then read the value back.
+    async fn fix_winhttp_proxy(&self) -> Result<String, String> {
+        let Some(before) = self.configured_winhttp_proxy().await? else {
+            return Ok("WinHTTP already connects directly.".to_string());
+        };
+        let out = self
+            .runner
+            .run(
+                "netsh.exe",
+                &["winhttp", "reset", "proxy"],
+                Duration::from_secs(15),
+            )
+            .await?;
+        if !out.success {
+            // Without elevation: "Error writing proxy settings. (5)".
+            let said = [out.stdout.trim(), out.stderr.trim()]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            return Err(format!(
+                "netsh winhttp reset proxy failed (exit code {:?}): {said}",
+                out.exit_code
+            ));
+        }
+        match self.configured_winhttp_proxy().await? {
+            None => Ok(format!(
+                "WinHTTP connects directly again. It pointed at {}; `{}` puts that back.",
+                before.server,
+                before.restore_command()
+            )),
+            Some(still) => Err(format!(
+                "netsh winhttp reset proxy ran (exit code {:?}) but WinHTTP still points at {}. A group policy, or the software that set the proxy, is putting it back.",
+                out.exit_code, still.server
+            )),
+        }
     }
 
     async fn adapters(&self) -> Result<Vec<AdapterIpv4>, String> {
@@ -526,7 +705,55 @@ impl DiagnosticModule for NetworkModule {
             }
         }
 
-        // 4. Winsock Catalog
+        // 4. The WinHTTP proxy services and Windows Update connect through
+        match self.configured_winhttp_proxy().await {
+            Ok(Some(proxy)) => {
+                Self::send_progress(
+                    &progress_tx,
+                    75,
+                    "Checking the WinHTTP proxy...",
+                    Some(&format!("WinHTTP proxy: {}", proxy.server)),
+                )
+                .await;
+                if let Err(log) = self.proxy_answers(&proxy).await {
+                    issues.push(Issue::new(
+                        "net_winhttp_proxy_dead",
+                        self.id(),
+                        format!("Windows Update's proxy does not answer: {}", proxy.server),
+                        "Network & DNS",
+                        Severity::Warning,
+                        RiskScore::Low,
+                        format!(
+                            "Windows Update, the Microsoft Store and many background services connect through the WinHTTP proxy, which is set apart from the browser's. It points at {}, and nothing answers there, so those connections fail while the browser still works. VPN clients, debugging proxies and company networks leave such a setting behind. If this PC is managed by a company, ask its IT first.",
+                            proxy.server
+                        ),
+                        format!(
+                            "{WINHTTP_KEY}\\WinHttpSettings\nProxy: {}\nBypass list: {}\n{}",
+                            proxy.server,
+                            proxy.bypass.as_deref().unwrap_or("(none)"),
+                            log.join("\n")
+                        ),
+                        "Switch WinHTTP back to a direct connection (netsh winhttp reset proxy)",
+                        vec![
+                            "Run netsh winhttp reset proxy".to_string(),
+                            "Check that WinHTTP no longer names a proxy".to_string(),
+                        ],
+                    ));
+                }
+            }
+            Ok(None) => {}
+            Err(err) => {
+                Self::send_progress(
+                    &progress_tx,
+                    75,
+                    "The WinHTTP proxy could not be read",
+                    Some(&err),
+                )
+                .await;
+            }
+        }
+
+        // 5. Winsock Catalog
         Self::send_progress(
             &progress_tx,
             85,
@@ -603,6 +830,7 @@ impl DiagnosticModule for NetworkModule {
     ) -> Result<String, String> {
         match issue_id {
             id if id.starts_with("net_no_dhcp_") => self.fix_no_dhcp(id).await,
+            "net_winhttp_proxy_dead" => self.fix_winhttp_proxy().await,
             "net_dns_failure" => {
                 let _ = self
                     .runner
@@ -976,28 +1204,37 @@ mod tests {
         assert!(!issue.is_selected, "the PC is online through 'Ethernet'");
     }
 
-    /// Answers the adapter query with `before` until `ipconfig /renew` ran,
-    /// then with `after`.
-    struct RenewRunner {
-        before: String,
-        after: String,
-        renewed: std::sync::atomic::AtomicBool,
+    /// Answers every query with `before` until the repair command ran, then
+    /// with `after` - what a repair's read-back sees on a real machine.
+    struct RepairRunner {
+        repair: &'static str,
+        repair_output: CmdOutput,
+        before: CmdOutput,
+        after: CmdOutput,
+        repaired: std::sync::atomic::AtomicBool,
         executed: std::sync::Mutex<Vec<String>>,
     }
 
-    impl RenewRunner {
-        fn new(before: String, after: String) -> Arc<Self> {
-            Arc::new(Self {
+    impl RepairRunner {
+        fn new(repair: &'static str, before: CmdOutput, after: CmdOutput) -> Self {
+            Self {
+                repair,
+                repair_output: CmdOutput::ok(""),
                 before,
                 after,
-                renewed: Default::default(),
+                repaired: Default::default(),
                 executed: Default::default(),
-            })
+            }
+        }
+
+        fn repair_answers(mut self, output: CmdOutput) -> Self {
+            self.repair_output = output;
+            self
         }
     }
 
     #[async_trait::async_trait]
-    impl CommandRunner for RenewRunner {
+    impl CommandRunner for RepairRunner {
         async fn run(
             &self,
             program: &str,
@@ -1009,16 +1246,15 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("{program} {}", args.join(" ")));
-            if program == "ipconfig.exe" {
-                self.renewed.store(true, Ordering::SeqCst);
-                return Ok(CmdOutput::ok(""));
+            if program == self.repair {
+                self.repaired.store(true, Ordering::SeqCst);
+                return Ok(self.repair_output.clone());
             }
-            let adapters = if self.renewed.load(Ordering::SeqCst) {
-                &self.after
+            Ok(if self.repaired.load(Ordering::SeqCst) {
+                self.after.clone()
             } else {
-                &self.before
-            };
-            Ok(CmdOutput::ok(adapters.clone()))
+                self.before.clone()
+            })
         }
 
         async fn run_streaming(
@@ -1034,7 +1270,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_renewed_lease_is_read_back() {
-        let runner = RenewRunner::new(apipa_adapters(), real_adapters());
+        let runner = Arc::new(RepairRunner::new(
+            "ipconfig.exe",
+            CmdOutput::ok(apipa_adapters()),
+            CmdOutput::ok(real_adapters()),
+        ));
         let msg = NetworkModule::with_runner(runner.clone())
             .fix("net_no_dhcp_ethernet", None)
             .await
@@ -1051,11 +1291,197 @@ mod tests {
 
     #[tokio::test]
     async fn a_renew_nobody_answered_is_a_failure() {
-        let runner = RenewRunner::new(apipa_adapters(), apipa_adapters());
-        let err = NetworkModule::with_runner(runner)
+        let runner = RepairRunner::new(
+            "ipconfig.exe",
+            CmdOutput::ok(apipa_adapters()),
+            CmdOutput::ok(apipa_adapters()),
+        );
+        let err = NetworkModule::with_runner(Arc::new(runner))
             .fix("net_no_dhcp_ethernet", None)
             .await
             .unwrap_err();
         assert!(err.contains("no DHCP server answered"), "{err}");
+    }
+
+    /// `reg query ...\Connections` on a machine without a WinHTTP proxy.
+    fn real_winhttp_direct() -> String {
+        crate::utils::decode::decode_output(include_bytes!(
+            "../../tests/fixtures/console/reg_query_winhttp_direct.bin"
+        ))
+    }
+
+    /// The same `reg` output with a proxy set.
+    ///
+    /// Constructed: setting a proxy needs elevation and changes the machine.
+    /// The header is the captured value's; access type 3 is a named proxy,
+    /// and the proxy and the bypass list follow as length and text, the
+    /// shape `netsh winhttp set proxy` writes.
+    fn winhttp_with_proxy(server: &str, bypass: &str) -> String {
+        let mut bytes = vec![0x18, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0];
+        for text in [server, bypass] {
+            bytes.extend((text.len() as u32).to_le_bytes());
+            bytes.extend(text.as_bytes());
+        }
+        let hex: String = bytes.iter().map(|b| format!("{b:02X}")).collect();
+        real_winhttp_direct().replace("1800000000000000010000000000000000000000", &hex)
+    }
+
+    fn winhttp_value(reg_output: &str) -> Option<WinHttpProxy> {
+        let keys = crate::utils::registry::parse_reg_query(reg_output);
+        winhttp_proxy(&crate::utils::registry::find(&keys, WINHTTP_KEY, "WinHttpSettings")?.data)
+    }
+
+    #[test]
+    fn the_captured_direct_connection_has_no_proxy() {
+        let keys = crate::utils::registry::parse_reg_query(&real_winhttp_direct());
+        assert!(crate::utils::registry::find(&keys, WINHTTP_KEY, "WinHttpSettings").is_some());
+        assert_eq!(winhttp_value(&real_winhttp_direct()), None);
+    }
+
+    #[test]
+    fn proxy_and_bypass_list_are_read() {
+        let proxy = winhttp_value(&winhttp_with_proxy("proxy.corp:8080", "<local>")).unwrap();
+        assert_eq!(proxy.server, "proxy.corp:8080");
+        assert_eq!(proxy.bypass.as_deref(), Some("<local>"));
+        assert_eq!(
+            proxy.restore_command(),
+            "netsh winhttp set proxy proxy-server=\"proxy.corp:8080\" bypass-list=\"<local>\""
+        );
+
+        let bare = winhttp_value(&winhttp_with_proxy("127.0.0.1:8888", "")).unwrap();
+        assert_eq!(bare.bypass, None);
+        assert_eq!(
+            bare.restore_command(),
+            "netsh winhttp set proxy proxy-server=\"127.0.0.1:8888\""
+        );
+    }
+
+    #[test]
+    fn the_real_probe_tells_an_open_port_from_a_closed_one() {
+        // Loopback only: nothing leaves the machine.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let open = listener.local_addr().unwrap().to_string();
+        assert_eq!(real_proxy_probe()(&open), Ok(()));
+        drop(listener);
+        assert!(real_proxy_probe()(&open).is_err());
+    }
+
+    #[test]
+    fn every_endpoint_of_a_proxy_list_is_named_once() {
+        assert_eq!(proxy_endpoints("proxy:8080"), ["proxy:8080"]);
+        assert_eq!(proxy_endpoints("http://proxy/"), ["proxy:80"]);
+        assert_eq!(
+            proxy_endpoints("http=a:3128;https=b:8443"),
+            ["a:3128", "b:8443"]
+        );
+        assert_eq!(proxy_endpoints("http=a:3128;https=a:3128"), ["a:3128"]);
+        assert!(proxy_endpoints(";").is_empty());
+    }
+
+    /// A healthy machine whose WinHTTP value is `winhttp`, with a proxy
+    /// probe that answers `probe` and records what it was asked.
+    async fn scan_winhttp(winhttp: String, probe: Result<(), String>) -> (Vec<Issue>, Vec<String>) {
+        let mock = MockCommandRunner::new();
+        mock.add_response("reg.exe", CmdOutput::ok(winhttp));
+        mock.add_response("nslookup.exe", CmdOutput::ok(RESOLVED_OUTPUT));
+        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = asked.clone();
+        let module = NetworkModule::with_runner(Arc::new(mock)).with_proxy_probe(Arc::new(
+            move |endpoint: &str| {
+                log.lock().unwrap().push(endpoint.to_string());
+                probe.clone()
+            },
+        ));
+        let issues = module.scan(None).await.unwrap();
+        let asked = asked.lock().unwrap().clone();
+        (issues, asked)
+    }
+
+    #[tokio::test]
+    async fn a_direct_connection_is_not_probed() {
+        let (issues, asked) = scan_winhttp(real_winhttp_direct(), Ok(())).await;
+        assert!(!issues.iter().any(|i| i.id == "net_winhttp_proxy_dead"));
+        assert!(asked.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_proxy_that_answers_is_left_alone() {
+        let (issues, asked) =
+            scan_winhttp(winhttp_with_proxy("proxy.corp:8080", "<local>"), Ok(())).await;
+        assert!(!issues.iter().any(|i| i.id == "net_winhttp_proxy_dead"));
+        assert_eq!(asked, ["proxy.corp:8080"]);
+    }
+
+    #[tokio::test]
+    async fn a_proxy_nobody_answers_at_is_a_finding() {
+        let (issues, asked) = scan_winhttp(
+            winhttp_with_proxy("http=127.0.0.1:8888;https=127.0.0.1:8889", ""),
+            Err("connection refused".to_string()),
+        )
+        .await;
+        assert_eq!(asked, ["127.0.0.1:8888", "127.0.0.1:8889"]);
+        let issue = issues
+            .iter()
+            .find(|i| i.id == "net_winhttp_proxy_dead")
+            .expect("no endpoint answered");
+        assert!(issue.title.contains("127.0.0.1:8888"));
+        assert!(
+            issue
+                .technical_details
+                .contains("127.0.0.1:8889: connection refused")
+        );
+    }
+
+    fn winhttp_repair(before: String, after: String) -> RepairRunner {
+        RepairRunner::new("netsh.exe", CmdOutput::ok(before), CmdOutput::ok(after))
+    }
+
+    #[tokio::test]
+    async fn a_reset_proxy_is_read_back_and_can_be_put_back() {
+        let runner = Arc::new(winhttp_repair(
+            winhttp_with_proxy("proxy.corp:8080", "<local>"),
+            real_winhttp_direct(),
+        ));
+        let msg = NetworkModule::with_runner(runner.clone())
+            .fix("net_winhttp_proxy_dead", None)
+            .await
+            .unwrap();
+        assert!(
+            msg.contains("bypass-list=\"<local>\""),
+            "the message has to say how to undo it: {msg}"
+        );
+        assert!(
+            runner
+                .executed
+                .lock()
+                .unwrap()
+                .contains(&"netsh.exe winhttp reset proxy".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_proxy_that_comes_back_is_a_failure() {
+        let proxy = winhttp_with_proxy("proxy.corp:8080", "");
+        let err = NetworkModule::with_runner(Arc::new(winhttp_repair(proxy.clone(), proxy)))
+            .fix("net_winhttp_proxy_dead", None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("still points at proxy.corp:8080"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_refused_reset_says_what_netsh_said() {
+        let proxy = winhttp_with_proxy("proxy.corp:8080", "");
+        let runner = winhttp_repair(proxy.clone(), proxy).repair_answers(CmdOutput::with_output(
+            1,
+            "Error writing proxy settings. (5) Access is denied.",
+            "",
+        ));
+        let err = NetworkModule::with_runner(Arc::new(runner))
+            .fix("net_winhttp_proxy_dead", None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("Access is denied"), "{err}");
     }
 }
