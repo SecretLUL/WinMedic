@@ -254,6 +254,11 @@ mod tests {
         // these tests look for is only drawn in Advanced mode; the Easy mode
         // tests below switch it off.
         app.config.advanced_mode = true;
+        // And whether this process is elevated, which differs between a
+        // developer's terminal and the CI runner, and with it whether the
+        // page carries the administrator notice. Fixed, so a test draws the
+        // same page on both.
+        app.is_admin = true;
         // It also restores the last scan from `%APPDATA%`, which on a machine
         // that has actually run WinMedic is a real one — and these tests
         // describe the state they want to draw. Start from nothing scanned.
@@ -667,8 +672,11 @@ mod tests {
                     })
                     .count();
                 let drawn = drawn.into_inner();
+                // Easy mode before the first scan is the sparsest page the
+                // window draws, at 14 strings. Reading only the labels, the
+                // mistake this guards against, collects about six.
                 assert!(
-                    drawn.len() > 15,
+                    drawn.len() >= 10,
                     "view {tab} produced only {} strings, so this asserts on nothing",
                     drawn.len()
                 );
