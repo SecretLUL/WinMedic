@@ -16,6 +16,61 @@ use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
 /// reports a failure when *no* probe resolves.
 const DNS_PROBE_NAMES: &[&str] = &["dns.google", "www.microsoft.com"];
 
+/// The provider DLL paths `netsh winsock show catalog` lists, in order.
+///
+/// The field labels are in the display language ("Anbieterpfad" on a German
+/// system), the values are not: whatever follows the first colon and ends in
+/// `.dll` is a provider path. Description lines that point into a DLL's
+/// resources (`@%SystemRoot%\system32\nlasvc.dll,-1000`) do not end in `.dll`.
+///
+/// The check this replaces looked for the words "Error" and "Fehler" in the
+/// catalog, which says nothing about its health and nothing at all in any
+/// third language.
+pub fn winsock_provider_paths(catalog: &str) -> Vec<String> {
+    catalog
+        .lines()
+        .filter_map(|line| {
+            let (_, value) = line.split_once(':')?;
+            let value = value.trim();
+            value
+                .to_ascii_lowercase()
+                .ends_with(".dll")
+                .then(|| value.to_string())
+        })
+        .collect()
+}
+
+/// Whether a provider path names a file that is not there.
+///
+/// This is the corruption that breaks networking: an LSP left in the catalog
+/// by software that has since been removed. A path with an environment
+/// variable this process cannot expand is not judged — an unverifiable entry
+/// is not evidence of a broken one.
+pub fn provider_is_missing(path: &str) -> bool {
+    match expand_env_vars(path) {
+        Some(expanded) => {
+            let expanded = std::path::Path::new(&expanded);
+            expanded.is_absolute() && !expanded.exists()
+        }
+        None => false,
+    }
+}
+
+/// `%SystemRoot%\x` → `C:\WINDOWS\x`; `None` when a variable is not set.
+fn expand_env_vars(path: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut rest = path;
+    while let Some(start) = rest.find('%') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        let end = after.find('%')?;
+        out.push_str(&std::env::var(&after[..end]).ok()?);
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    Some(out)
+}
+
 /// What one resolver probe did.
 struct DnsProbe {
     resolved: bool,
@@ -293,10 +348,29 @@ impl DiagnosticModule for NetworkModule {
             )
             .await;
         if let Ok(out) = winsock_audit {
-            if out.stdout.is_empty()
-                || out.stdout.contains("Fehler")
-                || out.stdout.contains("Error")
-            {
+            let providers = winsock_provider_paths(&out.stdout);
+            let missing: Vec<&String> = providers
+                .iter()
+                .filter(|path| provider_is_missing(path))
+                .collect();
+            let evidence = if !out.success || providers.is_empty() {
+                Some(format!(
+                    "netsh winsock show catalog listed no provider (exit code {:?}).",
+                    out.exit_code
+                ))
+            } else if !missing.is_empty() {
+                Some(format!(
+                    "Catalog entries whose provider DLL does not exist:\n{}",
+                    missing
+                        .iter()
+                        .map(|p| p.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ))
+            } else {
+                None
+            };
+            if let Some(evidence) = evidence {
                 issues.push(Issue::new(
                     "net_winsock_corrupt",
                     self.id(),
@@ -305,7 +379,7 @@ impl DiagnosticModule for NetworkModule {
                     Severity::Warning,
                     RiskScore::Medium,
                     "The Winsock Layered Service Provider (LSP) catalog contains damaged or incomplete entries, which can cause dropped connections.",
-                    out.stdout,
+                    evidence,
                     "Reset the Winsock catalog to its defaults",
                     vec!["Run netsh winsock reset".to_string()],
                 ));
@@ -441,6 +515,71 @@ mod tests {
         assert!(!NetworkModule::nslookup_resolved(""));
     }
 
+    /// `netsh winsock show catalog` on a German Windows 11, as captured.
+    fn real_catalog() -> String {
+        crate::utils::decode::decode_output(include_bytes!(
+            "../../tests/fixtures/console/netsh_winsock_catalog_de.bin"
+        ))
+    }
+
+    #[test]
+    fn provider_paths_are_read_whatever_the_labels_say() {
+        let paths = winsock_provider_paths(&real_catalog());
+        assert_eq!(paths.len(), 28, "{paths:?}");
+        assert!(
+            paths
+                .iter()
+                .all(|p| p == r"%SystemRoot%\system32\mswsock.dll")
+        );
+    }
+
+    #[test]
+    fn a_provider_that_exists_is_not_missing() {
+        assert!(!provider_is_missing(r"%SystemRoot%\system32\mswsock.dll"));
+        assert!(provider_is_missing(
+            r"%SystemRoot%\system32\winmedic-uninstalled-lsp.dll"
+        ));
+        // Cannot be expanded here, so it cannot be judged.
+        assert!(!provider_is_missing(r"%WINMEDIC_NO_SUCH_VAR%\lsp.dll"));
+    }
+
+    async fn scan_winsock(catalog: CmdOutput) -> Vec<Issue> {
+        let mock = MockCommandRunner::new();
+        mock.add_response("nslookup.exe", CmdOutput::ok(RESOLVED_OUTPUT));
+        mock.add_response("netsh.exe", catalog);
+        NetworkModule::with_runner(Arc::new(mock))
+            .scan(None)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_healthy_german_catalog_is_not_a_finding() {
+        let issues = scan_winsock(CmdOutput::ok(real_catalog())).await;
+        assert!(!issues.iter().any(|i| i.id == "net_winsock_corrupt"));
+    }
+
+    #[tokio::test]
+    async fn a_catalog_entry_without_its_dll_is_a_finding() {
+        let catalog = real_catalog().replacen(
+            r"%SystemRoot%\system32\mswsock.dll",
+            r"C:\Program Files\GoneVPN\gone_lsp.dll",
+            1,
+        );
+        let issues = scan_winsock(CmdOutput::ok(catalog)).await;
+        let issue = issues
+            .iter()
+            .find(|i| i.id == "net_winsock_corrupt")
+            .expect("a dangling LSP is corruption");
+        assert!(issue.technical_details.contains("gone_lsp.dll"));
+    }
+
+    #[tokio::test]
+    async fn an_empty_catalog_is_a_finding() {
+        let issues = scan_winsock(CmdOutput::ok("")).await;
+        assert!(issues.iter().any(|i| i.id == "net_winsock_corrupt"));
+    }
+
     #[tokio::test]
     async fn the_resolver_check_never_pins_a_public_dns_server() {
         // A machine whose own resolver works, on a network that blocks outbound
@@ -448,10 +587,7 @@ mod tests {
         // failure here that no repair could ever clear.
         let mock = MockCommandRunner::new();
         mock.add_response("nslookup.exe", CmdOutput::ok(RESOLVED_OUTPUT));
-        mock.add_response(
-            "netsh.exe",
-            CmdOutput::ok("Winsock Catalog Provider: MSAFD Tcpip"),
-        );
+        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
 
         let module = NetworkModule::with_runner(Arc::new(mock.clone()));
         let issues = module.scan(None).await.unwrap();
@@ -510,12 +646,9 @@ mod tests {
         // ping succeeds (IP reachable)
         mock.add_response(
             "ping.exe",
-            CmdOutput::ok("Reply from 1.1.1.1: bytes=32 time=12ms TTL=58"),
+            CmdOutput::ok("Antwort von 1.1.1.1: Bytes=32 Zeit=7ms TTL=57"),
         );
-        mock.add_response(
-            "netsh.exe",
-            CmdOutput::ok("Winsock Catalog Provider: MSAFD Tcpip"),
-        );
+        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
 
         let module = NetworkModule::with_runner(Arc::new(mock));
         let issues = module.scan(None).await.unwrap();
