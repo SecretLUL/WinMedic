@@ -15,6 +15,23 @@ const CRITICAL_EVENT_SAMPLE: usize = 5;
 /// log setting says.
 const WHEA_LOOKBACK_MS: u64 = 7 * 24 * 3_600_000;
 
+const MEMORY_DIAGNOSTICS_PROVIDER: &str = "Microsoft-Windows-MemoryDiagnostics-Results";
+
+/// A memory test is run rarely and on purpose, so its result stays relevant
+/// for months.
+const MEMORY_TEST_LOOKBACK_MS: u64 = 90 * 24 * 3_600_000;
+
+/// Whether a MemoryDiagnostics-Results event reports defective RAM.
+///
+/// The IDs are from the provider's own manifest
+/// (`wevtutil gp Microsoft-Windows-MemoryDiagnostics-Results /ge /gm:true`):
+/// 1101 and 1201 are "no errors", 1102 and 1202 "hardware errors", and 1103
+/// and 1104 a test that was cancelled or could not finish, which says nothing
+/// about the RAM and is not queried.
+pub fn memory_test_found_errors(event_id: u32) -> bool {
+    matches!(event_id, 1102 | 1202)
+}
+
 pub struct EventLogModule {
     config: ModuleConfig,
     runner: Arc<dyn CommandRunner>,
@@ -266,6 +283,60 @@ impl DiagnosticModule for EventLogModule {
             .await;
         }
 
+        // 4. The last Windows Memory Diagnostic result. WinMedic schedules the
+        // test when a crash or a WHEA record points at RAM; this is where its
+        // verdict comes back.
+        let memtest_query = system_log_query(
+            &format!(
+                "Provider[@Name='{MEMORY_DIAGNOSTICS_PROVIDER}'] and (EventID=1101 or EventID=1102 or EventID=1201 or EventID=1202)"
+            ),
+            MEMORY_TEST_LOOKBACK_MS,
+            1,
+        );
+        let memtest_query: Vec<&str> = memtest_query.iter().map(String::as_str).collect();
+        let latest_memtest = read_events(
+            self.runner
+                .run("wevtutil.exe", &memtest_query, Duration::from_secs(10))
+                .await,
+        )?
+        .into_iter()
+        .next();
+        if let Some(test) = latest_memtest {
+            let when = test.summary();
+            if memory_test_found_errors(test.event_id) {
+                let mut issue = Issue::new(
+                    "evt_memory_test_failed",
+                    self.id(),
+                    "The Windows Memory Diagnostic found hardware errors",
+                    "Event-Log & Crashes",
+                    Severity::Critical,
+                    RiskScore::High,
+                    "The last memory test found defective RAM. Blue screens, corrupted files, failed updates and random crashes follow from it, and no software repair fixes any of them. A later test that finds no errors clears this finding.",
+                    when,
+                    "Find and replace the faulty memory module",
+                    vec![
+                        "Reset memory overclocking (XMP/EXPO) in the BIOS/UEFI and test again"
+                            .to_string(),
+                        "Test one module at a time with mdsched.exe to find the faulty one"
+                            .to_string(),
+                        "Replace the faulty module".to_string(),
+                    ],
+                );
+                issue.is_selected = false;
+                issues.push(issue);
+            } else {
+                Self::send_progress(
+                    &progress_tx,
+                    98,
+                    "Last memory test passed",
+                    Some(&format!(
+                        "Windows Memory Diagnostic found no errors: {when}"
+                    )),
+                )
+                .await;
+            }
+        }
+
         Self::send_progress(&progress_tx, 100, "Event log analysis complete", None).await;
 
         Ok(issues)
@@ -298,6 +369,10 @@ impl DiagnosticModule for EventLogModule {
             "evt_whea_hardware_error" => {
                 Ok("WHEA warning recorded. Recommendation: run the Windows Memory Diagnostic (mdsched.exe).".to_string())
             }
+            "evt_memory_test_failed" => Ok(
+                "Recorded in the audit log. Only replacing the faulty module clears this; a memory test that then finds no errors removes the finding."
+                    .to_string(),
+            ),
             _ => Err(format!("Unknown issue id: {}", issue_id)),
         }
     }
@@ -316,6 +391,7 @@ mod tests {
         let mock = MockCommandRunner::new();
         mock.add_response("WHEA-Logger", CmdOutput::ok(WHEA_EVENTS));
         mock.add_response("Level=1", CmdOutput::ok(""));
+        mock.add_response("MemoryDiagnostics", CmdOutput::ok(""));
 
         let module = EventLogModule::with_runner(ModuleConfig::default(), Arc::new(mock));
         let issues = module.scan(None).await.unwrap();
@@ -333,6 +409,7 @@ mod tests {
         let mock = MockCommandRunner::new();
         mock.add_response("WHEA-Logger", CmdOutput::ok(""));
         mock.add_response("Level=1", CmdOutput::ok(SYSTEM_ERRORS));
+        mock.add_response("MemoryDiagnostics", CmdOutput::ok(""));
 
         let module = EventLogModule::with_runner(ModuleConfig::default(), Arc::new(mock));
         let issues = module.scan(None).await.unwrap();
@@ -358,6 +435,7 @@ mod tests {
         let mock = MockCommandRunner::new();
         mock.add_response("WHEA-Logger", CmdOutput::ok(""));
         mock.add_response("Level=1", CmdOutput::ok(""));
+        mock.add_response("MemoryDiagnostics", CmdOutput::ok(""));
 
         let module = EventLogModule::with_runner(ModuleConfig::default(), Arc::new(mock));
         let issues = module.scan(None).await.unwrap();
@@ -391,5 +469,49 @@ mod tests {
             "{query}"
         );
         assert!(query.contains("timediff(@SystemTime)"), "{query}");
+    }
+
+    /// A MemoryDiagnostics-Results event in the shape wevtutil prints it.
+    fn memtest_event(id: u32) -> String {
+        format!(
+            "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-MemoryDiagnostics-Results' Guid='{{5f92bc59-248f-4111-86a9-e393e12c6139}}'/><EventID>{id}</EventID><Level>{}</Level><TimeCreated SystemTime='2026-09-20T06:12:03.0000000Z'/></System><EventData></EventData></Event>",
+            if memory_test_found_errors(id) { 2 } else { 4 }
+        )
+    }
+
+    async fn scan_with_memtest(output: String) -> Vec<Issue> {
+        let mock = MockCommandRunner::new();
+        mock.add_response("WHEA-Logger", CmdOutput::ok(""));
+        mock.add_response("Level=1", CmdOutput::ok(""));
+        mock.add_response("MemoryDiagnostics", CmdOutput::ok(output));
+        EventLogModule::with_runner(ModuleConfig::default(), Arc::new(mock))
+            .scan(None)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_memory_test_that_found_errors_is_reported() {
+        for id in [1102, 1202] {
+            let issues = scan_with_memtest(memtest_event(id)).await;
+            let issue = issues
+                .iter()
+                .find(|i| i.id == "evt_memory_test_failed")
+                .unwrap_or_else(|| panic!("event {id} is a failed test"));
+            assert_eq!(issue.severity, Severity::Critical);
+            assert!(!issue.is_selected, "no software repair fixes RAM");
+            assert!(issue.technical_details.contains("2026-09-20"));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_passed_memory_test_is_not_a_finding() {
+        for id in [1101, 1201] {
+            let issues = scan_with_memtest(memtest_event(id)).await;
+            assert!(
+                !issues.iter().any(|i| i.id == "evt_memory_test_failed"),
+                "{id}"
+            );
+        }
     }
 }
