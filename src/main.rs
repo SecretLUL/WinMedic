@@ -515,6 +515,23 @@ fn run_gui(autostart: bool) -> Result<u8, Box<dyn std::error::Error>> {
     // should not wait for a DISM call that has not come back yet.
     runtime.shutdown_background();
 
-    result?;
+    if let Err(err) = result {
+        // The console is gone by now, so the error `main` prints would reach
+        // nobody. The likeliest cause is the very machine WinMedic is for: a
+        // broken graphics driver leaves only OpenGL 1.1, and the window needs 2.0.
+        utils::console::show_error_dialog(
+            "WinMedic could not open its window",
+            &format!(
+                "WinMedic could not open its window:\n\n{err}\n\n\
+                 This usually means the graphics driver offers no OpenGL 2.0 or newer - \
+                 for example the Microsoft Basic Display Adapter after a driver crash, \
+                 or some virtual machines and remote sessions.\n\n\
+                 Every check and repair also runs without the window. From a Command Prompt,\n\n\
+                 \x20   winmedic --scan --output report.html\n\n\
+                 writes a report you can open in any browser; winmedic --help lists the rest."
+            ),
+        );
+        return Err(err.into());
+    }
     Ok(exit_code::OK)
 }

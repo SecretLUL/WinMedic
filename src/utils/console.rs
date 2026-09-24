@@ -53,3 +53,32 @@ pub fn release_console_if_owned() -> bool {
 pub fn release_console_if_owned() -> bool {
     false
 }
+
+/// Tell the user something went wrong when there is no console to print it to.
+///
+/// Once [`release_console_if_owned`] has run, `eprintln!` writes into nothing:
+/// a window that fails to open would leave the user who double-clicked the exe
+/// looking at a desktop where nothing happened. A message box needs no console
+/// and no working graphics driver.
+#[cfg(windows)]
+pub fn show_error_dialog(title: &str, text: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
+
+    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    let (title, text) = (wide(title), wide(text));
+    // SAFETY: both pointers are to NUL-terminated UTF-16 buffers that outlive
+    // the call; a null owner window is allowed.
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+pub fn show_error_dialog(title: &str, text: &str) {
+    eprintln!("{title}: {text}");
+}
