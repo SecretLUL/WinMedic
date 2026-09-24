@@ -1,3 +1,4 @@
+pub mod clock_restart;
 pub mod crash_analysis;
 pub mod event_log;
 pub mod network;
@@ -7,6 +8,7 @@ pub mod scheduled_tasks;
 pub mod storage;
 pub mod system_cleaner;
 pub mod system_integrity;
+pub mod tweaks;
 pub mod whea_logger;
 pub mod windows_updates;
 
@@ -156,6 +158,14 @@ pub fn get_all_modules_with_runner(
             runner.clone(),
         )),
         Arc::new(crash_analysis::CrashAnalysisModule::with_runner(
+            cfg.clone(),
+            runner.clone(),
+        )),
+        Arc::new(tweaks::TweaksModule::with_runner(
+            cfg.clone(),
+            runner.clone(),
+        )),
+        Arc::new(clock_restart::ClockRestartModule::with_runner(
             cfg.clone(),
             runner,
         )),

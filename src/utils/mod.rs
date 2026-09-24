@@ -6,6 +6,7 @@ pub mod debug_log;
 pub mod decode;
 pub mod event_xml;
 pub mod fs_stats;
+pub mod registry;
 pub mod self_update;
 pub mod service;
 #[cfg(test)]

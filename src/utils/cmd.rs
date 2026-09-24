@@ -195,25 +195,21 @@ impl CommandRunner for SystemCommandRunner {
 #[derive(Default, Clone)]
 pub struct MockCommandRunner {
     responses: Arc<Mutex<Vec<(String, CmdOutput)>>>,
+    /// `(trigger, match_substring, output)`, see [`Self::add_response_after`].
+    responses_after: Arc<Mutex<Vec<(String, String, CmdOutput)>>>,
     default_response: Arc<Mutex<Option<CmdOutput>>>,
     executed_commands: Arc<Mutex<Vec<String>>>,
 }
 
 impl MockCommandRunner {
     pub fn new() -> Self {
-        Self {
-            responses: Arc::new(Mutex::new(Vec::new())),
-            default_response: Arc::new(Mutex::new(None)),
-            executed_commands: Arc::new(Mutex::new(Vec::new())),
-        }
+        Self::default()
     }
 
     pub fn with_default_success() -> Self {
-        Self {
-            responses: Arc::new(Mutex::new(Vec::new())),
-            default_response: Arc::new(Mutex::new(Some(CmdOutput::ok("")))),
-            executed_commands: Arc::new(Mutex::new(Vec::new())),
-        }
+        let mock = Self::default();
+        *mock.default_response.lock().unwrap() = Some(CmdOutput::ok(""));
+        mock
     }
 
     /// Register a mock response for commands matching `match_substring`.
@@ -222,6 +218,21 @@ impl MockCommandRunner {
             .lock()
             .unwrap()
             .push((match_substring.into(), output));
+    }
+
+    /// Like [`Self::add_response`], but only once a command matching
+    /// `trigger` has run - the state a repair leaves behind, which is what
+    /// its read-back has to see. Takes precedence over `add_response`.
+    pub fn add_response_after(
+        &self,
+        trigger: impl Into<String>,
+        match_substring: impl Into<String>,
+        output: CmdOutput,
+    ) {
+        self.responses_after
+            .lock()
+            .unwrap()
+            .push((trigger.into(), match_substring.into(), output));
     }
 
     /// Retrieve all executed command strings.
@@ -239,14 +250,27 @@ impl CommandRunner for MockCommandRunner {
         _timeout_duration: Duration,
     ) -> Result<CmdOutput, String> {
         let full_cmd = format!("{} {}", program, args.join(" "));
-        self.executed_commands
+        let matches = |pattern: &str| full_cmd.contains(pattern) || program.contains(pattern);
+
+        let mut executed = self.executed_commands.lock().unwrap();
+        let after = self
+            .responses_after
             .lock()
             .unwrap()
-            .push(full_cmd.clone());
+            .iter()
+            .find(|(trigger, pattern, _)| {
+                matches(pattern) && executed.iter().any(|done| done.contains(trigger.as_str()))
+            })
+            .map(|(_, _, output)| output.clone());
+        executed.push(full_cmd.clone());
+        drop(executed);
+        if let Some(output) = after {
+            return Ok(output);
+        }
 
         let responses = self.responses.lock().unwrap();
         for (pattern, output) in responses.iter() {
-            if full_cmd.contains(pattern) || program.contains(pattern) {
+            if matches(pattern) {
                 return Ok(output.clone());
             }
         }
@@ -607,6 +631,27 @@ mod tests {
         assert_eq!(executed.len(), 2);
         assert!(executed[0].contains("dism.exe"));
         assert!(executed[1].contains("sfc.exe"));
+    }
+
+    #[tokio::test]
+    async fn the_mock_answers_a_read_back_with_the_repaired_state() {
+        let mock = MockCommandRunner::new();
+        mock.add_response("query", CmdOutput::ok("broken"));
+        mock.add_response("repair", CmdOutput::ok("done"));
+        mock.add_response_after("repair", "query", CmdOutput::ok("healthy"));
+        let run = |args: &'static [&'static str]| {
+            let mock = mock.clone();
+            async move {
+                mock.run("tool.exe", args, Duration::from_secs(1))
+                    .await
+                    .unwrap()
+                    .stdout
+            }
+        };
+
+        assert_eq!(run(&["query"]).await, "broken");
+        assert_eq!(run(&["repair"]).await, "done");
+        assert_eq!(run(&["query"]).await, "healthy");
     }
 
     /// Answers each call with the next of `answers` and counts the calls.
