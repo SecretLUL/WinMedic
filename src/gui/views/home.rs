@@ -5,8 +5,12 @@
 //! action that answers the second one. The body shows whatever that state has
 //! to show: the checks while a scan runs, the findings once there are any, and
 //! the list of checks when there is nothing to report.
+//!
+//! That is Advanced mode. Easy mode keeps the header's question and answer and
+//! replaces the body with [`super::easy`]'s short list: no ticks, filters,
+//! detail pane, logs or simulation switch.
 
-use super::findings;
+use super::{easy, findings};
 use crate::app::{App, ConfirmRequest};
 use crate::engine::issue::Severity;
 use crate::gui::theme;
@@ -19,6 +23,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
     header(ui, app);
     ui.add_space(6.0);
     ui.separator();
+
+    if !app.config.advanced_mode {
+        easy::show(ui, app);
+        return;
+    }
 
     // Before the body, so the body gets whatever height the log leaves.
     log_panel(ui, app);
@@ -39,6 +48,19 @@ fn selected_for_repair(app: &App) -> usize {
         .iter()
         .filter(|i| i.is_selected && !i.is_fixed && !i.is_reboot_pending)
         .count()
+}
+
+fn waiting_for_restart(app: &App) -> usize {
+    app.issues.iter().filter(|i| i.is_reboot_pending).count()
+}
+
+/// What the repair button says: how many, and whether it only simulates.
+fn repair_label(dry_run: bool, selected: usize, noun: &str) -> String {
+    match (dry_run, selected) {
+        (_, 0) => "Repair".to_string(),
+        (true, n) => format!("Simulate {}", plural(n, "repair")),
+        (false, n) => format!("Repair {}", plural(n, noun)),
+    }
 }
 
 fn has_scanned(app: &App) -> bool {
@@ -121,6 +143,8 @@ fn header(ui: &mut egui::Ui, app: &mut App) {
         if primary(ui, true, "Scan now").on_hover_text("S").clicked() {
             app.start_scan();
         }
+    } else if !app.config.advanced_mode {
+        easy_summary(ui, app);
     } else {
         let open = open_findings(app);
         if open == 0 {
@@ -152,6 +176,91 @@ fn header(ui: &mut egui::Ui, app: &mut App) {
     }
 
     notices(ui, app);
+}
+
+/// Easy mode's answer after a scan: how many problems there are, how many of
+/// them WinMedic repairs by itself, and the one button that does it.
+///
+/// A finding waiting for a restart is not counted as a problem. It has been
+/// repaired, and the only thing left to do about it is restart, which is what
+/// the page then asks for.
+fn easy_summary(ui: &mut egui::Ui, app: &mut App) {
+    let palette = theme::palette(ui);
+    let open: Vec<Severity> = app
+        .issues
+        .iter()
+        .filter(|i| !i.is_fixed && !i.is_reboot_pending)
+        .map(|i| i.severity)
+        .collect();
+    let problems = open.len();
+    let to_repair = selected_for_repair(app);
+    let restarts = waiting_for_restart(app);
+
+    if problems > 0 {
+        let worst = [Severity::Critical, Severity::Warning, Severity::Info]
+            .into_iter()
+            .find(|s| open.contains(s))
+            .unwrap_or(Severity::Info);
+        headline(
+            ui,
+            &format!("{} found", plural(problems, "problem")),
+            Some(theme::severity_color(ui, worst)),
+        );
+        let undo = if app.config.create_vss_before_repair || app.dry_run {
+            "A restore point is created first, so every change can be undone."
+        } else {
+            "Restore points are switched off in Settings."
+        };
+        ui.label(match to_repair {
+            0 => "None of them is repaired automatically. The list below says why.".to_string(),
+            n if n == problems => format!("WinMedic can repair all of them. {undo}"),
+            n => format!("WinMedic can repair {n} of them by itself. {undo}"),
+        });
+    } else if restarts > 0 {
+        headline(ui, "Almost done", Some(palette.amber));
+        ui.label(format!(
+            "Restart Windows to finish {}. Save your work first.",
+            plural(restarts, "repair")
+        ));
+    } else if app.issues.is_empty() {
+        headline(ui, "No problems found", Some(palette.green));
+    } else {
+        headline(ui, "All problems are fixed", Some(palette.green));
+    }
+
+    last_runs(ui, app);
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        if problems > 0 {
+            let response = primary(
+                ui,
+                to_repair > 0,
+                &repair_label(app.dry_run, to_repair, "problem"),
+            );
+            let response = if to_repair == 0 {
+                response.on_disabled_hover_text(
+                    "Nothing here is repaired automatically. Advanced mode (F7) lets you choose.",
+                )
+            } else {
+                response.on_hover_text("F")
+            };
+            if response.clicked() {
+                app.start_repairs();
+            }
+            if ui.button("Scan again").on_hover_text("S").clicked() {
+                app.start_scan();
+            }
+        } else if restarts > 0 {
+            if primary(ui, true, "Restart now").clicked() {
+                app.show_reboot_notice();
+            }
+            if ui.button("Scan again").on_hover_text("S").clicked() {
+                app.start_scan();
+            }
+        } else if primary(ui, true, "Scan again").on_hover_text("S").clicked() {
+            app.start_scan();
+        }
+    });
 }
 
 fn headline(ui: &mut egui::Ui, text: &str, color: Option<egui::Color32>) {
@@ -209,12 +318,7 @@ fn actions(ui: &mut egui::Ui, app: &mut App, open: usize) {
     ui.horizontal(|ui| {
         if open > 0 {
             let selected = selected_for_repair(app);
-            let label = match (app.dry_run, selected) {
-                (_, 0) => "Repair".to_string(),
-                (true, n) => format!("Simulate {n} repairs"),
-                (false, 1) => "Repair 1 finding".to_string(),
-                (false, n) => format!("Repair {n} findings"),
-            };
+            let label = repair_label(app.dry_run, selected, "finding");
             let response = primary(ui, selected > 0, &label);
             let response = if selected == 0 {
                 response.on_disabled_hover_text("Tick at least one finding below first")
@@ -266,20 +370,43 @@ fn notices(ui: &mut egui::Ui, app: &mut App) {
         });
     }
 
-    let restarts = app.issues.iter().filter(|i| i.is_reboot_pending).count();
-    if restarts > 0 {
+    let easy = !app.config.advanced_mode;
+    let restarts = waiting_for_restart(app);
+    // Easy mode's headline already asks for the restart once nothing else is
+    // left, and saying it twice reads like two different things to do.
+    let asked_in_headline = easy
+        && !app.is_busy()
+        && has_scanned(app)
+        && app.issues.iter().all(|i| i.is_fixed || i.is_reboot_pending);
+    if restarts > 0 && !asked_in_headline {
         ui.colored_label(
             palette.amber,
-            format!(
-                "Restart Windows to finish {restarts} {}.",
-                if restarts == 1 { "repair" } else { "repairs" }
-            ),
+            format!("Restart Windows to finish {}.", plural(restarts, "repair")),
         );
     }
 
     if !app.is_scanning {
-        for (_, name, _, status) in &app.module_statuses {
-            if let ModuleStatus::Failed(reason) = status {
+        let failed: Vec<(&str, &str)> = app
+            .module_statuses
+            .iter()
+            .filter_map(|(_, name, _, status)| match status {
+                ModuleStatus::Failed(reason) => Some((name.as_str(), reason.as_str())),
+                _ => None,
+            })
+            .collect();
+        if easy && !failed.is_empty() {
+            // The reason is a command's error text, which says nothing to
+            // someone who has never opened a terminal.
+            let names: Vec<&str> = failed.iter().map(|(name, _)| *name).collect();
+            ui.colored_label(
+                palette.red,
+                format!(
+                    "Could not check {}. Advanced mode (F7) shows why.",
+                    names.join(", ")
+                ),
+            );
+        } else {
+            for (name, reason) in failed {
                 ui.colored_label(
                     palette.red,
                     format!("{name} could not be checked: {reason}"),

@@ -14,7 +14,7 @@
 //! | [`filters`] | Severity/module filtering, live search, issue selection |
 //! | [`safety`] | Registry backups, restore points, rollback requests |
 //! | [`confirm`] | The confirmation modal and the parked update notice |
-//! | [`settings`] | Settings navigation and persistence |
+//! | [`settings`] | Settings navigation and persistence, the Easy / Advanced switch |
 
 use crate::utils::self_update::{InstalledUpdate, UpdateFailure};
 use crate::utils::updater::UpdateInfo;

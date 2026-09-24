@@ -142,17 +142,29 @@ fn help(ctx: &egui::Context, app: &mut App) {
         ));
         ui.add_space(8.0);
 
+        // Easy mode leaves the keys for the controls it does not draw inert,
+        // so listing them there would promise something that does not happen.
+        let advanced = app.config.advanced_mode;
         egui::Grid::new("shortcuts")
             .num_columns(2)
             .striped(true)
             .spacing([16.0, 4.0])
             .show(ui, |ui| {
-                for (keys, description) in SHORTCUTS {
+                for (keys, description, advanced_only) in SHORTCUTS {
+                    if *advanced_only && !advanced {
+                        continue;
+                    }
                     ui.label(RichText::new(*keys).strong());
                     ui.label(*description);
                     ui.end_row();
                 }
             });
+        if !advanced {
+            ui.add_space(4.0);
+            ui.label(theme::muted(
+                "Advanced mode (F7) adds the keys for ticking, filtering and simulating.",
+            ));
+        }
 
         ui.add_space(8.0);
         ui.separator();
@@ -166,23 +178,38 @@ fn help(ctx: &egui::Context, app: &mut App) {
     }
 }
 
-const SHORTCUTS: &[(&str, &str)] = &[
-    ("S", "Scan this PC"),
-    ("F", "Repair the ticked findings"),
-    ("D", "Simulate only: show what a repair would do"),
-    ("Space / Enter", "Tick or untick the highlighted finding"),
-    ("A / N", "Tick all or none"),
-    ("Up / Down", "Move through the findings"),
-    ("/", "Search the findings"),
-    ("C / W / I", "Show only critical, warning or info findings"),
-    ("M / X", "Cycle the module filter, clear all filters"),
-    ("1 / 2", "Scan & Repair, Settings"),
-    ("E", "Export an HTML report"),
-    ("U", "Roll back a registry backup (Settings)"),
-    ("B", "Move the arrow keys between settings and backups"),
+/// Key, what it does, and whether only Advanced mode binds it.
+const SHORTCUTS: &[(&str, &str, bool)] = &[
+    ("S", "Scan this PC", false),
+    ("F", "Repair the ticked findings", false),
+    ("F7", "Switch between Easy and Advanced mode", false),
+    ("D", "Simulate only: show what a repair would do", true),
+    (
+        "Space / Enter",
+        "Tick or untick the highlighted finding",
+        true,
+    ),
+    ("A / N", "Tick all or none", true),
+    ("Up / Down", "Move through the findings", true),
+    ("/", "Search the findings", true),
+    (
+        "C / W / I",
+        "Show only critical, warning or info findings",
+        true,
+    ),
+    ("M / X", "Cycle the module filter, clear all filters", true),
+    ("1 / 2", "Scan & Repair, Settings", false),
+    ("E", "Export an HTML report", false),
+    ("U", "Roll back a registry backup (Settings)", false),
+    (
+        "B",
+        "Move the arrow keys between settings and backups",
+        false,
+    ),
     (
         "Esc",
         "Unwind: filters, then focus, then a running operation",
+        false,
     ),
-    ("Q", "Quit"),
+    ("Q", "Quit", false),
 ];

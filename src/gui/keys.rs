@@ -10,16 +10,22 @@ use eframe::egui;
 
 /// Collect this frame's keystrokes, in the order they arrived.
 ///
-/// Returns nothing at all while a text field holds focus. That is the rule that
+/// Returns nothing but F7 while a text field holds focus. That is the rule that
 /// makes single-letter bindings safe in a window: typing "storage" into the
 /// triage search box must not start a scan on the `s`, and the widget that owns
-/// the keyboard is the one egui already tracks.
+/// the keyboard is the one egui already tracks. F7 types nothing, so it switches
+/// the mode from anywhere, as it does in a BIOS setup screen.
 pub fn shortcuts(ctx: &egui::Context) -> Vec<Key> {
-    if ctx.memory(|memory| memory.focused().is_some()) {
-        return Vec::new();
-    }
+    let typing = ctx.memory(|memory| memory.focused().is_some());
 
-    ctx.input(|input| input.events.iter().filter_map(translate).collect())
+    ctx.input(|input| {
+        input
+            .events
+            .iter()
+            .filter_map(translate)
+            .filter(|key| !typing || *key == Key::F7)
+            .collect()
+    })
 }
 
 fn translate(event: &egui::Event) -> Option<Key> {
@@ -52,6 +58,7 @@ fn named_key(key: egui::Key, modifiers: egui::Modifiers) -> Option<Key> {
         egui::Key::PageDown => Key::PageDown,
         egui::Key::Home => Key::Home,
         egui::Key::End => Key::End,
+        egui::Key::F7 => Key::F7,
         // Bare Tab belongs to egui, which moves focus between widgets with it —
         // taking it away would strip the window of keyboard navigation. Ctrl+Tab
         // is free, and is what Windows applications cycle views with anyway.

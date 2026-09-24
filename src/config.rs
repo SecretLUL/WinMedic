@@ -113,6 +113,10 @@ pub struct AppConfig {
     pub helper_frequency_hours: u32,
     /// Automatically launch WinMedic on Windows startup.
     pub autostart: bool,
+    /// Show the whole Scan & Repair page — ticks, filters, the detail pane,
+    /// the logs, simulation — instead of Easy mode's short list. Switched with
+    /// F7 or the button next to "Export report", not from the settings list.
+    pub advanced_mode: bool,
 }
 
 impl Default for AppConfig {
@@ -128,6 +132,7 @@ impl Default for AppConfig {
             helper_enabled: false,
             helper_frequency_hours: 24,
             autostart: false,
+            advanced_mode: false,
         }
     }
 }
@@ -573,6 +578,17 @@ mod tests {
         assert!(!restored.check_for_updates);
         assert!(restored.verbose_logging);
         assert_eq!(restored.temp_clean_threshold_mb, 600);
+    }
+
+    /// Easy mode is where a first start lands, and so does a config written
+    /// before the two modes existed.
+    #[test]
+    fn a_new_or_older_config_opens_in_easy_mode() {
+        assert!(!AppConfig::default().advanced_mode);
+        let older: AppConfig = serde_json::from_str(r#"{"autostart": true}"#).unwrap();
+        assert!(!older.advanced_mode);
+        let chosen: AppConfig = serde_json::from_str(r#"{"advanced_mode": true}"#).unwrap();
+        assert!(chosen.advanced_mode, "and the choice survives a restart");
     }
 
     #[test]
