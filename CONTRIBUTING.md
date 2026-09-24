@@ -160,9 +160,9 @@ can be run on its own:
 ./scripts/set-version.ps1 0.3.3 -Check   # report what disagrees, change nothing
 ```
 
-The README's checksum example is deliberately not on that list: it globs
-`winmedic-v*.exe` out of the download directory instead of naming a version, so
-it never goes stale.
+The checksum example in `docs/how-it-works.md` is deliberately not on that
+list: it globs `winmedic-v*.exe` out of the download directory instead of naming
+a version, so it never goes stale.
 
 Pushing a `v*` tag by hand still builds and publishes, but a tag is immutable,
 so that path can only run the `-Check` pass: if the tagged tree states a
