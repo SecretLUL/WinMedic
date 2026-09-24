@@ -7,8 +7,8 @@ name: WinGet
 #
 # WinGet accepts unsigned binaries as long as the manifest carries the right
 # InstallerSha256, and the release workflow already publishes a .sha256 next to
-# every binary — so the input this needs exists, and komac (inside the action
-# below) computes the hash from the asset itself anyway.
+# every binary — so the input this needs exists, and komac, which builds and
+# submits the manifest below, computes the hash from the asset itself anyway.
 #
 # This is a *reusable* workflow rather than one triggered by `release:
 # published`, and that is not a stylistic choice. release.yml publishes with
@@ -38,6 +38,11 @@ on:
         description: 'Release tag to submit, e.g. v0.3.4 (the release must already be published)'
         required: true
         type: string
+      dry_run:
+        description: 'Rehearsal: build the manifest from the release, but sync no fork and open no pull request'
+        required: false
+        type: boolean
+        default: false
 
 # One submission at a time: komac pushes a branch to the same winget-pkgs fork
 # for every run, and two runs doing that at once would fight over it.
@@ -112,26 +117,73 @@ jobs:
 
           "publish=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-      # Pinned to a commit rather than the v2 tag: v2 predates fixes the action
-      # needs (a komac argument bug among them) and has not moved since, so the
-      # tag is the stale option here, not the safe one. Dependabot watches the
-      # github-actions ecosystem and updates commit pins too.
+      # komac itself, not WinGet Releaser, the action that wraps it. The action
+      # adds one thing before calling komac: a check that the package already
+      # exists in winget-pkgs, made as an anonymous HEAD request against a
+      # github.com page. From the runner that request fails, although
+      # SecretLUL.WinMedic has been in winget-pkgs since 0.3.4 — so it failed
+      # for v0.4.0 and for v0.4.1, and neither reached WinGet. komac asks the
+      # GitHub API with the token instead, and says what is wrong when
+      # something is.
+      #
+      # Pinned by version and by the SHA-256 GitHub records for the release
+      # asset, so a replaced download is refused instead of being run with the
+      # token in its environment. Dependabot cannot see this pin: raise
+      # KOMAC_VERSION and KOMAC_SHA256 together, by hand, from
+      # `gh api repos/russellbanks/Komac/releases/tags/v<version>`.
+      - name: Install komac
+        if: steps.gate.outputs.publish == 'true'
+        shell: bash
+        env:
+          KOMAC_VERSION: 2.16.0
+          KOMAC_SHA256: 7d2707fa6210f2789a3702de49fbd150b736dbf426ee0b9bc8e098736f9fd82d
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          archive="komac-${KOMAC_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          mkdir -p "$RUNNER_TEMP/komac"
+          cd "$RUNNER_TEMP/komac"
+          gh release download "v${KOMAC_VERSION}" --repo russellbanks/Komac --pattern "$archive"
+          echo "${KOMAC_SHA256}  ${archive}" | sha256sum --check --strict -
+          tar -xzf "$archive" komac
+          echo "$RUNNER_TEMP/komac" >> "$GITHUB_PATH"
+          ./komac --version
+
       - name: Submit the manifest to microsoft/winget-pkgs
         if: steps.gate.outputs.publish == 'true'
-        uses: vedantmgoyal9/winget-releaser@a8fff44b123f115ce4c21543edf8b677376fc7e0 # main as of 2026-07-28
-        with:
-          identifier: SecretLUL.WinMedic
-          release-tag: ${{ inputs.tag }}
-          # Release assets are the binary and its checksum file. Only the first
-          # is an installer, and .sha256 does not end in .exe.
-          installers-regex: '\.exe$'
-          release-notes-url: https://github.com/${{ github.repository }}/releases/tag/${{ inputs.tag }}
-          # Not GITHUB_TOKEN: the pull request is opened against a repository
-          # this one has no relationship to.
-          token: ${{ secrets.WINGET_TOKEN }}
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+          REPO: ${{ github.repository }}
+          # komac reads its token from GITHUB_TOKEN. It is WINGET_TOKEN's value,
+          # not this run's token: the pull request is opened against a
+          # repository this one has no relationship to.
+          GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          # Not named DRY_RUN: komac reads that variable as its own --dry-run.
+          REHEARSAL: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          if [ "${REHEARSAL:-false}" = "true" ]; then
+            mode=--dry-run
+          else
+            mode=--submit
+            # komac pushes the manifest branch to the fork, so bring the fork
+            # up to date with winget-pkgs first.
+            komac sync-fork
+          fi
+          # The release assets are the binary and its .sha256; only the binary
+          # is an installer. komac downloads it and hashes it itself, and takes
+          # everything else - portable, the `winmedic` command, the licence -
+          # from the version already in winget-pkgs.
+          komac update SecretLUL.WinMedic \
+            --version "$version" \
+            --urls "https://github.com/$REPO/releases/download/$TAG/winmedic-$TAG.exe" \
+            --release-notes-url "https://github.com/$REPO/releases/tag/$TAG" \
+            "$mode"
 
       - name: Say where the pull request went
-        if: steps.gate.outputs.publish == 'true'
+        if: steps.gate.outputs.publish == 'true' && !inputs.dry_run
         shell: pwsh
         env:
           TAG: ${{ inputs.tag }}

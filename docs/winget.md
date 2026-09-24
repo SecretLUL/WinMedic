@@ -14,9 +14,16 @@ directory and links it onto the `PATH` as `winmedic`.
 ## How a release reaches WinGet
 
 `release.yml` calls `winget.yml` once the release assets are on the releases
-page. That workflow runs [WinGet Releaser][winget-releaser], which reads the
-GitHub release, builds the manifest with [komac][komac] and opens a pull request
-against [microsoft/winget-pkgs][winget-pkgs] from the fork under this account.
+page. That workflow runs [komac][komac] — a pinned release, checked against its
+SHA-256 — which downloads the released `.exe`, hashes it, builds the manifest
+from the version already in winget-pkgs and opens a pull request against
+[microsoft/winget-pkgs][winget-pkgs] from the fork under this account.
+
+It used to run [WinGet Releaser][winget-releaser], an action around komac. The
+action first checks that the package exists with an anonymous request to a
+github.com page, and from the runner that request fails even though the package
+is there, so v0.4.0 and v0.4.1 never reached WinGet. komac on its own asks the
+GitHub API with the token.
 
 Two things are deliberately not automatic:
 
@@ -41,25 +48,25 @@ wired up and silently do nothing on every release. `release.yml` therefore calls
 
 ## One-time setup
 
-WinGet Releaser needs both of these, and fails with an explanation in the job
-summary until they exist.
+Both of these exist; the workflow fails with an explanation in the job summary
+if either goes missing.
 
-1. **A fork of winget-pkgs** under the `SecretLUL` account. The action pushes
-   its manifest branch there and opens the pull request from it. (If the fork
-   ever has to live under a different account, pass `fork-user` in
-   `winget.yml`.)
+1. **A fork of winget-pkgs** under the `SecretLUL` account. komac pushes its
+   manifest branch there and opens the pull request from it. The fork belongs
+   to whichever account owns the token.
 
-2. **A `WINGET_TOKEN` repository secret.** It has to be a **classic** personal
-   access token with the `public_repo` scope — fine-grained tokens are
-   [not supported by the action][fine-grained-issue]. `GITHUB_TOKEN` cannot be
-   used, because the pull request is opened against a repository this one has no
-   relationship to.
+2. **A `WINGET_TOKEN` repository secret.** A **classic** personal access token
+   with the `public_repo` scope, the scope komac asks for. `GITHUB_TOKEN`
+   cannot be used, because the pull request is opened against a repository this
+   one has no relationship to. When the token expires, the submission fails and
+   says so; replace the secret and re-run `winget.yml` with the tag.
 
-## The first submission, which has to be done by hand
+## The first submission, which had to be done by hand
 
-WinGet Releaser refuses to run until at least one version of the package already
-exists in winget-pkgs — it uses the existing manifest as the base for the next
-one. The first version therefore has to be submitted manually, once:
+`komac update` adds a version to a package that already exists in winget-pkgs,
+using the existing manifest as the base for the next one. The first version
+therefore had to be submitted manually, once — that was 0.3.4, and it is kept
+here for the record:
 
 ```powershell
 # Build the three manifests for a published release and validate them
@@ -93,7 +100,6 @@ already there. For a WinGet install, `winget upgrade SecretLUL.WinMedic` is the
 tidier of the two paths; the built-in updater is what serves everyone who
 downloaded the `.exe` directly.
 
-[fine-grained-issue]: https://github.com/vedantmgoyal9/winget-releaser/issues/172
 [komac]: https://github.com/russellbanks/Komac
 [winget-pkgs]: https://github.com/microsoft/winget-pkgs
 [winget-releaser]: https://github.com/vedantmgoyal9/winget-releaser
