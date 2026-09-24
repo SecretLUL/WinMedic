@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" width="1200" height="300" role="img" aria-labelledby="title desc">
   <title id="title">WinMedic</title>
-  <desc id="desc">Scan and repair Windows without reinstalling it.</desc>
+  <desc id="desc">Healing Windows at 1 HP. Fast. Reliable. Easy.</desc>
   <style>
     .panel { fill: #F8F8F8; stroke: #BEBEBE; }
     .name { fill: #191919; }
@@ -28,5 +28,5 @@
   </g>
 
   <text class="name" x="296" y="152" font-size="76" font-weight="600" letter-spacing="-1">WinMedic</text>
-  <text class="tagline" x="298" y="200" font-size="27">Scan and repair Windows without reinstalling it.</text>
+  <text class="tagline" x="298" y="200" font-size="27">Healing Windows at 1 HP. Fast. Reliable. Easy.</text>
 </svg>

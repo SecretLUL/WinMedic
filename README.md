@@ -14,7 +14,7 @@
 
 <br/>
 
-![WinMedic: scan and repair Windows without reinstalling it](assets/banner.svg)
+![WinMedic: healing Windows at 1 HP. Fast. Reliable. Easy.](assets/banner.svg)
 
 </div>
 

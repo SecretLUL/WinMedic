@@ -25,7 +25,7 @@ impl DiagnosticReporter {
   ██║███╗██║██║██║╚██╗██║██║╚██╔╝██║██╔══╝  ██║  ██║██║██║     
   ╚███╔███╔╝██║██║ ╚████║██║ ╚═╝ ██║███████╗██████╔╝██║╚██████╗
    ╚══╝╚══╝ ╚═╝╚═╝  ╚═══╝╚═╝     ╚═╝╚══════╝╚═════╝ ╚═╝ ╚═════╝
-           ─── ADVANCED PC DIAGNOSTICS & AUTO-REPAIR ───
+          Healing Windows at 1 HP. Fast. Reliable. Easy.
 "#
             .cyan()
             .bold()
