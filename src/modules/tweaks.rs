@@ -543,7 +543,7 @@ impl TweaksModule {
     async fn part_of_domain(&self) -> Option<bool> {
         let out = self
             .runner
-            .run_powershell(
+            .query_powershell(
                 "(Get-CimInstance -ClassName Win32_ComputerSystem).PartOfDomain",
                 Duration::from_secs(10),
             )
@@ -806,14 +806,17 @@ impl DiagnosticModule for TweaksModule {
             Some("reg query HKLM\\SOFTWARE\\Policies\\Microsoft\\..."),
         )
         .await;
-        if self.part_of_domain().await == Some(true) {
-            Self::send_progress(
-                &progress_tx,
-                70,
-                "Policies left alone",
-                Some("This PC is joined to a domain, whose administrators set these policies on purpose."),
-            )
-            .await;
+        // Only a PC WMI calls standalone is judged: on a domain member these
+        // policies are its administrators' to set, and a PC whose membership
+        // could not be read may be one.
+        let membership = self.part_of_domain().await;
+        if membership != Some(false) {
+            let why = if membership == Some(true) {
+                "This PC is joined to a domain, whose administrators set these policies on purpose."
+            } else {
+                "WMI did not say whether this PC is joined to a domain, so its policies were not judged."
+            };
+            Self::send_progress(&progress_tx, 70, "Policies left alone", Some(why)).await;
         } else {
             match self.current_policy_hits().await {
                 Ok(hits) => {
@@ -1097,19 +1100,46 @@ mod tests {
         assert!(policy_hits(&wu, &[]).is_empty());
     }
 
-    #[tokio::test]
-    async fn policies_of_a_domain_are_left_alone() {
-        let dir = sandbox("domain");
+    /// A PC pointed at a WSUS server, with every service healthy and no
+    /// Store policy; `domain` is what WMI says about membership, `None`
+    /// when it does not answer.
+    async fn wsus_scan(name: &str, domain: Option<&str>) -> Vec<Issue> {
+        let dir = sandbox(name);
         let mock = MockCommandRunner::new();
-        mock.add_response("PartOfDomain", CmdOutput::ok("True\r\n"));
+        if let Some(answer) = domain {
+            mock.add_response("PartOfDomain", CmdOutput::ok(format!("{answer}\r\n")));
+        }
         mock.add_response(
-            "WindowsUpdate",
+            format!("query {WU_POLICY_KEY}"),
             reg_output(
-                "HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU\r\n    NoAutoUpdate    REG_DWORD    0x1",
+                "HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\r\n    WUServer    REG_SZ    http://wsus.corp:8530\r\n\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU\r\n    UseWUServer    REG_DWORD    0x1",
             ),
         );
+        mock.add_response("reg.exe", CmdOutput::with_output(1, "", "FEHLER"));
         mock.add_response("sc.exe", CmdOutput::ok(sc_qc_output("x", 3)));
-        let issues = module(mock, &dir, b"").scan(None).await.unwrap();
+        module(mock, &dir, b"").scan(None).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_standalone_pc_pointed_at_wsus_is_a_finding() {
+        let issues = wsus_scan("domain_no", Some("False")).await;
+        assert!(
+            issues.iter().any(|i| i.id == "tweak_policy_wsus"),
+            "{issues:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn policies_of_a_domain_are_left_alone() {
+        let issues = wsus_scan("domain_yes", Some("True")).await;
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[tokio::test]
+    async fn policies_are_left_alone_when_the_domain_is_unknown() {
+        // This may be a company PC whose WSUS server the repair would
+        // otherwise offer to delete.
+        let issues = wsus_scan("domain_unknown", None).await;
         assert!(issues.is_empty(), "{issues:?}");
     }
 
