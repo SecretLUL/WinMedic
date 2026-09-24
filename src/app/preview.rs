@@ -3,7 +3,7 @@
 //! Everything here comes from what the scan measured, never from a guess: the
 //! disk space is the sum of the sizes the cleanup checks counted, and each
 //! "works again" line belongs to a repair that actually changes the thing it
-//! names. A repair that only records a finding — critical events, crash
+//! names. A finding no repair can change — hardware errors, crash
 //! history, a pending restart — promises nothing, so it adds no line.
 
 use super::state::App;
@@ -230,7 +230,7 @@ mod tests {
     #[test]
     fn only_repairs_that_change_something_promise_something() {
         let app = app_with(vec![
-            issue("evt_system_critical_events", Severity::Warning),
+            issue("evt_whea_hardware_error", Severity::Critical),
             issue("wu_reboot_pending", Severity::Info),
             issue("crash_bugcheck_history", Severity::Warning),
             issue("sched_failing_foo", Severity::Info),
@@ -242,7 +242,7 @@ mod tests {
     /// when something ticked it.
     #[test]
     fn advice_raises_no_health_forecast() {
-        let mut advice = issue("evt_system_critical_events", Severity::Warning).with_advice_only();
+        let mut advice = issue("storage_smart_warning", Severity::Warning).with_advice_only();
         advice.is_selected = true;
         let app = app_with(vec![advice]);
         assert_eq!(app.repair_preview().health_after, 90);
