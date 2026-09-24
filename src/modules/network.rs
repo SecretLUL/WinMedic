@@ -77,6 +77,76 @@ struct DnsProbe {
     detail: String,
 }
 
+/// Every physical, connected adapter's IPv4 setup as `name|dhcp|addresses`,
+/// e.g. `Ethernet|Enabled|192.168.1.10`. `Enabled` / `Disabled` are enum
+/// names, printed the same in every display language. Virtual adapters are
+/// left out: VPN and Hyper-V adapters sit on 169.254.x.x by design.
+const ADAPTER_IPV4_SCRIPT: &str = "Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object Status -eq 'Up' | ForEach-Object { $ip = Get-NetIPInterface -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue; $addr = @(Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object IPAddress) -join ','; '{0}|{1}|{2}' -f $_.Name, $ip.Dhcp, $addr }";
+
+/// One line of [`ADAPTER_IPV4_SCRIPT`]'s output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdapterIpv4 {
+    pub name: String,
+    pub dhcp: bool,
+    pub addresses: Vec<String>,
+}
+
+impl AdapterIpv4 {
+    /// Set to DHCP and holding nothing but a self-assigned 169.254.x.x
+    /// address: the adapter asked for an address and no DHCP server answered.
+    /// Without DHCP the address is set by hand, and such an adapter is left
+    /// alone — a direct cable to a device often runs on 169.254 on purpose.
+    pub fn dhcp_failed(&self) -> bool {
+        self.dhcp && !self.addresses.is_empty() && self.addresses.iter().all(|a| is_apipa(a))
+    }
+
+    fn has_usable_address(&self) -> bool {
+        self.addresses.iter().any(|a| !is_apipa(a))
+    }
+}
+
+fn is_apipa(address: &str) -> bool {
+    address.starts_with("169.254.")
+}
+
+/// The adapters [`ADAPTER_IPV4_SCRIPT`] printed. Read from the right, so an
+/// adapter the user named with a `|` in it still parses.
+pub fn parse_adapters(output: &str) -> Vec<AdapterIpv4> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.trim().rsplitn(3, '|');
+            let addresses = fields.next()?;
+            let dhcp = fields.next()?;
+            let name = fields.next()?;
+            Some(AdapterIpv4 {
+                name: name.to_string(),
+                dhcp: dhcp.eq_ignore_ascii_case("Enabled"),
+                addresses: addresses
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|a| !a.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+            })
+        })
+        .collect()
+}
+
+fn no_dhcp_issue_id(adapter: &str) -> String {
+    let slug: String = adapter
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("net_no_dhcp_{slug}")
+}
+
 pub struct NetworkModule {
     runner: Arc<dyn CommandRunner>,
 }
@@ -94,6 +164,69 @@ impl NetworkModule {
 
     pub fn with_runner(runner: Arc<dyn CommandRunner>) -> Self {
         Self { runner }
+    }
+
+    async fn adapters(&self) -> Result<Vec<AdapterIpv4>, String> {
+        let out = self
+            .runner
+            .run_powershell(ADAPTER_IPV4_SCRIPT, Duration::from_secs(20))
+            .await?;
+        if !out.success {
+            return Err(format!(
+                "the adapter query failed (exit code {:?}): {}",
+                out.exit_code,
+                out.stderr.trim()
+            ));
+        }
+        Ok(parse_adapters(&out.stdout))
+    }
+
+    /// Ask the adapter's DHCP server again, then look at the address it holds.
+    ///
+    /// `ipconfig /renew` exits with an error when no server answers, but that
+    /// message is in the display language; the address afterwards is not.
+    async fn fix_no_dhcp(&self, issue_id: &str) -> Result<String, String> {
+        let Some(adapter) = self
+            .adapters()
+            .await?
+            .into_iter()
+            .find(|a| no_dhcp_issue_id(&a.name) == issue_id)
+        else {
+            return Ok("The adapter is no longer connected - nothing to renew.".to_string());
+        };
+        if !adapter.dhcp_failed() {
+            return Ok(format!(
+                "'{}' already holds an address from DHCP ({}).",
+                adapter.name,
+                adapter.addresses.join(", ")
+            ));
+        }
+
+        let _ = self
+            .runner
+            .run(
+                "ipconfig.exe",
+                &["/renew", &adapter.name],
+                Duration::from_secs(90),
+            )
+            .await;
+
+        match self
+            .adapters()
+            .await?
+            .into_iter()
+            .find(|a| a.name == adapter.name)
+        {
+            Some(after) if after.has_usable_address() => Ok(format!(
+                "'{}' received an address from the DHCP server: {}.",
+                after.name,
+                after.addresses.join(", ")
+            )),
+            _ => Err(format!(
+                "'{}' asked for an address again, but no DHCP server answered. The fault is outside this PC: restart the router, check the cable or the Wi-Fi connection, and whether the router's DHCP server is switched on.",
+                adapter.name
+            )),
+        }
     }
 
     /// Whether an `nslookup` run actually returned an answer record.
@@ -200,7 +333,7 @@ impl DiagnosticModule for NetworkModule {
     }
 
     fn description(&self) -> &'static str {
-        "Checks DNS resolution, the Winsock catalog, the TCP/IP stack and broken proxy configurations"
+        "Checks DHCP addresses, DNS resolution, the Winsock catalog, the TCP/IP stack and broken proxy configurations"
     }
 
     fn icon(&self) -> &'static str {
@@ -213,7 +346,68 @@ impl DiagnosticModule for NetworkModule {
     ) -> Result<Vec<Issue>, String> {
         let mut issues = Vec::new();
 
-        // 1. DNS Resolution Check
+        // 1. Adapters that got no address from DHCP
+        Self::send_progress(
+            &progress_tx,
+            10,
+            "Checking the network adapters' addresses...",
+            Some("Get-NetAdapter / Get-NetIPAddress..."),
+        )
+        .await;
+
+        let adapters = match self.adapters().await {
+            Ok(adapters) => adapters,
+            Err(err) => {
+                Self::send_progress(
+                    &progress_tx,
+                    15,
+                    "Adapter addresses could not be read",
+                    Some(&err),
+                )
+                .await;
+                Vec::new()
+            }
+        };
+        let connected = adapters.iter().any(AdapterIpv4::has_usable_address);
+        for adapter in adapters.iter().filter(|a| a.dhcp_failed()) {
+            let (severity, consequence) = if connected {
+                (
+                    Severity::Info,
+                    "Another adapter is connected, so this may be a cable to a device that hands out no addresses.",
+                )
+            } else {
+                (
+                    Severity::Warning,
+                    "No other adapter has an address either, so this PC is cut off from the network.",
+                )
+            };
+            let mut issue = Issue::new(
+                no_dhcp_issue_id(&adapter.name),
+                self.id(),
+                format!("'{}' received no address from the router", adapter.name),
+                "Network & DNS",
+                severity,
+                RiskScore::Low,
+                format!(
+                    "The adapter asked for an address (DHCP) and nobody answered, so Windows gave it a stand-in address from 169.254.x.x that reaches nothing. {consequence} Usual causes: the router is off or hung, a loose cable, or a Wi-Fi connection that has not finished."
+                ),
+                format!(
+                    "Adapter: {}\nDHCP: enabled\nIPv4: {}",
+                    adapter.name,
+                    adapter.addresses.join(", ")
+                ),
+                "Ask the DHCP server for an address again (ipconfig /renew)",
+                vec![
+                    format!("Run ipconfig /renew \"{}\"", adapter.name),
+                    "Check that the adapter now holds a real address".to_string(),
+                ],
+            );
+            issue.is_selected = severity == Severity::Warning;
+            issues.push(issue);
+        }
+        let dhcp_explains_offline = !connected && adapters.iter().any(AdapterIpv4::dhcp_failed);
+
+        // 2. DNS Resolution Check
         Self::send_progress(
             &progress_tx,
             20,
@@ -258,6 +452,9 @@ impl DiagnosticModule for NetworkModule {
                         "Confirm that name resolution works again".to_string(),
                     ],
                 ));
+            } else if dhcp_explains_offline {
+                // Resetting Winsock and the IP stack cannot hand out an address;
+                // the DHCP finding above names the actual fault and its repair.
             } else {
                 issues.push(Issue::new(
                     "net_offline_warning",
@@ -285,7 +482,7 @@ impl DiagnosticModule for NetworkModule {
             .await;
         }
 
-        // 2. Proxy Settings in Registry
+        // 3. Proxy Settings in Registry
         Self::send_progress(
             &progress_tx,
             65,
@@ -329,7 +526,7 @@ impl DiagnosticModule for NetworkModule {
             }
         }
 
-        // 3. Winsock Catalog
+        // 4. Winsock Catalog
         Self::send_progress(
             &progress_tx,
             85,
@@ -405,6 +602,7 @@ impl DiagnosticModule for NetworkModule {
         _progress_tx: Option<Sender<FixProgress>>,
     ) -> Result<String, String> {
         match issue_id {
+            id if id.starts_with("net_no_dhcp_") => self.fix_no_dhcp(id).await,
             "net_dns_failure" => {
                 let _ = self
                     .runner
@@ -656,5 +854,208 @@ mod tests {
         let dns_issue = issues.iter().find(|i| i.id == "net_dns_failure");
         assert!(dns_issue.is_some());
         assert_eq!(dns_issue.unwrap().severity, Severity::Critical);
+    }
+
+    /// [`ADAPTER_IPV4_SCRIPT`] on a German Windows 11, LAN address replaced.
+    fn real_adapters() -> String {
+        crate::utils::decode::decode_output(include_bytes!(
+            "../../tests/fixtures/console/powershell_adapters_ipv4.bin"
+        ))
+    }
+
+    /// The same adapter after its DHCP request went unanswered.
+    fn apipa_adapters() -> String {
+        real_adapters().replace("192.168.1.10", "169.254.83.107")
+    }
+
+    #[test]
+    fn adapters_are_read_as_captured() {
+        let adapters = parse_adapters(&real_adapters());
+        assert_eq!(
+            adapters,
+            vec![AdapterIpv4 {
+                name: "Ethernet".to_string(),
+                dhcp: true,
+                addresses: vec!["192.168.1.10".to_string()],
+            }]
+        );
+        assert!(!adapters[0].dhcp_failed());
+        assert!(parse_adapters(&apipa_adapters())[0].dhcp_failed());
+    }
+
+    #[test]
+    fn only_an_unanswered_dhcp_request_is_a_failure() {
+        let adapter = |line: &str| parse_adapters(line).remove(0);
+        // Set by hand, e.g. a direct cable to a camera or a NAS.
+        assert!(!adapter("Ethernet 2|Disabled|169.254.10.20").dhcp_failed());
+        // A real lease next to the stand-in address.
+        assert!(!adapter("WLAN|Enabled|169.254.1.1,192.168.1.20").dhcp_failed());
+        // No address at all is not the 169.254 case this check is about.
+        assert!(!adapter("WLAN|Enabled|").dhcp_failed());
+
+        let odd = adapter("LAN | Dock|Enabled|169.254.1.1");
+        assert_eq!(odd.name, "LAN | Dock");
+        assert!(odd.dhcp_failed());
+        assert_eq!(no_dhcp_issue_id(&odd.name), "net_no_dhcp_lan___dock");
+    }
+
+    fn offline_mock(adapters: String) -> MockCommandRunner {
+        let mock = MockCommandRunner::new();
+        mock.add_response("Get-NetAdapter", CmdOutput::ok(adapters));
+        mock.add_response(
+            "nslookup.exe",
+            CmdOutput::failed(1, "DNS request timed out."),
+        );
+        mock.add_response("ping.exe", CmdOutput::failed(1, ""));
+        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
+        mock
+    }
+
+    #[tokio::test]
+    async fn a_healthy_adapter_is_not_a_finding() {
+        let mock = MockCommandRunner::new();
+        mock.add_response("Get-NetAdapter", CmdOutput::ok(real_adapters()));
+        mock.add_response("nslookup.exe", CmdOutput::ok(RESOLVED_OUTPUT));
+        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
+        let issues = NetworkModule::with_runner(Arc::new(mock))
+            .scan(None)
+            .await
+            .unwrap();
+        assert!(!issues.iter().any(|i| i.id.starts_with("net_no_dhcp_")));
+    }
+
+    #[tokio::test]
+    async fn no_dhcp_answer_replaces_the_stack_reset() {
+        let issues = NetworkModule::with_runner(Arc::new(offline_mock(apipa_adapters())))
+            .scan(None)
+            .await
+            .unwrap();
+        let issue = issues
+            .iter()
+            .find(|i| i.id == "net_no_dhcp_ethernet")
+            .expect("the adapter got no address");
+        assert_eq!(issue.severity, Severity::Warning);
+        assert!(issue.is_selected);
+        assert!(issue.technical_details.contains("169.254.83.107"));
+        assert!(
+            !issues.iter().any(|i| i.id == "net_offline_warning"),
+            "a Winsock reset cannot hand out an address"
+        );
+    }
+
+    #[tokio::test]
+    async fn without_an_adapter_finding_the_offline_warning_stays() {
+        let issues = NetworkModule::with_runner(Arc::new(offline_mock(real_adapters())))
+            .scan(None)
+            .await
+            .unwrap();
+        assert!(issues.iter().any(|i| i.id == "net_offline_warning"));
+    }
+
+    #[tokio::test]
+    async fn a_second_adapter_without_dhcp_is_only_information() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "Get-NetAdapter",
+            CmdOutput::ok(format!(
+                "{}Ethernet 2|Enabled|169.254.7.7\r\n",
+                real_adapters()
+            )),
+        );
+        mock.add_response("nslookup.exe", CmdOutput::ok(RESOLVED_OUTPUT));
+        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
+        let issues = NetworkModule::with_runner(Arc::new(mock))
+            .scan(None)
+            .await
+            .unwrap();
+        let issue = issues
+            .iter()
+            .find(|i| i.id == "net_no_dhcp_ethernet_2")
+            .unwrap();
+        assert_eq!(issue.severity, Severity::Info);
+        assert!(!issue.is_selected, "the PC is online through 'Ethernet'");
+    }
+
+    /// Answers the adapter query with `before` until `ipconfig /renew` ran,
+    /// then with `after`.
+    struct RenewRunner {
+        before: String,
+        after: String,
+        renewed: std::sync::atomic::AtomicBool,
+        executed: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl RenewRunner {
+        fn new(before: String, after: String) -> Arc<Self> {
+            Arc::new(Self {
+                before,
+                after,
+                renewed: Default::default(),
+                executed: Default::default(),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl CommandRunner for RenewRunner {
+        async fn run(
+            &self,
+            program: &str,
+            args: &[&str],
+            _timeout: Duration,
+        ) -> Result<CmdOutput, String> {
+            use std::sync::atomic::Ordering;
+            self.executed
+                .lock()
+                .unwrap()
+                .push(format!("{program} {}", args.join(" ")));
+            if program == "ipconfig.exe" {
+                self.renewed.store(true, Ordering::SeqCst);
+                return Ok(CmdOutput::ok(""));
+            }
+            let adapters = if self.renewed.load(Ordering::SeqCst) {
+                &self.after
+            } else {
+                &self.before
+            };
+            Ok(CmdOutput::ok(adapters.clone()))
+        }
+
+        async fn run_streaming(
+            &self,
+            program: &str,
+            args: &[&str],
+            _log_tx: Option<Sender<String>>,
+            timeout: Duration,
+        ) -> Result<CmdOutput, String> {
+            self.run(program, args, timeout).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_renewed_lease_is_read_back() {
+        let runner = RenewRunner::new(apipa_adapters(), real_adapters());
+        let msg = NetworkModule::with_runner(runner.clone())
+            .fix("net_no_dhcp_ethernet", None)
+            .await
+            .unwrap();
+        assert!(msg.contains("192.168.1.10"), "{msg}");
+        assert!(
+            runner
+                .executed
+                .lock()
+                .unwrap()
+                .contains(&"ipconfig.exe /renew Ethernet".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_renew_nobody_answered_is_a_failure() {
+        let runner = RenewRunner::new(apipa_adapters(), apipa_adapters());
+        let err = NetworkModule::with_runner(runner)
+            .fix("net_no_dhcp_ethernet", None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("no DHCP server answered"), "{err}");
     }
 }
