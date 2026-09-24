@@ -34,12 +34,17 @@ Every pull request must pass all of these. Run them before pushing:
 cargo fmt -- --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
-cargo check --locked --all-targets    # with the 1.88 toolchain, for the MSRV gate
+cargo check --locked --all-targets    # with the rust-version toolchain from Cargo.toml, for the MSRV gate
+cargo run --locked -- --scan          # every module has to finish: no "[X] Module" line
 ```
 
 Clippy runs with `-D warnings`, so a warning is a build failure. If a lint is
 genuinely wrong for a piece of code, add a **targeted** `#[allow(...)]` on the
 item with a comment explaining why — not a crate-wide allow in `lib.rs`.
+
+The last line is CI's smoke test: a real, read-only scan on the runner's own
+Windows. It exists because mocks answer whatever they are asked, and for a long
+time they answered event log queries that `wevtutil` itself refused.
 
 Pull requests into *any* branch are gated, not just those targeting `main`.
 
@@ -48,16 +53,45 @@ Pull requests into *any* branch are gated, not just those targeting `main`.
 | Suite | What it covers |
 | --- | --- |
 | `#[cfg(test)]` modules in `src/` | Unit tests next to the code they test |
-| `tests/tier1_features.rs` | Feature-level behaviour of each module |
-| `tests/tier2_boundaries.rs` | Boundary and edge-case inputs |
-| `tests/tier3_combinations.rs` | Interactions between modules |
-| `tests/tier4_scenarios.rs` | End-to-end scenarios |
-| `tests/*adversarial*`, `tests/*challenger*` | Hostile and malformed inputs |
+| `tests/integration/tier1_features.rs` | Feature-level behaviour of each module |
+| `tests/integration/tier2_boundaries.rs` | Boundary and edge-case inputs |
+| `tests/integration/tier3_combinations.rs` | Interactions between modules |
+| `tests/integration/tier4_scenarios.rs` | End-to-end scenarios |
+| `tests/integration/*_hostile_inputs.rs`, `*_edge_cases.rs` | Hostile and malformed inputs |
+| `tests/fixtures/` | Captured output of real Windows tools — see its README |
 
 Diagnostics and repairs must be tested through `MockCommandRunner` rather than
 by shelling out. A test that executes a real `DISM` or `reg` command is not
 acceptable — it makes the suite machine-dependent and can damage the machine
 running it.
+
+**Feed the mock what Windows prints, not what you expect it to print.** A mock
+answers whatever it is asked, so a test written from the same assumption as
+the code proves nothing: WinMedic's DISM, service and event log checks all had
+passing tests while none of them could fire on a real machine. When a module
+parses a tool's output, its tests use a capture from `tests/fixtures/` — add one
+if the output you need is not there yet, following the rules in
+[tests/fixtures/README.md](tests/fixtures/README.md).
+
+## Reading what Windows tools print
+
+WinMedic runs on every display language, so a check must not depend on one.
+
+- **Prefer a language-neutral source**: a number, an enum name, an exit code,
+  XML, a registry value. `sc qc` reports the start type as a number; DISM takes
+  `/English`; PowerShell objects print enum names in English;
+  `utils::event_xml::system_log_query` reads the event log as XML.
+- **Never match a translated sentence** unless there is no alternative, and then
+  take the wording from the tool's own resources (the `.mui` files), for both
+  English and German at least, and fail safe for every other language — a
+  missed finding, never an invented one.
+- **Never decode output yourself.** `CommandRunner` hands you text decoded by
+  `utils::decode`, which knows that `dism` writes the OEM code page, `sfc`
+  UTF-16 and `netsh` UTF-8. `String::from_utf8_lossy` on process output turns
+  every umlaut into `�`.
+- **A refused command is not a clean result.** Check the exit code before
+  reading the output as a verdict; an unelevated DISM or a rejected query must
+  surface as "not checked", not as "healthy".
 
 ## Areas that need extra care
 
