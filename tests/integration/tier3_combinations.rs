@@ -14,7 +14,7 @@ use common::{
     DISM_ANALYZE_CLEAN, DISM_ANALYZE_ENGLISH_RECLAIMABLE, GITHUB_RELEASE_NEWER_JSON,
     MockWindowsPaths, ProgrammableMockRunner, TempWorkspace,
 };
-use winmedic::app::{App, BackgroundEvent, ConfirmRequest, TAB_SETTINGS, TAB_TRIAGE};
+use winmedic::app::{App, BackgroundEvent, ConfirmRequest, TAB_HOME, TAB_SETTINGS};
 use winmedic::config::AppConfig;
 use winmedic::engine::exit_code;
 use winmedic::engine::issue::{Issue, RiskScore, Severity};
@@ -702,7 +702,7 @@ async fn test_tier3_update_check_with_subsequent_triage_cleanup() {
     assert!(app.pending_confirm.is_none());
 
     // 3. User switches to Triage and toggles issue
-    app.active_tab = TAB_TRIAGE;
+    app.active_tab = TAB_HOME;
     // `App::new` restores the last scan from `%APPDATA%`, so on a machine that
     // has actually run WinMedic `issues[0]` is a real finding rather than the
     // one this test is about.

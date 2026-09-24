@@ -1,7 +1,7 @@
 //! Starting, cancelling and simulating scans and repair runs.
 
+use super::TAB_HOME;
 use super::state::App;
-use super::{TAB_REPAIR, TAB_SCANNER};
 use crate::engine::runner::{RepairEvent, RepairOptions, ScanEvent};
 use crate::modules::ModuleStatus;
 use std::time::Instant;
@@ -19,7 +19,7 @@ impl App {
         self.is_scanning = true;
         self.scan_overall_progress = 0;
         self.scan_started_at = Some(Instant::now());
-        self.active_tab = TAB_SCANNER;
+        self.active_tab = TAB_HOME;
         self.issues.clear();
         self.selected_issue_index = 0;
         self.selected_filtered_index = 0;
@@ -69,7 +69,7 @@ impl App {
         }
 
         self.is_fixing = true;
-        self.active_tab = TAB_REPAIR;
+        self.active_tab = TAB_HOME;
         self.fixed_count = 0;
         self.failed_count = 0;
         self.total_to_fix = selected_count;

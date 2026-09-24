@@ -15,10 +15,7 @@ use common::{
     GITHUB_RELEASE_NEWER_JSON, MockWindowsPaths, ProgrammableMockRunner, TempWorkspace,
     sandboxed_cleaner,
 };
-use winmedic::app::{
-    App, BackgroundEvent, ConfirmRequest, TAB_DASHBOARD, TAB_REPAIR, TAB_SCANNER, TAB_SETTINGS,
-    TAB_TRIAGE,
-};
+use winmedic::app::{App, BackgroundEvent, ConfirmRequest, TAB_HOME, TAB_SETTINGS};
 use winmedic::config::AppConfig;
 use winmedic::engine::exit_code;
 use winmedic::engine::issue::{Issue, RiskScore, Severity};
