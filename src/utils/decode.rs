@@ -63,8 +63,10 @@ impl LineDecoder {
         loop {
             let end = if utf16 {
                 self.pending
-                    .chunks_exact(2)
-                    .position(|unit| unit == [b'\n', 0])
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .position(|unit| *unit == [b'\n', 0])
                     .map(|unit| (unit * 2, 2))
             } else {
                 self.pending
@@ -110,7 +112,7 @@ fn looks_like_utf16le(bytes: &[u8]) -> bool {
     if bytes.starts_with(&[0xFF, 0xFE]) {
         return true;
     }
-    let units = bytes.chunks_exact(2).take(128);
+    let units = bytes.as_chunks::<2>().0.iter().take(128);
     let total = units.len();
     let ascii_units = units.filter(|unit| unit[1] == 0 && unit[0] != 0).count();
     total > 0 && ascii_units * 2 > total
@@ -119,8 +121,10 @@ fn looks_like_utf16le(bytes: &[u8]) -> bool {
 fn decode_utf16le(bytes: &[u8]) -> String {
     let bytes = bytes.strip_prefix(&[0xFF, 0xFE]).unwrap_or(bytes);
     let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&unit| u16::from_le_bytes(unit))
         .collect();
     String::from_utf16_lossy(&units)
 }
