@@ -1,0 +1,4 @@
+
+HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Connections
+    WinHttpSettings    REG_BINARY    1800000000000000010000000000000000000000
+

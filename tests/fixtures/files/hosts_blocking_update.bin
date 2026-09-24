@@ -1,0 +1,16 @@
+﻿0.0.0.0 vortex.data.microsoft.com
+0.0.0.0 settings-win.data.microsoft.com
+0.0.0.0 watson.telemetry.microsoft.com
+0.0.0.0 ocsp.digicert.com
+0.0.0.0 fe3.delivery.mp.microsoft.com
+0.0.0.0 wpad.microsoft.com
+0.0.0.0 browser.events.data.microsoft.com
+0.0.0.0 activity.windows.com
+0.0.0.0 geo-prod.do.dsp.mp.microsoft.com
+127.0.0.1 view-localhost # view localhost server
+# Added by Docker Desktop
+192.168.1.10 host.docker.internal
+192.168.1.10 gateway.docker.internal
+# To allow the same kube context to work on the host and the container:
+127.0.0.1 kubernetes.docker.internal
+# End of section

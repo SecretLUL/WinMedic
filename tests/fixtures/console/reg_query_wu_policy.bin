@@ -1,0 +1,4 @@
+
+HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate
+    ExcludeWUDriversInQualityUpdate    REG_DWORD    0x1
+
