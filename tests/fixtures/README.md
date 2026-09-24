@@ -44,6 +44,7 @@ Captured on Windows 11 Pro 10.0.26200, German display language, OEM code page
 
 | File | Content |
 | --- | --- |
+| `reagent_enabled.xml` | `C:\Windows\System32\Recovery\ReAgent.xml` of the capture machine, unchanged: the recovery environment's configuration, readable without elevation, with `InstallState state="1"` (enabled). |
 | `hosts_blocking_update.bin` | The hosts file of the capture machine, byte for byte (UTF-8 with BOM, CRLF), its LAN address replaced with `192.168.1.10`. Next to telemetry blocks it blocks `fe3.delivery.mp.microsoft.com` — Windows Update's and the Store's metadata endpoint — and `ocsp.digicert.com`, which is what the hosts check exists to find. |
 
 The English DISM verdicts used in `src/modules/system_integrity.rs` are not a

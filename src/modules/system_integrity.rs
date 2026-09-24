@@ -121,16 +121,66 @@ fn read_tail(path: &Path, max_bytes: u64) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn default_cbs_log() -> PathBuf {
+fn system_root() -> PathBuf {
     std::env::var_os("SystemRoot")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
-        .join(r"Logs\CBS\CBS.log")
+}
+
+fn default_cbs_log() -> PathBuf {
+    system_root().join(r"Logs\CBS\CBS.log")
+}
+
+fn default_reagent_xml() -> PathBuf {
+    system_root().join(r"System32\Recovery\ReAgent.xml")
+}
+
+/// Whether ReAgent.xml says the recovery environment is enabled.
+///
+/// `reagentc /info` says so too, but only elevated and only in the display
+/// language. The file it reads is neither: `<InstallState state="1"/>` means
+/// enabled on every Windows, unelevated or not.
+pub fn winre_enabled(reagent_xml: &str) -> Option<bool> {
+    let tag = &reagent_xml[reagent_xml.find("<InstallState")?..];
+    let tag = &tag[..tag.find('>')?];
+    let value = tag.split("state=").nth(1)?.trim_start_matches(['"', '\'']);
+    match value.chars().next()? {
+        '1' => Some(true),
+        '0' => Some(false),
+        _ => None,
+    }
+}
+
+/// Asks WMI for the classes WinMedic's own checks read, one line per class.
+///
+/// A functional test rather than `winmgmt /verifyrepository`, which needs
+/// elevation and answers in the display language. A repository that verifies
+/// fine can still fail queries, and failing queries are what break things.
+const WMI_PROBE_SCRIPT: &str = "foreach ($class in 'Win32_OperatingSystem', 'Win32_ComputerSystem', 'Win32_Volume') { try { $null = Get-CimInstance -ClassName $class -ErrorAction Stop; \"OK $class\" } catch { \"FAIL $class $($_.Exception.Message)\" } }";
+
+/// The failed classes in [`WMI_PROBE_SCRIPT`]'s output, or `None` when it
+/// printed no verdict at all - PowerShell itself failing is not WMI failing.
+pub fn wmi_failures(output: &str) -> Option<Vec<String>> {
+    let lines: Vec<&str> = output
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("OK ") || l.starts_with("FAIL "))
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    Some(
+        lines
+            .into_iter()
+            .filter_map(|l| l.strip_prefix("FAIL ").map(str::to_string))
+            .collect(),
+    )
 }
 
 pub struct SystemIntegrityModule {
     runner: Arc<dyn CommandRunner>,
     cbs_log: PathBuf,
+    reagent_xml: PathBuf,
 }
 
 impl Default for SystemIntegrityModule {
@@ -150,7 +200,22 @@ impl SystemIntegrityModule {
 
     /// For tests: read `cbs_log` instead of the machine's own CBS.log.
     pub fn with_runner_and_cbs_log(runner: Arc<dyn CommandRunner>, cbs_log: PathBuf) -> Self {
-        Self { runner, cbs_log }
+        Self {
+            runner,
+            cbs_log,
+            reagent_xml: default_reagent_xml(),
+        }
+    }
+
+    /// For tests: read `path` instead of the machine's own ReAgent.xml.
+    pub fn with_reagent_xml(mut self, path: PathBuf) -> Self {
+        self.reagent_xml = path;
+        self
+    }
+
+    fn winre_state(&self) -> Option<bool> {
+        let bytes = std::fs::read(&self.reagent_xml).ok()?;
+        winre_enabled(&String::from_utf8_lossy(&bytes))
     }
 
     async fn send_progress(
@@ -183,7 +248,7 @@ impl DiagnosticModule for SystemIntegrityModule {
     }
 
     fn description(&self) -> &'static str {
-        "Checks the component store (DISM), system files (SFC) and Volume Shadow Copy services"
+        "Checks the component store (DISM), system files (SFC), Volume Shadow Copy, the recovery environment and WMI"
     }
 
     fn icon(&self) -> &'static str {
@@ -365,6 +430,79 @@ impl DiagnosticModule for SystemIntegrityModule {
             }
         }
 
+        // 4. Windows Recovery Environment
+        match self.winre_state() {
+            Some(false) => issues.push(Issue::new(
+                "sys_winre_disabled",
+                self.id(),
+                "The Windows Recovery Environment is switched off",
+                "System Integrity",
+                Severity::Warning,
+                RiskScore::Medium,
+                "When Windows no longer starts, the recovery environment is what offers Startup Repair, Safe Mode, System Restore and resetting the PC. With it switched off, a PC that fails to boot leaves only a reinstall from a USB stick.",
+                format!("{}: InstallState 0", self.reagent_xml.display()),
+                "Switch the recovery environment back on (reagentc /enable)",
+                vec!["reagentc /enable".to_string()],
+            )),
+            Some(true) => {
+                Self::send_progress(
+                    &progress_tx,
+                    92,
+                    "Recovery environment enabled",
+                    Some("The Windows Recovery Environment is enabled."),
+                )
+                .await;
+            }
+            None => {
+                Self::send_progress(
+                    &progress_tx,
+                    92,
+                    "Recovery environment not checked",
+                    Some("ReAgent.xml could not be read; the recovery environment was not checked."),
+                )
+                .await;
+            }
+        }
+
+        // 5. WMI
+        Self::send_progress(
+            &progress_tx,
+            95,
+            "Checking that WMI answers...",
+            Some("Querying the WMI classes WinMedic itself relies on..."),
+        )
+        .await;
+        if let Ok(out) = self
+            .runner
+            .run_powershell(WMI_PROBE_SCRIPT, Duration::from_secs(30))
+            .await
+        {
+            match wmi_failures(&out.stdout) {
+                Some(failures) if !failures.is_empty() => issues.push(Issue::new(
+                    "sys_wmi_broken",
+                    self.id(),
+                    "WMI does not answer",
+                    "System Integrity",
+                    Severity::Critical,
+                    RiskScore::Medium,
+                    "Windows Management Instrumentation fails basic queries. System information, device and driver tools, many installers and several of WinMedic's own checks depend on it. If the Tweaks & Policies check reports the WMI service disabled, repair that first.",
+                    failures.join("\n"),
+                    "Salvage the WMI repository (winmgmt /salvagerepository)",
+                    vec!["winmgmt /salvagerepository".to_string()],
+                )),
+                Some(_) => {
+                    Self::send_progress(
+                        &progress_tx,
+                        98,
+                        "WMI answers",
+                        Some("Every probed WMI class answered."),
+                    )
+                    .await;
+                }
+                None => {}
+            }
+        }
+
         Self::send_progress(&progress_tx, 100, "System integrity check complete", None).await;
 
         Ok(issues)
@@ -446,6 +584,43 @@ impl DiagnosticModule for SystemIntegrityModule {
                     _ => Ok("Volume Shadow Copy (VSS) service set to start on demand.".to_string()),
                 }
             }
+            "sys_winre_disabled" => {
+                let out = self
+                    .runner
+                    .run("reagentc.exe", &["/enable"], Duration::from_secs(120))
+                    .await?;
+                if self.winre_state() == Some(true) {
+                    return Ok("The Windows Recovery Environment is enabled again.".to_string());
+                }
+                Err(format!(
+                    "reagentc /enable did not enable it (exit code {:?}): {}. Its image, Winre.wim, is usually missing then; a repair install of Windows puts it back.",
+                    out.exit_code,
+                    out.stdout.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("")
+                ))
+            }
+            "sys_wmi_broken" => {
+                let _ = self
+                    .runner
+                    .run(
+                        "winmgmt.exe",
+                        &["/salvagerepository"],
+                        Duration::from_secs(300),
+                    )
+                    .await?;
+                let probe = self
+                    .runner
+                    .run_powershell(WMI_PROBE_SCRIPT, Duration::from_secs(30))
+                    .await?;
+                match wmi_failures(&probe.stdout) {
+                    Some(failures) if failures.is_empty() => {
+                        Ok("WMI answers again after salvaging its repository.".to_string())
+                    }
+                    _ => Err(
+                        "WMI still fails after salvaging its repository. 'winmgmt /resetrepository' rebuilds it from scratch but drops every third-party WMI registration; a repair install of Windows is the safer next step."
+                            .to_string(),
+                    ),
+                }
+            }
             "sys_dism_unrepairable" => Ok(
                 "Advisory recorded in the audit log. Only a repair install of Windows clears this - see the fix steps."
                     .to_string(),
@@ -491,6 +666,115 @@ mod tests {
             Arc::new(mock),
             std::env::temp_dir().join("winmedic-test-no-such-cbs.log"),
         )
+        .with_reagent_xml(std::env::temp_dir().join("winmedic-test-no-such-ReAgent.xml"))
+    }
+
+    /// The ReAgent.xml of a real Windows 11 with the recovery environment on.
+    const REAGENT_ENABLED: &str = include_str!("../../tests/fixtures/files/reagent_enabled.xml");
+
+    fn reagent_file(name: &str, content: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "winmedic-reagent-{}-{}.xml",
+            name,
+            std::process::id()
+        ));
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn the_recovery_state_is_read_from_reagent_xml() {
+        assert_eq!(winre_enabled(REAGENT_ENABLED), Some(true));
+        let disabled =
+            REAGENT_ENABLED.replace("<InstallState state=\"1\"/>", "<InstallState state=\"0\"/>");
+        assert_eq!(winre_enabled(&disabled), Some(false));
+        assert_eq!(winre_enabled("<WindowsRE/>"), None);
+    }
+
+    #[tokio::test]
+    async fn a_disabled_recovery_environment_is_reported() {
+        let path = reagent_file(
+            "scan",
+            &REAGENT_ENABLED.replace("<InstallState state=\"1\"/>", "<InstallState state=\"0\"/>"),
+        );
+        let mock = MockCommandRunner::new();
+        mock.add_response("dism.exe", dism_says(HEALTHY));
+        healthy_vss(&mock);
+        let issues = module_with(mock)
+            .with_reagent_xml(path.clone())
+            .scan(None)
+            .await
+            .unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].id, "sys_winre_disabled");
+    }
+
+    #[tokio::test]
+    async fn enabling_the_recovery_environment_is_read_back() {
+        let still_off = reagent_file("off", "<WindowsRE><InstallState state=\"0\"/></WindowsRE>");
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "reagentc.exe",
+            CmdOutput::with_output(
+                2,
+                "REAGENTC.EXE: Das Windows RE-Abbild wurde nicht gefunden.",
+                "",
+            ),
+        );
+        let err = module_with(mock.clone())
+            .with_reagent_xml(still_off.clone())
+            .fix("sys_winre_disabled", None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("Winre.wim"), "{err}");
+
+        std::fs::write(&still_off, REAGENT_ENABLED).unwrap();
+        let ok = module_with(mock)
+            .with_reagent_xml(still_off.clone())
+            .fix("sys_winre_disabled", None)
+            .await
+            .unwrap();
+        let _ = std::fs::remove_file(&still_off);
+        assert!(ok.contains("enabled again"));
+    }
+
+    #[test]
+    fn wmi_failures_are_read_per_class() {
+        assert_eq!(
+            wmi_failures(
+                "OK Win32_OperatingSystem\r\nOK Win32_ComputerSystem\r\nOK Win32_Volume\r\n"
+            ),
+            Some(vec![])
+        );
+        assert_eq!(
+            wmi_failures("OK Win32_OperatingSystem\r\nFAIL Win32_Volume Ungültige Klasse \r\n"),
+            Some(vec!["Win32_Volume Ungültige Klasse".to_string()])
+        );
+        // PowerShell failing to run at all is not a verdict on WMI.
+        assert_eq!(
+            wmi_failures("Das System kann die Datei nicht finden."),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn failing_wmi_queries_are_a_finding() {
+        let mock = MockCommandRunner::new();
+        mock.add_response("dism.exe", dism_says(HEALTHY));
+        healthy_vss(&mock);
+        mock.add_response(
+            "Get-CimInstance",
+            CmdOutput::ok("FAIL Win32_OperatingSystem Invalid class\r\nFAIL Win32_ComputerSystem Invalid class\r\nOK Win32_Volume\r\n"),
+        );
+        let issues = module_with(mock).scan(None).await.unwrap();
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].id, "sys_wmi_broken");
+        assert!(
+            issues[0]
+                .technical_details
+                .contains("Win32_OperatingSystem")
+        );
     }
 
     fn healthy_vss(mock: &MockCommandRunner) {
