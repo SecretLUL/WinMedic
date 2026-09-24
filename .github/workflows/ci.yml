@@ -30,7 +30,8 @@ jobs:
   # rustfmt, clippy and the test suite share one runner. They do not share a
   # compile — clippy caches under its own driver — but they do share the
   # checkout, the toolchain install and the cache round trip, which is the
-  # fixed cost that made a separate `check` job wasteful.
+  # fixed cost that made a separate `check` job wasteful. The real scan below
+  # is the exception: it waits on Windows, not on the compiler.
   test:
     name: Lints & Test Suite
     runs-on: windows-latest
@@ -62,13 +63,34 @@ jobs:
       - name: Run Tests
         run: cargo test --locked --verbose
 
-      # The tests feed the modules captured tool output. This feeds them the
-      # runner's own Windows: a real scan, read-only — nothing is repaired —
-      # that has to end with every module finished. Mocks answer whatever they
-      # are asked; this is what notices when Windows would not have. It is the
-      # check that would have caught wevtutil refusing every event log query
-      # WinMedic sent, which no unit test could.
-      - name: Smoke-test a real scan
+  # The tests feed the modules captured tool output. This feeds them the
+  # runner's own Windows: a real scan, read-only — nothing is repaired — that
+  # has to end with every module finished. Mocks answer whatever they are
+  # asked; this is what notices when Windows would not have. It is the check
+  # that would have caught wevtutil refusing every event log query WinMedic
+  # sent, which no unit test could.
+  #
+  # Its own job, because the scan takes one to two minutes on a runner - an
+  # elevated DISM /AnalyzeComponentStore is most of it - and needs only a
+  # build of the binary, not the lints or the test suite before it.
+  smoke:
+    name: Smoke-test a real scan
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build
+        run: cargo build --locked
+
+      - name: Scan
         shell: pwsh
         run: |
           $out = cargo run --locked --quiet -- --scan 2>&1 | Out-String
