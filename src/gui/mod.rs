@@ -49,6 +49,7 @@ const IDLE_REPAINT: Duration = Duration::from_millis(500);
 pub struct WinMedicApp {
     app: App,
     last_telemetry_tick: Instant,
+    initial_minimize: bool,
 }
 
 /// Draw the navigation, page header, body, status bar and overlays.
@@ -85,6 +86,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
 
 impl WinMedicApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        Self::with_autostart(cc, false)
+    }
+
+    pub fn with_autostart(cc: &eframe::CreationContext<'_>, autostart: bool) -> Self {
         theme::apply(&cc.egui_ctx);
 
         let mut app = App::new();
@@ -93,11 +98,13 @@ impl WinMedicApp {
         // open a browser, accepting the elevation dialog should really raise
         // UAC, and a repair run should really leave a restore point behind.
         app.enable_real_system_actions();
+        app.reconcile_background_integration();
         app.start_update_check();
 
         Self {
             app,
             last_telemetry_tick: Instant::now(),
+            initial_minimize: autostart,
         }
     }
 }
@@ -283,6 +290,7 @@ impl eframe::App for WinMedicApp {
 
         if self.last_telemetry_tick.elapsed() >= Duration::from_secs(1) {
             self.app.refresh_telemetry();
+            self.app.poll_external_scan_updates();
             self.last_telemetry_tick = Instant::now();
         }
 
@@ -297,6 +305,12 @@ impl eframe::App for WinMedicApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if self.initial_minimize {
+            self.initial_minimize = false;
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
+
         for key in keys::shortcuts(ui.ctx()) {
             handle_key(&mut self.app, key);
         }
@@ -542,6 +556,21 @@ mod tests {
 
         let harness = window(app);
         assert!(harness.query_by_label_contains("Last action:").is_none());
+    }
+
+    #[test]
+    fn the_dashboard_displays_exact_last_scan_timestamp() {
+        let mut app = populated_app();
+        app.active_tab = TAB_DASHBOARD;
+        app.last_scan_timestamp = Some("2026-09-22 14:30:00".to_string());
+        app.scan_duration = Some(Duration::from_secs(15));
+
+        let harness = window(app);
+        assert!(
+            harness
+                .query_by_label_contains("Last scan: 2026-09-22 14:30:00 (took 15s)")
+                .is_some()
+        );
     }
 
     /// A confirmation is a question about the machine, and it has to be visible

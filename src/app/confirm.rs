@@ -4,6 +4,7 @@
 //! key for it goes through a [`ConfirmRequest`] first.
 
 use super::state::App;
+use crate::config::AppConfig;
 use crate::safety::reg_backup::RegBackupManager;
 use crate::safety::restore_point::RestorePointService;
 use crate::utils::admin::relaunch_as_admin;
@@ -55,6 +56,18 @@ pub struct SystemActions {
     /// builds dozens of `App`s and ticks their checkboxes, and none of that may
     /// overwrite the scan the developer's own WinMedic left behind.
     pub persist_scan_state: bool,
+    /// Whether settings may be written back to `%APPDATA%`.
+    ///
+    /// Off by default for the same reason: a test that changes a setting must
+    /// not rewrite the developer's own configuration — least of all the helper
+    /// and autostart switches the real app acts on.
+    pub persist_config: bool,
+    /// Synchronize the WinMedicHelper scheduled background task.
+    pub sync_helper_task: fn(bool, u32) -> Result<(), String>,
+    /// Synchronize the "Start with Windows" autostart registry entry.
+    pub sync_autostart: fn(bool) -> Result<(), String>,
+    /// Repair the task and the Run entry for the settings that are on.
+    pub reconcile_background: fn(&AppConfig) -> Result<(), String>,
 }
 
 fn real_restart_system() -> Result<(), String> {
@@ -82,6 +95,10 @@ impl SystemActions {
             restore_point: RestorePointService::real(),
             restart_system: real_restart_system,
             persist_scan_state: true,
+            persist_config: true,
+            sync_helper_task: crate::utils::background_task::sync_helper_task,
+            sync_autostart: crate::utils::background_task::sync_autostart,
+            reconcile_background: crate::utils::background_task::reconcile,
         }
     }
 
@@ -94,6 +111,10 @@ impl SystemActions {
             restore_point: RestorePointService::inert(),
             restart_system: || Ok(()),
             persist_scan_state: false,
+            persist_config: false,
+            sync_helper_task: |_, _| Ok(()),
+            sync_autostart: |_| Ok(()),
+            reconcile_background: |_| Ok(()),
         }
     }
 }
@@ -474,6 +495,11 @@ mod tests {
             "App::new was allowed to write to %APPDATA%: ticking a checkbox in \
              a test would overwrite the developer's own last scan"
         );
+        assert!(
+            !actions.persist_config,
+            "App::new was allowed to write config.json: changing a setting in \
+             a test would overwrite the developer's own settings"
+        );
     }
 
     /// And the front end that does opt in gets all of it, persistence
@@ -486,6 +512,7 @@ mod tests {
         assert!(app.system_actions.restore_point.is_live());
         assert!(app.system_actions.self_update.is_live());
         assert!(app.system_actions.persist_scan_state);
+        assert!(app.system_actions.persist_config);
     }
 
     /// The engine an [`App`] hands a repair run must inherit that inertness —

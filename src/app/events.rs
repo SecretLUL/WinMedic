@@ -8,7 +8,6 @@
 use super::ConfirmRequest;
 use super::state::{App, ModuleScanProgress};
 use super::{BackgroundEvent, push_bounded_log};
-use crate::engine::issue::Severity;
 use crate::engine::runner::{DiagnosticEngine, RepairEvent, ScanEvent};
 use crate::modules::ModuleStatus;
 
@@ -83,21 +82,7 @@ impl App {
                         ));
                     }
                     if let Some(pos) = self.module_statuses.iter().position(|m| m.0 == module_id) {
-                        let crit = issues
-                            .iter()
-                            .filter(|i| i.severity == Severity::Critical)
-                            .count();
-                        let warn = issues
-                            .iter()
-                            .filter(|i| i.severity == Severity::Warning)
-                            .count();
-                        if crit > 0 {
-                            self.module_statuses[pos].3 = ModuleStatus::Critical(crit);
-                        } else if warn > 0 {
-                            self.module_statuses[pos].3 = ModuleStatus::Warning(warn);
-                        } else {
-                            self.module_statuses[pos].3 = ModuleStatus::Passed;
-                        }
+                        self.module_statuses[pos].3 = ModuleStatus::from_findings(&issues);
                     }
                     self.issues.extend(issues);
                     self.recalculate_scan_progress();
@@ -173,6 +158,8 @@ impl App {
             // Freeze the clock. Left running, "DIAGNOSTICS COMPLETE" would go
             // on counting up for as long as the app stayed open.
             self.scan_duration = self.scan_started_at.map(|start| start.elapsed());
+            self.last_scan_timestamp =
+                Some(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
             self.scan_started_at = None;
             self.scan_event_rx = None;
             self.cancel_token = None;

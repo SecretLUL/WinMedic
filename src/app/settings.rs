@@ -1,5 +1,6 @@
 use super::state::{App, SettingInput};
 use crate::config::AppConfig;
+use crate::utils::background_task::helper_schedule;
 
 impl App {
     pub fn next_setting(&mut self) {
@@ -16,13 +17,13 @@ impl App {
 
     pub fn toggle_current_setting(&mut self) {
         let changed = match self.selected_setting_index {
-            4 | 5 => self
+            4 | 5 | 8 => self
                 .config
                 .adjust_setting(self.selected_setting_index, true),
             _ => self.config.toggle_setting(self.selected_setting_index),
         };
         if changed {
-            self.apply_config_change();
+            self.apply_config_change(self.selected_setting_index);
         }
     }
 
@@ -31,7 +32,7 @@ impl App {
             .config
             .adjust_setting(self.selected_setting_index, increase)
         {
-            self.apply_config_change();
+            self.apply_config_change(self.selected_setting_index);
         }
     }
 
@@ -57,6 +58,17 @@ impl App {
                     min_value: 1,
                     max_value: 8760,
                     buffer: self.config.max_event_log_hours.to_string(),
+                    error_msg: None,
+                });
+            }
+            8 => {
+                self.setting_input = Some(SettingInput {
+                    setting_index: 8,
+                    setting_name: "WinMedicHelper scan frequency".to_string(),
+                    unit: "Hours (h)".to_string(),
+                    min_value: 1,
+                    max_value: 720,
+                    buffer: self.config.helper_frequency_hours.to_string(),
                     error_msg: None,
                 });
             }
@@ -91,6 +103,14 @@ impl App {
             return false;
         }
 
+        if input.setting_index == 8 && helper_schedule(val as u32).is_none() {
+            input.error_msg = Some(
+                "Task Scheduler repeats every 1-23 hours or every whole number of days (24, 48, 72 ...)."
+                    .to_string(),
+            );
+            return false;
+        }
+
         let idx = input.setting_index;
         match idx {
             4 => {
@@ -99,11 +119,14 @@ impl App {
             5 => {
                 self.config.max_event_log_hours = val as u32;
             }
+            8 => {
+                self.config.helper_frequency_hours = val as u32;
+            }
             _ => {}
         }
 
         self.setting_input = None;
-        self.apply_config_change();
+        self.apply_config_change(idx);
         true
     }
 
@@ -112,20 +135,37 @@ impl App {
         self.setting_input = None;
     }
 
-    /// Persist the config and rebuild the engine so modules pick up new
-    /// thresholds on the next scan.
-    fn apply_config_change(&mut self) {
-        match self.config.save() {
-            Ok(()) => {
-                self.status_message = Some(format!(
-                    "Setting saved: {}",
-                    AppConfig::config_path().display()
-                ));
+    /// Persist the config, bring Windows in line with the setting at `index`,
+    /// and rebuild the engine so modules pick up new thresholds on the next
+    /// scan.
+    fn apply_config_change(&mut self, index: usize) {
+        let mut message = if !self.system_actions.persist_config {
+            "Setting changed.".to_string()
+        } else {
+            match self.config.save() {
+                Ok(()) => format!("Setting saved: {}", AppConfig::config_path().display()),
+                Err(e) => format!("Setting could not be saved: {}", e),
             }
-            Err(e) => {
-                self.status_message = Some(format!("Setting could not be saved: {}", e));
+        };
+
+        // Only the setting that changed is synced. Re-registering the task on
+        // every change blocked the window on schtasks and, with no /ST, restarted
+        // the helper's schedule each time.
+        let synced = match index {
+            7 => (self.system_actions.sync_helper_task)(
+                self.config.helper_enabled,
+                self.config.helper_frequency_hours,
+            ),
+            8 if self.config.helper_enabled => {
+                (self.system_actions.sync_helper_task)(true, self.config.helper_frequency_hours)
             }
+            9 => (self.system_actions.sync_autostart)(self.config.autostart),
+            _ => Ok(()),
+        };
+        if let Err(e) = synced {
+            message = format!("{message} - but Windows was not updated: {e}");
         }
+        self.status_message = Some(message);
 
         if self.is_busy() {
             return;
@@ -197,6 +237,8 @@ mod tests {
     #[test]
     fn submit_setting_input_validates_and_updates_config() {
         let mut app = App::new();
+        app.config.temp_clean_threshold_mb = 500;
+        app.config.helper_frequency_hours = 24;
         app.selected_setting_index = 4;
         app.open_setting_input();
 
@@ -221,5 +263,27 @@ mod tests {
         // Cancel dialog
         app.cancel_setting_input();
         assert!(app.setting_input.is_none());
+
+        // Test helper frequency setting (index 8)
+        app.selected_setting_index = 8;
+        app.open_setting_input();
+        assert!(app.setting_input.is_some());
+        let input8 = app.setting_input.as_ref().unwrap();
+        assert_eq!(input8.setting_index, 8);
+        assert_eq!(input8.setting_name, "WinMedicHelper scan frequency");
+        assert_eq!(input8.buffer, "24");
+
+        // In range, but Task Scheduler has no way to repeat every 30 h.
+        if let Some(input) = app.setting_input.as_mut() {
+            input.buffer = "30".to_string();
+        }
+        assert!(!app.submit_setting_input());
+        assert!(app.setting_input.as_ref().unwrap().error_msg.is_some());
+
+        if let Some(input) = app.setting_input.as_mut() {
+            input.buffer = "48".to_string();
+        }
+        assert!(app.submit_setting_input());
+        assert_eq!(app.config.helper_frequency_hours, 48);
     }
 }

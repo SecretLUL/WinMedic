@@ -1,0 +1,6 @@
+# Link the C runtime statically. Without this the executable imports
+# VCRUNTIME140.dll, which a fresh Windows install does not have, and WinMedic
+# ships as a single .exe — from GitHub, WinGet and its own in-place updater
+# alike — with no installer that could bring the runtime along.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

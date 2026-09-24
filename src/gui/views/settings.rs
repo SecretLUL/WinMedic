@@ -48,10 +48,9 @@ fn settings(ui: &mut egui::Ui, app: &mut App) {
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        // The two numeric settings open the input
-                                        // dialog; the rest are booleans a click
-                                        // can flip outright.
-                                        let numeric = matches!(index, 4 | 5);
+                                        // The numeric settings open the input dialog;
+                                        // the rest are booleans a click can flip outright.
+                                        let numeric = matches!(index, 4 | 5 | 8);
                                         let button = egui::Button::new(
                                             RichText::new(&value).size(12.0).strong().color(
                                                 if value == "ON" {

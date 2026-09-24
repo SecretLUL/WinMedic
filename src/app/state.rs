@@ -22,6 +22,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::confirm::{ConfirmRequest, SystemActions};
 
+/// One module's dashboard row: id, name, icon and status.
+type ModuleStatusRow = (String, String, String, ModuleStatus);
+
 /// One diagnostic module's live state during a scan.
 ///
 /// The engine runs every module in parallel, so "what is happening right now"
@@ -147,6 +150,8 @@ pub struct App {
     pub scan_started_at: Option<Instant>,
     /// How long the last completed scan took.
     pub scan_duration: Option<Duration>,
+    /// Exact timestamp when the last scan was performed.
+    pub last_scan_timestamp: Option<String>,
     pub module_progress_list: Vec<ModuleScanProgress>,
     pub module_statuses: Vec<(String, String, String, ModuleStatus)>,
     pub scan_log_messages: VecDeque<String>,
@@ -228,11 +233,14 @@ impl App {
         let (bg_tx, bg_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let (module_progress_list, default_module_statuses) = Self::module_lists(&engine);
-        let (saved_issues, saved_health, module_statuses, saved_duration, init_msg) = if let Some(
-            mut saved,
-        ) =
-            ScanState::load()
-        {
+        let (
+            saved_issues,
+            saved_health,
+            module_statuses,
+            saved_duration,
+            saved_timestamp,
+            init_msg,
+        ) = if let Some(mut saved) = ScanState::load() {
             let current_boot = sysinfo::System::boot_time();
             let rebooted = saved.boot_time_secs.is_some_and(|b| current_boot > b);
             if rebooted {
@@ -250,28 +258,15 @@ impl App {
                 saved.timestamp, open_count, health
             );
 
-            // Reconcile saved module statuses with current engine modules so newly added modules appear
-            let mut reconciled_statuses = Vec::new();
-            for (id, name, icon, def_status) in &default_module_statuses {
-                if let Some((_, _, _, st)) =
-                    saved.module_statuses.iter().find(|(s_id, ..)| s_id == id)
-                {
-                    reconciled_statuses.push((id.clone(), name.clone(), icon.clone(), st.clone()));
-                } else {
-                    reconciled_statuses.push((
-                        id.clone(),
-                        name.clone(),
-                        icon.clone(),
-                        def_status.clone(),
-                    ));
-                }
-            }
+            let reconciled_statuses =
+                Self::reconcile_module_statuses(&default_module_statuses, &saved.module_statuses);
 
             (
                 saved.issues,
                 health,
                 reconciled_statuses,
                 saved.scan_duration_secs.map(Duration::from_secs),
+                Some(saved.timestamp),
                 msg,
             )
         } else {
@@ -279,6 +274,7 @@ impl App {
                 Vec::new(),
                 100,
                 default_module_statuses,
+                None,
                 None,
                 "WinMedic initialised. Ready to diagnose.".to_string(),
             )
@@ -303,6 +299,7 @@ impl App {
             scan_overall_progress: 0,
             scan_started_at: None,
             scan_duration: saved_duration,
+            last_scan_timestamp: saved_timestamp,
             module_progress_list,
             module_statuses,
             scan_log_messages: VecDeque::from([init_msg]),
@@ -403,6 +400,20 @@ impl App {
         });
     }
 
+    /// Repair the scheduled task and the Run entry for the settings that are on.
+    ///
+    /// Like [`App::start_update_check`], not part of [`App::new`]: the desktop
+    /// front end calls it once, after handing the app the real machine.
+    pub fn reconcile_background_integration(&mut self) {
+        if let Err(e) = (self.system_actions.reconcile_background)(&self.config) {
+            let problem = format!("Background scan / autostart could not be repaired: {e}");
+            self.status_message = Some(match self.status_message.take() {
+                Some(existing) if existing != "Ready" => format!("{existing} {problem}"),
+                _ => problem,
+            });
+        }
+    }
+
     /// Whether any repaired issue currently requires a system restart.
     pub fn has_pending_reboot(&self) -> bool {
         self.issues.iter().any(|i| i.is_reboot_pending)
@@ -449,6 +460,24 @@ impl App {
             ));
         }
         (progress, statuses)
+    }
+
+    /// Saved module statuses laid over the current engine's module list, so a
+    /// module added since the save still appears.
+    fn reconcile_module_statuses(
+        defaults: &[ModuleStatusRow],
+        saved: &[ModuleStatusRow],
+    ) -> Vec<ModuleStatusRow> {
+        defaults
+            .iter()
+            .map(|(id, name, icon, default)| {
+                let status = saved
+                    .iter()
+                    .find(|(saved_id, ..)| saved_id == id)
+                    .map_or(default, |(.., status)| status);
+                (id.clone(), name.clone(), icon.clone(), status.clone())
+            })
+            .collect()
     }
 
     pub fn refresh_telemetry(&mut self) {
@@ -541,13 +570,71 @@ impl App {
         if !self.system_actions.persist_scan_state {
             return;
         }
-        let state = ScanState::new(
+        // Stamped with the scan's time, not the save's. A tick in triage is not
+        // a new scan, and [`Self::poll_external_scan_updates`] tells a scan from
+        // another process apart by exactly this timestamp. Nothing scanned,
+        // nothing to save — and nothing to overwrite a helper's results with.
+        let Some(timestamp) = self.last_scan_timestamp.clone() else {
+            return;
+        };
+        let mut state = ScanState::new(
             self.health_score,
             self.issues.clone(),
             self.module_statuses.clone(),
             self.scan_duration.map(|d| d.as_secs()),
         );
+        state.timestamp = timestamp;
         let _ = state.save();
+    }
+
+    /// Check if an external background scan (e.g. from WinMedicHelper) saved newer results.
+    pub fn poll_external_scan_updates(&mut self) {
+        if self.is_busy() || !self.system_actions.persist_scan_state {
+            return;
+        }
+        let Some(mut saved) = ScanState::load() else {
+            return;
+        };
+        if self.last_scan_timestamp.as_deref() == Some(saved.timestamp.as_str()) {
+            return;
+        }
+
+        // A fresh scan knows nothing of the decisions made against the last
+        // one: which findings the user unticked, which repairs wait on a
+        // restart, which failed and why. Carry them over for findings that are
+        // still reported, or the next [F] repairs what was deliberately left
+        // out. No reboot can have happened in between — it would have ended
+        // this process — so a pending restart is still pending.
+        for issue in &mut saved.issues {
+            let Some(known) = self.issues.iter().find(|i| i.id == issue.id) else {
+                continue;
+            };
+            if known.is_reboot_pending {
+                issue.is_reboot_pending = true;
+                issue.is_selected = false;
+            } else {
+                issue.is_selected = known.is_selected;
+            }
+            if issue.fix_error.is_none() {
+                issue.fix_error = known.fix_error.clone();
+            }
+        }
+
+        let (_, default_statuses) = Self::module_lists(&self.engine);
+        self.module_statuses =
+            Self::reconcile_module_statuses(&default_statuses, &saved.module_statuses);
+        self.health_score = DiagnosticEngine::calculate_health_score(&saved.issues);
+        self.issues = saved.issues;
+        self.scan_duration = saved.scan_duration_secs.map(Duration::from_secs);
+        self.clamp_filtered_selection();
+
+        let message = format!(
+            "Loaded background scan from {} (health: {}/100).",
+            saved.timestamp, self.health_score
+        );
+        self.last_scan_timestamp = Some(saved.timestamp);
+        self.push_scan_log(message.clone());
+        self.status_message = Some(message);
     }
 }
 

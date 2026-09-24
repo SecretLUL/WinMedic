@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod background_task;
 pub mod cmd;
 pub mod console;
 pub mod debug_log;
