@@ -1064,16 +1064,11 @@ async fn test_tier1_f12_whea_logger_scan_and_repair_integration() {
     use winmedic::engine::runner::{DiagnosticEngine, RepairOptions};
 
     let runner = Arc::new(ProgrammableMockRunner::new());
+    // wevtutil /f:xml output, the only form WinMedic reads events in.
     runner.set_response(
         "wevtutil.exe",
         CmdOutput::ok(
-            r#"Event[0]:
-  Source: Microsoft-Windows-WHEA-Logger
-  Event ID: 17
-  Level: Warning
-  Component: PCI Express Root Port
-  Primary Bus:Device:Function: 0x0:0x1:0x1
-  Primary Device Name: PCI\VEN_1022&DEV_1453"#,
+            r#"<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-WHEA-Logger' Guid='{c26c4f3c-3f66-4e99-8f8a-39405cfed220}'/><EventID>17</EventID><Level>3</Level><TimeCreated SystemTime='2026-08-21T08:00:00.0000000Z'/></System><EventData><Data Name='ErrorSource'>4</Data><Data Name='Bus'>0x0</Data><Data Name='Device'>0x1</Data><Data Name='Function'>0x1</Data><Data Name='PrimaryDeviceName'>PCI\VEN_1022&amp;DEV_1453</Data></EventData></Event>"#,
         ),
     );
     runner.set_response("powercfg.exe", CmdOutput::ok(""));
@@ -1115,14 +1110,12 @@ fn test_tier1_f12_crash_analysis_metadata() {
 #[tokio::test]
 async fn test_tier1_f12_crash_analysis_scan_and_repair_integration() {
     let runner = Arc::new(ProgrammableMockRunner::new());
+    // A bugcheck event the way current Windows logs it: provider
+    // WER-SystemErrorReporting, stop code in param1.
     runner.set_response(
         "wevtutil.exe",
         CmdOutput::ok(
-            r#"Event[0]:
-  Source: BugCheck
-  Event ID: 1001
-  Description:
-The computer has rebooted from a bugcheck.  The bugcheck was: 0x00000116 (0xffffc8073e4a3010, 0xfffff8024a123456)."#,
+            r#"<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-WER-SystemErrorReporting' Guid='{abce23e7-de45-4366-8631-84fa6c525952}'/><EventID>1001</EventID><Level>2</Level><TimeCreated SystemTime='2026-08-20T10:15:30.0000000Z'/></System><EventData><Data Name='param1'>0x00000116 (0xffffc8073e4a3010, 0xfffff8024a123456)</Data><Data Name='param2'>C:\WINDOWS\Minidump\082026-1111-01.dmp</Data><Data Name='param3'>00000000-0000-0000-0000-000000000000</Data></EventData></Event>"#,
         ),
     );
     runner.set_response("cmd.exe", CmdOutput::ok(""));

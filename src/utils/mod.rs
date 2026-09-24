@@ -4,6 +4,7 @@ pub mod cmd;
 pub mod console;
 pub mod debug_log;
 pub mod decode;
+pub mod event_xml;
 pub mod fs_stats;
 pub mod self_update;
 #[cfg(test)]
