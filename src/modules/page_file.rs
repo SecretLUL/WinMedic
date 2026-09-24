@@ -251,7 +251,7 @@ impl PageFileModule {
     async fn probe(&self, script: &str) -> Result<String, String> {
         let out = self
             .runner
-            .run_powershell(script, Duration::from_secs(20))
+            .query_powershell(script, Duration::from_secs(20))
             .await?;
 
         if !out.success && out.stdout.trim().is_empty() {

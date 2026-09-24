@@ -479,7 +479,7 @@ impl DiagnosticModule for ScheduledTasksModule {
 
         let inventory = self
             .runner
-            .run_powershell(TASK_INVENTORY_SCRIPT, Duration::from_secs(45))
+            .query_powershell(TASK_INVENTORY_SCRIPT, Duration::from_secs(45))
             .await?;
 
         // A non-zero exit with usable output is normal here: a single task the

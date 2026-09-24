@@ -80,6 +80,52 @@ pub trait CommandRunner: Send + Sync {
         )
         .await
     }
+
+    /// [`Self::run_powershell`] for a script that only reads: a timeout is
+    /// retried once.
+    ///
+    /// At scan start every module asks WMI something at the same moment, and
+    /// on a busy machine (seen on CI runners) the first query of a module
+    /// sometimes stalls past its timeout while the same query answers at
+    /// once a little later. A second timeout is reported as before.
+    async fn query_powershell(
+        &self,
+        command_str: &str,
+        timeout_duration: Duration,
+    ) -> Result<CmdOutput, String> {
+        match self.run_powershell(command_str, timeout_duration).await {
+            Err(err) if is_timeout(&err) => self
+                .run_powershell(command_str, timeout_duration)
+                .await
+                .map_err(|again| format!("{again} (on the second attempt too)")),
+            result => result,
+        }
+    }
+}
+
+/// The error [`run_cmd`] and [`run_cmd_streaming`] return when a command did
+/// not finish in time.
+fn timed_out(program: &str, timeout_duration: Duration) -> String {
+    format!("Command '{program}' timed out after {timeout_duration:?}")
+}
+
+/// Whether an error from a [`CommandRunner`] is a timeout.
+pub fn is_timeout(err: &str) -> bool {
+    err.starts_with("Command '") && err.contains("' timed out after ")
+}
+
+/// How many PowerShell processes the real runner starts at once.
+///
+/// Every module of a scan starts at the same time, and most ask PowerShell
+/// and WMI something first: a dozen processes loading CIM together. Capping
+/// them costs a couple of seconds on a fast PC and keeps WMI from being
+/// swamped on a slow one. Waiting for a slot does not count against a
+/// command's timeout.
+const POWERSHELL_SLOTS: usize = 4;
+
+fn powershell_slots() -> &'static tokio::sync::Semaphore {
+    static SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    SLOTS.get_or_init(|| tokio::sync::Semaphore::new(POWERSHELL_SLOTS))
 }
 
 /// Prefix a script with the switch that makes PowerShell write UTF-8.
@@ -124,6 +170,24 @@ impl CommandRunner for SystemCommandRunner {
         timeout_duration: Duration,
     ) -> Result<CmdOutput, String> {
         run_cmd_streaming(program, args, log_tx, timeout_duration).await
+    }
+
+    async fn run_powershell(
+        &self,
+        command_str: &str,
+        timeout_duration: Duration,
+    ) -> Result<CmdOutput, String> {
+        let _slot = powershell_slots()
+            .acquire()
+            .await
+            .map_err(|e| format!("PowerShell could not be started: {e}"))?;
+        let script = powershell_script(command_str);
+        run_cmd(
+            "powershell",
+            &["-NoProfile", "-NonInteractive", "-Command", &script],
+            timeout_duration,
+        )
+        .await
     }
 }
 
@@ -382,10 +446,7 @@ pub async fn run_cmd(
         Ok(Err(e)) => Err(format!("Command execution error: {}", e)),
         Err(_) => {
             let _ = child.kill().await;
-            Err(format!(
-                "Command '{}' timed out after {:?}",
-                program, timeout_duration
-            ))
+            Err(timed_out(program, timeout_duration))
         }
     }
 }
@@ -453,10 +514,7 @@ pub async fn run_cmd_streaming(
         Ok(Err(e)) => Err(format!("Command error: {}", e)),
         Err(_) => {
             let _ = child.kill().await;
-            Err(format!(
-                "Command '{}' timed out after {:?}",
-                program, timeout_duration
-            ))
+            Err(timed_out(program, timeout_duration))
         }
     }
 }
@@ -594,6 +652,82 @@ mod tests {
         assert_eq!(run(&["query"]).await, "broken");
         assert_eq!(run(&["repair"]).await, "done");
         assert_eq!(run(&["query"]).await, "healthy");
+    }
+
+    /// Answers each call with the next of `answers` and counts the calls.
+    struct Scripted {
+        answers: Mutex<Vec<Result<CmdOutput, String>>>,
+        calls: Mutex<usize>,
+    }
+
+    impl Scripted {
+        fn new(answers: Vec<Result<CmdOutput, String>>) -> Self {
+            Self {
+                answers: Mutex::new(answers),
+                calls: Mutex::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            *self.calls.lock().unwrap()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl CommandRunner for Scripted {
+        async fn run(&self, _: &str, _: &[&str], _: Duration) -> Result<CmdOutput, String> {
+            *self.calls.lock().unwrap() += 1;
+            self.answers.lock().unwrap().remove(0)
+        }
+
+        async fn run_streaming(
+            &self,
+            program: &str,
+            args: &[&str],
+            _: Option<Sender<String>>,
+            timeout: Duration,
+        ) -> Result<CmdOutput, String> {
+            self.run(program, args, timeout).await
+        }
+    }
+
+    const QUERY_TIMEOUT: Duration = Duration::from_secs(20);
+
+    #[tokio::test]
+    async fn a_query_that_timed_out_is_asked_once_more() {
+        let runner = Scripted::new(vec![
+            Err(timed_out("powershell", QUERY_TIMEOUT)),
+            Ok(CmdOutput::ok("True|17179869184")),
+        ]);
+        let out = runner.query_powershell("q", QUERY_TIMEOUT).await.unwrap();
+        assert_eq!(out.stdout, "True|17179869184");
+        assert_eq!(runner.calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_second_timeout_is_reported() {
+        let runner = Scripted::new(vec![
+            Err(timed_out("powershell", QUERY_TIMEOUT)),
+            Err(timed_out("powershell", QUERY_TIMEOUT)),
+        ]);
+        let err = runner
+            .query_powershell("q", QUERY_TIMEOUT)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "Command 'powershell' timed out after 20s (on the second attempt too)"
+        );
+        assert_eq!(runner.calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn only_a_timeout_is_retried() {
+        let runner = Scripted::new(vec![Err("Command execution error: denied".to_string())]);
+        assert!(runner.query_powershell("q", QUERY_TIMEOUT).await.is_err());
+        assert_eq!(runner.calls(), 1);
+        assert!(!is_timeout("Command execution error: denied"));
+        assert!(is_timeout(&timed_out("wevtutil.exe", QUERY_TIMEOUT)));
     }
 
     /// The whole point of the table is that a failed repair explains itself, so
