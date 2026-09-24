@@ -1,6 +1,7 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
+use crate::utils::service::{self, SERVICE_DISABLED};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -193,13 +194,8 @@ impl DiagnosticModule for WindowsUpdatesModule {
         ];
 
         for (svc, svc_name) in services {
-            let out = self
-                .runner
-                .run("sc.exe", &["query", svc], Duration::from_secs(8))
-                .await;
-            if let Ok(res) = out {
-                let stdout = res.stdout.to_lowercase();
-                if stdout.contains("disabled") || stdout.contains("deaktiviert") {
+            match service::start_type(&*self.runner, svc).await {
+                Ok(Some(SERVICE_DISABLED)) => {
                     issues.push(Issue::new(
                         format!("wu_svc_disabled_{}", svc),
                         self.id(),
@@ -208,19 +204,35 @@ impl DiagnosticModule for WindowsUpdatesModule {
                         Severity::Critical,
                         RiskScore::Medium,
                         format!("The system service '{}' ({}) is disabled. Without it Windows cannot install security updates.", svc_name, svc),
-                        res.stdout,
+                        format!("sc qc {}: START_TYPE 4 (DISABLED)", svc),
                         format!("Reset service '{}' to start type 'Manual/Demand'", svc),
                         vec![
                             format!("sc config {} start= demand", svc),
                             format!("net start {}", svc),
                         ],
                     ));
-                } else {
+                }
+                Ok(Some(_)) => {
                     Self::send_progress(
                         &progress_tx,
                         35,
-                        &format!("Service '{}' running", svc),
-                        Some(&format!("Service '{}' ({}) is operational.", svc_name, svc)),
+                        &format!("Service '{}' enabled", svc),
+                        Some(&format!(
+                            "Service '{}' ({}) is not disabled.",
+                            svc_name, svc
+                        )),
+                    )
+                    .await;
+                }
+                Ok(None) | Err(_) => {
+                    Self::send_progress(
+                        &progress_tx,
+                        35,
+                        &format!("Service '{}' not checked", svc),
+                        Some(&format!(
+                            "sc qc {} reported no start type; the service was not checked.",
+                            svc
+                        )),
                     )
                     .await;
                 }
@@ -361,14 +373,29 @@ impl DiagnosticModule for WindowsUpdatesModule {
 
         if issue_id.starts_with("wu_svc_disabled_") {
             let svc = issue_id.trim_start_matches("wu_svc_disabled_");
-            let _ = self
+            let config = self
                 .runner
                 .run(
                     "sc.exe",
                     &["config", svc, "start=", "demand"],
                     Duration::from_secs(10),
                 )
-                .await;
+                .await?;
+            if !config.success {
+                return Err(format!(
+                    "sc config {} failed: {}",
+                    svc,
+                    config.stdout.trim()
+                ));
+            }
+            // Read back: a group policy can pin a service to disabled, and
+            // Windows then accepts the change without keeping it.
+            if service::start_type(&*self.runner, svc).await? == Some(SERVICE_DISABLED) {
+                return Err(format!(
+                    "Windows accepted the change but '{}' is still disabled - a group policy may enforce it",
+                    svc
+                ));
+            }
 
             if !self.config.auto_restart_services {
                 return Ok(format!(
@@ -470,15 +497,14 @@ mod tests {
     use super::*;
     use crate::utils::cmd::{CmdOutput, MockCommandRunner};
 
+    use crate::utils::service::test_support::sc_qc_output;
+
     #[tokio::test]
     async fn test_windows_updates_detects_disabled_service() {
         let mock = MockCommandRunner::new();
-        mock.add_response(
-            "query wuauserv",
-            CmdOutput::ok("STATE: 1 STOPPED \n START_TYPE: DISABLED"),
-        );
-        mock.add_response("query bits", CmdOutput::ok("STATE: 4 RUNNING"));
-        mock.add_response("query cryptsvc", CmdOutput::ok("STATE: 4 RUNNING"));
+        mock.add_response("qc wuauserv", CmdOutput::ok(sc_qc_output("wuauserv", 4)));
+        mock.add_response("qc bits", CmdOutput::ok(sc_qc_output("bits", 2)));
+        mock.add_response("qc cryptsvc", CmdOutput::ok(sc_qc_output("cryptsvc", 2)));
 
         let module = WindowsUpdatesModule::with_runner(ModuleConfig::default(), Arc::new(mock));
         let issues = module.scan(None).await.unwrap();
@@ -486,6 +512,25 @@ mod tests {
         let disabled_wu = issues.iter().find(|i| i.id == "wu_svc_disabled_wuauserv");
         assert!(disabled_wu.is_some());
         assert_eq!(disabled_wu.unwrap().severity, Severity::Critical);
+        assert!(!issues.iter().any(|i| i.id == "wu_svc_disabled_bits"));
+    }
+
+    #[tokio::test]
+    async fn a_service_disable_that_windows_does_not_keep_is_a_failed_repair() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "config wuauserv",
+            CmdOutput::ok("[SC] ChangeServiceConfig ERFOLG"),
+        );
+        // Read back after the change: still 4, as a group policy would keep it.
+        mock.add_response("qc wuauserv", CmdOutput::ok(sc_qc_output("wuauserv", 4)));
+
+        let module = WindowsUpdatesModule::with_runner(ModuleConfig::default(), Arc::new(mock));
+        let err = module
+            .fix("wu_svc_disabled_wuauserv", None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("still disabled"), "{err}");
     }
 
     /// The false positive this detection was rewritten for. Windows leaves the

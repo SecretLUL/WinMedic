@@ -7,6 +7,7 @@ pub mod decode;
 pub mod event_xml;
 pub mod fs_stats;
 pub mod self_update;
+pub mod service;
 #[cfg(test)]
 pub mod test_guard;
 pub mod updater;

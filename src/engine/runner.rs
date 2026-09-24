@@ -1075,18 +1075,12 @@ mod tests {
                 "The component store is repairable. The operation completed successfully.",
             ),
         );
-        // Mock disabled Windows Update service
-        mock.add_response(
-            "query wuauserv",
-            CmdOutput::ok("STATE: 1 STOPPED \n START_TYPE: DISABLED"),
-        );
-        // Mock disabled VSS
-        mock.add_response(
-            "query vss",
-            CmdOutput::ok("STATE: 1 STOPPED \n START_TYPE: DISABLED"),
-        );
-        mock.add_response("query bits", CmdOutput::ok("STATE: 4 RUNNING"));
-        mock.add_response("query cryptsvc", CmdOutput::ok("STATE: 4 RUNNING"));
+        // Mock disabled Windows Update and VSS services, in real `sc qc` output
+        use crate::utils::service::test_support::sc_qc_output;
+        mock.add_response("qc wuauserv", CmdOutput::ok(sc_qc_output("wuauserv", 4)));
+        mock.add_response("qc vss", CmdOutput::ok(sc_qc_output("vss", 4)));
+        mock.add_response("qc bits", CmdOutput::ok(sc_qc_output("bits", 2)));
+        mock.add_response("qc cryptsvc", CmdOutput::ok(sc_qc_output("cryptsvc", 2)));
         mock.add_response("dirty query C:", CmdOutput::ok("Volume - C: is clean"));
         mock.add_response("Get-PhysicalDisk", CmdOutput::ok("SSD | Health: Healthy"));
         mock.add_response("nslookup.exe", CmdOutput::ok("Address: 8.8.8.8"));

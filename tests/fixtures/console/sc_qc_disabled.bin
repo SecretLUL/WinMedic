@@ -1,0 +1,15 @@
+[SC] QueryServiceConfig ERFOLG
+
+SERVICE_NAME: AppVClient
+        TYPE               : 10  WIN32_OWN_PROCESS 
+        START_TYPE         : 4   DISABLED
+        ERROR_CONTROL      : 1   NORMAL
+        BINARY_PATH_NAME   : C:\WINDOWS\system32\AppVClient.exe
+        LOAD_ORDER_GROUP   : 
+        TAG                : 0
+        DISPLAY_NAME       : Microsoft App-V Client
+        DEPENDENCIES       : RpcSS
+                           : netprofm
+                           : AppvVfs
+                           : AppVStrm
+        SERVICE_START_NAME : LocalSystem
