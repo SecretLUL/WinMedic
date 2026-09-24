@@ -1,0 +1,539 @@
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter
+Beschreibung:                       MSAFD-Tcpip [TCP/IPv6]
+Anbieter-ID:                        {F9EAB0C0-26D4-11D0-BBBF-00AA006C34E4}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1001
+Version:                            2
+Adressfamilie:                      23
+Max. Adresslänge:                   28
+Min. Adresslänge:                   28
+Sockettyp:                          1
+Protokoll:                          6
+Dienstflags:                        0x20066
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter
+Beschreibung:                       MSAFD-Tcpip [UDP/IPv6]
+Anbieter-ID:                        {F9EAB0C0-26D4-11D0-BBBF-00AA006C34E4}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1002
+Version:                            2
+Adressfamilie:                      23
+Max. Adresslänge:                   28
+Min. Adresslänge:                   28
+Sockettyp:                          2
+Protokoll:                          17
+Dienstflags:                        0x20609
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter
+Beschreibung:                       MSAFD-Tcpip [RAW/IPv6]
+Anbieter-ID:                        {F9EAB0C0-26D4-11D0-BBBF-00AA006C34E4}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1003
+Version:                            2
+Adressfamilie:                      23
+Max. Adresslänge:                   28
+Min. Adresslänge:                   28
+Sockettyp:                          3
+Protokoll:                          0
+Dienstflags:                        0x20609
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter
+Beschreibung:                       MSAFD-Tcpip [TCP/IP]
+Anbieter-ID:                        {E70F1AA0-AB8B-11CF-8CA3-00805F48A192}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1004
+Version:                            2
+Adressfamilie:                      2
+Max. Adresslänge:                   16
+Min. Adresslänge:                   16
+Sockettyp:                          1
+Protokoll:                          6
+Dienstflags:                        0x20066
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter
+Beschreibung:                       MSAFD-Tcpip [UDP/IP]
+Anbieter-ID:                        {E70F1AA0-AB8B-11CF-8CA3-00805F48A192}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1005
+Version:                            2
+Adressfamilie:                      2
+Max. Adresslänge:                   16
+Min. Adresslänge:                   16
+Sockettyp:                          2
+Protokoll:                          17
+Dienstflags:                        0x20609
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter
+Beschreibung:                       MSAFD-Tcpip [RAW/IP]
+Anbieter-ID:                        {E70F1AA0-AB8B-11CF-8CA3-00805F48A192}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1006
+Version:                            2
+Adressfamilie:                      2
+Max. Adresslänge:                   16
+Min. Adresslänge:                   16
+Sockettyp:                          3
+Protokoll:                          0
+Dienstflags:                        0x20609
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter
+Beschreibung:                       Hyper-V RAW
+Anbieter-ID:                        {1234191B-4BF7-4CA7-86E0-DFD7C32B5445}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1007
+Version:                            2
+Adressfamilie:                      34
+Max. Adresslänge:                   36
+Min. Adresslänge:                   36
+Sockettyp:                          1
+Protokoll:                          1
+Dienstflags:                        0x20026
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter
+Beschreibung:                       RSVP-TCPv6-Dienstanbieter
+Anbieter-ID:                        {9D60A9E0-337A-11D0-BD88-0000C082E69A}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1008
+Version:                            2
+Adressfamilie:                      23
+Max. Adresslänge:                   28
+Min. Adresslänge:                   28
+Sockettyp:                          1
+Protokoll:                          6
+Dienstflags:                        0x22066
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter
+Beschreibung:                       RSVP-TCP-Dienstanbieter
+Anbieter-ID:                        {9D60A9E0-337A-11D0-BD88-0000C082E69A}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1009
+Version:                            2
+Adressfamilie:                      2
+Max. Adresslänge:                   16
+Min. Adresslänge:                   16
+Sockettyp:                          1
+Protokoll:                          6
+Dienstflags:                        0x22066
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter
+Beschreibung:                       RSVP-UDPv6-Dienstanbieter
+Anbieter-ID:                        {9D60A9E0-337A-11D0-BD88-0000C082E69A}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1010
+Version:                            2
+Adressfamilie:                      23
+Max. Adresslänge:                   28
+Min. Adresslänge:                   28
+Sockettyp:                          2
+Protokoll:                          17
+Dienstflags:                        0x22609
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter
+Beschreibung:                       RSVP-UDP-Dienstanbieter
+Anbieter-ID:                        {9D60A9E0-337A-11D0-BD88-0000C082E69A}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1011
+Version:                            2
+Adressfamilie:                      2
+Max. Adresslänge:                   16
+Min. Adresslänge:                   16
+Sockettyp:                          2
+Protokoll:                          17
+Dienstflags:                        0x22609
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter
+Beschreibung:                       AF_UNIX
+Anbieter-ID:                        {A00943D9-9C2E-4633-9B59-0057A3160994}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1012
+Version:                            2
+Adressfamilie:                      1
+Max. Adresslänge:                   110
+Min. Adresslänge:                   2
+Sockettyp:                          1
+Protokoll:                          0
+Dienstflags:                        0x20026
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter
+Beschreibung:                       MSAFD L2CAP [Bluetooth]
+Anbieter-ID:                        {9FC48064-7298-43E4-B7BD-181F2089792A}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1013
+Version:                            2
+Adressfamilie:                      32
+Max. Adresslänge:                   30
+Min. Adresslänge:                   30
+Sockettyp:                          1
+Protokoll:                          256
+Dienstflags:                        0x20006
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter
+Beschreibung:                       MSAFD RfComm [Bluetooth]
+Anbieter-ID:                        {9FC48064-7298-43E4-B7BD-181F2089792A}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1014
+Version:                            2
+Adressfamilie:                      32
+Max. Adresslänge:                   30
+Min. Adresslänge:                   30
+Sockettyp:                          1
+Protokoll:                          3
+Dienstflags:                        0x20026
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter (32)
+Beschreibung:                       MSAFD-Tcpip [TCP/IPv6]
+Anbieter-ID:                        {F9EAB0C0-26D4-11D0-BBBF-00AA006C34E4}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1001
+Version:                            2
+Adressfamilie:                      23
+Max. Adresslänge:                   28
+Min. Adresslänge:                   28
+Sockettyp:                          1
+Protokoll:                          6
+Dienstflags:                        0x20066
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter (32)
+Beschreibung:                       MSAFD-Tcpip [UDP/IPv6]
+Anbieter-ID:                        {F9EAB0C0-26D4-11D0-BBBF-00AA006C34E4}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1002
+Version:                            2
+Adressfamilie:                      23
+Max. Adresslänge:                   28
+Min. Adresslänge:                   28
+Sockettyp:                          2
+Protokoll:                          17
+Dienstflags:                        0x20609
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter (32)
+Beschreibung:                       MSAFD-Tcpip [RAW/IPv6]
+Anbieter-ID:                        {F9EAB0C0-26D4-11D0-BBBF-00AA006C34E4}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1003
+Version:                            2
+Adressfamilie:                      23
+Max. Adresslänge:                   28
+Min. Adresslänge:                   28
+Sockettyp:                          3
+Protokoll:                          0
+Dienstflags:                        0x20609
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter (32)
+Beschreibung:                       MSAFD-Tcpip [TCP/IP]
+Anbieter-ID:                        {E70F1AA0-AB8B-11CF-8CA3-00805F48A192}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1004
+Version:                            2
+Adressfamilie:                      2
+Max. Adresslänge:                   16
+Min. Adresslänge:                   16
+Sockettyp:                          1
+Protokoll:                          6
+Dienstflags:                        0x20066
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter (32)
+Beschreibung:                       MSAFD-Tcpip [UDP/IP]
+Anbieter-ID:                        {E70F1AA0-AB8B-11CF-8CA3-00805F48A192}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1005
+Version:                            2
+Adressfamilie:                      2
+Max. Adresslänge:                   16
+Min. Adresslänge:                   16
+Sockettyp:                          2
+Protokoll:                          17
+Dienstflags:                        0x20609
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter (32)
+Beschreibung:                       MSAFD-Tcpip [RAW/IP]
+Anbieter-ID:                        {E70F1AA0-AB8B-11CF-8CA3-00805F48A192}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1006
+Version:                            2
+Adressfamilie:                      2
+Max. Adresslänge:                   16
+Min. Adresslänge:                   16
+Sockettyp:                          3
+Protokoll:                          0
+Dienstflags:                        0x20609
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter (32)
+Beschreibung:                       Hyper-V RAW
+Anbieter-ID:                        {1234191B-4BF7-4CA7-86E0-DFD7C32B5445}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1007
+Version:                            2
+Adressfamilie:                      34
+Max. Adresslänge:                   36
+Min. Adresslänge:                   36
+Sockettyp:                          1
+Protokoll:                          1
+Dienstflags:                        0x20026
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter (32)
+Beschreibung:                       RSVP-TCPv6-Dienstanbieter
+Anbieter-ID:                        {9D60A9E0-337A-11D0-BD88-0000C082E69A}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1008
+Version:                            2
+Adressfamilie:                      23
+Max. Adresslänge:                   28
+Min. Adresslänge:                   28
+Sockettyp:                          1
+Protokoll:                          6
+Dienstflags:                        0x22066
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter (32)
+Beschreibung:                       RSVP-TCP-Dienstanbieter
+Anbieter-ID:                        {9D60A9E0-337A-11D0-BD88-0000C082E69A}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1009
+Version:                            2
+Adressfamilie:                      2
+Max. Adresslänge:                   16
+Min. Adresslänge:                   16
+Sockettyp:                          1
+Protokoll:                          6
+Dienstflags:                        0x22066
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter (32)
+Beschreibung:                       RSVP-UDPv6-Dienstanbieter
+Anbieter-ID:                        {9D60A9E0-337A-11D0-BD88-0000C082E69A}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1010
+Version:                            2
+Adressfamilie:                      23
+Max. Adresslänge:                   28
+Min. Adresslänge:                   28
+Sockettyp:                          2
+Protokoll:                          17
+Dienstflags:                        0x22609
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter (32)
+Beschreibung:                       RSVP-UDP-Dienstanbieter
+Anbieter-ID:                        {9D60A9E0-337A-11D0-BD88-0000C082E69A}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1011
+Version:                            2
+Adressfamilie:                      2
+Max. Adresslänge:                   16
+Min. Adresslänge:                   16
+Sockettyp:                          2
+Protokoll:                          17
+Dienstflags:                        0x22609
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter (32)
+Beschreibung:                       AF_UNIX
+Anbieter-ID:                        {A00943D9-9C2E-4633-9B59-0057A3160994}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1012
+Version:                            2
+Adressfamilie:                      1
+Max. Adresslänge:                   110
+Min. Adresslänge:                   2
+Sockettyp:                          1
+Protokoll:                          0
+Dienstflags:                        0x20026
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter (32)
+Beschreibung:                       MSAFD L2CAP [Bluetooth]
+Anbieter-ID:                        {9FC48064-7298-43E4-B7BD-181F2089792A}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1013
+Version:                            2
+Adressfamilie:                      32
+Max. Adresslänge:                   30
+Min. Adresslänge:                   30
+Sockettyp:                          1
+Protokoll:                          256
+Dienstflags:                        0x20006
+Protokollverkettungslänge:          1
+
+Winsock-Kataloganbietereintrag
+------------------------------------------------------
+Eintragstyp:                        Basisdienstanbieter (32)
+Beschreibung:                       MSAFD RfComm [Bluetooth]
+Anbieter-ID:                        {9FC48064-7298-43E4-B7BD-181F2089792A}
+Anbieterpfad:                       %SystemRoot%\system32\mswsock.dll
+Katalogeintrags-ID:                 1014
+Version:                            2
+Adressfamilie:                      32
+Max. Adresslänge:                   30
+Min. Adresslänge:                   30
+Sockettyp:                          1
+Protokoll:                          3
+Dienstflags:                        0x20026
+Protokollverkettungslänge:          1
+
+Namespace-Anbietereintrag
+------------------------------------------------------
+Beschreibung:                       E-Mail-Namenshimanbieter
+Anbieterkennung:                    {964ACBA2-B2BC-40EB-8C6A-A6DB40161CAE}
+Namespace:                          37
+Aktiv:                              1
+Version:                            0
+
+
+Namespace-Anbietereintrag
+------------------------------------------------------
+Beschreibung:                       TCP/IP
+Anbieterkennung:                    {22059D40-7E9E-11CF-AE5A-00AA00A7112B}
+Namespace:                          12
+Aktiv:                              1
+Version:                            0
+
+
+Namespace-Anbietereintrag
+------------------------------------------------------
+Beschreibung:                       NTDS
+Anbieterkennung:                    {3B2637EE-E580-11CF-A555-00C04FD8D4AC}
+Namespace:                          32
+Aktiv:                              1
+Version:                            0
+
+
+Namespace-Anbietereintrag
+------------------------------------------------------
+Beschreibung:                       @%SystemRoot%\system32\nlasvc.dll,-1000
+Anbieterkennung:                    {6642243A-3BA8-4AA6-BAA5-2E0BD71FDD83}
+Namespace:                          15
+Aktiv:                              1
+Version:                            0
+
+
+Namespace-Anbietereintrag
+------------------------------------------------------
+Beschreibung:                       Bluetooth Namespace
+Anbieterkennung:                    {06AA63E0-7D60-41FF-AFB2-3EE6D2D9392D}
+Namespace:                          16
+Aktiv:                              1
+Version:                            0
+
+
+Namespace-Anbietereintrag (32)
+------------------------------------------------------
+Beschreibung:                       E-Mail-Namenshimanbieter
+Anbieterkennung:                    {964ACBA2-B2BC-40EB-8C6A-A6DB40161CAE}
+Namespace:                          37
+Aktiv:                              1
+Version:                            0
+
+
+Namespace-Anbietereintrag (32)
+------------------------------------------------------
+Beschreibung:                       TCP/IP
+Anbieterkennung:                    {22059D40-7E9E-11CF-AE5A-00AA00A7112B}
+Namespace:                          12
+Aktiv:                              1
+Version:                            0
+
+
+Namespace-Anbietereintrag (32)
+------------------------------------------------------
+Beschreibung:                       NTDS
+Anbieterkennung:                    {3B2637EE-E580-11CF-A555-00C04FD8D4AC}
+Namespace:                          32
+Aktiv:                              1
+Version:                            0
+
+
+Namespace-Anbietereintrag (32)
+------------------------------------------------------
+Beschreibung:                       @%SystemRoot%\system32\nlasvc.dll,-1000
+Anbieterkennung:                    {6642243A-3BA8-4AA6-BAA5-2E0BD71FDD83}
+Namespace:                          15
+Aktiv:                              1
+Version:                            0
+
+
+Namespace-Anbietereintrag (32)
+------------------------------------------------------
+Beschreibung:                       Bluetooth Namespace
+Anbieterkennung:                    {06AA63E0-7D60-41FF-AFB2-3EE6D2D9392D}
+Namespace:                          16
+Aktiv:                              1
+Version:                            0
+
+

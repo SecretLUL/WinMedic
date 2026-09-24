@@ -1,7 +1,8 @@
+use crate::utils::decode::{LineDecoder, decode_output};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::AsyncReadExt;
 use tokio::process::Command as TokioCommand;
 use tokio::sync::mpsc::Sender;
 use tokio::time::timeout;
@@ -71,13 +72,73 @@ pub trait CommandRunner: Send + Sync {
         command_str: &str,
         timeout_duration: Duration,
     ) -> Result<CmdOutput, String> {
+        let script = powershell_script(command_str);
         self.run(
             "powershell",
-            &["-NoProfile", "-NonInteractive", "-Command", command_str],
+            &["-NoProfile", "-NonInteractive", "-Command", &script],
             timeout_duration,
         )
         .await
     }
+
+    /// [`Self::run_powershell`] for a script that only reads: a timeout is
+    /// retried once.
+    ///
+    /// At scan start every module asks WMI something at the same moment, and
+    /// on a busy machine (seen on CI runners) the first query of a module
+    /// sometimes stalls past its timeout while the same query answers at
+    /// once a little later. A second timeout is reported as before.
+    async fn query_powershell(
+        &self,
+        command_str: &str,
+        timeout_duration: Duration,
+    ) -> Result<CmdOutput, String> {
+        match self.run_powershell(command_str, timeout_duration).await {
+            Err(err) if is_timeout(&err) => self
+                .run_powershell(command_str, timeout_duration)
+                .await
+                .map_err(|again| format!("{again} (on the second attempt too)")),
+            result => result,
+        }
+    }
+}
+
+/// The error [`run_cmd`] and [`run_cmd_streaming`] return when a command did
+/// not finish in time.
+fn timed_out(program: &str, timeout_duration: Duration) -> String {
+    format!("Command '{program}' timed out after {timeout_duration:?}")
+}
+
+/// Whether an error from a [`CommandRunner`] is a timeout.
+pub fn is_timeout(err: &str) -> bool {
+    err.starts_with("Command '") && err.contains("' timed out after ")
+}
+
+/// How many PowerShell processes the real runner starts at once.
+///
+/// Every module of a scan starts at the same time, and most ask PowerShell
+/// and WMI something first: a dozen processes loading CIM together. Capping
+/// them costs a couple of seconds on a fast PC and keeps WMI from being
+/// swamped on a slow one. Waiting for a slot does not count against a
+/// command's timeout.
+const POWERSHELL_SLOTS: usize = 4;
+
+fn powershell_slots() -> &'static tokio::sync::Semaphore {
+    static SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    SLOTS.get_or_init(|| tokio::sync::Semaphore::new(POWERSHELL_SLOTS))
+}
+
+/// Prefix a script with the switch that makes PowerShell write UTF-8.
+///
+/// Left alone, PowerShell writes into a pipe in the OEM code page, which cannot
+/// hold every character a device name, a path or a task description may carry.
+/// UTF-8 can, and [`crate::utils::decode`] takes UTF-8 as it is. No byte order
+/// mark: the output would otherwise start with one.
+pub fn powershell_script(command_str: &str) -> String {
+    format!(
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); {}",
+        command_str
+    )
 }
 
 /// Production runner executing actual OS processes via tokio::process::Command.
@@ -109,6 +170,24 @@ impl CommandRunner for SystemCommandRunner {
         timeout_duration: Duration,
     ) -> Result<CmdOutput, String> {
         run_cmd_streaming(program, args, log_tx, timeout_duration).await
+    }
+
+    async fn run_powershell(
+        &self,
+        command_str: &str,
+        timeout_duration: Duration,
+    ) -> Result<CmdOutput, String> {
+        let _slot = powershell_slots()
+            .acquire()
+            .await
+            .map_err(|e| format!("PowerShell could not be started: {e}"))?;
+        let script = powershell_script(command_str);
+        run_cmd(
+            "powershell",
+            &["-NoProfile", "-NonInteractive", "-Command", &script],
+            timeout_duration,
+        )
+        .await
     }
 }
 
@@ -333,22 +412,17 @@ pub async fn run_cmd(
         Ok(Ok(status)) => {
             let stdout_bytes = stdout_handle.await.unwrap_or_default();
             let stderr_bytes = stderr_handle.await.unwrap_or_default();
-            let stdout_str = String::from_utf8_lossy(&stdout_bytes).to_string();
-            let stderr_str = String::from_utf8_lossy(&stderr_bytes).to_string();
             Ok(CmdOutput {
                 success: status.success(),
                 exit_code: status.code(),
-                stdout: stdout_str,
-                stderr: stderr_str,
+                stdout: decode_output(&stdout_bytes),
+                stderr: decode_output(&stderr_bytes),
             })
         }
         Ok(Err(e)) => Err(format!("Command execution error: {}", e)),
         Err(_) => {
             let _ = child.kill().await;
-            Err(format!(
-                "Command '{}' timed out after {:?}",
-                program, timeout_duration
-            ))
+            Err(timed_out(program, timeout_duration))
         }
     }
 }
@@ -387,13 +461,7 @@ pub async fn run_cmd_streaming(
     let stdout_tx = log_tx.clone();
     let stdout_handle = tokio::spawn(async move {
         if let Some(stdout) = stdout {
-            let mut reader = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                if let Some(ref tx) = stdout_tx {
-                    let _ = tx.send(line.clone()).await;
-                }
-                stdout_lines.push(line);
-            }
+            forward_lines(stdout, stdout_tx, "", &mut stdout_lines).await;
         }
         stdout_lines
     });
@@ -401,13 +469,7 @@ pub async fn run_cmd_streaming(
     let stderr_tx = log_tx;
     let stderr_handle = tokio::spawn(async move {
         if let Some(stderr) = stderr {
-            let mut reader = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                if let Some(ref tx) = stderr_tx {
-                    let _ = tx.send(format!("[STDERR] {}", line)).await;
-                }
-                stderr_lines.push(line);
-            }
+            forward_lines(stderr, stderr_tx, "[STDERR] ", &mut stderr_lines).await;
         }
         stderr_lines
     });
@@ -428,19 +490,51 @@ pub async fn run_cmd_streaming(
         Ok(Err(e)) => Err(format!("Command error: {}", e)),
         Err(_) => {
             let _ = child.kill().await;
-            Err(format!(
-                "Command '{}' timed out after {:?}",
-                program, timeout_duration
-            ))
+            Err(timed_out(program, timeout_duration))
         }
+    }
+}
+
+/// Read `pipe` to the end, decoding it line by line, and hand each line to the
+/// log channel as it arrives.
+///
+/// Reads raw bytes rather than `lines()`: that reader stops at the first line
+/// that is not UTF-8, and German DISM or SFC output has one within the first
+/// few lines — everything after it, the verdict included, was lost.
+async fn forward_lines(
+    mut pipe: impl tokio::io::AsyncRead + Unpin,
+    tx: Option<Sender<String>>,
+    prefix: &str,
+    lines: &mut Vec<String>,
+) {
+    let mut decoder = LineDecoder::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        let read = match pipe.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(read) => read,
+        };
+        for line in decoder.push(&buf[..read]) {
+            if let Some(ref tx) = tx {
+                let _ = tx.send(format!("{prefix}{line}")).await;
+            }
+            lines.push(line);
+        }
+    }
+    if let Some(line) = decoder.finish() {
+        if let Some(ref tx) = tx {
+            let _ = tx.send(format!("{prefix}{line}")).await;
+        }
+        lines.push(line);
     }
 }
 
 /// Run a PowerShell command safely and return output.
 pub async fn run_powershell(command_str: &str, timeout_dur: Duration) -> Result<CmdOutput, String> {
+    let script = powershell_script(command_str);
     run_cmd(
         "powershell",
-        &["-NoProfile", "-NonInteractive", "-Command", command_str],
+        &["-NoProfile", "-NonInteractive", "-Command", &script],
         timeout_dur,
     )
     .await
@@ -513,6 +607,82 @@ mod tests {
         assert_eq!(executed.len(), 2);
         assert!(executed[0].contains("dism.exe"));
         assert!(executed[1].contains("sfc.exe"));
+    }
+
+    /// Answers each call with the next of `answers` and counts the calls.
+    struct Scripted {
+        answers: Mutex<Vec<Result<CmdOutput, String>>>,
+        calls: Mutex<usize>,
+    }
+
+    impl Scripted {
+        fn new(answers: Vec<Result<CmdOutput, String>>) -> Self {
+            Self {
+                answers: Mutex::new(answers),
+                calls: Mutex::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            *self.calls.lock().unwrap()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl CommandRunner for Scripted {
+        async fn run(&self, _: &str, _: &[&str], _: Duration) -> Result<CmdOutput, String> {
+            *self.calls.lock().unwrap() += 1;
+            self.answers.lock().unwrap().remove(0)
+        }
+
+        async fn run_streaming(
+            &self,
+            program: &str,
+            args: &[&str],
+            _: Option<Sender<String>>,
+            timeout: Duration,
+        ) -> Result<CmdOutput, String> {
+            self.run(program, args, timeout).await
+        }
+    }
+
+    const QUERY_TIMEOUT: Duration = Duration::from_secs(20);
+
+    #[tokio::test]
+    async fn a_query_that_timed_out_is_asked_once_more() {
+        let runner = Scripted::new(vec![
+            Err(timed_out("powershell", QUERY_TIMEOUT)),
+            Ok(CmdOutput::ok("True|17179869184")),
+        ]);
+        let out = runner.query_powershell("q", QUERY_TIMEOUT).await.unwrap();
+        assert_eq!(out.stdout, "True|17179869184");
+        assert_eq!(runner.calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_second_timeout_is_reported() {
+        let runner = Scripted::new(vec![
+            Err(timed_out("powershell", QUERY_TIMEOUT)),
+            Err(timed_out("powershell", QUERY_TIMEOUT)),
+        ]);
+        let err = runner
+            .query_powershell("q", QUERY_TIMEOUT)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "Command 'powershell' timed out after 20s (on the second attempt too)"
+        );
+        assert_eq!(runner.calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn only_a_timeout_is_retried() {
+        let runner = Scripted::new(vec![Err("Command execution error: denied".to_string())]);
+        assert!(runner.query_powershell("q", QUERY_TIMEOUT).await.is_err());
+        assert_eq!(runner.calls(), 1);
+        assert!(!is_timeout("Command execution error: denied"));
+        assert!(is_timeout(&timed_out("wevtutil.exe", QUERY_TIMEOUT)));
     }
 
     /// The whole point of the table is that a failed repair explains itself, so

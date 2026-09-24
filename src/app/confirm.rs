@@ -148,6 +148,10 @@ pub enum ConfirmRequest {
     RestartRequired {
         issues: Vec<String>,
     },
+    /// Take the helper task and the Run entry out of Windows before the user
+    /// deletes the executable, which would otherwise leave both pointing at a
+    /// file that is gone.
+    Unregister,
 }
 
 impl ConfirmRequest {
@@ -157,6 +161,7 @@ impl ConfirmRequest {
             ConfirmRequest::Elevate => "ADMINISTRATOR PRIVILEGES REQUIRED",
             ConfirmRequest::UpdateAvailable { .. } => "NEW WINMEDIC UPDATE AVAILABLE",
             ConfirmRequest::RestartRequired { .. } => "SYSTEM RESTART REQUIRED",
+            ConfirmRequest::Unregister => "REMOVE WINMEDIC FROM WINDOWS?",
         }
     }
 
@@ -171,6 +176,7 @@ impl ConfirmRequest {
                 "Open the release page in a browser"
             }
             ConfirmRequest::RestartRequired { .. } => "Restart now",
+            ConfirmRequest::Unregister => "Remove",
         }
     }
 
@@ -180,6 +186,7 @@ impl ConfirmRequest {
             ConfirmRequest::Elevate => "Continue without Administrator",
             ConfirmRequest::UpdateAvailable { .. } => "Remind me later",
             ConfirmRequest::RestartRequired { .. } => "Later",
+            ConfirmRequest::Unregister => "Cancel",
         }
     }
 
@@ -266,6 +273,18 @@ impl ConfirmRequest {
                 body.push("Restart the system now to complete these repairs?".to_string());
                 body
             }
+            ConfirmRequest::Unregister => vec![
+                "WinMedic will remove what it registered with Windows:".to_string(),
+                String::new(),
+                "  • the background scan task (WinMedicHelper)".to_string(),
+                "  • the \"Start with Windows\" entry".to_string(),
+                String::new(),
+                "and turn both settings off. Do this before deleting winmedic.exe,".to_string(),
+                "or both keep pointing at a file that is gone.".to_string(),
+                String::new(),
+                "Settings, logs and registry backups stay where they are; the".to_string(),
+                "command line 'winmedic --uninstall --purge' deletes them too.".to_string(),
+            ],
         }
     }
 }
@@ -295,8 +314,46 @@ impl App {
                             .to_string(),
                     );
                 }
+                ConfirmRequest::Unregister => {
+                    self.status_message = Some("Cancelled - nothing was changed.".to_string());
+                }
             }
         }
+    }
+
+    /// Ask before taking WinMedic's registrations out of Windows.
+    pub fn request_unregister(&mut self) {
+        self.pending_confirm = Some(ConfirmRequest::Unregister);
+    }
+
+    /// Remove the helper task and the Run entry, and turn off the settings
+    /// that would register them again the next time the window opens.
+    fn unregister_from_windows(&mut self) {
+        self.config.helper_enabled = false;
+        self.config.autostart = false;
+
+        let mut problems: Vec<String> = Vec::new();
+        problems.extend(
+            (self.system_actions.sync_helper_task)(false, self.config.helper_frequency_hours).err(),
+        );
+        problems.extend((self.system_actions.sync_autostart)(false).err());
+        if self.system_actions.persist_config
+            && let Err(e) = self.config.save()
+        {
+            problems.push(format!("the settings could not be saved: {e}"));
+        }
+
+        self.status_message = Some(if problems.is_empty() {
+            format!(
+                "Removed from Windows - winmedic.exe can be deleted now. Settings, logs and backups stay in {}.",
+                AppConfig::config_path()
+                    .parent()
+                    .map(|dir| dir.display().to_string())
+                    .unwrap_or_default()
+            )
+        } else {
+            format!("Not everything could be removed: {}", problems.join("; "))
+        });
     }
 
     /// Open the parked update notice as a confirmation dialog.
@@ -455,6 +512,7 @@ impl App {
                     self.should_quit = true;
                 }
             }
+            ConfirmRequest::Unregister => self.unregister_from_windows(),
         }
     }
 }
@@ -755,6 +813,58 @@ mod tests {
 
         assert!(app.pending_confirm.is_none());
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn unregistering_turns_both_settings_off() {
+        let mut app = App::new();
+        app.config.helper_enabled = true;
+        app.config.autostart = true;
+        app.request_unregister();
+        assert_eq!(
+            app.pending_confirm.as_ref().map(ConfirmRequest::title),
+            Some("REMOVE WINMEDIC FROM WINDOWS?")
+        );
+
+        app.confirm_pending_action();
+
+        assert!(!app.config.helper_enabled);
+        assert!(!app.config.autostart);
+        assert!(
+            app.status_message
+                .as_deref()
+                .is_some_and(|m| m.contains("can be deleted now")),
+            "{:?}",
+            app.status_message
+        );
+    }
+
+    #[test]
+    fn a_removal_windows_refuses_is_reported_not_hidden() {
+        let mut app = App::new();
+        app.system_actions.sync_helper_task = |_, _| Err("access denied".to_string());
+        app.request_unregister();
+
+        app.confirm_pending_action();
+
+        let message = app.status_message.unwrap_or_default();
+        assert!(
+            message.contains("Not everything could be removed"),
+            "{message}"
+        );
+        assert!(message.contains("access denied"), "{message}");
+    }
+
+    #[test]
+    fn cancelling_the_removal_changes_nothing() {
+        let mut app = App::new();
+        app.config.helper_enabled = true;
+        app.request_unregister();
+
+        app.dismiss_confirm();
+
+        assert!(app.config.helper_enabled);
+        assert!(app.pending_confirm.is_none());
     }
 
     #[test]

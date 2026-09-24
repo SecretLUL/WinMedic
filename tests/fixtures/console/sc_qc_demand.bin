@@ -1,0 +1,12 @@
+[SC] QueryServiceConfig ERFOLG
+
+SERVICE_NAME: vss
+        TYPE               : 10  WIN32_OWN_PROCESS 
+        START_TYPE         : 3   DEMAND_START
+        ERROR_CONTROL      : 1   NORMAL
+        BINARY_PATH_NAME   : C:\WINDOWS\system32\vssvc.exe
+        LOAD_ORDER_GROUP   : 
+        TAG                : 0
+        DISPLAY_NAME       : Volumeschattenkopie
+        DEPENDENCIES       : RPCSS
+        SERVICE_START_NAME : LocalSystem

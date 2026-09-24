@@ -87,7 +87,7 @@ fn check(output: std::process::Output, what: &str) -> Result<(), String> {
     if output.status.success() {
         Ok(())
     } else {
-        let err = String::from_utf8_lossy(&output.stderr);
+        let err = crate::utils::decode::decode_output(&output.stderr);
         Err(format!("{what}: {}", err.trim()))
     }
 }
@@ -99,7 +99,7 @@ fn query_helper_task(name: &str) -> Option<String> {
     output
         .status
         .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+        .then(|| crate::utils::decode::decode_output(&output.stdout))
 }
 
 pub fn sync_helper_task(enabled: bool, frequency_hours: u32) -> Result<(), String> {

@@ -42,8 +42,10 @@ regex = "1.11"
 dirs = "7.0"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Globalization",
     "Win32_Security",
     "Win32_System_Console",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 # The desktop front end. Default features are off because most of them are for

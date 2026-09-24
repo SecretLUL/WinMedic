@@ -76,25 +76,45 @@ impl DiagnosticModule for StorageModule {
             &progress_tx,
             15,
             "Checking file system integrity (dirty bit on drive C:)...",
-            Some("fsutil dirty query C:..."),
+            Some("Reading the dirty bit of C: (WMI, then fsutil)..."),
         )
         .await;
         sleep(Duration::from_millis(150)).await;
 
         let dbg = DebugTrace::scan(self.id(), progress_tx.clone(), self.config.verbose_logging);
 
-        let dirty_check = dbg
-            .run(
-                &self.runner,
-                "fsutil.exe",
-                &["dirty", "query", "C:"],
-                Duration::from_secs(6),
-            )
-            .await;
-        if let Ok(out) = dirty_check
-            && out.success
-        {
-            let verdict = volume_is_dirty(&out.stdout);
+        // WMI first: `DirtyBitSet` is a boolean, the same on every Windows.
+        // fsutil answers in a sentence in the display language, which only the
+        // English and German wordings below can read; it stays as the fallback
+        // for a machine whose WMI does not answer.
+        let wmi_verdict = dbg
+            .run_powershell(&self.runner, DIRTY_BIT_SCRIPT, Duration::from_secs(10))
+            .await
+            .ok()
+            .filter(|out| out.success)
+            .and_then(|out| parse_dirty_bit_set(&out.stdout));
+        let dirty_check: Option<(bool, String)> = match wmi_verdict {
+            Some(dirty) => Some((
+                dirty,
+                format!(
+                    "Win32_Volume C: DirtyBitSet = {}",
+                    if dirty { "True" } else { "False" }
+                ),
+            )),
+            None => match dbg
+                .run(
+                    &self.runner,
+                    "fsutil.exe",
+                    &["dirty", "query", "C:"],
+                    Duration::from_secs(6),
+                )
+                .await
+            {
+                Ok(out) if out.success => Some((volume_is_dirty(&out.stdout), out.stdout)),
+                _ => None,
+            },
+        };
+        if let Some((verdict, evidence)) = dirty_check {
             dbg.kv("dirty bit", if verdict { "set" } else { "clear" })
                 .await;
             if verdict {
@@ -106,7 +126,7 @@ impl DiagnosticModule for StorageModule {
                     Severity::Critical,
                     RiskScore::Medium,
                     "Drive C: has the file system integrity flag ('dirty bit') set. That points to incompletely written sectors or abrupt shutdowns.",
-                    out.stdout,
+                    evidence,
                     "Run a file system check via 'chkdsk C: /scan'",
                     vec!["Run chkdsk C: /scan online".to_string()],
                 ));
@@ -120,11 +140,13 @@ impl DiagnosticModule for StorageModule {
                 .await;
             }
         } else {
-            // fsutil needs elevation to read the dirty bit. A refused query says
+            // Both need elevation to read the dirty bit. A refused query says
             // nothing about the volume, and treating its error text as a verdict
             // is how a healthy disk ends up scheduled for chkdsk.
-            dbg.warn("fsutil could not read the dirty bit - the volume state is unknown, not bad")
-                .await;
+            dbg.warn(
+                "neither WMI nor fsutil could read the dirty bit - the volume state is unknown, not bad",
+            )
+            .await;
         }
 
         // 2. Physical Disk SMART Health
@@ -431,6 +453,19 @@ impl DiagnosticModule for StorageModule {
     }
 }
 
+/// Asks WMI for the system drive's dirty bit. Prints `True` or `False`, or
+/// nothing when WMI does not know — which it does not without elevation.
+const DIRTY_BIT_SCRIPT: &str = "Get-CimInstance -ClassName Win32_Volume -Filter \"DriveLetter='C:'\" | ForEach-Object { $_.DirtyBitSet }";
+
+/// The verdict in [`DIRTY_BIT_SCRIPT`]'s output, if it gave one.
+pub fn parse_dirty_bit_set(output: &str) -> Option<bool> {
+    match output.trim() {
+        "True" => Some(true),
+        "False" => Some(false),
+        _ => None,
+    }
+}
+
 /// Decide whether `fsutil dirty query` reported a volume as dirty.
 ///
 /// The catch is negation. A clean volume answers `Volume - C: is NOT Dirty`, and
@@ -508,6 +543,50 @@ mod tests {
         let dirty_issue = issues.iter().find(|i| i.id == "storage_dirty_bit");
         assert!(dirty_issue.is_some());
         assert_eq!(dirty_issue.unwrap().severity, Severity::Critical);
+    }
+
+    #[tokio::test]
+    async fn wmi_decides_the_dirty_bit_without_asking_fsutil() {
+        for (answer, dirty) in [("True\r\n", true), ("False\r\n", false)] {
+            let mock = MockCommandRunner::new();
+            mock.add_response("DirtyBitSet", CmdOutput::ok(answer));
+            mock.add_response("Get-PhysicalDisk", CmdOutput::ok("SSD | Health: Healthy"));
+
+            let module =
+                StorageModule::with_runner(ModuleConfig::default(), Arc::new(mock.clone()));
+            let issues = module.scan(None).await.unwrap();
+
+            assert_eq!(
+                issues.iter().any(|i| i.id == "storage_dirty_bit"),
+                dirty,
+                "WMI said {answer:?}"
+            );
+            assert!(
+                !mock.executed().iter().any(|c| c.contains("fsutil")),
+                "a WMI verdict needs no fsutil sentence to interpret"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn without_a_wmi_verdict_fsutil_is_asked() {
+        let mock = MockCommandRunner::new();
+        // Unelevated, WMI leaves DirtyBitSet empty.
+        mock.add_response("DirtyBitSet", CmdOutput::ok("\r\n"));
+        mock.add_response("dirty query C:", CmdOutput::ok("Volume - C: is Dirty"));
+        mock.add_response("Get-PhysicalDisk", CmdOutput::ok("SSD | Health: Healthy"));
+
+        let module = StorageModule::with_runner(ModuleConfig::default(), Arc::new(mock));
+        let issues = module.scan(None).await.unwrap();
+        assert!(issues.iter().any(|i| i.id == "storage_dirty_bit"));
+    }
+
+    #[test]
+    fn only_a_boolean_is_a_wmi_verdict() {
+        assert_eq!(parse_dirty_bit_set("True\r\n"), Some(true));
+        assert_eq!(parse_dirty_bit_set("False"), Some(false));
+        assert_eq!(parse_dirty_bit_set(""), None);
+        assert_eq!(parse_dirty_bit_set("Zugriff verweigert"), None);
     }
 
     /// The regression that started this: on a German system `fsutil` answers

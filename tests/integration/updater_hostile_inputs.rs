@@ -1,8 +1,6 @@
-//! Adversarial stress test suite for Milestone 3: Startup Auto-Updater & Settings
-//!
-//! Author: Challenger 1
-//! Scope: SemVer parser fuzzing/edge cases, comparison truth table, MockCommandRunner
-//! GitHub API response matrix, AppConfig boundary toggles/persistence, and App modal buffering.
+//! Hostile and malformed input for the update check and the settings: SemVer
+//! parser edge cases, the comparison truth table, a matrix of GitHub API
+//! responses, AppConfig boundary toggles and persistence, and modal buffering.
 
 use std::time::Duration;
 use winmedic::app::{App, ConfirmRequest};

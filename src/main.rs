@@ -72,6 +72,14 @@ struct CliArgs {
     /// Started by the "Start with Windows" entry: open minimized, or not at all while the setting is off
     #[arg(long)]
     autostart: bool,
+
+    /// Remove what WinMedic registered with Windows (the background scan task and the "Start with Windows" entry) and turn both settings off. Run this before deleting winmedic.exe. Settings, logs and registry backups stay unless --purge is given.
+    #[arg(long)]
+    uninstall: bool,
+
+    /// With --uninstall: also delete %APPDATA%\WinMedic - settings, logs, reports and the registry backups a rollback needs
+    #[arg(long, requires = "uninstall")]
+    purge: bool,
 }
 
 impl CliArgs {
@@ -126,6 +134,10 @@ fn run(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         println!("Already running with Administrator privileges.");
     }
 
+    if args.uninstall {
+        return Ok(run_uninstall(args.purge));
+    }
+
     if args.is_headless() {
         if args.helper {
             utils::console::release_console_if_owned();
@@ -134,6 +146,72 @@ fn run(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         runtime.block_on(run_headless(args))
     } else {
         run_gui(args.autostart)
+    }
+}
+
+// --------------------------------------------------------------- uninstall
+
+/// `--uninstall`: take out of Windows what WinMedic put there, so deleting the
+/// executable leaves nothing behind that points at it.
+///
+/// WinMedic has no installer to do this — WinGet removes the file and nothing
+/// else — and a scheduled task or Run entry naming a missing program is exactly
+/// the kind of leftover WinMedic reports on other people's software.
+fn run_uninstall(purge: bool) -> u8 {
+    let data_dir = AppConfig::config_path().parent().map(|d| d.to_path_buf());
+    let mut failures = 0;
+    let mut report = |what: &str, result: Result<(), String>| match result {
+        Ok(()) => println!("[OK]   {what}"),
+        Err(e) => {
+            failures += 1;
+            eprintln!("[FAIL] {what}: {e}");
+        }
+    };
+
+    report(
+        "Removed the background scan task",
+        utils::background_task::sync_helper_task(false, 0),
+    );
+    report(
+        "Removed the \"Start with Windows\" entry",
+        utils::background_task::sync_autostart(false),
+    );
+
+    match data_dir {
+        Some(dir) if purge => {
+            if dir.exists() {
+                report(
+                    &format!("Deleted {}", dir.display()),
+                    std::fs::remove_dir_all(&dir).map_err(|e| e.to_string()),
+                );
+            } else {
+                println!("[OK]   Nothing to delete in {}", dir.display());
+            }
+        }
+        dir => {
+            // Leave the settings saying what is now true; otherwise the next
+            // start of the window registers both again.
+            let (mut config, _) = AppConfig::load_reporting();
+            config.helper_enabled = false;
+            config.autostart = false;
+            report(
+                "Turned both settings off",
+                config.save().map_err(|e| e.to_string()),
+            );
+            if let Some(dir) = dir {
+                println!(
+                    "       Settings, logs and registry backups stay in {} (--purge deletes them).",
+                    dir.display()
+                );
+            }
+        }
+    }
+
+    if failures == 0 {
+        println!("\nwinmedic.exe can be deleted now.");
+        exit_code::OK
+    } else {
+        exit_code::INTERNAL_ERROR
     }
 }
 
@@ -515,6 +593,23 @@ fn run_gui(autostart: bool) -> Result<u8, Box<dyn std::error::Error>> {
     // should not wait for a DISM call that has not come back yet.
     runtime.shutdown_background();
 
-    result?;
+    if let Err(err) = result {
+        // The console is gone by now, so the error `main` prints would reach
+        // nobody. The likeliest cause is the very machine WinMedic is for: a
+        // broken graphics driver leaves only OpenGL 1.1, and the window needs 2.0.
+        utils::console::show_error_dialog(
+            "WinMedic could not open its window",
+            &format!(
+                "WinMedic could not open its window:\n\n{err}\n\n\
+                 This usually means the graphics driver offers no OpenGL 2.0 or newer - \
+                 for example the Microsoft Basic Display Adapter after a driver crash, \
+                 or some virtual machines and remote sessions.\n\n\
+                 Every check and repair also runs without the window. From a Command Prompt,\n\n\
+                 \x20   winmedic --scan --output report.html\n\n\
+                 writes a report you can open in any browser; winmedic --help lists the rest."
+            ),
+        );
+        return Err(err.into());
+    }
     Ok(exit_code::OK)
 }

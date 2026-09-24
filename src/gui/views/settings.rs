@@ -101,6 +101,21 @@ fn safety(ui: &mut egui::Ui, app: &mut App) {
             ui.label(theme::muted(
                 "Every scan, repair, simulation and rollback is recorded here.",
             ));
+            ui.add_space(14.0);
+
+            theme::section(ui, "Remove from this PC");
+            ui.label(theme::muted(
+                "Before deleting winmedic.exe: removes the background scan task and the \
+                 Start with Windows entry, and turns both settings off.",
+            ));
+            ui.add_space(4.0);
+            if ui
+                .button("Remove WinMedic from Windows")
+                .on_hover_text("Asks for confirmation first")
+                .clicked()
+            {
+                app.request_unregister();
+            }
         });
 }
 
