@@ -62,8 +62,7 @@ impl App {
         let indices = self.filtered_issue_indices();
         if let Some(&orig_idx) = indices.get(self.selected_filtered_index)
             && let Some(issue) = self.issues.get_mut(orig_idx)
-            && !issue.is_fixed
-            && !issue.is_reboot_pending
+            && issue.is_repairable()
         {
             issue.is_selected = !issue.is_selected;
             self.save_scan_state();
@@ -74,7 +73,7 @@ impl App {
         let indices = self.filtered_issue_indices();
         let any_unselected = indices.iter().any(|&idx| {
             if let Some(issue) = self.issues.get(idx) {
-                !issue.is_fixed && !issue.is_reboot_pending && !issue.is_selected
+                issue.is_repairable() && !issue.is_selected
             } else {
                 false
             }
@@ -82,8 +81,7 @@ impl App {
 
         for &orig_idx in &indices {
             if let Some(issue) = self.issues.get_mut(orig_idx)
-                && !issue.is_fixed
-                && !issue.is_reboot_pending
+                && issue.is_repairable()
             {
                 issue.is_selected = any_unselected;
             }
@@ -95,8 +93,7 @@ impl App {
         let indices = self.filtered_issue_indices();
         for &orig_idx in &indices {
             if let Some(issue) = self.issues.get_mut(orig_idx)
-                && !issue.is_fixed
-                && !issue.is_reboot_pending
+                && issue.is_repairable()
             {
                 issue.is_selected = true;
             }

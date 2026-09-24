@@ -101,7 +101,7 @@ pub struct AppConfig {
     pub auto_backup_registry: bool,
     /// Report temp/junk files as an issue once they exceed this many megabytes.
     pub temp_clean_threshold_mb: u64,
-    /// How far back the event log module looks for critical events.
+    /// How far back crash and hardware-error events are read.
     pub max_event_log_hours: u32,
     /// Check for newer WinMedic releases on GitHub upon startup.
     pub check_for_updates: bool,
@@ -258,7 +258,7 @@ impl AppConfig {
             5 => Some((
                 "Event log analysis window",
                 format!("{} h", self.max_event_log_hours),
-                "How far back the event log is searched for critical events. [Enter] Custom value, [+/-] ±6 h.",
+                "How far back crash and hardware-error events are read. [Enter] Custom value, [+/-] ±6 h.",
             )),
             6 => Some((
                 "Enable verbose / debug logs",

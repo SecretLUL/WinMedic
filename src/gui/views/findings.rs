@@ -83,11 +83,7 @@ fn filters(ui: &mut egui::Ui, app: &mut App) {
 
     ui.horizontal(|ui| {
         let shown = app.filtered_issue_indices().len();
-        let selected = app
-            .issues
-            .iter()
-            .filter(|i| i.is_selected && !i.is_fixed)
-            .count();
+        let selected = app.issues.iter().filter(|i| i.will_repair()).count();
         ui.label(theme::muted(format!(
             "{shown} of {} findings shown · {selected} selected for repair",
             app.issues.len()
@@ -214,14 +210,20 @@ fn row(ui: &mut egui::Ui, app: &mut App, issue_index: usize, highlighted: bool, 
                         // A fixed issue is history: it cannot be selected for
                         // another repair run, so the checkbox stops offering.
                         // One waiting on a restart is in the same position for
-                        // the same reason, and `toggle_select_all_issues`
-                        // passes over both.
+                        // the same reason, and so is advice, which no repair
+                        // run touches; `toggle_select_all_issues` passes over
+                        // all three.
                         let start = ui.cursor().min.x;
                         let ticked = if issue.is_fixed {
                             ui.colored_label(palette.green, "Fixed");
                             false
                         } else if issue.is_reboot_pending {
                             ui.colored_label(palette.amber, "Restart");
+                            false
+                        } else if issue.advice_only {
+                            ui.label(theme::muted("Advice")).on_hover_text(
+                                "WinMedic cannot repair this. The details say what to do.",
+                            );
                             false
                         } else {
                             ui.checkbox(&mut issue.is_selected, "").changed()
@@ -296,12 +298,16 @@ fn detail(ui: &mut egui::Ui, app: &mut App, indices: &[usize]) {
                         .color(theme::severity_color(ui, issue.severity)),
                 );
                 ui.label(theme::muted("·"));
-                let risk = RichText::new(risk_text(issue.risk_score));
-                ui.label(if issue.risk_score == RiskScore::High {
-                    risk.color(palette.amber)
+                if issue.advice_only {
+                    ui.label("No automatic repair");
                 } else {
-                    risk
-                });
+                    let risk = RichText::new(risk_text(issue.risk_score));
+                    ui.label(if issue.risk_score == RiskScore::High {
+                        risk.color(palette.amber)
+                    } else {
+                        risk
+                    });
+                }
             });
             ui.label(theme::muted(format!(
                 "{} · {}",
@@ -324,7 +330,14 @@ fn detail(ui: &mut egui::Ui, app: &mut App, indices: &[usize]) {
             }
 
             ui.add_space(10.0);
-            theme::section(ui, "Recommended fix");
+            theme::section(
+                ui,
+                if issue.advice_only {
+                    "What to do"
+                } else {
+                    "Recommended fix"
+                },
+            );
             ui.label(&issue.recommended_fix);
 
             if !issue.fix_steps.is_empty() {
@@ -424,6 +437,20 @@ mod tests {
             !harness.state().issues[0].is_selected,
             "and clicking it again has to clear it"
         );
+    }
+
+    /// Advice has nothing to repair, so it offers no box and "select all"
+    /// passes over it.
+    #[test]
+    fn advice_offers_no_checkbox() {
+        let mut app = triage_app();
+        app.issues[1] = app.issues[1].clone().with_advice_only();
+        app.select_all_issues();
+        let harness = harness(app);
+
+        assert_eq!(harness.get_all_by_role(Role::CheckBox).count(), 2);
+        harness.get_by_label("Advice");
+        assert!(!harness.state().issues[1].is_selected);
     }
 
     /// Every box is its own: ticking one must not tick the rest.

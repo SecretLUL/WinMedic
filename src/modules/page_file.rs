@@ -510,7 +510,7 @@ impl DiagnosticModule for PageFileModule {
                 continue;
             }
 
-            let mut issue = Issue::new(
+            issues.push(Issue::new(
                 format!("pagefile_low_space_{}", drive),
                 self.id(),
                 format!(
@@ -552,9 +552,7 @@ impl DiagnosticModule for PageFileModule {
                     ),
                     "Or move the page file: System Properties -> Advanced -> Performance -> Virtual memory".to_string(),
                 ],
-            );
-            issue.is_selected = false;
-            issues.push(issue);
+            ).with_advice_only());
         }
 
         // 3. A manually sized page file whose maximum is too small to be useful.
@@ -664,17 +662,9 @@ impl DiagnosticModule for PageFileModule {
             return self.set_system_managed(drive).await;
         }
 
-        if let Some(drive) = Self::drive_from_issue_id(issue_id, "pagefile_low_space_") {
-            // Deliberately advisory. Freeing space means choosing which of the
-            // user's files to remove, and moving the page file to another
-            // volume is a decision about their disk layout — neither is
-            // WinMedic's to make, so this reports rather than acts.
-            return Ok(format!(
-                "No change was made. Free space on {}:, or move the page file to another volume via System Properties -> Advanced -> Performance -> Virtual memory.",
-                drive.to_ascii_uppercase()
-            ));
-        }
-
+        // The nearly-full-drive finding is advice: freeing space means choosing
+        // which of the user's files to remove, and moving the page file is a
+        // decision about their disk layout. A repair run never asks.
         Err(format!("Unknown issue id: {}", issue_id))
     }
 }
@@ -869,17 +859,11 @@ mod tests {
             .expect("the full volume must be reported");
 
         assert_eq!(issue.severity, Severity::Critical);
+        assert!(
+            issue.advice_only,
+            "which files to delete is not WinMedic's call"
+        );
         assert!(!issue.is_selected);
-
-        // The repair is advisory by design: it must succeed without touching
-        // anything, and say so.
-        let mock = MockCommandRunner::new();
-        let advisory = PageFileModule::with_runner(Arc::new(mock.clone()))
-            .fix("pagefile_low_space_c", None)
-            .await
-            .unwrap();
-        assert!(advisory.starts_with("No change was made."));
-        assert!(mock.executed().is_empty(), "nothing may be executed");
     }
 
     #[tokio::test]

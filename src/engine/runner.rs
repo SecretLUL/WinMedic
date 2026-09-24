@@ -543,10 +543,7 @@ impl DiagnosticEngine {
         event_tx: Sender<RepairEvent>,
         cancel: CancellationToken,
     ) -> (usize, usize) {
-        let pending = issues
-            .iter()
-            .filter(|i| i.is_selected && !i.is_fixed)
-            .count();
+        let pending = issues.iter().filter(|i| i.will_repair()).count();
 
         let run_trace = RepairTrace::new(&event_tx, "engine", options.verbose_logging);
         run_trace.section("repair run environment").await;
@@ -649,7 +646,7 @@ impl DiagnosticEngine {
         let mut processed = 0;
 
         for issue in issues.iter_mut() {
-            if !issue.is_selected || issue.is_fixed {
+            if !issue.will_repair() {
                 continue;
             }
 

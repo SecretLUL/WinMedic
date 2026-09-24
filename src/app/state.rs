@@ -600,7 +600,7 @@ impl App {
                 issue.is_reboot_pending = true;
                 issue.is_selected = false;
             } else {
-                issue.is_selected = known.is_selected;
+                issue.is_selected = known.is_selected && !issue.advice_only;
             }
             if issue.fix_error.is_none() {
                 issue.fix_error = known.fix_error.clone();
