@@ -323,7 +323,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) {
               $reasons += "The fallback branch $head could not be pushed either, so the bump exists only inside this run."
             } else {
-              $body = "Raises the version to ``$env:TAG`` across Cargo.toml, Cargo.lock, the README and the issue template.`n`nThe release itself already shipped from the tag, which carries this same commit — merging this only stops ``$env:BRANCH`` from claiming an older version."
+              $body = "Raises the version to ``$env:TAG`` across Cargo.toml, Cargo.lock and the issue template.`n`nThe release itself already shipped from the tag, which carries this same commit — merging this only stops ``$env:BRANCH`` from claiming an older version."
               $created = gh pr create --base $env:BRANCH --head $head --title "chore(release): $env:TAG" --body $body 2>&1 | Out-String
               $createExit = $LASTEXITCODE
               Write-Host $created.Trim()
