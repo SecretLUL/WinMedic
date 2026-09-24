@@ -176,9 +176,9 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("/", "Search the findings"),
     ("C / W / I", "Show only critical, warning or info findings"),
     ("M / X", "Cycle the module filter, clear all filters"),
-    ("1 / 2", "Scan & Repair, Settings & Safety"),
+    ("1 / 2", "Scan & Repair, Settings"),
     ("E", "Export an HTML report"),
-    ("U", "Roll back a registry backup (Settings & Safety)"),
+    ("U", "Roll back a registry backup (Settings)"),
     ("B", "Move the arrow keys between settings and backups"),
     (
         "Esc",

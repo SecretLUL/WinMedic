@@ -24,7 +24,7 @@ use eframe::egui;
 use std::time::{Duration, Instant};
 
 /// Navigation destinations, in the order of the `TAB_*` constants.
-const TABS: [&str; 2] = ["Scan & Repair", "Settings & Safety"];
+const TABS: [&str; 2] = ["Scan & Repair", "Settings"];
 
 /// How often to redraw while a scan or repair run is in flight.
 ///
@@ -360,13 +360,14 @@ mod tests {
         }
 
         // The four tabs merged into one page must not come back as labels the
-        // user can look for.
+        // user can look for, and neither may the settings view's old name.
         for retired in [
             "Dashboard",
             "Health Scan",
             "Issue Triage",
             "Repair Center",
             "Backups & Logs",
+            "Settings & Safety",
         ] {
             assert!(
                 harness.query_by_label(retired).is_none(),
@@ -522,7 +523,7 @@ mod tests {
         let mut app = fresh_app();
         app.pending_confirm = Some(ConfirmRequest::Elevate);
         let mut harness = window(app);
-        harness.get_by_label("Settings & Safety").click();
+        harness.get_by_label("Settings").click();
         harness.run();
         assert_eq!(harness.state().active_tab, TAB_HOME);
         assert!(harness.state().pending_confirm.is_some());

@@ -79,7 +79,7 @@ Where Windows offers nothing but a translated sentence, only the English and Ger
 Before WinMedic touches your system:
 1. **Windows System Restore Point (VSS)**: A checkpoint named `"WinMedic Auto-Restore Point (Vor Reparatur)"` is automatically triggered via WMI / PowerShell. WinMedic then **verifies** that a new restore point actually appeared instead of trusting the exit status — Windows silently declines to create one if another was made within the last 24 hours (`SystemRestorePointCreationFrequency`), and reports that refusal as a warning rather than an error. A throttled run is surfaced as a warning, never as success.
 2. **Registry Snapshotting**: Every modified registry key is exported into `%APPDATA%\WinMedic\backups\reg_<timestamp>.reg` prior to modification. If the export fails, the fix is aborted instead of applied. The backup index is written atomically, and an index that cannot be parsed is moved aside as `index.json.corrupt-<timestamp>` rather than overwritten, so previously recorded backups are never lost.
-3. **One-Key Rollback**: Any stored snapshot can be restored directly from the **`[2]` Settings & Safety** view — `[B]` moves the arrow keys onto the snapshot list, `[U]` restores the highlighted one after an explicit confirmation prompt.
+3. **One-Key Rollback**: Any stored snapshot can be restored directly from the **`[2]` Settings** view — `[B]` moves the arrow keys onto the snapshot list, `[U]` restores the highlighted one after an explicit confirmation prompt.
 4. **Dry-Run First**: the simulation switch in the window or `--dry-run` on the CLI lists every command a repair would execute, without executing any of it.
 5. **High-Performance Audit Logging**: Every scan, fix, simulation, rollback, and cancellation is appended in $O(1)$ to `%APPDATA%\WinMedic\logs\history.jsonl` (with automatic 5 MB log rotation) and formatted human-readable `%APPDATA%\WinMedic\logs\audit.log`.
 6. **Self-Contained Report Export**: Complete diagnostic findings can be exported at any time with `[E]` or `--output <file>` as responsive, standalone HTML, Markdown, or JSON reports.
@@ -88,7 +88,7 @@ Before WinMedic touches your system:
 
 ## ⚙️ Configuration
 
-Settings live in the **`[2]` Settings & Safety** view and are persisted to `%APPDATA%\WinMedic\config.json` immediately on change. The same view carries the safety surface — VSS restore points, registry snapshots, recent activity from the audit trail and the `[U]` rollback — with `[B]` switching the arrow keys between the settings list and the snapshot list.
+Settings live in the **`[2]` Settings** view and are persisted to `%APPDATA%\WinMedic\config.json` immediately on change. The same view carries the safety surface — VSS restore points, registry snapshots, recent activity from the audit trail and the `[U]` rollback — with `[B]` switching the arrow keys between the settings list and the snapshot list.
 
 | Setting | Default | Effect |
 | :--- | :--- | :--- |
@@ -134,7 +134,7 @@ If you installed WinMedic through WinGet, prefer `winget upgrade SecretLUL.WinMe
 The window has two views, and everything you need for a checkup is on the first one:
 
 - **Scan & Repair** — the top of the page says what state the PC is in and offers the one step that makes sense next: *Scan now* on a machine that has never been checked, *Repair N findings* once there are any, *Cancel* while something runs. Below it you see the checks while a scan runs, and afterwards the findings: tick what you want fixed, read the details on the right, repair. Each finding shows its outcome (*Fixed*, *Repair failed*, *Restart*) as the run lands, and the scan log and the repair output are one click away under *Show log*.
-- **Settings & Safety** — what WinMedic is allowed to do, plus everything to undo it: registry snapshots with rollback, system restore points, recent activity, the log folder, and *Remove WinMedic from Windows* for before you delete it.
+- **Settings** — what WinMedic is allowed to do, plus everything to undo it: registry snapshots with rollback, system restore points, recent activity, the log folder, and *Remove WinMedic from Windows* for before you delete it.
 
 The window follows the Windows light / dark app theme.
 
@@ -148,7 +148,7 @@ Every shortcut is also a button in the window; `[?]` lists them.
 
 | Shortcut | Action |
 | :--- | :--- |
-| **`[1]` / `[2]`** | Switch views (Scan & Repair, Settings & Safety) |
+| **`[1]` / `[2]`** | Switch views (Scan & Repair, Settings) |
 | **`[Ctrl+Tab]` / `[Ctrl+Shift+Tab]`** | Cycle through the views (plain `[Tab]` moves focus between controls) |
 | **`[S]`** | Start full system health scan |
 | **`[R]`** | Re-run scan / refresh current view |
@@ -162,11 +162,11 @@ Every shortcut is also a button in the window; `[?]` lists them.
 | **`[F]`** | Repair the ticked findings |
 | **`[D]`** | Toggle dry-run mode — repairs are shown, not executed |
 | **`[E]`** | Export diagnostic & repair report as self-contained HTML |
-| **`[B]`** | Settings & Safety: move `[↑]`/`[↓]` between the settings list and the registry snapshot list |
-| **`[U]`** | Settings & Safety: restore the selected registry snapshot — elsewhere: open the pending "update available" notice, which can download, verify and install the new version |
+| **`[B]`** | Settings: move `[↑]`/`[↓]` between the settings list and the registry snapshot list |
+| **`[U]`** | Settings: restore the selected registry snapshot — elsewhere: open the pending "update available" notice, which can download, verify and install the new version |
 | **`[PgUp]` / `[PgDn]` / `[Home]` / `[End]`** | Move the findings selection by a page, or to the first / last finding (the logs scroll with the mouse wheel and their own scrollbars) |
 | **`[←]` / `[→]` or `[h]` / `[l]`** | Switch views (wraps around) |
-| **`[+]` / `[-]` or `[[` / `]]`** | Adjust the highlighted numeric setting (Settings & Safety) |
+| **`[+]` / `[-]` or `[[` / `]]`** | Adjust the highlighted numeric setting (Settings) |
 | **`[↑]` / `[↓]` or `[j]` / `[k]`** | Navigate list items |
 | **`[?]`** | Open interactive Help Modal overlay |
 | **`[Esc]`** | Clear filters / abort a running operation / close modal / return to Scan & Repair |
@@ -280,7 +280,7 @@ winmedic --uninstall --purge  # also deletes %APPDATA%\WinMedic (settings, logs,
 winget uninstall SecretLUL.WinMedic   # or just delete the .exe
 ```
 
-The window offers the first step as *Settings & Safety → Remove WinMedic from Windows*.
+The window offers the first step as *Settings → Remove WinMedic from Windows*.
 
 ---
 
