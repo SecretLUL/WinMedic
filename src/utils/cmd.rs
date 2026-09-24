@@ -1,7 +1,8 @@
+use crate::utils::decode::{LineDecoder, decode_output};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::AsyncReadExt;
 use tokio::process::Command as TokioCommand;
 use tokio::sync::mpsc::Sender;
 use tokio::time::timeout;
@@ -71,13 +72,27 @@ pub trait CommandRunner: Send + Sync {
         command_str: &str,
         timeout_duration: Duration,
     ) -> Result<CmdOutput, String> {
+        let script = powershell_script(command_str);
         self.run(
             "powershell",
-            &["-NoProfile", "-NonInteractive", "-Command", command_str],
+            &["-NoProfile", "-NonInteractive", "-Command", &script],
             timeout_duration,
         )
         .await
     }
+}
+
+/// Prefix a script with the switch that makes PowerShell write UTF-8.
+///
+/// Left alone, PowerShell writes into a pipe in the OEM code page, which cannot
+/// hold every character a device name, a path or a task description may carry.
+/// UTF-8 can, and [`crate::utils::decode`] takes UTF-8 as it is. No byte order
+/// mark: the output would otherwise start with one.
+pub fn powershell_script(command_str: &str) -> String {
+    format!(
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); {}",
+        command_str
+    )
 }
 
 /// Production runner executing actual OS processes via tokio::process::Command.
@@ -333,13 +348,11 @@ pub async fn run_cmd(
         Ok(Ok(status)) => {
             let stdout_bytes = stdout_handle.await.unwrap_or_default();
             let stderr_bytes = stderr_handle.await.unwrap_or_default();
-            let stdout_str = String::from_utf8_lossy(&stdout_bytes).to_string();
-            let stderr_str = String::from_utf8_lossy(&stderr_bytes).to_string();
             Ok(CmdOutput {
                 success: status.success(),
                 exit_code: status.code(),
-                stdout: stdout_str,
-                stderr: stderr_str,
+                stdout: decode_output(&stdout_bytes),
+                stderr: decode_output(&stderr_bytes),
             })
         }
         Ok(Err(e)) => Err(format!("Command execution error: {}", e)),
@@ -387,13 +400,7 @@ pub async fn run_cmd_streaming(
     let stdout_tx = log_tx.clone();
     let stdout_handle = tokio::spawn(async move {
         if let Some(stdout) = stdout {
-            let mut reader = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                if let Some(ref tx) = stdout_tx {
-                    let _ = tx.send(line.clone()).await;
-                }
-                stdout_lines.push(line);
-            }
+            forward_lines(stdout, stdout_tx, "", &mut stdout_lines).await;
         }
         stdout_lines
     });
@@ -401,13 +408,7 @@ pub async fn run_cmd_streaming(
     let stderr_tx = log_tx;
     let stderr_handle = tokio::spawn(async move {
         if let Some(stderr) = stderr {
-            let mut reader = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                if let Some(ref tx) = stderr_tx {
-                    let _ = tx.send(format!("[STDERR] {}", line)).await;
-                }
-                stderr_lines.push(line);
-            }
+            forward_lines(stderr, stderr_tx, "[STDERR] ", &mut stderr_lines).await;
         }
         stderr_lines
     });
@@ -436,11 +437,46 @@ pub async fn run_cmd_streaming(
     }
 }
 
+/// Read `pipe` to the end, decoding it line by line, and hand each line to the
+/// log channel as it arrives.
+///
+/// Reads raw bytes rather than `lines()`: that reader stops at the first line
+/// that is not UTF-8, and German DISM or SFC output has one within the first
+/// few lines — everything after it, the verdict included, was lost.
+async fn forward_lines(
+    mut pipe: impl tokio::io::AsyncRead + Unpin,
+    tx: Option<Sender<String>>,
+    prefix: &str,
+    lines: &mut Vec<String>,
+) {
+    let mut decoder = LineDecoder::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        let read = match pipe.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(read) => read,
+        };
+        for line in decoder.push(&buf[..read]) {
+            if let Some(ref tx) = tx {
+                let _ = tx.send(format!("{prefix}{line}")).await;
+            }
+            lines.push(line);
+        }
+    }
+    if let Some(line) = decoder.finish() {
+        if let Some(ref tx) = tx {
+            let _ = tx.send(format!("{prefix}{line}")).await;
+        }
+        lines.push(line);
+    }
+}
+
 /// Run a PowerShell command safely and return output.
 pub async fn run_powershell(command_str: &str, timeout_dur: Duration) -> Result<CmdOutput, String> {
+    let script = powershell_script(command_str);
     run_cmd(
         "powershell",
-        &["-NoProfile", "-NonInteractive", "-Command", command_str],
+        &["-NoProfile", "-NonInteractive", "-Command", &script],
         timeout_dur,
     )
     .await

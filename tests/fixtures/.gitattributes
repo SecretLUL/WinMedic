@@ -1,0 +1,3 @@
+# Captured bytes: their encoding and line endings are what the tests check,
+# so git must neither convert nor diff them as text.
+*.bin binary

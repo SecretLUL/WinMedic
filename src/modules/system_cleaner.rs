@@ -249,13 +249,11 @@ pub fn clean_log_dir_files(path: &Path) -> CleanStats {
 
 /// Read the component store without changing it.
 ///
-/// `/English` is not cosmetic. DISM prints in the Windows display language and
-/// in the console code page, which [`String::from_utf8_lossy`] turns into
-/// replacement characters — on a German machine that alone cost the parser the
-/// store size and cache lines, because "Größe" and "temporäre" no longer match
-/// anything. Pinning the output language leaves the parser one set of labels to
-/// know, whatever locale it runs on. The localised labels below stay as a
-/// fallback for a DISM build that ignores the switch.
+/// `/English` is not cosmetic. DISM prints in the Windows display language, so
+/// without it the parser would need the labels of every language Windows ships
+/// in. Pinning the output language leaves it one set to know, whatever locale
+/// it runs on. The German labels below stay as a fallback for a DISM build that
+/// ignores the switch.
 const DISM_ANALYZE_ARGS: &[&str] = &[
     "/Online",
     "/Cleanup-Image",
