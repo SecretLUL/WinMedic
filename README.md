@@ -14,7 +14,7 @@
 
 <br/>
 
-![WinMedic Hero Banner](assets/banner.jpg)
+![WinMedic: scan and repair Windows without reinstalling it](assets/banner.svg)
 
 </div>
 
