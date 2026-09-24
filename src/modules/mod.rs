@@ -11,7 +11,7 @@ pub mod whea_logger;
 pub mod windows_updates;
 
 use crate::config::AppConfig;
-use crate::engine::issue::Issue;
+use crate::engine::issue::{Issue, Severity};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
@@ -55,6 +55,30 @@ pub enum ModuleStatus {
     Warning(usize),
     Critical(usize),
     Failed(String),
+}
+
+impl ModuleStatus {
+    /// The badge a module that finished earns from the findings it reported.
+    ///
+    /// Only for a module that finished: one that failed reported nothing, and
+    /// counting its findings would call it passed.
+    pub fn from_findings<'a>(issues: impl IntoIterator<Item = &'a Issue>) -> Self {
+        let (mut critical, mut warnings) = (0, 0);
+        for issue in issues {
+            match issue.severity {
+                Severity::Critical => critical += 1,
+                Severity::Warning => warnings += 1,
+                Severity::Info => {}
+            }
+        }
+        if critical > 0 {
+            Self::Critical(critical)
+        } else if warnings > 0 {
+            Self::Warning(warnings)
+        } else {
+            Self::Passed
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

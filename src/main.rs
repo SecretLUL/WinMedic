@@ -2,9 +2,10 @@
 // also what the integration tests link against. The binary is a thin front end
 // over it — declaring `mod app; mod config; …` here again would compile every
 // module a second time into a separate, untested set of types.
-use winmedic::{config, engine, gui, safety, utils};
+use winmedic::{app, config, engine, gui, modules, safety, utils};
 
 use clap::Parser;
+use std::collections::HashMap;
 use std::process::ExitCode;
 use std::sync::Arc;
 use tokio::sync::mpsc::channel;
@@ -63,12 +64,25 @@ struct CliArgs {
     /// Request Windows Administrator elevation
     #[arg(short, long)]
     elevate: bool,
+
+    /// Run as background diagnostic helper (WinMedicHelper): scan silently, save the results for the window and exit 0. Does nothing while the setting is off.
+    #[arg(long)]
+    helper: bool,
+
+    /// Started by the "Start with Windows" entry: open minimized, or not at all while the setting is off
+    #[arg(long)]
+    autostart: bool,
 }
 
 impl CliArgs {
     /// Anything that runs without opening the window.
     fn is_headless(&self) -> bool {
-        self.scan || self.auto_fix || self.json || self.dry_run || self.output.is_some()
+        self.scan
+            || self.auto_fix
+            || self.json
+            || self.dry_run
+            || self.output.is_some()
+            || self.helper
     }
 
     /// Whether a repair pass (real or simulated) should follow the scan.
@@ -113,18 +127,18 @@ fn run(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     }
 
     if args.is_headless() {
+        if args.helper {
+            utils::console::release_console_if_owned();
+        }
         let runtime = tokio::runtime::Runtime::new()?;
         runtime.block_on(run_headless(args))
     } else {
-        run_gui()
+        run_gui(args.autostart)
     }
 }
 
 // ---------------------------------------------------------------- headless
 
-// Scoped rather than a crate-level allow list: the library crate root carries
-// its own, and duplicating it here is what this file just stopped doing.
-#[allow(clippy::single_match)]
 async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     // Real repairs without elevation just produce a wall of access-denied
     // errors, so refuse up front with a code a script can branch on.
@@ -142,7 +156,12 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     if let Some(warning) = config_status.warning() {
         eprintln!("WinMedic: {}", warning);
     }
-    let quiet = args.json;
+    // A task that outlived its setting — a delete that failed, a config changed
+    // elsewhere — must not go on scanning behind the user's back.
+    if args.helper && !config.helper_enabled {
+        return Ok(exit_code::OK);
+    }
+    let quiet = args.json || args.helper;
 
     // Ctrl+C cancels the run instead of leaving orphaned DISM/chkdsk children.
     let cancel = CancellationToken::new();
@@ -171,13 +190,20 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
 
     let scan_cancel = cancel.clone();
     let engine_for_scan = engine.clone();
+    let scan_started = std::time::Instant::now();
     let engine_handle =
         tokio::spawn(async move { engine_for_scan.run_scan(tx, scan_cancel).await });
 
     let mut scan_cancelled = false;
+    // For the helper, which records module outcomes itself: a module that
+    // failed reported no findings, and counting findings alone calls it passed.
+    let mut failed_modules = HashMap::new();
     while let Some(evt) = rx.recv().await {
-        match evt {
+        match &evt {
             ScanEvent::ScanCancelled { .. } => scan_cancelled = true,
+            ScanEvent::ModuleFailed { module_id, error } => {
+                failed_modules.insert(module_id.clone(), error.clone());
+            }
             _ => {}
         }
         if quiet {
@@ -216,23 +242,74 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     let mut issues = engine_handle.await?;
 
     let audit_logger = safety::audit::AuditLogger::new();
+    let health_score = DiagnosticEngine::calculate_health_score(&issues);
+
+    if args.helper && scan_cancelled {
+        // A partial scan would replace a complete one with modules that never ran.
+        audit_logger.log(
+            "SCAN",
+            "WinMedicHelper",
+            "Automated background diagnostic scan",
+            "CANCELLED",
+            "Interrupted before every module finished; the previous results were kept.",
+        );
+    } else if args.helper {
+        let mut module_statuses = Vec::new();
+        for m in engine.modules() {
+            let status = match failed_modules.get(m.id()) {
+                Some(error) => modules::ModuleStatus::Failed(error.clone()),
+                None => modules::ModuleStatus::from_findings(
+                    issues.iter().filter(|i| i.module_id == m.id()),
+                ),
+            };
+            module_statuses.push((
+                m.id().to_string(),
+                m.name().to_string(),
+                m.icon().to_string(),
+                status,
+            ));
+        }
+
+        let state = app::ScanState::new(
+            health_score,
+            issues.clone(),
+            module_statuses,
+            Some(scan_started.elapsed().as_secs()),
+        );
+        let (status, details) = match state.save() {
+            Err(e) => ("FAILED", format!("The results could not be saved: {e}")),
+            Ok(()) if failed_modules.is_empty() => (
+                "SUCCESS",
+                format!("Health: {}/100, Issues: {}", health_score, issues.len()),
+            ),
+            Ok(()) => (
+                "PARTIAL",
+                format!(
+                    "Health: {}/100, Issues: {}, failed modules: {}",
+                    health_score,
+                    issues.len(),
+                    failed_modules.len()
+                ),
+            ),
+        };
+        audit_logger.log(
+            "SCAN",
+            "WinMedicHelper",
+            "Automated background diagnostic scan",
+            status,
+            &details,
+        );
+    }
 
     // With repairs to follow, the JSON document is emitted at the very end so it
     // reflects the post-repair state instead of a snapshot that is already stale.
     let defer_json = args.json && args.runs_repairs() && !scan_cancelled;
-    if !args.json {
-        DiagnosticReporter::print_cli_report(
-            &issues,
-            DiagnosticEngine::calculate_health_score(&issues),
-        );
-    } else if !defer_json {
+    if !args.json && !args.helper {
+        DiagnosticReporter::print_cli_report(&issues, health_score);
+    } else if !defer_json && !args.helper {
         println!(
             "{}",
-            DiagnosticReporter::to_json(
-                &issues,
-                DiagnosticEngine::calculate_health_score(&issues),
-                &audit_logger.get_history()
-            )
+            DiagnosticReporter::to_json(&issues, health_score, &audit_logger.get_history())
         );
     }
 
@@ -362,6 +439,11 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
 
     let code = if scan_cancelled || repairs_cancelled {
         exit_code::CANCELLED
+    } else if args.helper && failed_fixes == 0 {
+        // Findings are the helper's output, not its failure. Task Scheduler
+        // records any other exit as a failed run, which WinMedic's own
+        // scheduled-task check would then report against the helper itself.
+        exit_code::OK
     } else {
         exit_code::from_issues(&issues, failed_fixes)
     };
@@ -375,7 +457,19 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
 
 // --------------------------------------------------------------------- GUI
 
-fn run_gui() -> Result<u8, Box<dyn std::error::Error>> {
+fn run_gui(autostart: bool) -> Result<u8, Box<dyn std::error::Error>> {
+    // A Run entry that outlived its setting opens nothing. Parsed directly
+    // rather than through `AppConfig::load`, which would quarantine a corrupt
+    // file before the window got the chance to report it.
+    if autostart
+        && std::fs::read_to_string(AppConfig::config_path())
+            .ok()
+            .and_then(|data| serde_json::from_str::<AppConfig>(&data).ok())
+            .is_some_and(|config| !config.autostart)
+    {
+        return Ok(exit_code::OK);
+    }
+
     // WinMedic links into the console subsystem so that its headless mode keeps
     // its exit codes and its pipes; see `utils::console` for the whole argument.
     // The window has no use for the console that came with it.
@@ -390,6 +484,10 @@ fn run_gui() -> Result<u8, Box<dyn std::error::Error>> {
         .with_title("WinMedic")
         .with_inner_size([1280.0, 820.0])
         .with_min_inner_size([960.0, 640.0]);
+
+    if autostart {
+        viewport = viewport.with_active(false);
+    }
 
     // The same mark the executable carries in its PE resources, so the title
     // bar and the taskbar agree with Explorer. A window with no icon still
@@ -408,7 +506,7 @@ fn run_gui() -> Result<u8, Box<dyn std::error::Error>> {
         eframe::run_native(
             "WinMedic",
             options,
-            Box::new(|cc| Ok(Box::new(gui::WinMedicApp::new(cc)))),
+            Box::new(move |cc| Ok(Box::new(gui::WinMedicApp::with_autostart(cc, autostart)))),
         )
     };
 

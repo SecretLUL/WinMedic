@@ -123,7 +123,15 @@ fn health(ui: &mut egui::Ui, app: &mut App) {
                     })
                     .size(13.0),
                 );
-                if let Some(duration) = app.scan_duration {
+                if let Some(ref timestamp) = app.last_scan_timestamp {
+                    let duration_str = app
+                        .scan_duration
+                        .map(|d| format!(" (took {})", super::scanner::format_duration(d)))
+                        .unwrap_or_default();
+                    ui.label(
+                        theme::muted(format!("Last scan: {timestamp}{duration_str}")).size(11.0),
+                    );
+                } else if let Some(duration) = app.scan_duration {
                     ui.label(
                         theme::muted(format!(
                             "Last scan took {}",
@@ -131,6 +139,8 @@ fn health(ui: &mut egui::Ui, app: &mut App) {
                         ))
                         .size(11.0),
                     );
+                } else if !app.is_scanning {
+                    ui.label(theme::muted("Last scan: Not scanned yet").size(11.0));
                 }
             });
         });

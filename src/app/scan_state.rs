@@ -59,13 +59,24 @@ impl ScanState {
         Self::save_to(self, &Self::file_path())
     }
 
+    /// Write atomically, through a temp file renamed over the target.
+    ///
+    /// The window and the WinMedicHelper task both write this file, and the
+    /// window re-reads it every second. A plain write let either of them read,
+    /// or leave behind, half a file.
     pub fn save_to(&self, path: &Path) -> Result<(), std::io::Error> {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        std::fs::write(path, json)
+
+        // Per process, so the two writers never share a temp file.
+        let tmp_path = path.with_extension(format!("json.{}.tmp", std::process::id()));
+        std::fs::write(&tmp_path, json)?;
+        std::fs::rename(&tmp_path, path).inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp_path);
+        })
     }
 }
 
