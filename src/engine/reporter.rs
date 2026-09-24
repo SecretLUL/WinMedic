@@ -69,6 +69,8 @@ impl DiagnosticReporter {
 
             let status_str = if issue.is_fixed {
                 "[FIXED]".green().bold()
+            } else if issue.advice_only {
+                "[ADVICE]".white()
             } else {
                 "[OPEN]".white()
             };
@@ -169,6 +171,8 @@ impl DiagnosticReporter {
                     "[FIXED]"
                 } else if issue.fix_error.is_some() {
                     "[FAILED]"
+                } else if issue.advice_only {
+                    "[ADVICE]"
                 } else {
                     "[OPEN]"
                 };
@@ -284,15 +288,19 @@ impl DiagnosticReporter {
                     ("status-fixed", "FIXED")
                 } else if issue.fix_error.is_some() {
                     ("status-failed", "FAILED")
+                } else if issue.advice_only {
+                    ("status-open", "ADVICE")
                 } else {
                     ("status-open", "OPEN")
                 };
 
                 let mut steps_html = String::new();
                 if !issue.fix_steps.is_empty() {
-                    steps_html.push_str(
-                        "<div class=\"steps-title\">Planned steps:</div><ol class=\"steps-list\">",
-                    );
+                    steps_html.push_str(if issue.advice_only {
+                        "<div class=\"steps-title\">What to do:</div><ol class=\"steps-list\">"
+                    } else {
+                        "<div class=\"steps-title\">Planned steps:</div><ol class=\"steps-list\">"
+                    });
                     for step in &issue.fix_steps {
                         steps_html.push_str(&format!("<li>{}</li>", escape_html(step)));
                     }

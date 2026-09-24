@@ -82,6 +82,11 @@ pub struct Issue {
     /// and for cleanups whose size is not known before they run.
     #[serde(default)]
     pub reclaimable_bytes: Option<u64>,
+    /// WinMedic has nothing to run for this finding; it tells the user what
+    /// to do. It can never be ticked, so a repair run neither touches it nor
+    /// counts it as fixed, and it keeps weighing on the health score.
+    #[serde(default)]
+    pub advice_only: bool,
 }
 
 impl Issue {
@@ -120,7 +125,26 @@ impl Issue {
             fix_error: None,
             timestamp: Local::now().format("%H:%M:%S").to_string(),
             reclaimable_bytes: None,
+            advice_only: false,
         }
+    }
+
+    /// Mark the finding as advice only. It starts unticked, like every finding
+    /// the user has to act on.
+    pub fn with_advice_only(mut self) -> Self {
+        self.advice_only = true;
+        self.is_selected = false;
+        self
+    }
+
+    /// Whether a repair run could still do something for this finding.
+    pub fn is_repairable(&self) -> bool {
+        !self.advice_only && !self.is_fixed && !self.is_reboot_pending
+    }
+
+    /// Whether the next repair run works on this finding.
+    pub fn will_repair(&self) -> bool {
+        self.is_selected && self.is_repairable()
     }
 
     pub fn with_requires_reboot(mut self, requires_reboot: bool) -> Self {

@@ -527,7 +527,7 @@ impl DiagnosticModule for CrashAnalysisModule {
                     "Review drivers updated shortly before the first crash and roll suspect updates back".to_string(),
                     "Run 'sfc /scannow' and 'DISM /Online /Cleanup-Image /RestoreHealth'".to_string(),
                 ],
-            ));
+            ).with_advice_only());
         }
 
         // 5. Kernel-Power 41 events beyond explainable bugchecks
@@ -555,7 +555,7 @@ impl DiagnosticModule for CrashAnalysisModule {
                     "Verify the PSU is sized for peak system load and cables are fully seated".to_string(),
                     "Review Event Viewer reliability history around the shutdown timestamps".to_string(),
                 ],
-            ));
+            ).with_advice_only());
         }
 
         // 6. Dump accumulation
@@ -597,7 +597,8 @@ impl DiagnosticModule for CrashAnalysisModule {
                     let _ = tx
                         .send(FixProgress {
                             issue_id: issue_id.to_string(),
-                            step_description: "Opening Device Manager for driver rollback...".to_string(),
+                            step_description: "Opening Device Manager for driver rollback..."
+                                .to_string(),
                             is_success: true,
                             error: None,
                             console_line: Some("cmd.exe /c start devmgmt.msc".to_string()),
@@ -619,8 +620,8 @@ impl DiagnosticModule for CrashAnalysisModule {
                         "Device Manager opened. Roll back or clean-reinstall the implicated driver as outlined in the fix steps."
                             .to_string(),
                     ),
-                    _ => Ok(
-                        "Manual action required: open Device Manager, roll back the implicated display/driver, then clean-reinstall the latest vendor package (DDU recommended)."
+                    _ => Err(
+                        "Device Manager could not be opened. Open it yourself (devmgmt.msc), roll back the implicated display/driver, then clean-reinstall the latest vendor package (DDU recommended)."
                             .to_string(),
                     ),
                 }
@@ -630,7 +631,8 @@ impl DiagnosticModule for CrashAnalysisModule {
                     let _ = tx
                         .send(FixProgress {
                             issue_id: issue_id.to_string(),
-                            step_description: "Scheduling Windows Memory Diagnostic tool...".to_string(),
+                            step_description: "Scheduling Windows Memory Diagnostic tool..."
+                                .to_string(),
                             is_success: true,
                             error: None,
                             console_line: Some("mdsched.exe".to_string()),
@@ -643,15 +645,16 @@ impl DiagnosticModule for CrashAnalysisModule {
                     .run("mdsched.exe", &[], Duration::from_secs(5))
                     .await;
 
-                let sched_msg = match sched_res {
-                    Ok(out) if out.success => "Windows Memory Diagnostic (mdsched.exe) launched.",
-                    _ => "Windows Memory Diagnostic recommendation recorded.",
-                };
-
-                Ok(format!(
-                    "{} The memory test runs during the next reboot; also check XMP/EXPO settings in BIOS.",
-                    sched_msg
-                ))
+                match sched_res {
+                    Ok(out) if out.success => Ok(
+                        "Windows Memory Diagnostic (mdsched.exe) launched. The memory test runs during the next reboot; also check XMP/EXPO settings in BIOS."
+                            .to_string(),
+                    ),
+                    _ => Err(
+                        "Windows Memory Diagnostic (mdsched.exe) could not be started. Start it from the Start menu, and check XMP/EXPO settings in BIOS."
+                            .to_string(),
+                    ),
+                }
             }
             "crash_stale_dumps" => {
                 if let Some(ref tx) = progress_tx {
@@ -682,8 +685,7 @@ impl DiagnosticModule for CrashAnalysisModule {
                     )
                     .await;
 
-                let user_dir_cmd =
-                    "Remove-Item -Path (Join-Path $env:LOCALAPPDATA 'CrashDumps\\*.dmp') -Force -ErrorAction SilentlyContinue";
+                let user_dir_cmd = "Remove-Item -Path (Join-Path $env:LOCALAPPDATA 'CrashDumps\\*.dmp') -Force -ErrorAction SilentlyContinue";
                 let _ = dbg
                     .run(
                         &self.runner,
@@ -695,12 +697,14 @@ impl DiagnosticModule for CrashAnalysisModule {
 
                 match res {
                     Ok(out) if out.success => Ok("Analysed crash dump files deleted.".to_string()),
-                    _ => Ok("Crash dump cleanup ran; individual unreadable files may remain.".to_string()),
+                    _ => Ok(
+                        "Crash dump cleanup ran; individual unreadable files may remain."
+                            .to_string(),
+                    ),
                 }
             }
-            "crash_unexpected_shutdown" | "crash_bugcheck_history" => {
-                Ok("Advisory finding recorded in the audit trail. Follow the fix steps: check thermals/PSU (Event 41) and roll back recently updated drivers (bugcheck history).".to_string())
-            }
+            // The unexpected-shutdown and bugcheck-history findings are
+            // advice: a repair run never asks.
             _ => Err(format!("Unknown crash analysis issue id: {}", issue_id)),
         }
     }
@@ -1437,6 +1441,10 @@ mod tests {
             .expect("unexpected shutdown issue");
         assert_eq!(kp.severity, Severity::Warning);
         assert!(kp.technical_details.contains("Unexplained: 1"));
+        assert!(
+            kp.advice_only,
+            "a lost power supply is not repaired in software"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1462,6 +1470,7 @@ mod tests {
             .iter()
             .find(|i| i.id == "crash_bugcheck_history")
             .expect("bugcheck history");
+        assert!(history.advice_only);
         assert!(
             history.technical_details.contains("0x0000009F x1"),
             "the event's crash is the dump's crash: {}",
@@ -1563,16 +1572,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_fix_advisory_findings_record_audit_note() {
+    async fn advice_findings_have_no_repair_that_could_claim_success() {
         let mock = MockCommandRunner::new();
         let module = CrashAnalysisModule::with_runner(ModuleConfig::default(), Arc::new(mock));
 
-        let res = module.fix("crash_unexpected_shutdown", None).await;
-        assert!(res.is_ok());
-        assert!(res.unwrap().contains("audit trail"));
-
-        let res = module.fix("crash_bugcheck_history", None).await;
-        assert!(res.is_ok());
+        for id in ["crash_unexpected_shutdown", "crash_bugcheck_history"] {
+            assert!(module.fix(id, None).await.is_err(), "{id}");
+        }
     }
 
     #[tokio::test]

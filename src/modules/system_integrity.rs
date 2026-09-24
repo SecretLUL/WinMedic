@@ -313,7 +313,7 @@ impl DiagnosticModule for SystemIntegrityModule {
                             "Windows 11: Settings > System > Recovery > 'Fix problems using Windows Update'".to_string(),
                             "Otherwise: mount a Windows ISO of the same edition and run setup.exe, choosing 'Keep personal files and apps'".to_string(),
                         ],
-                    ));
+                    ).with_advice_only());
                 }
                 ComponentStoreHealth::Healthy => {
                     Self::send_progress(
@@ -565,10 +565,7 @@ impl DiagnosticModule for SystemIntegrityModule {
                     )
                     .await?;
                 if !config.success {
-                    return Err(format!(
-                        "sc config vss failed: {}",
-                        config.stdout.trim()
-                    ));
+                    return Err(format!("sc config vss failed: {}", config.stdout.trim()));
                 }
                 // VSS is a demand-start service: it only has to be startable,
                 // so a start that fails because it is already running is fine.
@@ -595,7 +592,11 @@ impl DiagnosticModule for SystemIntegrityModule {
                 Err(format!(
                     "reagentc /enable did not enable it (exit code {:?}): {}. Its image, Winre.wim, is usually missing then; a repair install of Windows puts it back.",
                     out.exit_code,
-                    out.stdout.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("")
+                    out.stdout
+                        .lines()
+                        .map(str::trim)
+                        .find(|l| !l.is_empty())
+                        .unwrap_or("")
                 ))
             }
             "sys_wmi_broken" => {
@@ -621,10 +622,6 @@ impl DiagnosticModule for SystemIntegrityModule {
                     ),
                 }
             }
-            "sys_dism_unrepairable" => Ok(
-                "Advisory recorded in the audit log. Only a repair install of Windows clears this - see the fix steps."
-                    .to_string(),
-            ),
             "sys_sfc_corrupt" => {
                 let out = self
                     .runner
@@ -822,6 +819,7 @@ mod tests {
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].id, "sys_dism_unrepairable");
         assert_eq!(issues[0].risk_score, RiskScore::High);
+        assert!(issues[0].advice_only, "only a repair install clears it");
     }
 
     #[tokio::test]

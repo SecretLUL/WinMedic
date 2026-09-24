@@ -12,8 +12,17 @@ use crate::modules::ModuleStatus;
 
 pub const SCAN_STATE_FILE_NAME: &str = "last_scan.json";
 
+/// Raised whenever an older file would be read wrongly. 1: findings say
+/// whether they are advice; before that, advice read as a repairable finding
+/// and a repair run failed on it.
+const FORMAT: u32 = 1;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanState {
+    /// A file from before [`FORMAT`] reads as 0 and is not loaded: the next
+    /// scan replaces it.
+    #[serde(default)]
+    pub format: u32,
     pub timestamp: String,
     pub health_score: u8,
     pub issues: Vec<Issue>,
@@ -32,6 +41,7 @@ impl ScanState {
         scan_duration_secs: Option<u64>,
     ) -> Self {
         Self {
+            format: FORMAT,
             timestamp: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             health_score,
             issues,
@@ -52,7 +62,9 @@ impl ScanState {
 
     pub fn load_from(path: &Path) -> Option<Self> {
         let data = std::fs::read_to_string(path).ok()?;
-        serde_json::from_str(&data).ok()
+        serde_json::from_str(&data)
+            .ok()
+            .filter(|state: &Self| state.format == FORMAT)
     }
 
     pub fn save(&self) -> Result<(), std::io::Error> {
@@ -120,6 +132,27 @@ mod tests {
         assert_eq!(loaded.module_statuses.len(), 1);
         assert_eq!(loaded.scan_duration_secs, Some(12));
 
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// A v0.5.0 file has no format and no advice flags; loading it would
+    /// offer advice for repair.
+    #[test]
+    fn a_file_from_an_older_format_is_not_loaded() {
+        let tmp = std::env::temp_dir().join(format!(
+            "winmedic_scan_state_old_{}.json",
+            std::process::id()
+        ));
+        let mut state = ScanState::new(90, Vec::new(), Vec::new(), None);
+        let current = serde_json::to_value(&state).unwrap();
+        assert_eq!(current["format"], FORMAT);
+
+        state.format = 0;
+        let mut old = serde_json::to_value(&state).unwrap();
+        old.as_object_mut().unwrap().remove("format");
+        std::fs::write(&tmp, old.to_string()).unwrap();
+
+        assert!(ScanState::load_from(&tmp).is_none());
         let _ = std::fs::remove_file(&tmp);
     }
 }
