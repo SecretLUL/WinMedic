@@ -474,7 +474,7 @@ impl DiagnosticModule for SystemIntegrityModule {
         .await;
         if let Ok(out) = self
             .runner
-            .run_powershell(WMI_PROBE_SCRIPT, Duration::from_secs(30))
+            .query_powershell(WMI_PROBE_SCRIPT, Duration::from_secs(30))
             .await
         {
             match wmi_failures(&out.stdout) {
@@ -609,7 +609,7 @@ impl DiagnosticModule for SystemIntegrityModule {
                     .await?;
                 let probe = self
                     .runner
-                    .run_powershell(WMI_PROBE_SCRIPT, Duration::from_secs(30))
+                    .query_powershell(WMI_PROBE_SCRIPT, Duration::from_secs(30))
                     .await?;
                 match wmi_failures(&probe.stdout) {
                     Some(failures) if failures.is_empty() => {

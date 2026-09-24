@@ -348,7 +348,7 @@ impl NetworkModule {
     async fn adapters(&self) -> Result<Vec<AdapterIpv4>, String> {
         let out = self
             .runner
-            .run_powershell(ADAPTER_IPV4_SCRIPT, Duration::from_secs(20))
+            .query_powershell(ADAPTER_IPV4_SCRIPT, Duration::from_secs(20))
             .await?;
         if !out.success {
             return Err(format!(
