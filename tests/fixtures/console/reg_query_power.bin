@@ -1,0 +1,40 @@
+
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Power
+    Class1InitialUnparkCount    REG_DWORD    0x40
+    CustomizeDuringSetup    REG_DWORD    0x1
+    EnergyEstimationEnabled    REG_DWORD    0x0
+    HiberFileSizePercent    REG_DWORD    0x0
+    MfBufferingThreshold    REG_DWORD    0x0
+    PerfCalculateActualUtilization    REG_DWORD    0x1
+    TimerRebaseThresholdOnDripsExit    REG_DWORD    0x3c
+    HibernateEnabledDefault    REG_DWORD    0x1
+    EventProcessorEnabled    REG_DWORD    0x1
+    SourceSettingsVersion    REG_DWORD    0x3
+    LidReliabilityState    REG_DWORD    0x1
+    ExitLatency    REG_DWORD    0x1
+    ExitLatencyCheckEnabled    REG_DWORD    0x1
+    Latency    REG_DWORD    0x1
+    LatencyToleranceDefault    REG_DWORD    0x1
+    LatencyToleranceFSVP    REG_DWORD    0x1
+    LatencyTolerancePerfOverride    REG_DWORD    0x1
+    LatencyToleranceScreenOffIR    REG_DWORD    0x1
+    LatencyToleranceVSyncEnabled    REG_DWORD    0x1
+    RtlCapabilityCheckLatency    REG_DWORD    0x1
+    EnergySaverPolicy    REG_DWORD    0x1
+    CsEnabled    REG_DWORD    0x0
+    VideoIdleTimeout    REG_DWORD    0x0
+    EnergySaverStatus    REG_DWORD    0x0
+    DynamicThrottlePolicy    REG_DWORD    0x0
+    HibernateEnabled    REG_DWORD    0x1
+    EcoMode    REG_DWORD    0x0
+
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Power\EnergyEstimation
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Power\ModernSleep
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Power\PDC
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Power\PowerRequestOverride
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Power\PowerSettings
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Power\Profile
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Power\SecurityDescriptors
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Power\Sync
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Power\User

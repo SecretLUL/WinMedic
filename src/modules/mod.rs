@@ -1,3 +1,4 @@
+pub mod clock_restart;
 pub mod crash_analysis;
 pub mod event_log;
 pub mod network;
@@ -160,7 +161,14 @@ pub fn get_all_modules_with_runner(
             cfg.clone(),
             runner.clone(),
         )),
-        Arc::new(tweaks::TweaksModule::with_runner(cfg.clone(), runner)),
+        Arc::new(tweaks::TweaksModule::with_runner(
+            cfg.clone(),
+            runner.clone(),
+        )),
+        Arc::new(clock_restart::ClockRestartModule::with_runner(
+            cfg.clone(),
+            runner,
+        )),
     ]
 }
 

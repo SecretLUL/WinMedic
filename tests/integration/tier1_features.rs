@@ -964,11 +964,11 @@ async fn test_tier1_f11_triage_navigation_bounds() {
 // ============================================================================
 
 #[test]
-fn test_tier1_f12_all_modules_count_equals_twelve() {
+fn test_tier1_f12_all_modules_count_equals_thirteen() {
     let cfg = ModuleConfig::default();
     let runner = Arc::new(ProgrammableMockRunner::new());
     let modules = get_all_modules_with_runner(&cfg, runner);
-    assert_eq!(modules.len(), 12);
+    assert_eq!(modules.len(), 13);
 }
 
 #[test]
@@ -1030,13 +1030,13 @@ fn test_tier1_f12_system_cleaner_metadata() {
 fn test_tier1_f12_diagnostic_engine_contains_all_eleven_modules() {
     let config = AppConfig::default();
     let engine = DiagnosticEngine::new(&config);
-    assert_eq!(engine.modules().len(), 12);
+    assert_eq!(engine.modules().len(), 13);
 }
 
 #[tokio::test]
 async fn test_tier1_f12_app_initializes_with_eleven_module_statuses() {
     let app = App::new();
-    assert_eq!(app.module_statuses.len(), 12);
+    assert_eq!(app.module_statuses.len(), 13);
     assert!(
         app.module_statuses
             .iter()
