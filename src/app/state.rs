@@ -396,7 +396,10 @@ impl App {
     /// Like [`App::start_update_check`], not part of [`App::new`]: the desktop
     /// front end calls it once, after handing the app the real machine.
     pub fn reconcile_background_integration(&mut self) {
-        if let Err(e) = (self.system_actions.reconcile_background)(&self.config) {
+        let Ok(exe) = std::env::current_exe() else {
+            return;
+        };
+        if let Err(e) = (self.system_actions.reconcile_background)(&self.config, &exe) {
             let problem = format!("Background scan / autostart could not be repaired: {e}");
             self.status_message = Some(match self.status_message.take() {
                 Some(existing) if existing != "Ready" => format!("{existing} {problem}"),

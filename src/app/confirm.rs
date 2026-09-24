@@ -67,7 +67,7 @@ pub struct SystemActions {
     /// Synchronize the "Start with Windows" autostart registry entry.
     pub sync_autostart: fn(bool) -> Result<(), String>,
     /// Repair the task and the Run entry for the settings that are on.
-    pub reconcile_background: fn(&AppConfig) -> Result<(), String>,
+    pub reconcile_background: fn(&AppConfig, &std::path::Path) -> Result<(), String>,
 }
 
 fn real_restart_system() -> Result<(), String> {
@@ -114,7 +114,7 @@ impl SystemActions {
             persist_config: false,
             sync_helper_task: |_, _| Ok(()),
             sync_autostart: |_| Ok(()),
-            reconcile_background: |_| Ok(()),
+            reconcile_background: |_, _| Ok(()),
         }
     }
 }

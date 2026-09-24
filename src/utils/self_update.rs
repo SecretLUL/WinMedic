@@ -28,12 +28,13 @@
 //! renamed but neither deleted nor overwritten, so the current executable moves
 //! aside to `<name>.old-<tag>`, the staged file takes its place, and the retired
 //! image is deleted by [`clean_leftovers`] on the next start — by which point
-//! nothing has it mapped any more.
+//! nothing has it mapped any more. A file still named after its release takes
+//! the new release's name on the way ([`install_target`]).
 
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner, ps_single_quoted};
 use crate::utils::updater::{
-    GITHUB_RELEASE_DOWNLOAD_PREFIX, GITHUB_USER_AGENT, MAX_UPDATE_BYTES, UpdateDownload,
-    is_safe_download_url, parse_sha256_manifest,
+    GITHUB_RELEASE_DOWNLOAD_PREFIX, GITHUB_USER_AGENT, MAX_UPDATE_BYTES, SemVer, UpdateDownload,
+    is_safe_asset_name, is_safe_download_url, parse_sha256_manifest,
 };
 
 use sha2::{Digest, Sha256};
@@ -344,11 +345,14 @@ impl InstallPlan {
     }
 }
 
-/// A completed in-place update.
+/// A completed update.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledUpdate {
     /// The path that now holds the new binary — the one the user launches.
     pub installed: PathBuf,
+    /// The path the replaced binary had. Differs from [`Self::installed`] when
+    /// the file took the new release's name.
+    pub replaced: PathBuf,
     /// Where the replaced image was parked. Still mapped by the running
     /// process, so it is deleted on the next start by [`clean_leftovers`].
     pub retired: PathBuf,
@@ -455,10 +459,12 @@ async fn stage_verify_and_swap(
     }
 
     step(progress, "Installing the new binary...");
-    swap_in_place(&plan.exe, staged, retired)?;
+    let target = install_target(&plan.exe, &plan.download.binary_name);
+    swap_in_place(&plan.exe, staged, retired, &target)?;
 
     Ok(InstalledUpdate {
-        installed: plan.exe.clone(),
+        installed: target,
+        replaced: plan.exe.clone(),
         retired: retired.to_path_buf(),
         sha256,
         signature,
@@ -551,13 +557,73 @@ pub async fn authenticode_status(
     }
 }
 
-/// Move `staged` into `exe`'s place, parking the running image at `retired`.
+/// Where the verified download goes: `exe` itself, or `exe` renamed.
 ///
-/// The two renames are the whole reason this works while WinMedic is running:
-/// Windows refuses to delete or overwrite a mapped image but is happy to rename
-/// one. If the second rename fails the first is undone, because "the update did
-/// not install" must never also mean "and now there is no WinMedic here".
-pub fn swap_in_place(exe: &Path, staged: &Path, retired: &Path) -> Result<(), UpdateFailure> {
+/// A file still named after its release, `winmedic-v0.4.1.exe`, takes the new
+/// release's name. Kept, the name would state a version the file no longer
+/// is, and Explorer, which caches icons by path, would keep showing the old
+/// icon. Any other name was chosen by the user, or by WinGet, whose command
+/// link points at it, so it stays; so does a name that is already taken.
+pub fn install_target(exe: &Path, binary_name: &str) -> PathBuf {
+    let Some(current) = exe.file_name().and_then(|n| n.to_str()) else {
+        return exe.to_path_buf();
+    };
+    let target = exe.with_file_name(binary_name);
+    if is_release_file_name(current)
+        && is_release_file_name(binary_name)
+        && is_safe_asset_name(binary_name)
+        && !current.eq_ignore_ascii_case(binary_name)
+        && !is_winget_install(exe)
+        && !target.exists()
+    {
+        target
+    } else {
+        exe.to_path_buf()
+    }
+}
+
+/// `winmedic-v<version>.exe`, the name the release workflow publishes under.
+///
+/// Strict about the characters, because [`SemVer::parse`] is lenient: it
+/// reads the browser's duplicate `winmedic-v0.4.1 (1).exe` as a version too.
+fn is_release_file_name(name: &str) -> bool {
+    name.to_ascii_lowercase()
+        .strip_prefix("winmedic-v")
+        .and_then(|rest| rest.strip_suffix(".exe"))
+        .is_some_and(|version| {
+            version.starts_with(|c: char| c.is_ascii_digit())
+                && version
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'))
+                && SemVer::parse(version).is_some()
+        })
+}
+
+/// Whether `exe` sits in WinGet's portable package directory
+/// (`...\WinGet\Packages\<package>\`), which WinGet owns.
+fn is_winget_install(exe: &Path) -> bool {
+    let parts: Vec<String> = exe
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase())
+        .collect();
+    parts
+        .windows(2)
+        .any(|pair| pair[0] == "winget" && pair[1] == "packages")
+}
+
+/// Move `staged` to `target`, parking the running image at `retired`.
+///
+/// `target` is normally `exe` itself; see [`install_target`]. The two renames
+/// are the whole reason this works while WinMedic is running: Windows refuses
+/// to delete or overwrite a mapped image but is happy to rename one. If the
+/// second rename fails the first is undone, because "the update did not
+/// install" must never also mean "and now there is no WinMedic here".
+pub fn swap_in_place(
+    exe: &Path,
+    staged: &Path,
+    retired: &Path,
+    target: &Path,
+) -> Result<(), UpdateFailure> {
     // A retired binary from an earlier update in this same session is still
     // mapped and cannot be removed; the rename below would then fail. Sweeping
     // it first costs nothing and covers the case where it *is* removable.
@@ -571,7 +637,7 @@ pub fn swap_in_place(exe: &Path, staged: &Path, retired: &Path) -> Result<(), Up
         ))
     })?;
 
-    if let Err(e) = fs::rename(staged, exe) {
+    if let Err(e) = fs::rename(staged, target) {
         let recovery = match fs::rename(retired, exe) {
             Ok(()) => "the installed version was put back and is unchanged".to_string(),
             Err(restore_err) => format!(
@@ -603,9 +669,6 @@ pub fn clean_leftovers(exe: &Path) -> usize {
     let (Some(dir), Some(name)) = (exe.parent(), exe.file_name().and_then(|n| n.to_str())) else {
         return 0;
     };
-    let staging_prefix = format!("{}{}", name, STAGING_INFIX);
-    let retired_prefix = format!("{}{}", name, RETIRED_INFIX);
-
     let Ok(entries) = fs::read_dir(dir) else {
         return 0;
     };
@@ -619,20 +682,31 @@ pub fn clean_leftovers(exe: &Path) -> usize {
         let Some(candidate) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if (candidate.starts_with(&staging_prefix) || candidate.starts_with(&retired_prefix))
-            && fs::remove_file(&path).is_ok()
-        {
+        if is_update_leftover(candidate, name) && fs::remove_file(&path).is_ok() {
             removed += 1;
         }
     }
     removed
 }
 
+/// `<name><infix><tag>` for the running executable's own name, or for a
+/// release's name: an update that renamed the file left the replaced binary
+/// under the name it had before.
+fn is_update_leftover(candidate: &str, own_name: &str) -> bool {
+    [STAGING_INFIX, RETIRED_INFIX].into_iter().any(|infix| {
+        candidate.starts_with(&format!("{own_name}{infix}"))
+            || candidate
+                .split_once(infix)
+                .is_some_and(|(name, _)| is_release_file_name(name))
+    })
+}
+
 /// [`clean_leftovers`] for the running executable.
 ///
 /// Best-effort by design and safe to call before anything else in `main`: it
 /// only ever removes files whose name starts with the running executable's own
-/// file name plus an update infix this module writes.
+/// file name, or a release's `winmedic-v<version>.exe`, plus an update infix
+/// this module writes.
 pub fn clean_leftovers_beside_current_exe() -> usize {
     match std::env::current_exe() {
         Ok(exe) => clean_leftovers(&exe),
@@ -663,8 +737,11 @@ impl SelfUpdateService {
         fn install(plan: InstallPlan, progress: Option<UnboundedSender<String>>) -> InstallFuture {
             Box::pin(async move {
                 let runner = SystemCommandRunner::new();
-                super::self_update::install(Fetcher::curl(), &runner, &plan, progress.as_ref())
-                    .await
+                let installed =
+                    super::self_update::install(Fetcher::curl(), &runner, &plan, progress.as_ref())
+                        .await?;
+                show_in_the_shell(&runner, &installed).await;
+                Ok(installed)
             })
         }
         Self {
@@ -702,6 +779,106 @@ impl SelfUpdateService {
 impl Default for SelfUpdateService {
     fn default() -> Self {
         Self::inert()
+    }
+}
+
+/// Make Windows show the update: shortcuts follow a renamed binary, and
+/// Explorer draws the new binary's own icon.
+///
+/// Best effort, after the fact: the update is installed whatever happens here.
+async fn show_in_the_shell(runner: &dyn CommandRunner, installed: &InstalledUpdate) {
+    let mut changed = vec![installed.installed.clone()];
+    if installed.installed != installed.replaced {
+        changed.extend(retarget_shortcuts(runner, &installed.replaced, &installed.installed).await);
+    }
+    for path in &changed {
+        notify_shell(path);
+    }
+    if installed.installed == installed.replaced {
+        // Same path, so Explorer's icon cache still holds the old binary's
+        // icon under it. This is the notice installers send after changing
+        // icons: it rebuilds the cached ones.
+        notify_shell_icons_changed();
+    }
+}
+
+/// Point the shortcuts that start `old` at `new`, and return the ones changed.
+///
+/// A renamed binary would otherwise break every desktop, Start menu and
+/// taskbar shortcut to it. Only shortcuts whose target is exactly `old` are
+/// touched; one in a folder this account cannot write (all users' shortcuts,
+/// unelevated) keeps its old target.
+pub async fn retarget_shortcuts(
+    runner: &dyn CommandRunner,
+    old: &Path,
+    new: &Path,
+) -> Vec<PathBuf> {
+    let script = format!(
+        "$old = {}; $new = {}; $shell = New-Object -ComObject WScript.Shell; \
+         $dirs = @('Desktop', 'CommonDesktopDirectory', 'Programs', 'CommonPrograms' | ForEach-Object {{ [Environment]::GetFolderPath($_) }}) + (Join-Path $env:APPDATA 'Microsoft\\Internet Explorer\\Quick Launch\\User Pinned') | Where-Object {{ $_ -and (Test-Path -LiteralPath $_) }}; \
+         foreach ($lnk in Get-ChildItem -LiteralPath $dirs -Filter *.lnk -Recurse -File -ErrorAction SilentlyContinue) {{ \
+         try {{ $s = $shell.CreateShortcut($lnk.FullName); \
+         if ($s.TargetPath -ieq $old) {{ \
+         $s.TargetPath = $new; \
+         if ($s.IconLocation.StartsWith($old + ',', [StringComparison]::OrdinalIgnoreCase)) {{ $s.IconLocation = $new + $s.IconLocation.Substring($old.Length) }}; \
+         $s.Save(); $lnk.FullName }} }} catch {{ }} }}",
+        ps_single_quoted(&old.to_string_lossy()),
+        ps_single_quoted(&new.to_string_lossy()),
+    );
+    let Ok(out) = runner
+        .run_powershell(&script, Duration::from_secs(30))
+        .await
+    else {
+        return Vec::new();
+    };
+    out.stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.to_ascii_lowercase().ends_with(".lnk"))
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// Tell Explorer that `path` changed, so it redraws the item.
+fn notify_shell(path: &Path) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::UI::Shell::{
+            SHCNE_UPDATEITEM, SHCNF_FLUSHNOWAIT, SHCNF_PATHW, SHChangeNotify,
+        };
+
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        // SAFETY: `wide` is a NUL-terminated UTF-16 path that outlives the
+        // call, which is what SHCNF_PATHW asks for; the second item is unused.
+        unsafe {
+            SHChangeNotify(
+                SHCNE_UPDATEITEM as i32,
+                SHCNF_PATHW | SHCNF_FLUSHNOWAIT,
+                wide.as_ptr().cast(),
+                std::ptr::null(),
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = path;
+}
+
+/// Tell Explorer that icons changed, so it rebuilds the ones it cached.
+fn notify_shell_icons_changed() {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
+
+        // SAFETY: SHCNE_ASSOCCHANGED takes no items; both must be null.
+        unsafe {
+            SHChangeNotify(
+                SHCNE_ASSOCCHANGED as i32,
+                SHCNF_IDLIST,
+                std::ptr::null(),
+                std::ptr::null(),
+            );
+        }
     }
 }
 
@@ -966,7 +1143,7 @@ mod tests {
         let staged = dir.file("winmedic.exe.new-v1", "new");
         let retired = dir.path.join("winmedic.exe.old-v1");
 
-        swap_in_place(&exe, &staged, &retired).unwrap();
+        swap_in_place(&exe, &staged, &retired, &exe).unwrap();
 
         assert_eq!(fs::read_to_string(&exe).unwrap(), "new");
         assert_eq!(fs::read_to_string(&retired).unwrap(), "old");
@@ -983,7 +1160,7 @@ mod tests {
         let staged = dir.path.join("winmedic.exe.new-v1"); // never created
         let retired = dir.path.join("winmedic.exe.old-v1");
 
-        let err = swap_in_place(&exe, &staged, &retired).unwrap_err();
+        let err = swap_in_place(&exe, &staged, &retired, &exe).unwrap_err();
 
         assert_eq!(err.kind(), "INSTALL");
         assert!(err.reason().contains("put back"), "{}", err.reason());
@@ -1003,11 +1180,18 @@ mod tests {
         // Neither belongs to this executable's update machinery.
         dir.file("winmedic.exe.config", "keep");
         dir.file("other.exe.old-v1", "keep");
+        // An older release the user kept is a program, not a leftover.
+        dir.file("winmedic-v0.3.0.exe", "keep");
 
         assert_eq!(clean_leftovers(&exe), 3);
         assert_eq!(
             dir.names(),
-            vec!["other.exe.old-v1", "winmedic.exe", "winmedic.exe.config"]
+            vec![
+                "other.exe.old-v1",
+                "winmedic-v0.3.0.exe",
+                "winmedic.exe",
+                "winmedic.exe.config"
+            ]
         );
     }
 
@@ -1197,6 +1381,108 @@ mod tests {
         );
         // The manifest is gone and nothing is staged.
         assert_eq!(dir.names(), vec!["winmedic.exe", "winmedic.exe.old-v9.9.9"]);
+    }
+
+    /// The case the user met: `winmedic-v0.4.1.exe` running v0.5.0 afterwards.
+    #[tokio::test]
+    async fn a_file_named_after_its_release_takes_the_new_releases_name() {
+        let dir = TempDir::new("install_renamed");
+        let mut plan = plan_for(&dir, "v9.9.9");
+        plan.exe = dir.file("winmedic-v0.1.0.exe", "the old build");
+
+        let payload = b"the new build";
+        serve(&plan.download.binary_url, payload);
+        let probe = dir.file("probe", "");
+        fs::write(&probe, payload).unwrap();
+        let digest = sha256_file(&probe).unwrap();
+        fs::remove_file(&probe).unwrap();
+        serve(
+            &plan.download.checksum_url,
+            format!("{}  {}\n", digest, plan.download.binary_name).as_bytes(),
+        );
+        let mock = MockCommandRunner::new();
+        mock.add_response("powershell", CmdOutput::ok("WINMEDIC_SIG:NotSigned|"));
+
+        let installed = install(stub_fetcher(), &mock, &plan, None).await.unwrap();
+
+        assert_eq!(installed.installed, dir.path.join("winmedic-v9.9.9.exe"));
+        assert_eq!(installed.replaced, plan.exe);
+        assert_eq!(
+            fs::read_to_string(&installed.installed).unwrap(),
+            "the new build"
+        );
+        assert_eq!(
+            dir.names(),
+            vec!["winmedic-v0.1.0.exe.old-v9.9.9", "winmedic-v9.9.9.exe"]
+        );
+
+        // The next start, from the new name, sweeps the old one away.
+        assert_eq!(clean_leftovers(&installed.installed), 1);
+        assert_eq!(dir.names(), vec!["winmedic-v9.9.9.exe"]);
+    }
+
+    #[test]
+    fn only_a_release_name_outside_winget_is_renamed() {
+        let dir = TempDir::new("install_target");
+        let release = dir.file("winmedic-v0.4.1.exe", "");
+        assert_eq!(
+            install_target(&release, "winmedic-v0.5.0.exe"),
+            dir.path.join("winmedic-v0.5.0.exe")
+        );
+        assert_eq!(
+            install_target(&dir.path.join("WinMedic-V0.4.1.EXE"), "winmedic-v0.5.0.exe"),
+            dir.path.join("winmedic-v0.5.0.exe"),
+            "Windows names are case-insensitive"
+        );
+
+        // A name the user chose, or WinGet's, stays.
+        for kept in [
+            "winmedic.exe",
+            "WinMedic Tool.exe",
+            "winmedic-v0.4.1 (1).exe",
+        ] {
+            let exe = dir.path.join(kept);
+            assert_eq!(install_target(&exe, "winmedic-v0.5.0.exe"), exe, "{kept}");
+        }
+        let winget = PathBuf::from(
+            r"C:\Users\u\AppData\Local\Microsoft\WinGet\Packages\SecretLUL.WinMedic_Microsoft.Winget.Source_8wekyb3d8bbwe\winmedic-v0.4.1.exe",
+        );
+        assert_eq!(install_target(&winget, "winmedic-v0.5.0.exe"), winget);
+
+        // A download that is not a release name, and a name that is taken.
+        assert_eq!(install_target(&release, "winmedic.exe"), release);
+        dir.file("winmedic-v0.6.0.exe", "a copy the user keeps");
+        assert_eq!(install_target(&release, "winmedic-v0.6.0.exe"), release);
+    }
+
+    #[tokio::test]
+    async fn shortcuts_are_retargeted_by_exact_path_and_reported() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "WScript.Shell",
+            CmdOutput::ok(
+                "C:\\Users\\u\\Desktop\\WinMedic.lnk\r\nC:\\Users\\u\\AppData\\Roaming\\Microsoft\\Internet Explorer\\Quick Launch\\User Pinned\\TaskBar\\WinMedic.lnk\r\n",
+            ),
+        );
+
+        let changed = retarget_shortcuts(
+            &mock,
+            Path::new(r"C:\Tools\winmedic-v0.4.1.exe"),
+            Path::new(r"C:\Tools\winmedic-v0.5.0.exe"),
+        )
+        .await;
+
+        assert_eq!(changed.len(), 2);
+        let script = mock.executed().join("\n");
+        assert!(
+            script.contains(r"$old = 'C:\Tools\winmedic-v0.4.1.exe'"),
+            "{script}"
+        );
+        assert!(
+            script.contains(r"$new = 'C:\Tools\winmedic-v0.5.0.exe'"),
+            "{script}"
+        );
+        assert!(script.contains("-ieq $old"), "only exact targets: {script}");
     }
 
     /// The case the whole module exists for: bytes that are not what the release

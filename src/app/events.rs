@@ -392,10 +392,30 @@ impl App {
                             // process still running is the old build, and a
                             // "done" that let someone believe otherwise would be
                             // a lie about which code is executing.
-                            self.status_message = Some(format!(
+                            let mut message = format!(
                                 "WinMedic v{} installed and SHA256-verified. Restart WinMedic to run it.",
                                 version
-                            ));
+                            );
+                            if installed.installed != installed.replaced {
+                                if let Some(name) = installed.installed.file_name() {
+                                    message = format!(
+                                        "WinMedic v{} installed and SHA256-verified as {}. Restart WinMedic to run it.",
+                                        version,
+                                        name.to_string_lossy()
+                                    );
+                                }
+                                // The task and the Run entry still name the
+                                // file that is now gone.
+                                if let Err(e) = (self.system_actions.reconcile_background)(
+                                    &self.config,
+                                    &installed.installed,
+                                ) {
+                                    message.push_str(&format!(
+                                        " Background scan / autostart still point at the old file: {e}"
+                                    ));
+                                }
+                            }
+                            self.status_message = Some(message);
                         }
                         Err(err) => {
                             self.audit_logger.log(
@@ -569,6 +589,7 @@ mod tests {
     fn installed_update() -> InstalledUpdate {
         InstalledUpdate {
             installed: PathBuf::from(r"C:\Tools\winmedic.exe"),
+            replaced: PathBuf::from(r"C:\Tools\winmedic.exe"),
             retired: PathBuf::from(r"C:\Tools\winmedic.exe.old-v0.2.0"),
             sha256: "a".repeat(64),
             signature: SignatureStatus::Unsigned,
@@ -608,6 +629,41 @@ mod tests {
             .expect("the install was not written to the audit log");
         assert_eq!(entry.status, "SUCCESS");
         assert!(entry.details.contains(&"a".repeat(64)));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A file that took the new release's name says so, and the task and the
+    /// Run entry follow it before anything tries to start the old name.
+    #[tokio::test]
+    async fn a_renamed_install_names_the_new_file_and_moves_the_background_entries() {
+        static RETARGETED: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+        let (mut app, dir) = app_with_scratch_audit_log();
+        app.system_actions.reconcile_background = |_, exe| {
+            *RETARGETED.lock().unwrap() = Some(exe.to_path_buf());
+            Ok(())
+        };
+        let mut installed = installed_update();
+        installed.replaced = PathBuf::from(r"C:\Tools\winmedic-v0.1.0.exe");
+        installed.installed = PathBuf::from(r"C:\Tools\winmedic-v0.2.0.exe");
+
+        app.bg_tx
+            .send(BackgroundEvent::UpdateInstallFinished {
+                version: "v0.2.0".to_string(),
+                release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0"
+                    .to_string(),
+                result: Ok(installed),
+            })
+            .unwrap();
+        app.process_background_events();
+
+        let message = app.status_message.clone().unwrap();
+        assert!(message.contains("as winmedic-v0.2.0.exe"), "{message}");
+        assert_eq!(
+            RETARGETED.lock().unwrap().as_deref(),
+            Some(std::path::Path::new(r"C:\Tools\winmedic-v0.2.0.exe"))
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }
