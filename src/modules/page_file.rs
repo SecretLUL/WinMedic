@@ -7,25 +7,42 @@
 //! settings unattended. The nearly-full-drive finding goes further and changes
 //! nothing at all — which files to delete is not WinMedic's decision to make.
 //!
-//! The numbers come from CIM rather than from the registry. `Win32_PageFileUsage`
-//! reports what the running system actually has, which is the only source that
-//! distinguishes "no page file" from "a page file Windows is managing for you" —
-//! a distinction the `PagingFiles` registry value cannot make.
+//! What every finding is judged against needs no WMI: the page files Windows
+//! creates come from the registry and the RAM size from Windows itself. The
+//! old source, `Win32_ComputerSystem`, gathers dozens of properties, and on a
+//! busy machine it twice took longer than 20 seconds — and busy machines are
+//! what WinMedic is for. What the page files look like right now (their use, the
+//! disks they live on) still comes from CIM, and each of those queries only
+//! costs its own check when it fails.
 
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::system_cleaner::format_bytes;
 use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner, ps_single_quoted};
+use crate::utils::registry;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 use tokio::time::sleep;
 
-/// `AutomaticManagedPagefile|TotalPhysicalMemory` — a flag and a byte count.
-const COMPUTER_SYSTEM_SCRIPT: &str = concat!(
-    "Get-CimInstance -ClassName Win32_ComputerSystem | ForEach-Object { ",
-    r#""$($_.AutomaticManagedPagefile)|$($_.TotalPhysicalMemory)" }"#,
-);
+/// Holds `PagingFiles`, the page files the Session Manager creates at boot:
+/// one entry per file, `?:\pagefile.sys` for "Automatically manage paging file
+/// size for all drives", and no entry at all when there is to be none.
+const MEMORY_MANAGEMENT_KEY: &str =
+    r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management";
+
+/// Physical memory in bytes. A function, so that a test can pick the machine.
+pub type RamSource = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+/// `GlobalMemoryStatusEx`, the same number `Win32_ComputerSystem` reports as
+/// `TotalPhysicalMemory`.
+fn real_ram() -> RamSource {
+    Arc::new(|| {
+        let mut system = sysinfo::System::new();
+        system.refresh_memory_specifics(sysinfo::MemoryRefreshKind::nothing().with_ram());
+        system.total_memory()
+    })
+}
 
 /// The page files the running system actually has. Empty output means none.
 const PAGE_FILE_USAGE_SCRIPT: &str = concat!(
@@ -59,14 +76,14 @@ const CRITICAL_FREE_MB: u64 = 512;
 const LOW_FREE_MB: u64 = 2048;
 const LOW_FREE_PERCENT: f64 = 10.0;
 
-/// Without the RAM size and the management flag nothing else can be judged, so
+/// Without the configured page files the main finding cannot be judged, so
 /// this is the one probe whose *failure* fails the module.
 const CONFIG_UNREADABLE: &str = "The virtual memory configuration could not be read";
 
-/// A query that ran and reported nothing is a different case from one that
-/// failed, and neither may be reported as a clean bill of health.
-const CONFIG_EMPTY: &str =
-    "Win32_ComputerSystem returned no data — nothing was judged against an unknown RAM size.";
+/// A missing value is a different case from an empty one, and neither may be
+/// reported as a clean bill of health.
+const CONFIG_MISSING: &str =
+    "PagingFiles is not set - whether this PC has a page file was not judged.";
 
 /// Stands in for a PowerShell failure that carried no stderr of its own.
 const NO_DETAIL: &str = "PowerShell reported no detail";
@@ -77,13 +94,6 @@ const ENABLED_MESSAGE: &str =
 
 fn mb_to_bytes(mb: u64) -> u64 {
     mb.saturating_mul(1024 * 1024)
-}
-
-/// Whether the machine leaves virtual memory to Windows, and how much RAM it has.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MemoryFacts {
-    automatic_managed: bool,
-    ram_mb: u64,
 }
 
 /// An active page file, as the running system reports it. Sizes are megabytes.
@@ -113,6 +123,7 @@ struct VolumeSpace {
 
 pub struct PageFileModule {
     runner: Arc<dyn CommandRunner>,
+    ram: RamSource,
 }
 
 impl Default for PageFileModule {
@@ -127,7 +138,16 @@ impl PageFileModule {
     }
 
     pub fn with_runner(runner: Arc<dyn CommandRunner>) -> Self {
-        Self { runner }
+        Self {
+            runner,
+            ram: real_ram(),
+        }
+    }
+
+    /// For tests: a RAM size other than the machine's own.
+    pub fn with_ram(mut self, ram: RamSource) -> Self {
+        self.ram = ram;
+        self
     }
 
     async fn send_progress(
@@ -162,14 +182,24 @@ impl PageFileModule {
         Some(letter.to_ascii_lowercase())
     }
 
-    fn parse_memory_facts(stdout: &str) -> Option<MemoryFacts> {
-        let line = stdout.lines().map(str::trim).find(|l| !l.is_empty())?;
-        let (managed_raw, ram_raw) = line.split_once('|')?;
+    /// The entries of a `REG_MULTI_SZ` as `reg query` prints it: joined by a
+    /// literal `\0`, nothing at all for an empty list.
+    fn multi_sz_entries(data: &str) -> Vec<String> {
+        data.split(r"\0")
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
 
-        Some(MemoryFacts {
-            automatic_managed: managed_raw.trim().eq_ignore_ascii_case("true"),
-            ram_mb: ram_raw.trim().parse::<u64>().unwrap_or(0) / (1024 * 1024),
-        })
+    /// The page files Windows is set up to create, or `None` when the key or
+    /// the value is missing and nothing can be said.
+    async fn configured_page_files(&self) -> Result<Option<Vec<String>>, String> {
+        let Some(keys) = registry::query(&*self.runner, MEMORY_MANAGEMENT_KEY, false).await? else {
+            return Ok(None);
+        };
+        Ok(registry::find(&keys, MEMORY_MANAGEMENT_KEY, "PagingFiles")
+            .map(|value| Self::multi_sz_entries(&value.data)))
     }
 
     fn parse_usage(stdout: &str) -> Vec<PageFileUsage> {
@@ -363,40 +393,29 @@ impl DiagnosticModule for PageFileModule {
             &progress_tx,
             20,
             "Reading the virtual memory configuration...",
-            Some("Get-CimInstance Win32_ComputerSystem..."),
+            Some("reg query ...\\Session Manager\\Memory Management"),
         )
         .await;
         sleep(Duration::from_millis(150)).await;
 
-        let raw_facts = self
-            .probe(COMPUTER_SYSTEM_SCRIPT)
+        let configured = self
+            .configured_page_files()
             .await
             .map_err(|e| format!("{}: {}", CONFIG_UNREADABLE, e))?;
+        let ram_mb = (self.ram)() / (1024 * 1024);
 
-        let Some(facts) = Self::parse_memory_facts(&raw_facts) else {
-            // Judging a page file against an unknown RAM size would be
-            // guesswork, so the scan records why it stopped rather than
-            // returning an empty result that reads as "everything is fine".
-            Self::send_progress(
-                &progress_tx,
-                100,
-                "Page file diagnostics skipped",
-                Some(CONFIG_EMPTY),
-            )
-            .await;
-            return Ok(Vec::new());
+        let facts_line = match &configured {
+            Some(files) if files.is_empty() => format!(
+                "{} RAM, page files set up: none",
+                format_bytes(mb_to_bytes(ram_mb))
+            ),
+            Some(files) => format!(
+                "{} RAM, page files set up: {}",
+                format_bytes(mb_to_bytes(ram_mb)),
+                files.join(", ")
+            ),
+            None => CONFIG_MISSING.to_string(),
         };
-
-        let management = if facts.automatic_managed {
-            "automatic"
-        } else {
-            "manual"
-        };
-        let facts_line = format!(
-            "{} RAM, page file management: {}",
-            format_bytes(mb_to_bytes(facts.ram_mb)),
-            management
-        );
         Self::send_progress(
             &progress_tx,
             45,
@@ -407,30 +426,23 @@ impl DiagnosticModule for PageFileModule {
         sleep(Duration::from_millis(150)).await;
 
         // One unavailable class here costs its own check, not the whole module:
-        // an unreadable disk inventory should not hide a disabled page file.
-        let usage_probe = self.probe(PAGE_FILE_USAGE_SCRIPT).await;
+        // an unreadable disk inventory should not hide an undersized limit.
+        let raw_usage = self.probe(PAGE_FILE_USAGE_SCRIPT).await.unwrap_or_default();
         let raw_setting = self
             .probe(PAGE_FILE_SETTING_SCRIPT)
             .await
             .unwrap_or_default();
         let raw_disks = self.probe(LOGICAL_DISK_SCRIPT).await.unwrap_or_default();
 
-        // Whether the query ran — a different question from whether it found
-        // any page files, and the only one that separates "this machine has
-        // none" from "this machine could not be asked".
-        let usage_readable = usage_probe.is_ok();
-        let raw_usage = usage_probe.unwrap_or_default();
-
         let usages = Self::parse_usage(&raw_usage);
         let settings = Self::parse_settings(&raw_setting);
         let volumes = Self::parse_volumes(&raw_disks);
 
-        // 1. No page file at all, and Windows is not allowed to create one.
-        //    With automatic management on, an empty usage list is a transient
-        //    reading rather than a configuration fault, so it is not reported —
-        //    and neither is one that comes from a query that never ran.
-        if usage_readable && usages.is_empty() && !facts.automatic_managed {
-            let low_ram = facts.ram_mb > 0 && facts.ram_mb < LOW_RAM_MB;
+        // 1. No page file set up on any drive, so Windows creates none at
+        //    boot. A missing value says nothing either way and is not read as
+        //    an empty one.
+        if configured.as_ref().is_some_and(Vec::is_empty) {
+            let low_ram = ram_mb > 0 && ram_mb < LOW_RAM_MB;
             let consequence = if low_ram {
                 "At this RAM size, programs are terminated outright once physical memory runs out instead of being paged out."
             } else {
@@ -450,13 +462,13 @@ impl DiagnosticModule for PageFileModule {
                 // Nothing takes effect before a restart.
                 RiskScore::High,
                 format!(
-                    "This machine has {} of RAM and no page file, with automatic management switched off. {} Windows also cannot write a kernel crash dump without one, so the next blue screen leaves nothing to analyse.",
-                    format_bytes(mb_to_bytes(facts.ram_mb)),
+                    "This machine has {} of RAM and no page file set up on any drive, so Windows creates none. {} Windows also cannot write a kernel crash dump without one, so the next blue screen leaves nothing to analyse.",
+                    format_bytes(mb_to_bytes(ram_mb)),
                     consequence
                 ),
                 format!(
-                    "Win32_ComputerSystem.AutomaticManagedPagefile: False\nWin32_ComputerSystem.TotalPhysicalMemory: {} MB\nWin32_PageFileUsage instances: 0",
-                    facts.ram_mb
+                    "{}\nPagingFiles: (empty)\nPhysical memory: {} MB",
+                    MEMORY_MANAGEMENT_KEY, ram_mb
                 ),
                 "Hand virtual memory back to Windows (automatic management); takes effect after a restart",
                 vec![
@@ -498,7 +510,7 @@ impl DiagnosticModule for PageFileModule {
                 continue;
             }
 
-            let mut issue = Issue::new(
+            issues.push(Issue::new(
                 format!("pagefile_low_space_{}", drive),
                 self.id(),
                 format!(
@@ -540,13 +552,11 @@ impl DiagnosticModule for PageFileModule {
                     ),
                     "Or move the page file: System Properties -> Advanced -> Performance -> Virtual memory".to_string(),
                 ],
-            );
-            issue.is_selected = false;
-            issues.push(issue);
+            ).with_advice_only());
         }
 
         // 3. A manually sized page file whose maximum is too small to be useful.
-        let recommended_min = Self::recommended_min_page_file_mb(facts.ram_mb);
+        let recommended_min = Self::recommended_min_page_file_mb(ram_mb);
         for setting in &settings {
             let Some(drive) = Self::drive_letter(&setting.name) else {
                 continue;
@@ -585,7 +595,7 @@ impl DiagnosticModule for PageFileModule {
                         "its maximum of {} MB is below the {} MB this machine's {} of RAM calls for",
                         setting.maximum_mb,
                         recommended_min,
-                        format_bytes(mb_to_bytes(facts.ram_mb))
+                        format_bytes(mb_to_bytes(ram_mb))
                     ),
                 )
             };
@@ -607,7 +617,7 @@ impl DiagnosticModule for PageFileModule {
                     setting.name,
                     setting.initial_mb,
                     setting.maximum_mb,
-                    facts.ram_mb,
+                    ram_mb,
                     recommended_min
                 ),
                 "Hand this volume's page file back to Windows (system managed); takes effect after a restart",
@@ -652,17 +662,9 @@ impl DiagnosticModule for PageFileModule {
             return self.set_system_managed(drive).await;
         }
 
-        if let Some(drive) = Self::drive_from_issue_id(issue_id, "pagefile_low_space_") {
-            // Deliberately advisory. Freeing space means choosing which of the
-            // user's files to remove, and moving the page file to another
-            // volume is a decision about their disk layout — neither is
-            // WinMedic's to make, so this reports rather than acts.
-            return Ok(format!(
-                "No change was made. Free space on {}:, or move the page file to another volume via System Properties -> Advanced -> Performance -> Virtual memory.",
-                drive.to_ascii_uppercase()
-            ));
-        }
-
+        // The nearly-full-drive finding is advice: freeing space means choosing
+        // which of the user's files to remove, and moving the page file is a
+        // decision about their disk layout. A repair run never asks.
         Err(format!("Unknown issue id: {}", issue_id))
     }
 }
@@ -671,25 +673,50 @@ impl DiagnosticModule for PageFileModule {
 mod tests {
     use super::*;
     use crate::utils::cmd::{CmdOutput, MockCommandRunner};
+    use crate::utils::decode::decode_output;
 
-    /// Wire up the four probes a scan makes. Each script names a distinct CIM
-    /// class, which is what the mock matches on.
+    // Captured on a German Windows 11; see tests/fixtures/README.md.
+    const MEMORY_MANAGEMENT: &[u8] =
+        include_bytes!("../../tests/fixtures/console/reg_query_memory_management.bin");
+
+    const GIB: u64 = 1024 * 1024 * 1024;
+
+    /// "Automatically manage paging file size for all drives", as captured.
+    const AUTOMATIC: &str = r"?:\pagefile.sys";
+
+    /// The captured Memory Management key with `PagingFiles` set to `data`.
+    fn memory_management(data: &str) -> String {
+        let line = format!("PagingFiles    REG_MULTI_SZ    {data}");
+        decode_output(MEMORY_MANAGEMENT).replace(
+            r"PagingFiles    REG_MULTI_SZ    ?:\pagefile.sys",
+            line.trim_end(),
+        )
+    }
+
+    /// Wire up the four probes a scan makes. The registry key and each CIM
+    /// class have a distinct name, which is what the mock matches on.
     fn mock_system(
-        computer_system: &str,
+        paging_files: &str,
         usage: &str,
         setting: &str,
         logical_disk: &str,
     ) -> MockCommandRunner {
         let mock = MockCommandRunner::new();
-        mock.add_response("Win32_ComputerSystem", CmdOutput::ok(computer_system));
+        mock.add_response(
+            "Memory Management",
+            CmdOutput::ok(memory_management(paging_files)),
+        );
         mock.add_response("Win32_PageFileUsage", CmdOutput::ok(usage));
         mock.add_response("Win32_PageFileSetting", CmdOutput::ok(setting));
         mock.add_response("Win32_LogicalDisk", CmdOutput::ok(logical_disk));
         mock
     }
 
-    /// 16 GB of RAM, automatic management on.
-    const HEALTHY_SYSTEM: &str = "True|17179869184";
+    /// The module on a machine with `ram_gib` of RAM.
+    fn module(mock: MockCommandRunner, ram_gib: u64) -> PageFileModule {
+        PageFileModule::with_runner(Arc::new(mock)).with_ram(Arc::new(move || ram_gib * GIB))
+    }
+
     /// A 500 GB volume with 250 GB free.
     const ROOMY_DISK: &str = "C:|536870912000|268435456000";
 
@@ -703,17 +730,21 @@ mod tests {
     }
 
     #[test]
-    fn ram_is_converted_from_bytes_and_the_flag_is_case_insensitive() {
-        let facts = PageFileModule::parse_memory_facts("true|17179869184").unwrap();
-        assert!(facts.automatic_managed);
-        assert_eq!(facts.ram_mb, 16384);
+    fn the_configured_page_files_are_read_from_the_captured_key() {
+        let keys = registry::parse_reg_query(&decode_output(MEMORY_MANAGEMENT));
+        let value = registry::find(&keys, MEMORY_MANAGEMENT_KEY, "PagingFiles").unwrap();
+        assert_eq!(value.kind, "REG_MULTI_SZ");
+        assert_eq!(
+            PageFileModule::multi_sz_entries(&value.data),
+            vec![AUTOMATIC]
+        );
 
-        let facts = PageFileModule::parse_memory_facts("False|8589934592").unwrap();
-        assert!(!facts.automatic_managed);
-        assert_eq!(facts.ram_mb, 8192);
-
-        assert!(PageFileModule::parse_memory_facts("").is_none());
-        assert!(PageFileModule::parse_memory_facts("no-separator").is_none());
+        // `reg` joins the entries of a REG_MULTI_SZ with a literal `\0`.
+        assert_eq!(
+            PageFileModule::multi_sz_entries(r"C:\pagefile.sys 0 0\0D:\pagefile.sys 1024 4096"),
+            vec![r"C:\pagefile.sys 0 0", r"D:\pagefile.sys 1024 4096"]
+        );
+        assert!(PageFileModule::multi_sz_entries("").is_empty());
     }
 
     #[test]
@@ -737,25 +768,18 @@ mod tests {
 
     #[tokio::test]
     async fn a_healthy_machine_produces_no_findings() {
-        let module = PageFileModule::with_runner(Arc::new(mock_system(
-            HEALTHY_SYSTEM,
-            r"C:\pagefile.sys|2048|512|900",
-            "",
-            ROOMY_DISK,
-        )));
+        let module = module(
+            mock_system(AUTOMATIC, r"C:\pagefile.sys|2048|512|900", "", ROOMY_DISK),
+            16,
+        );
 
         assert!(module.scan(None).await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn a_disabled_page_file_on_a_small_machine_is_critical() {
-        // 4 GB of RAM, manual management, no page file anywhere.
-        let module = PageFileModule::with_runner(Arc::new(mock_system(
-            "False|4294967296",
-            "",
-            "",
-            ROOMY_DISK,
-        )));
+        // 4 GB of RAM and no page file set up on any drive.
+        let module = module(mock_system("", "", "", ROOMY_DISK), 4);
 
         let issues = module.scan(None).await.unwrap();
         let issue = issues
@@ -773,24 +797,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_severity_follows_the_ram_size() {
+        let issues = module(mock_system("", "", "", ROOMY_DISK), 32)
+            .scan(None)
+            .await
+            .unwrap();
+        let issue = issues.iter().find(|i| i.id == "pagefile_disabled").unwrap();
+        assert_eq!(
+            issue.severity,
+            Severity::Warning,
+            "32 GB of RAM go a long way"
+        );
+        assert!(issue.technical_details.contains("PagingFiles: (empty)"));
+    }
+
+    #[tokio::test]
     async fn an_absent_page_file_under_automatic_management_is_not_reported() {
-        // Windows manages it; an empty usage list here is a transient reading,
-        // not a configuration fault to act on.
-        let module =
-            PageFileModule::with_runner(Arc::new(mock_system(HEALTHY_SYSTEM, "", "", ROOMY_DISK)));
+        // Windows creates it at boot; an empty usage list here is a transient
+        // reading, not a configuration fault to act on.
+        let module = module(mock_system(AUTOMATIC, "", "", ROOMY_DISK), 16);
 
         assert!(module.scan(None).await.unwrap().is_empty());
     }
 
     #[tokio::test]
+    async fn a_missing_value_is_not_read_as_an_empty_one() {
+        // Without `PagingFiles` nothing says whether a page file is set up, so
+        // claiming there is none would be fabricated.
+        let without_value: String = decode_output(MEMORY_MANAGEMENT)
+            .lines()
+            .filter(|line| !line.contains("PagingFiles"))
+            .map(|line| format!("{line}\r\n"))
+            .collect();
+        let mock = MockCommandRunner::new();
+        mock.add_response("Memory Management", CmdOutput::ok(without_value));
+        mock.add_response("Win32_PageFileUsage", CmdOutput::ok(""));
+        mock.add_response("Win32_PageFileSetting", CmdOutput::ok(""));
+        mock.add_response("Win32_LogicalDisk", CmdOutput::ok(ROOMY_DISK));
+
+        let issues = module(mock, 4).scan(None).await.unwrap();
+        assert!(!issues.iter().any(|i| i.id == "pagefile_disabled"));
+    }
+
+    #[tokio::test]
     async fn a_page_file_on_a_full_volume_is_reported_but_never_auto_fixed() {
         // 500 GB volume with 300 MB free.
-        let module = PageFileModule::with_runner(Arc::new(mock_system(
-            HEALTHY_SYSTEM,
-            r"C:\pagefile.sys|2048|1800|2040",
-            "",
-            "C:|536870912000|314572800",
-        )));
+        let module = module(
+            mock_system(
+                AUTOMATIC,
+                r"C:\pagefile.sys|2048|1800|2040",
+                "",
+                "C:|536870912000|314572800",
+            ),
+            16,
+        );
 
         let issues = module.scan(None).await.unwrap();
         let issue = issues
@@ -799,29 +859,26 @@ mod tests {
             .expect("the full volume must be reported");
 
         assert_eq!(issue.severity, Severity::Critical);
+        assert!(
+            issue.advice_only,
+            "which files to delete is not WinMedic's call"
+        );
         assert!(!issue.is_selected);
-
-        // The repair is advisory by design: it must succeed without touching
-        // anything, and say so.
-        let mock = MockCommandRunner::new();
-        let advisory = PageFileModule::with_runner(Arc::new(mock.clone()))
-            .fix("pagefile_low_space_c", None)
-            .await
-            .unwrap();
-        assert!(advisory.starts_with("No change was made."));
-        assert!(mock.executed().is_empty(), "nothing may be executed");
     }
 
     #[tokio::test]
     async fn a_volume_with_room_to_spare_is_not_flagged() {
         // 1 TiB with 128 GiB free — 12.5 %, chosen as an exact binary fraction
         // so the comparison does not hinge on f64 rounding.
-        let module = PageFileModule::with_runner(Arc::new(mock_system(
-            HEALTHY_SYSTEM,
-            r"C:\pagefile.sys|2048|512|900",
-            "",
-            "C:|1099511627776|137438953472",
-        )));
+        let module = module(
+            mock_system(
+                AUTOMATIC,
+                r"C:\pagefile.sys|2048|512|900",
+                "",
+                "C:|1099511627776|137438953472",
+            ),
+            16,
+        );
 
         assert!(module.scan(None).await.unwrap().is_empty());
     }
@@ -830,12 +887,15 @@ mod tests {
     async fn the_percentage_rule_fires_even_with_gigabytes_still_free() {
         // 1 TiB with 64 GiB free — 6.25 %. Far above the absolute floor, so
         // only the proportional threshold can catch this one.
-        let module = PageFileModule::with_runner(Arc::new(mock_system(
-            HEALTHY_SYSTEM,
-            r"C:\pagefile.sys|2048|512|900",
-            "",
-            "C:|1099511627776|68719476736",
-        )));
+        let module = module(
+            mock_system(
+                AUTOMATIC,
+                r"C:\pagefile.sys|2048|512|900",
+                "",
+                "C:|1099511627776|68719476736",
+            ),
+            16,
+        );
 
         let issues = module.scan(None).await.unwrap();
         let issue = issues
@@ -853,12 +913,15 @@ mod tests {
     #[tokio::test]
     async fn an_undersized_fixed_limit_is_reported() {
         // 16 GB of RAM wants at least 2048 MB; this file stops at 512.
-        let module = PageFileModule::with_runner(Arc::new(mock_system(
-            HEALTHY_SYSTEM,
-            r"C:\pagefile.sys|512|400|500",
-            r"C:\pagefile.sys|512|512",
-            ROOMY_DISK,
-        )));
+        let module = module(
+            mock_system(
+                AUTOMATIC,
+                r"C:\pagefile.sys|512|400|500",
+                r"C:\pagefile.sys|512|512",
+                ROOMY_DISK,
+            ),
+            16,
+        );
 
         let issues = module.scan(None).await.unwrap();
         let issue = issues
@@ -875,12 +938,15 @@ mod tests {
     async fn an_inverted_range_is_reported_even_when_the_maximum_is_generous() {
         // 8 GB maximum is plenty for 16 GB of RAM, but it is below the initial
         // size, so the range itself is unusable.
-        let module = PageFileModule::with_runner(Arc::new(mock_system(
-            HEALTHY_SYSTEM,
-            r"C:\pagefile.sys|8192|400|500",
-            r"C:\pagefile.sys|16384|8192",
-            ROOMY_DISK,
-        )));
+        let module = module(
+            mock_system(
+                AUTOMATIC,
+                r"C:\pagefile.sys|8192|400|500",
+                r"C:\pagefile.sys|16384|8192",
+                ROOMY_DISK,
+            ),
+            16,
+        );
 
         let issues = module.scan(None).await.unwrap();
         let issue = issues
@@ -899,12 +965,15 @@ mod tests {
     #[tokio::test]
     async fn a_system_managed_setting_is_left_alone() {
         // Both sizes at zero is exactly what "system managed" looks like here.
-        let module = PageFileModule::with_runner(Arc::new(mock_system(
-            HEALTHY_SYSTEM,
-            r"C:\pagefile.sys|2048|512|900",
-            r"C:\pagefile.sys|0|0",
-            ROOMY_DISK,
-        )));
+        let module = module(
+            mock_system(
+                AUTOMATIC,
+                r"C:\pagefile.sys|2048|512|900",
+                r"C:\pagefile.sys|0|0",
+                ROOMY_DISK,
+            ),
+            16,
+        );
 
         assert!(module.scan(None).await.unwrap().is_empty());
     }
@@ -972,49 +1041,62 @@ mod tests {
 
     #[tokio::test]
     async fn a_configuration_query_that_fails_fails_the_module() {
+        // `reg` could not be run at all: nothing is known about the page files.
+        let mock = MockCommandRunner::new();
+        mock.add_response("Win32_PageFileUsage", CmdOutput::ok(""));
+        let err = module(mock, 16).scan(None).await.unwrap_err();
+        assert!(err.contains("could not be read"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_missing_key_judges_nothing_and_fails_nothing() {
+        // Distinct from the case above: `reg` ran and said the key does not
+        // exist (exit code 1, translated text). The other checks still run.
         let mock = MockCommandRunner::new();
         mock.add_response(
-            "Win32_ComputerSystem",
-            CmdOutput::failed(1, "WMI repository is corrupt."),
+            "Memory Management",
+            CmdOutput::failed(
+                1,
+                "FEHLER: Der angegebene Registrierungsschlüssel bzw. Wert wurde nicht gefunden.",
+            ),
         );
-        let module = PageFileModule::with_runner(Arc::new(mock));
-
-        let err = module.scan(None).await.unwrap_err();
-        assert!(err.contains("could not be read"));
-        assert!(err.contains("WMI repository is corrupt."));
-    }
-
-    #[tokio::test]
-    async fn a_configuration_query_that_returns_nothing_judges_nothing() {
-        // Distinct from the case above: the query ran. Without a RAM size
-        // there is nothing to measure against, so the module reports no
-        // findings rather than inventing them — and does not fail either.
-        let mock = MockCommandRunner::new();
-        mock.add_response("Win32_ComputerSystem", CmdOutput::ok(""));
-        let module = PageFileModule::with_runner(Arc::new(mock));
-
-        assert!(module.scan(None).await.unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn an_unreadable_page_file_list_is_not_read_as_having_no_page_file() {
-        // Manual management plus an empty usage list is the disabled-page-file
-        // finding — but only when the list was actually readable. Here the
-        // query fails, so claiming there is no page file would be fabricated.
-        let mock = MockCommandRunner::new();
-        mock.add_response("Win32_ComputerSystem", CmdOutput::ok("False|4294967296"));
         mock.add_response(
             "Win32_PageFileUsage",
-            CmdOutput::failed(1, "Class not available."),
+            CmdOutput::ok(r"C:\pagefile.sys|2048|1800|2040"),
         );
         mock.add_response("Win32_PageFileSetting", CmdOutput::ok(""));
-        mock.add_response("Win32_LogicalDisk", CmdOutput::ok(ROOMY_DISK));
-        let module = PageFileModule::with_runner(Arc::new(mock));
+        mock.add_response(
+            "Win32_LogicalDisk",
+            CmdOutput::ok("C:|536870912000|314572800"),
+        );
 
-        let issues = module.scan(None).await.unwrap();
+        let issues = module(mock, 16).scan(None).await.unwrap();
+        assert!(!issues.iter().any(|i| i.id == "pagefile_disabled"));
+        assert!(issues.iter().any(|i| i.id == "pagefile_low_space_c"));
+    }
+
+    #[tokio::test]
+    async fn the_page_file_check_asks_wmi_nothing_it_cannot_do_without() {
+        // Every CIM query failing costs the checks that need it, never the
+        // disabled-page-file finding and never the module.
+        let mock = MockCommandRunner::new();
+        mock.add_response("Memory Management", CmdOutput::ok(memory_management("")));
+        for class in [
+            "Win32_PageFileUsage",
+            "Win32_PageFileSetting",
+            "Win32_LogicalDisk",
+        ] {
+            mock.add_response(class, CmdOutput::failed(1, "Timeout"));
+        }
+
+        let issues = module(mock.clone(), 4).scan(None).await.unwrap();
+        assert!(issues.iter().any(|i| i.id == "pagefile_disabled"));
         assert!(
-            !issues.iter().any(|i| i.id == "pagefile_disabled"),
-            "a failed query must not become a finding"
+            !mock
+                .executed()
+                .iter()
+                .any(|c| c.contains("Win32_ComputerSystem")),
+            "the scan must not depend on Win32_ComputerSystem"
         );
     }
 }

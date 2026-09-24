@@ -133,10 +133,7 @@ pub fn get_all_modules_with_runner(
             runner.clone(),
         )),
         Arc::new(network::NetworkModule::with_runner(runner.clone())),
-        Arc::new(event_log::EventLogModule::with_runner(
-            cfg.clone(),
-            runner.clone(),
-        )),
+        Arc::new(event_log::EventLogModule::with_runner(runner.clone())),
         Arc::new(storage::StorageModule::with_runner(
             cfg.clone(),
             runner.clone(),

@@ -426,7 +426,7 @@ impl DiagnosticModule for WheaLoggerModule {
                     "Update SSD/NVMe controller firmware via manufacturer utility".to_string(),
                     "Verify disk health with chkdsk and SMART diagnostics".to_string(),
                 ],
-            ));
+            ).with_advice_only());
         }
 
         Self::send_progress(&progress_tx, 100, "WHEA hardware diagnosis complete", None).await;
@@ -458,12 +458,7 @@ impl DiagnosticModule for WheaLoggerModule {
                     .runner
                     .run(
                         "powercfg.exe",
-                        &[
-                            "/setacvalueindex",
-                            "SCHEME_CURRENT",
-                            "SUB_PCIEXPRESS",
-                            "0",
-                        ],
+                        &["/setacvalueindex", "SCHEME_CURRENT", "SUB_PCIEXPRESS", "0"],
                         Duration::from_secs(10),
                     )
                     .await;
@@ -473,12 +468,7 @@ impl DiagnosticModule for WheaLoggerModule {
                     .runner
                     .run(
                         "powercfg.exe",
-                        &[
-                            "/setdcvalueindex",
-                            "SCHEME_CURRENT",
-                            "SUB_PCIEXPRESS",
-                            "0",
-                        ],
+                        &["/setdcvalueindex", "SCHEME_CURRENT", "SUB_PCIEXPRESS", "0"],
                         Duration::from_secs(10),
                     )
                     .await;
@@ -506,7 +496,8 @@ impl DiagnosticModule for WheaLoggerModule {
                     let _ = tx
                         .send(FixProgress {
                             issue_id: issue_id.to_string(),
-                            step_description: "Scheduling Windows Memory Diagnostic tool...".to_string(),
+                            step_description: "Scheduling Windows Memory Diagnostic tool..."
+                                .to_string(),
                             is_success: true,
                             error: None,
                             console_line: Some("mdsched.exe /? / schedule".to_string()),
@@ -520,19 +511,18 @@ impl DiagnosticModule for WheaLoggerModule {
                     .run("mdsched.exe", &[], Duration::from_secs(5))
                     .await;
 
-                let sched_msg = match sched_res {
-                    Ok(out) if out.success => "Windows Memory Diagnostic (mdsched.exe) launched.",
-                    _ => "Windows Memory Diagnostic recommendation recorded.",
-                };
-
-                Ok(format!(
-                    "{} Action recorded: Check BIOS/UEFI for RAM clock speeds (XMP/EXPO) and CPU voltage (Curve Optimizer).",
-                    sched_msg
-                ))
+                match sched_res {
+                    Ok(out) if out.success => Ok(
+                        "Windows Memory Diagnostic (mdsched.exe) launched. Also check BIOS/UEFI for RAM clock speeds (XMP/EXPO) and CPU voltage (Curve Optimizer)."
+                            .to_string(),
+                    ),
+                    _ => Err(
+                        "Windows Memory Diagnostic (mdsched.exe) could not be started. Start it from the Start menu, and check BIOS/UEFI for RAM clock speeds (XMP/EXPO) and CPU voltage."
+                            .to_string(),
+                    ),
+                }
             }
-            "whea_storage_platform_error" => {
-                Ok("Storage subsystem WHEA event recorded in the audit trail. Recommendation: check manufacturer SSD firmware and SMART status.".to_string())
-            }
+            // The storage/platform finding is advice: a repair run never asks.
             _ => Err(format!("Unknown WHEA issue id: {}", issue_id)),
         }
     }
@@ -854,16 +844,20 @@ mod tests {
         let issue = &issues[0];
         assert_eq!(issue.id, "whea_storage_platform_error");
         assert_eq!(issue.severity, Severity::Critical);
+        assert!(
+            issue.advice_only,
+            "a failing drive is not repaired in software"
+        );
     }
 
     #[tokio::test]
-    async fn test_fix_storage_platform_error() {
+    async fn a_memory_test_that_did_not_start_is_not_a_repair() {
         let mock = MockCommandRunner::new();
+        mock.add_response("mdsched.exe", CmdOutput::failed(1, ""));
         let module = WheaLoggerModule::with_runner(ModuleConfig::default(), Arc::new(mock));
-        let res = module.fix("whea_storage_platform_error", None).await;
 
-        assert!(res.is_ok());
-        assert!(res.unwrap().contains("audit trail"));
+        let res = module.fix("whea_memory_error", None).await;
+        assert!(res.unwrap_err().contains("could not be started"));
     }
 
     #[tokio::test]

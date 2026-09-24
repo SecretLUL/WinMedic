@@ -1,5 +1,5 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
-use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
+use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
 use crate::utils::event_xml::{EventRecord, read_events, system_log_query};
 use std::path::Path;
@@ -8,8 +8,10 @@ use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 use tokio::time::sleep;
 
-/// How many of the newest error and critical events the scan lists.
-const CRITICAL_EVENT_SAMPLE: usize = 5;
+// There is no check for "errors in the System log" as such: every Windows logs
+// some, a fresh CI runner included, so it fired on every PC and told nobody
+// what to do. Crashes, WHEA faults, disks, services and updates have checks of
+// their own that name the cause.
 
 /// WHEA faults are rare enough that a week is the window, whatever the event
 /// log setting says.
@@ -33,23 +35,22 @@ pub fn memory_test_found_errors(event_id: u32) -> bool {
 }
 
 pub struct EventLogModule {
-    config: ModuleConfig,
     runner: Arc<dyn CommandRunner>,
 }
 
+impl Default for EventLogModule {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EventLogModule {
-    pub fn new(config: ModuleConfig) -> Self {
-        Self::with_runner(config, Arc::new(SystemCommandRunner::new()))
+    pub fn new() -> Self {
+        Self::with_runner(Arc::new(SystemCommandRunner::new()))
     }
 
-    pub fn with_runner(config: ModuleConfig, runner: Arc<dyn CommandRunner>) -> Self {
-        Self { config, runner }
-    }
-
-    /// Configured lookback window expressed in milliseconds for `wevtutil` XPath
-    /// `timediff()` queries.
-    fn lookback_ms(&self) -> u64 {
-        u64::from(self.config.max_event_log_hours.max(1)) * 3_600_000
+    pub fn with_runner(runner: Arc<dyn CommandRunner>) -> Self {
+        Self { runner }
     }
 
     async fn send_progress(
@@ -167,71 +168,7 @@ impl DiagnosticModule for EventLogModule {
             .await;
         }
 
-        // 2. System Log Critical Events
-        let window_hours = self.config.max_event_log_hours.max(1);
-        Self::send_progress(
-            &progress_tx,
-            55,
-            &format!(
-                "Scanning the last {}h of system event logs (wevtutil)...",
-                window_hours
-            ),
-            Some("wevtutil qe System..."),
-        )
-        .await;
-        sleep(Duration::from_millis(150)).await;
-
-        let query = system_log_query(
-            "(Level=1 or Level=2)",
-            self.lookback_ms(),
-            CRITICAL_EVENT_SAMPLE,
-        );
-        let query: Vec<&str> = query.iter().map(String::as_str).collect();
-        let events = read_events(
-            self.runner
-                .run("wevtutil.exe", &query, Duration::from_secs(12))
-                .await,
-        )?;
-
-        if !events.is_empty() {
-            // wevtutil stops at the sample size, so a full sample means there
-            // may be more.
-            let count = if events.len() >= CRITICAL_EVENT_SAMPLE {
-                format!("at least {}", events.len())
-            } else {
-                events.len().to_string()
-            };
-            let sample = events
-                .iter()
-                .map(EventRecord::summary)
-                .collect::<Vec<_>>()
-                .join("\n");
-            issues.push(Issue::new(
-                "evt_system_critical_events",
-                self.id(),
-                format!("Critical system events logged in the last {}h", window_hours),
-                "Event-Log & Crashes",
-                Severity::Warning,
-                RiskScore::Low,
-                format!("The Windows system log contains {} errors or critical system events within the last {} hours.", count, window_hours),
-                sample,
-                "Analyse the cause in Windows Event Viewer and repair the affected services",
-                vec!["Review the listed events in Event Viewer (eventvwr.msc)".to_string()],
-            ));
-        } else {
-            Self::send_progress(
-                &progress_tx,
-                75,
-                "System log unremarkable",
-                Some(&format!(
-                    "No cluster of critical system events in the last {}h.",
-                    window_hours
-                )),
-            )
-            .await;
-        }
-
-        // 3. WHEA Hardware Logger
+        // 2. WHEA Hardware Logger
         Self::send_progress(
             &progress_tx,
             85,
@@ -272,7 +209,7 @@ impl DiagnosticModule for EventLogModule {
                     .join("\n"),
                 "Apply a BIOS/UEFI update, reset any overclock and run a RAM diagnostic",
                 vec!["Schedule the Windows memory diagnostic (mdsched.exe)".to_string()],
-            ));
+            ).with_advice_only());
         } else {
             Self::send_progress(
                 &progress_tx,
@@ -283,7 +220,7 @@ impl DiagnosticModule for EventLogModule {
             .await;
         }
 
-        // 4. The last Windows Memory Diagnostic result. WinMedic schedules the
+        // 3. The last Windows Memory Diagnostic result. WinMedic schedules the
         // test when a crash or a WHEA record points at RAM; this is where its
         // verdict comes back.
         let memtest_query = system_log_query(
@@ -304,7 +241,7 @@ impl DiagnosticModule for EventLogModule {
         if let Some(test) = latest_memtest {
             let when = test.summary();
             if memory_test_found_errors(test.event_id) {
-                let mut issue = Issue::new(
+                issues.push(Issue::new(
                     "evt_memory_test_failed",
                     self.id(),
                     "The Windows Memory Diagnostic found hardware errors",
@@ -321,9 +258,7 @@ impl DiagnosticModule for EventLogModule {
                             .to_string(),
                         "Replace the faulty module".to_string(),
                     ],
-                );
-                issue.is_selected = false;
-                issues.push(issue);
+                ).with_advice_only());
             } else {
                 Self::send_progress(
                     &progress_tx,
@@ -352,27 +287,25 @@ impl DiagnosticModule for EventLogModule {
                 let minidump_dir = Path::new(r"C:\Windows\Minidump");
                 let mut removed = 0;
                 if minidump_dir.exists()
-                    && let Ok(entries) = std::fs::read_dir(minidump_dir) {
-                        for entry in entries.flatten() {
-                            let path = entry.path();
-                            if path.extension().map(|e| e.to_string_lossy().to_lowercase()) == Some("dmp".to_string())
-                                && std::fs::remove_file(path).is_ok() {
-                                    removed += 1;
-                                }
+                    && let Ok(entries) = std::fs::read_dir(minidump_dir)
+                {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().map(|e| e.to_string_lossy().to_lowercase())
+                            == Some("dmp".to_string())
+                            && std::fs::remove_file(path).is_ok()
+                        {
+                            removed += 1;
                         }
                     }
-                Ok(format!("Safely cleaned up {} stale minidump files.", removed))
+                }
+                Ok(format!(
+                    "Safely cleaned up {} stale minidump files.",
+                    removed
+                ))
             }
-            "evt_system_critical_events" => {
-                Ok("Events analysed and recorded in the WinMedic audit log.".to_string())
-            }
-            "evt_whea_hardware_error" => {
-                Ok("WHEA warning recorded. Recommendation: run the Windows Memory Diagnostic (mdsched.exe).".to_string())
-            }
-            "evt_memory_test_failed" => Ok(
-                "Recorded in the audit log. Only replacing the faulty module clears this; a memory test that then finds no errors removes the finding."
-                    .to_string(),
-            ),
+            // The critical-event, WHEA and memory-test findings are advice:
+            // nothing here can repair them, so a repair run never asks.
             _ => Err(format!("Unknown issue id: {}", issue_id)),
         }
     }
@@ -390,10 +323,9 @@ mod tests {
     async fn test_event_log_detects_whea_error() {
         let mock = MockCommandRunner::new();
         mock.add_response("WHEA-Logger", CmdOutput::ok(WHEA_EVENTS));
-        mock.add_response("Level=1", CmdOutput::ok(""));
         mock.add_response("MemoryDiagnostics", CmdOutput::ok(""));
 
-        let module = EventLogModule::with_runner(ModuleConfig::default(), Arc::new(mock));
+        let module = EventLogModule::with_runner(Arc::new(mock));
         let issues = module.scan(None).await.unwrap();
 
         let whea_issue = issues.iter().find(|i| i.id == "evt_whea_hardware_error");
@@ -402,47 +334,32 @@ mod tests {
         assert_eq!(whea_issue.severity, Severity::Critical);
         assert!(whea_issue.technical_details.contains("ApicId: 4"));
         assert!(!whea_issue.technical_details.contains("RawData"));
-    }
-
-    #[tokio::test]
-    async fn critical_events_are_counted_as_events_not_lines() {
-        let mock = MockCommandRunner::new();
-        mock.add_response("WHEA-Logger", CmdOutput::ok(""));
-        mock.add_response("Level=1", CmdOutput::ok(SYSTEM_ERRORS));
-        mock.add_response("MemoryDiagnostics", CmdOutput::ok(""));
-
-        let module = EventLogModule::with_runner(ModuleConfig::default(), Arc::new(mock));
-        let issues = module.scan(None).await.unwrap();
-
-        let issue = issues
-            .iter()
-            .find(|i| i.id == "evt_system_critical_events")
-            .expect("five real error events are a finding");
         assert!(
-            issue.description.contains("at least 5 errors"),
-            "{}",
-            issue.description
-        );
-        assert!(
-            issue
-                .technical_details
-                .contains("Service Control Manager  Event 7023")
+            whea_issue.advice_only,
+            "a hardware fault is not repaired in software"
         );
     }
 
+    /// Every Windows logs errors; the five real ones in the fixture are what a
+    /// healthy PC has. Asked for them or not, they are not a finding.
     #[tokio::test]
-    async fn an_empty_log_is_not_a_finding() {
+    async fn errors_in_the_system_log_are_not_a_finding_by_themselves() {
         let mock = MockCommandRunner::new();
-        mock.add_response("WHEA-Logger", CmdOutput::ok(""));
-        mock.add_response("Level=1", CmdOutput::ok(""));
-        mock.add_response("MemoryDiagnostics", CmdOutput::ok(""));
+        mock.add_response("wevtutil", CmdOutput::ok(SYSTEM_ERRORS));
 
-        let module = EventLogModule::with_runner(ModuleConfig::default(), Arc::new(mock));
+        let module = EventLogModule::with_runner(Arc::new(mock.clone()));
         let issues = module.scan(None).await.unwrap();
+
         assert!(
-            issues
+            issues.iter().all(|i| i.id == "evt_bsod_dumps_found"),
+            "{issues:?}"
+        );
+        assert!(
+            !mock
+                .executed()
                 .iter()
-                .all(|i| i.id != "evt_system_critical_events" && i.id != "evt_whea_hardware_error")
+                .any(|c| c.contains("Level=1 or Level=2")),
+            "the System log is not searched for errors as such"
         );
     }
 
@@ -451,11 +368,11 @@ mod tests {
         let mock = MockCommandRunner::new();
         // What wevtutil answered to every query WinMedic used to send.
         mock.add_response(
-            "Level=1",
+            "WHEA-Logger",
             CmdOutput::with_output(87, "Es wurden zu viele Argumente angegeben.", ""),
         );
 
-        let module = EventLogModule::with_runner(ModuleConfig::default(), Arc::new(mock.clone()));
+        let module = EventLogModule::with_runner(Arc::new(mock.clone()));
         let err = module.scan(None).await.unwrap_err();
         assert!(err.contains("exit code 87"), "{err}");
 
@@ -464,10 +381,7 @@ mod tests {
             .into_iter()
             .find(|c| c.contains("wevtutil"))
             .unwrap();
-        assert!(
-            query.contains("/q:*[System[(Level=1 or Level=2)"),
-            "{query}"
-        );
+        assert!(query.contains("/q:*[System[Provider["), "{query}");
         assert!(query.contains("timediff(@SystemTime)"), "{query}");
     }
 
@@ -482,9 +396,8 @@ mod tests {
     async fn scan_with_memtest(output: String) -> Vec<Issue> {
         let mock = MockCommandRunner::new();
         mock.add_response("WHEA-Logger", CmdOutput::ok(""));
-        mock.add_response("Level=1", CmdOutput::ok(""));
         mock.add_response("MemoryDiagnostics", CmdOutput::ok(output));
-        EventLogModule::with_runner(ModuleConfig::default(), Arc::new(mock))
+        EventLogModule::with_runner(Arc::new(mock))
             .scan(None)
             .await
             .unwrap()
@@ -499,7 +412,8 @@ mod tests {
                 .find(|i| i.id == "evt_memory_test_failed")
                 .unwrap_or_else(|| panic!("event {id} is a failed test"));
             assert_eq!(issue.severity, Severity::Critical);
-            assert!(!issue.is_selected, "no software repair fixes RAM");
+            assert!(issue.advice_only, "no software repair fixes RAM");
+            assert!(!issue.is_selected);
             assert!(issue.technical_details.contains("2026-09-20"));
         }
     }

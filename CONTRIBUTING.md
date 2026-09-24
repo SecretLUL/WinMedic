@@ -1,192 +1,74 @@
 # Contributing to WinMedic
 
-Thanks for taking the time. WinMedic runs with Administrator privileges and
-modifies the registry, so the bar for changes to the repair paths is higher
-than for a typical CLI tool. This document explains what the checks expect and
-where the risky parts of the codebase are.
+WinMedic runs as Administrator and changes the registry, so the repair paths
+get a higher bar than the rest.
 
-## Prerequisites
+## Setup
 
-- **Windows.** The crate is Windows-only and does not cross-compile for
-  development — `winreg` refuses to build on other platforms with a
-  `compile_error!`. A Windows VM works fine.
-- **Rust 1.95 or newer.** This is the MSRV declared in `Cargo.toml` and
-  enforced by the `msrv` CI job. Edition 2024 alone would only need 1.85; the
-  floor comes from `egui`/`eframe`.
-- **Administrator rights** to exercise the repair paths by hand. The test
-  suite itself does not need them.
+- **Windows.** `winreg` does not build anywhere else; a VM is fine.
+- **Rust 1.95 or newer**, the MSRV in `Cargo.toml` (set by `egui`/`eframe`).
+- **Administrator rights** only to try repairs by hand. The tests do not need
+  them.
 
-## Build and test
+## Before you push
 
-```powershell
-cargo build --locked
-cargo test  --locked
-```
-
-`--locked` matters: `Cargo.lock` is committed and CI builds against it, so a
-change that silently updates a dependency will fail there.
-
-## What CI enforces
-
-Every pull request must pass all of these. Run them before pushing:
+CI runs exactly this, on every pull request into any branch:
 
 ```powershell
 cargo fmt -- --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
-cargo check --locked --all-targets    # with the rust-version toolchain from Cargo.toml, for the MSRV gate
-cargo run --locked -- --scan          # every module has to finish: no "[X] Module" line
+cargo check --locked --all-targets   # with the toolchain from rust-version (MSRV)
+cargo run --locked -- --scan         # a real scan: no "[X] Module" line
 ```
 
-Clippy runs with `-D warnings`, so a warning is a build failure. If a lint is
-genuinely wrong for a piece of code, add a **targeted** `#[allow(...)]` on the
-item with a comment explaining why — not a crate-wide allow in `lib.rs`.
+`--locked` because CI builds against the committed `Cargo.lock`. A lint that
+is wrong for one item gets a targeted `#[allow(...)]` with a comment, never a
+crate-wide one.
 
-The last line is CI's smoke test: a real, read-only scan on the runner's own
-Windows. It exists because mocks answer whatever they are asked, and for a long
-time they answered event log queries that `wevtutil` itself refused.
+## Tests
 
-Pull requests into *any* branch are gated, not just those targeting `main`.
+- Checks and repairs are tested through `MockCommandRunner`. No test runs a
+  real `DISM`, `reg` or anything else that could change the machine.
+- **Feed the mock what Windows prints, not what you expect it to print.** A
+  module that parses a tool's output is tested with a capture from
+  `tests/fixtures/`; add one if you need it ([rules](tests/fixtures/README.md)).
+  The DISM, service and event log checks all had passing tests while none of
+  them could fire on a real machine.
 
-## Test layout
+## Reading what Windows prints
 
-| Suite | What it covers |
-| --- | --- |
-| `#[cfg(test)]` modules in `src/` | Unit tests next to the code they test |
-| `tests/integration/tier1_features.rs` | Feature-level behaviour of each module |
-| `tests/integration/tier2_boundaries.rs` | Boundary and edge-case inputs |
-| `tests/integration/tier3_combinations.rs` | Interactions between modules |
-| `tests/integration/tier4_scenarios.rs` | End-to-end scenarios |
-| `tests/integration/*_hostile_inputs.rs`, `*_edge_cases.rs` | Hostile and malformed inputs |
-| `tests/fixtures/` | Captured output of real Windows tools — see its README |
+WinMedic runs in every display language.
 
-Diagnostics and repairs must be tested through `MockCommandRunner` rather than
-by shelling out. A test that executes a real `DISM` or `reg` command is not
-acceptable — it makes the suite machine-dependent and can damage the machine
-running it.
+- Prefer language-neutral sources: numbers, exit codes, XML, registry values,
+  enum names. DISM takes `/English`.
+- Match a translated sentence only when nothing else exists, using the tool's
+  own wording from its `.mui` files for English and German, and fail safe in
+  every other language: a missed finding, never an invented one.
+- Never decode process output yourself; `CommandRunner` already did.
+- A refused command is "not checked", never "healthy". Check the exit code
+  before reading the output as a verdict.
 
-**Feed the mock what Windows prints, not what you expect it to print.** A mock
-answers whatever it is asked, so a test written from the same assumption as
-the code proves nothing: WinMedic's DISM, service and event log checks all had
-passing tests while none of them could fire on a real machine. When a module
-parses a tool's output, its tests use a capture from `tests/fixtures/` — add one
-if the output you need is not there yet, following the rules in
-[tests/fixtures/README.md](tests/fixtures/README.md).
+## Code that needs extra care
 
-## Reading what Windows tools print
-
-WinMedic runs on every display language, so a check must not depend on one.
-
-- **Prefer a language-neutral source**: a number, an enum name, an exit code,
-  XML, a registry value. `sc qc` reports the start type as a number; DISM takes
-  `/English`; PowerShell objects print enum names in English;
-  `utils::event_xml::system_log_query` reads the event log as XML.
-- **Never match a translated sentence** unless there is no alternative, and then
-  take the wording from the tool's own resources (the `.mui` files), for both
-  English and German at least, and fail safe for every other language — a
-  missed finding, never an invented one.
-- **Never decode output yourself.** `CommandRunner` hands you text decoded by
-  `utils::decode`, which knows that `dism` writes the OEM code page, `sfc`
-  UTF-16 and `netsh` UTF-8. `String::from_utf8_lossy` on process output turns
-  every umlaut into `�`.
-- **A refused command is not a clean result.** Check the exit code before
-  reading the output as a verdict; an unelevated DISM or a rejected query must
-  surface as "not checked", not as "healthy".
-
-## Areas that need extra care
-
-**`src/safety/`** is the layer everything else depends on for not destroying a
-system. Restore point creation, the registry backup index and the audit log
-all live here. Changes need unit tests covering the failure paths, not just
-the happy path.
-
-**`src/modules/*.rs`** contain the `fix()` implementations that actually change
-the system. A new repair should:
-
-- carry a truthful `RiskScore` — `High` for anything destructive or requiring a
-  reboot
-- start deselected by default if it is risky
-- produce a dry-run description listing the exact commands it would run
-- back up whatever it modifies, via `safety::reg_backup` for registry keys
-
-**`src/utils/self_update.rs`** replaces the executable the user runs, very
-often as Administrator. The order — download, hash, compare against the
-published `.sha256`, only then swap — is not negotiable, and every URL and
-asset name arriving from the network is treated as hostile input. Nothing may
-be installed that has not matched the checksum, and any failure has to leave the
-installed binary untouched and fall back to the browser download. No test may
-build `SelfUpdateService::real()` or `Fetcher::curl()`; a guard test enforces
-that, and `install()` takes a stub `Fetcher` precisely so the verify-and-swap
-sequence can be tested without a network.
-
-**PowerShell invocation.** Never interpolate a runtime value into a script
-string. Use `utils::cmd::ps_single_quoted` — see the module documentation there.
-
-## Cutting a release
-
-A release is two steps: land the version bump on `main`, then run the workflow.
-
-```powershell
-./scripts/prepare-release.ps1 0.3.3   # opens the "chore(release): v0.3.3" pull request
-# merge it, wait for CI on main, then:
-gh workflow run release.yml --ref main -f version=0.3.3
-```
-
-The bump goes through a pull request rather than being pushed to `main` by the
-workflow because `main` is protected and `GITHUB_TOKEN` is not allowed through
-its four required checks. The workflow does try — a direct push, then a pull
-request as a fallback — and the fallback needs a repository setting that is
-deliberately off, so the attempt fails and the run's last step goes red. Giving
-CI a token that bypasses branch protection would fix the symptom by removing the
-protection; sending the bump down the same reviewed, CI-gated road as every
-other change costs one merge and removes nothing. v0.4.0 is the release that
-shipped correctly and still went red this way.
-
-Preparing first also makes the workflow's own bump step a no-op: it finds every
-version site already correct, tags `HEAD` unchanged, and its "did the bump reach
-the branch" check passes. Everything else it does is unchanged — it builds from
-the tag it just made and refuses to publish a binary that does not introduce
-itself as that version.
-
-Do not edit `Cargo.toml` by hand to bump the version. `Cargo.lock` and the
-issue-template placeholder repeat it, and the one place the number actually
-matters — `env!("CARGO_PKG_VERSION")`, which feeds the header, the help popup,
-`--version`, the HTML report and the update check — is the one nobody remembers
-to check. `prepare-release.ps1` calls the script that owns all of them, and it
-can be run on its own:
-
-```powershell
-./scripts/set-version.ps1 0.3.3          # rewrite every version site
-./scripts/set-version.ps1 0.3.3 -Check   # report what disagrees, change nothing
-```
-
-The checksum example in `docs/how-it-works.md` is deliberately not on that
-list: it globs `winmedic-v*.exe` out of the download directory instead of naming
-a version, so it never goes stale.
-
-Pushing a `v*` tag by hand still builds and publishes, but a tag is immutable,
-so that path can only run the `-Check` pass: if the tagged tree states a
-different version than the tag, the release fails rather than shipping a
-mislabelled binary.
-
-Release notes are read from `docs/release-notes/<tag>.md` when that file exists,
-and generated from the commit list when it does not.
-
-Once the release is published, the workflow hands the tag to
-`.github/workflows/winget.yml`, which opens a pull request against
-microsoft/winget-pkgs so `winget install SecretLUL.WinMedic` catches up.
-[docs/winget.md](docs/winget.md) explains the setup it needs and why it is not
-triggered by `release: published`.
+- **`src/safety/`** (restore points, registry backups, audit log): test the
+  failure paths, not only the happy path.
+- **`fix()` in `src/modules/`**: a truthful `RiskScore` (`High` when it is
+  destructive or needs a reboot), risky repairs start unticked, the dry run
+  lists the exact commands, and whatever is changed is backed up first
+  (`safety::reg_backup` for registry keys).
+- **`src/utils/self_update.rs`**: download, hash, compare with the published
+  `.sha256`, only then swap. Everything from the network is hostile input, and
+  any failure leaves the installed binary alone. No test builds
+  `SelfUpdateService::real()` or `Fetcher::curl()`.
+- **PowerShell**: never put a runtime value into a script string; use
+  `utils::cmd::ps_single_quoted`.
 
 ## Commits and pull requests
 
-- Conventional-commit prefixes (`fix:`, `feat:`, `ci:`, `docs:`, `chore:`) are
-  used throughout the history; please match it.
-- Describe *why* the change is needed, not only what it does.
-- Say what you verified and on which Windows version. If you could not test
-  something, say so — an honest gap is more useful than an assumed pass.
+- Conventional-commit prefixes: `fix:`, `feat:`, `ci:`, `docs:`, `chore:`.
+- Say why, and what you verified on which Windows. If you could not test
+  something, say so.
+- Code, comments, docs and every user-facing string are in English.
 
-## Language
-
-All user-facing strings, code, comments and documentation are in **English**.
-The project previously mixed German and English; please do not reintroduce it.
+Cutting a release: [docs/releasing.md](docs/releasing.md).

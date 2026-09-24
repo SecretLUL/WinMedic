@@ -179,18 +179,21 @@ impl DiagnosticModule for StorageModule {
                     if l.to_lowercase().contains("unhealthy")
                         || l.to_lowercase().contains("warning")
                     {
-                        issues.push(Issue::new(
-                            "storage_smart_warning",
-                            self.id(),
-                            "SMART hardware warning reported for a physical drive",
-                            "Storage & File System",
-                            Severity::Critical,
-                            RiskScore::High,
-                            format!("A physical disk reports a degraded health status: {}", l),
-                            l.to_string(),
-                            "Back up important data and run the vendor's drive diagnostics",
-                            vec!["Back up important data immediately".to_string()],
-                        ));
+                        issues.push(
+                            Issue::new(
+                                "storage_smart_warning",
+                                self.id(),
+                                "SMART hardware warning reported for a physical drive",
+                                "Storage & File System",
+                                Severity::Critical,
+                                RiskScore::High,
+                                format!("A physical disk reports a degraded health status: {}", l),
+                                l.to_string(),
+                                "Back up important data and run the vendor's drive diagnostics",
+                                vec!["Back up important data immediately".to_string()],
+                            )
+                            .with_advice_only(),
+                        );
                     }
                 }
             }
@@ -442,13 +445,8 @@ impl DiagnosticModule for StorageModule {
                     .await;
                 Ok("Icon & thumbnail cache reset and Explorer restarted successfully.".to_string())
             }
-            "storage_smart_warning" => {
-                dbg.hint(
-                    "a SMART warning is hardware wear - WinMedic records it, only a drive replacement clears it",
-                )
-                .await;
-                Ok("SMART warning acknowledged and recorded in the audit log.".to_string())
-            }
+            // A SMART warning is hardware wear and advice only: only a drive
+            // replacement clears it, so a repair run never asks.
             _ => Err(format!("Unknown issue ID: {}", issue_id)),
         }
     }

@@ -58,11 +58,7 @@ impl App {
             return;
         }
 
-        let selected_count = self
-            .issues
-            .iter()
-            .filter(|i| i.is_selected && !i.is_fixed && !i.is_reboot_pending)
-            .count();
+        let selected_count = self.issues.iter().filter(|i| i.will_repair()).count();
         if selected_count == 0 {
             self.status_message = Some("No open issues selected for repair.".to_string());
             return;
