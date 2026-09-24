@@ -52,6 +52,28 @@ jobs:
       - name: Run Tests
         run: cargo test --locked --verbose
 
+      # The tests feed the modules captured tool output. This feeds them the
+      # runner's own Windows: a real scan, read-only — nothing is repaired —
+      # that has to end with every module finished. Mocks answer whatever they
+      # are asked; this is what notices when Windows would not have. It is the
+      # check that would have caught wevtutil refusing every event log query
+      # WinMedic sent, which no unit test could.
+      - name: Smoke-test a real scan
+        shell: pwsh
+        run: |
+          $out = cargo run --locked --quiet -- --scan 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          Write-Host $out
+          if ($code -gt 2) { throw "winmedic --scan exited with $code" }
+          $failed = [regex]::Matches($out, '(?m)^\[X\] Module .*$')
+          if ($failed.Count -gt 0) {
+            throw "Modules failed on a real Windows:`n$(($failed | ForEach-Object Value) -join "`n")"
+          }
+          if ($out -notmatch '(?m)^\[OK\] Module ') { throw 'No module reported finishing' }
+          # Exit codes 1 and 2 are findings on the runner, not failures, but
+          # Actions ends a pwsh step with the last native exit code.
+          exit 0
+
   msrv:
     name: Minimum Supported Rust Version
     runs-on: windows-latest
