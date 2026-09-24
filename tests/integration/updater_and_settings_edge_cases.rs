@@ -1,3 +1,7 @@
+//! Edge cases of the update check and the settings as the app sees them:
+//! version parsing and ordering, GitHub responses, the browser hand-off and
+//! config compatibility.
+
 use std::time::Duration;
 use winmedic::app::{App, BackgroundEvent, ConfirmRequest};
 use winmedic::config::AppConfig;

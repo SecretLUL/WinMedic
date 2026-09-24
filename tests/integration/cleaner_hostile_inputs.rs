@@ -1,3 +1,7 @@
+//! Hostile and malformed input for the System & Cache Cleaner: odd DISM
+//! output, failing sweeps, and every browser-profile and cache layout it has to
+//! discover.
+
 use std::fs::{File, create_dir_all};
 use std::io::Write;
 use std::path::PathBuf;

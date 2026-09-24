@@ -12,11 +12,11 @@ mod tier3_combinations;
 #[path = "integration/tier4_scenarios.rs"]
 mod tier4_scenarios;
 
-#[path = "integration/challenger_m2_adversarial.rs"]
-mod challenger_m2_adversarial;
+#[path = "integration/cleaner_hostile_inputs.rs"]
+mod cleaner_hostile_inputs;
 
-#[path = "integration/m3_adversarial_challenger_test.rs"]
-mod m3_adversarial_challenger_test;
+#[path = "integration/updater_hostile_inputs.rs"]
+mod updater_hostile_inputs;
 
-#[path = "integration/test_milestone3_challenger2.rs"]
-mod test_milestone3_challenger2;
+#[path = "integration/updater_and_settings_edge_cases.rs"]
+mod updater_and_settings_edge_cases;
