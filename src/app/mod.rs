@@ -7,7 +7,7 @@
 //!
 //! | Module | Responsibility |
 //! | --- | --- |
-//! | [`state`] | The [`App`] struct, construction, telemetry, log buffers |
+//! | [`state`] | The [`App`] struct, construction, log buffers |
 //! | [`input`] | Key dispatch — the only place a keystroke maps to an action |
 //! | [`run_control`] | Starting, cancelling and simulating scans and repairs |
 //! | [`events`] | Draining scan, repair and background channels into state |
@@ -38,13 +38,16 @@ pub use state::{App, SafetyFocus, SettingInput};
 /// Maximum number of log lines kept in memory for scan and repair terminal buffers.
 pub const MAX_LOG_LINES: usize = 2000;
 
-/// Number of tabs in the main navigation.
-pub const TAB_COUNT: usize = 5;
+/// Number of views in the main navigation.
+pub const TAB_COUNT: usize = 2;
 
-pub const TAB_DASHBOARD: usize = 0;
-pub const TAB_SCANNER: usize = 1;
-pub const TAB_TRIAGE: usize = 2;
-pub const TAB_REPAIR: usize = 3;
+/// Scan, review and repair — the whole job, on one page.
+///
+/// This used to be four tabs (dashboard, scanner, triage, repair centre), and
+/// the user had to know which one the next step lived on. They are one page
+/// now: the header says what state the machine is in and offers the one action
+/// that makes sense next, and the body shows whatever that state has to show.
+pub const TAB_HOME: usize = 0;
 /// Settings *and* the safety surface — audit log, registry backups, VSS
 /// restore points and the `[U]` rollback.
 ///
@@ -52,7 +55,7 @@ pub const TAB_REPAIR: usize = 3;
 /// tab was a read-only wall of text that nobody navigated to, while every action
 /// it offered ([U] rollback, [R] refresh) is the same kind of "what is this tool
 /// allowed to do to my machine" decision the settings list already covers.
-pub const TAB_SETTINGS: usize = 4;
+pub const TAB_SETTINGS: usize = 1;
 
 /// Results of short-lived background tasks that are not part of a scan or a
 /// repair run (restore point lookups, registry rollbacks, update checks).

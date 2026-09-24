@@ -12,7 +12,7 @@ use common::{
     DISM_ANALYZE_CLEAN, DISM_ANALYZE_ENGLISH_RECLAIMABLE, MockWindowsPaths, ProgrammableMockRunner,
     TempWorkspace, sandboxed_cleaner,
 };
-use winmedic::app::{App, ConfirmRequest, TAB_TRIAGE};
+use winmedic::app::{App, ConfirmRequest, TAB_HOME};
 use winmedic::config::AppConfig;
 use winmedic::engine::issue::{Issue, RiskScore, Severity};
 use winmedic::engine::runner::DiagnosticEngine;

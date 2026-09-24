@@ -1,8 +1,8 @@
-//! The [`App`] struct itself: construction, telemetry, log buffers and report
+//! The [`App`] struct itself: construction, log buffers and report
 //! export. Behaviour that belongs to a specific feature lives in the sibling
 //! modules listed in [`crate::app`].
 
-use super::{BackgroundEvent, ScanState, TAB_COUNT, TAB_DASHBOARD, TAB_SETTINGS, push_bounded_log};
+use super::{BackgroundEvent, ScanState, TAB_COUNT, TAB_HOME, TAB_SETTINGS, push_bounded_log};
 use crate::config::AppConfig;
 use crate::engine::issue::{Issue, Severity};
 use crate::engine::reporter::DiagnosticReporter;
@@ -12,7 +12,6 @@ use crate::safety::audit::{AuditEntry, AuditLogger};
 use crate::safety::reg_backup::{BackupRecord, RegBackupManager};
 use crate::utils::admin::is_admin;
 use crate::utils::cmd::SystemCommandRunner;
-use crate::utils::hardware::{SystemTelemetry, TelemetryCollector};
 use crate::utils::updater::{self, UpdateInfo};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -118,10 +117,6 @@ pub struct App {
     pub is_admin: bool,
     pub config: AppConfig,
 
-    // Telemetry
-    pub telemetry_collector: TelemetryCollector,
-    pub telemetry: Option<SystemTelemetry>,
-
     // Diagnostic & Engine
     pub engine: Arc<DiagnosticEngine>,
     pub issues: Vec<Issue>,
@@ -218,8 +213,6 @@ impl Default for App {
 
 impl App {
     pub fn new() -> Self {
-        let mut telemetry_collector = TelemetryCollector::new();
-        let telemetry = Some(telemetry_collector.refresh());
         let admin_flag = is_admin();
         let (config, config_status) = AppConfig::load_reporting();
         let system_actions = SystemActions::default();
@@ -281,11 +274,9 @@ impl App {
         };
 
         Self {
-            active_tab: TAB_DASHBOARD,
+            active_tab: TAB_HOME,
             is_admin: admin_flag,
             config,
-            telemetry_collector,
-            telemetry,
             engine,
             issues: saved_issues,
             selected_issue_index: 0,
@@ -478,10 +469,6 @@ impl App {
                 (id.clone(), name.clone(), icon.clone(), status.clone())
             })
             .collect()
-    }
-
-    pub fn refresh_telemetry(&mut self) {
-        self.telemetry = Some(self.telemetry_collector.refresh());
     }
 
     /// How long the scan has been running, or how long the last one took.

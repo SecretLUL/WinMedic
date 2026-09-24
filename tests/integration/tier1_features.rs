@@ -13,9 +13,7 @@ use common::{
     GITHUB_RELEASE_CURRENT_JSON, GITHUB_RELEASE_DRAFT_JSON, GITHUB_RELEASE_NEWER_JSON,
     MockWindowsPaths, ProgrammableMockRunner, TempWorkspace, sandboxed_cleaner,
 };
-use winmedic::app::{
-    App, BackgroundEvent, ConfirmRequest, TAB_DASHBOARD, TAB_SETTINGS, TAB_TRIAGE,
-};
+use winmedic::app::{App, BackgroundEvent, ConfirmRequest, TAB_HOME, TAB_SETTINGS};
 use winmedic::config::AppConfig;
 use winmedic::engine::issue::{RiskScore, Severity};
 use winmedic::engine::runner::DiagnosticEngine;
@@ -893,7 +891,7 @@ async fn test_tier1_f11_triage_issue_toggle_in_app() {
     app.issues.push(issue);
     assert!(app.issues[0].is_selected);
 
-    app.active_tab = TAB_TRIAGE;
+    app.active_tab = TAB_HOME;
     app.toggle_selected_issue();
     assert!(!app.issues[0].is_selected);
 

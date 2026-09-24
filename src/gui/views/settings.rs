@@ -12,9 +12,32 @@ use eframe::egui::{self, RichText};
 
 pub fn show(ui: &mut egui::Ui, app: &mut App) {
     ui.columns(2, |columns| {
-        settings(&mut columns[0], app);
-        safety(&mut columns[1], app);
+        theme::plain(&mut columns[0], |ui| settings(ui, app));
+        theme::plain(&mut columns[1], |ui| safety(ui, app));
     });
+}
+
+/// The settings that take a number, and open the input dialog to get one.
+fn is_numeric(index: usize) -> bool {
+    matches!(index, 4 | 5 | 8)
+}
+
+/// The row the arrow keys point at, so the keyboard moves something visible.
+fn keyboard_row<R>(ui: &mut egui::Ui, focused: bool, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let fill = if focused {
+        ui.visuals().selection.bg_fill.gamma_multiply(0.35)
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    egui::Frame::NONE
+        .fill(fill)
+        .corner_radius(2)
+        .inner_margin(egui::Margin::symmetric(6, 4))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui)
+        })
+        .inner
 }
 
 fn settings(ui: &mut egui::Ui, app: &mut App) {
@@ -22,97 +45,43 @@ fn settings(ui: &mut egui::Ui, app: &mut App) {
         .id_salt("settings_list")
         .auto_shrink([false, false])
         .show(ui, |ui| {
+            theme::section(ui, "Options");
             let focused = !app.backups_focused();
-            theme::card(ui, &focus_title("SETTINGS", focused), |ui| {
-                for index in 0..AppConfig::SETTING_COUNT {
-                    let Some((label, value, explanation)) = app.config.setting_row(index) else {
-                        continue;
-                    };
+            for index in 0..AppConfig::SETTING_COUNT {
+                let Some((label, value, explanation)) = app.config.setting_row(index) else {
+                    continue;
+                };
+                // The keyboard hints live in the help sheet; the description
+                // keeps only what the setting does.
+                let description = explanation.split(" [").next().unwrap_or(explanation);
+                let keyboard = focused && index == app.selected_setting_index;
 
-                    // The arrow keys move `selected_setting_index`, so the row
-                    // it points at has to be visible. Without this the keyboard
-                    // moves a selection nothing on screen shows.
-                    let fill = if focused && index == app.selected_setting_index {
-                        theme::BG_SUNKEN
+                keyboard_row(ui, keyboard, |ui| {
+                    let clicked = if is_numeric(index) {
+                        ui.horizontal(|ui| {
+                            ui.label(label);
+                            ui.label(RichText::new(&value).strong());
+                            ui.button("Change").clicked()
+                        })
+                        .inner
                     } else {
-                        egui::Color32::TRANSPARENT
+                        let mut on = value == "ON";
+                        ui.checkbox(&mut on, label).changed()
                     };
+                    ui.label(theme::muted(description));
 
-                    egui::Frame::NONE
-                        .fill(fill)
-                        .corner_radius(10)
-                        .inner_margin(egui::Margin::symmetric(12, 12))
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.horizontal(|ui| {
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        // The numeric settings open the input dialog;
-                                        // the rest are booleans a click can flip outright.
-                                        let numeric = matches!(index, 4 | 5 | 8);
-                                        let button = egui::Button::new(
-                                            RichText::new(&value).size(12.0).strong().color(
-                                                if value == "ON" {
-                                                    theme::CYAN
-                                                } else {
-                                                    theme::TEXT_WHITE
-                                                },
-                                            ),
-                                        )
-                                        .fill(if value == "ON" {
-                                            theme::SELECTED
-                                        } else {
-                                            theme::HOVER
-                                        });
-                                        if ui.add(button).on_hover_text(label).clicked() {
-                                            app.safety_focus = SafetyFocus::Settings;
-                                            app.selected_setting_index = index;
-                                            if numeric {
-                                                app.open_setting_input();
-                                            } else {
-                                                app.toggle_current_setting();
-                                            }
-                                        }
-                                        ui.with_layout(
-                                            egui::Layout::left_to_right(egui::Align::Center),
-                                            |ui| {
-                                                ui.add(
-                                                    egui::Label::new(RichText::new(label).strong())
-                                                        .wrap(),
-                                                );
-                                            },
-                                        );
-                                    },
-                                );
-                            });
-                            // Keyboard hints stay available on hover without repeating
-                            // terminal instructions in every settings description.
-                            let description = explanation.split(" [").next().unwrap_or(explanation);
-                            ui.label(theme::muted(description).size(12.0))
-                                .on_hover_text(explanation);
-                        });
-                    ui.add_space(4.0);
-                }
-            });
+                    if clicked {
+                        app.safety_focus = SafetyFocus::Settings;
+                        app.selected_setting_index = index;
+                        if is_numeric(index) {
+                            app.open_setting_input();
+                        } else {
+                            app.toggle_current_setting();
+                        }
+                    }
+                });
+            }
         });
-}
-
-/// Say which of the two lists the arrow keys are currently driving.
-///
-/// The terminal front end put this in the pane titles, and it is needed just as
-/// much here: `[B]` moves the arrows between the settings and the snapshots,
-/// and a focus the user cannot see is a focus they cannot use.
-///
-/// Spelled out in words rather than drawn with the arrow glyphs the terminal
-/// front end used: the fonts egui bundles have no glyph for U+25C4 or
-/// U+2191/U+2193, so all three reached the screen as empty boxes.
-fn focus_title(title: &str, focused: bool) -> String {
-    if focused {
-        format!("{title}  (arrow keys)")
-    } else {
-        format!("{title}  ([B] to focus)")
-    }
 }
 
 fn safety(ui: &mut egui::Ui, app: &mut App) {
@@ -121,87 +90,123 @@ fn safety(ui: &mut egui::Ui, app: &mut App) {
         .auto_shrink([false, false])
         .show(ui, |ui| {
             backups(ui, app);
-            ui.add_space(8.0);
+            ui.add_space(14.0);
             restore_points(ui, app);
-            ui.add_space(8.0);
+            ui.add_space(14.0);
+            activity(ui, app);
+            ui.add_space(14.0);
 
-            theme::card(ui, "LOGS & BACKUPS", |ui| {
-                ui.label(
-                    RichText::new(app.audit_logger.log_dir().to_string_lossy())
-                        .monospace()
-                        .size(11.0),
-                );
-                if ui.button("Export HTML report").clicked() {
-                    app.status_message = Some(match app.export_report() {
-                        Ok(path) => format!("Report exported: {}", path.display()),
-                        Err(error) => error,
-                    });
-                }
-            });
+            theme::section(ui, "Log folder");
+            ui.label(RichText::new(app.audit_logger.log_dir().to_string_lossy()).monospace());
+            ui.label(theme::muted(
+                "Every scan, repair, simulation and rollback is recorded here.",
+            ));
         });
 }
 
 fn backups(ui: &mut egui::Ui, app: &mut App) {
+    theme::section(ui, "Registry backups");
+    let records: Vec<_> = app.backups_newest_first().into_iter().cloned().collect();
+
+    if records.is_empty() {
+        ui.label(theme::muted(
+            "No registry snapshot has been taken yet. WinMedic writes one before it changes a key.",
+        ));
+        return;
+    }
+
     let focused = app.backups_focused();
-    theme::card(ui, &focus_title("REGISTRY BACKUPS", focused), |ui| {
-        let records: Vec<_> = app.backups_newest_first().into_iter().cloned().collect();
-
-        if records.is_empty() {
-            ui.label(theme::muted(
-                "No registry snapshot has been taken yet. WinMedic writes one before it changes a key.",
-            ));
-            return;
-        }
-
-        for (position, record) in records.iter().enumerate() {
-            let selected = position == app.selected_backup_index;
-            let response = ui.selectable_label(
+    for (position, record) in records.iter().enumerate() {
+        let selected = position == app.selected_backup_index;
+        let response = ui
+            .selectable_label(
                 selected,
-                RichText::new(format!("{}  {}", record.timestamp, record.description)),
-            );
-            if response.clicked() {
-                app.safety_focus = SafetyFocus::Backups;
-                app.selected_backup_index = position;
-            }
-            if selected {
-                ui.label(theme::muted(&record.key_path));
-            }
+                format!("{}   {}", record.timestamp, record.description),
+            )
+            .on_hover_text(&record.key_path);
+        if response.clicked() {
+            app.safety_focus = SafetyFocus::Backups;
+            app.selected_backup_index = position;
         }
+        if selected {
+            ui.label(RichText::new(&record.key_path).monospace().weak());
+        }
+    }
 
-        ui.add_space(8.0);
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
         if ui
             .add_enabled(
                 !app.is_restoring,
                 egui::Button::new("Restore the selected snapshot"),
             )
+            .on_hover_text("U - asks for confirmation first")
             .clicked()
         {
             app.request_rollback();
+        }
+        if !focused {
+            ui.label(theme::muted("B moves the arrow keys here"));
         }
     });
 }
 
 fn restore_points(ui: &mut egui::Ui, app: &mut App) {
-    theme::card(ui, "SYSTEM RESTORE POINTS", |ui| {
-        if app.restore_points_loading {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(theme::muted("Asking Windows for its restore points..."));
-            });
-            return;
-        }
+    theme::section(ui, "System restore points");
+    if app.restore_points_loading {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(theme::muted("Asking Windows for its restore points..."));
+        });
+        return;
+    }
 
-        if app.vss_restore_points.is_empty() {
-            ui.label(theme::muted("No restore points reported."));
-        } else {
-            for point in &app.vss_restore_points {
-                ui.label(RichText::new(point).size(12.0));
+    if app.vss_restore_points.is_empty() {
+        ui.label(theme::muted("No restore points reported."));
+    } else {
+        for point in &app.vss_restore_points {
+            ui.label(point);
+        }
+    }
+
+    ui.add_space(4.0);
+    if ui.button("Refresh").clicked() {
+        app.refresh_restore_points();
+    }
+}
+
+/// What WinMedic did to this machine lately, newest first.
+fn activity(ui: &mut egui::Ui, app: &mut App) {
+    const SHOWN: usize = 10;
+    theme::section(ui, "Recent activity");
+    if app.audit_entries.is_empty() {
+        ui.label(theme::muted("Nothing recorded yet."));
+        return;
+    }
+    let palette = theme::palette(ui);
+    for entry in app.audit_entries.iter().rev().take(SHOWN) {
+        ui.horizontal(|ui| {
+            ui.label(theme::muted(&entry.timestamp));
+            let status = entry.status.to_uppercase();
+            let color = if status.contains("FAIL") || status.contains("ERROR") {
+                Some(palette.red)
+            } else if status.contains("SUCCESS") || status == "OK" {
+                Some(palette.green)
+            } else {
+                None
+            };
+            let text = RichText::new(entry.status.to_lowercase());
+            ui.add_sized(
+                [56.0, ui.available_height()],
+                egui::Label::new(match color {
+                    Some(color) => text.color(color),
+                    None => text.weak(),
+                }),
+            );
+            let title = ui.add(egui::Label::new(&entry.title).truncate());
+            if !entry.details.is_empty() {
+                title.on_hover_text(&entry.details);
             }
-        }
-
-        ui.add_space(8.0);
-        if ui.button("Refresh").clicked() {
-            app.refresh_restore_points();
-        }
-    });
+        });
+    }
 }

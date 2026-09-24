@@ -15,7 +15,7 @@
 //! the front end sends nothing here at all.
 
 use super::state::App;
-use super::{TAB_DASHBOARD, TAB_REPAIR, TAB_SCANNER, TAB_SETTINGS, TAB_TRIAGE};
+use super::{TAB_HOME, TAB_SETTINGS};
 use crate::engine::issue::Severity;
 
 /// A keystroke, expressed independently of any UI toolkit.
@@ -110,11 +110,8 @@ pub fn handle_key(app: &mut App, code: Key) {
         Key::Char('q') | Key::Char('Q') => app.should_quit = true,
         Key::Char('?') => app.show_help = true,
 
-        Key::Char('1') => app.goto_tab(TAB_DASHBOARD),
-        Key::Char('2') => app.goto_tab(TAB_SCANNER),
-        Key::Char('3') => app.goto_tab(TAB_TRIAGE),
-        Key::Char('4') => app.goto_tab(TAB_REPAIR),
-        Key::Char('5') => app.goto_tab(TAB_SETTINGS),
+        Key::Char('1') => app.goto_tab(TAB_HOME),
+        Key::Char('2') => app.goto_tab(TAB_SETTINGS),
 
         Key::Tab => app.next_tab(),
         Key::BackTab => app.prev_tab(),
@@ -138,17 +135,15 @@ pub fn handle_key(app: &mut App, code: Key) {
         Key::Char('d') | Key::Char('D') => app.toggle_dry_run(),
 
         Key::Char('f') | Key::Char('F') => {
-            if app.active_tab == TAB_TRIAGE || app.active_tab == TAB_REPAIR {
+            if app.active_tab == TAB_HOME {
                 app.start_repairs();
             } else {
-                app.active_tab = TAB_TRIAGE;
+                app.goto_tab(TAB_HOME);
             }
         }
 
         Key::Char('a') | Key::Char('A') => {
-            if app.active_tab == TAB_DASHBOARD {
-                app.start_scan();
-            } else if app.active_tab == TAB_TRIAGE {
+            if app.active_tab == TAB_HOME {
                 app.toggle_select_all_issues();
             } else {
                 app.select_all_issues();
@@ -179,13 +174,13 @@ pub fn handle_key(app: &mut App, code: Key) {
         // silently editing the hidden selection would be worse than doing
         // nothing.
         Key::Enter => match app.active_tab {
-            TAB_TRIAGE => app.toggle_selected_issue(),
+            TAB_HOME => app.toggle_selected_issue(),
             TAB_SETTINGS if !app.backups_focused() => app.open_setting_input(),
             _ => {}
         },
 
         Key::Char(' ') => match app.active_tab {
-            TAB_TRIAGE => app.toggle_selected_issue(),
+            TAB_HOME => app.toggle_selected_issue(),
             TAB_SETTINGS if !app.backups_focused() => app.toggle_current_setting(),
             _ => {}
         },
@@ -194,13 +189,13 @@ pub fn handle_key(app: &mut App, code: Key) {
         // scroll areas now, which the mouse wheel and their own scrollbars
         // drive, so there is nothing left for these keys to move.
         Key::Up | Key::Char('k') => match app.active_tab {
-            TAB_TRIAGE => app.prev_issue(),
+            TAB_HOME => app.prev_issue(),
             TAB_SETTINGS if app.backups_focused() => app.prev_backup(),
             TAB_SETTINGS => app.prev_setting(),
             _ => {}
         },
         Key::Down | Key::Char('j') => match app.active_tab {
-            TAB_TRIAGE => app.next_issue(),
+            TAB_HOME => app.next_issue(),
             TAB_SETTINGS if app.backups_focused() => app.next_backup(),
             TAB_SETTINGS => app.next_setting(),
             _ => {}
@@ -209,25 +204,25 @@ pub fn handle_key(app: &mut App, code: Key) {
         // Jumping through the triage list, on the other hand, is still ours.
         // The list is a scroll area too, but the mouse only moves the viewport;
         // these keys move the selection, which is what Enter and Space act on.
-        Key::PageUp if app.active_tab == TAB_TRIAGE => app.page_up_issue(PAGE_STEP),
-        Key::PageDown if app.active_tab == TAB_TRIAGE => app.page_down_issue(PAGE_STEP),
-        Key::Home if app.active_tab == TAB_TRIAGE => app.first_issue(),
-        Key::End if app.active_tab == TAB_TRIAGE => app.last_issue(),
+        Key::PageUp if app.active_tab == TAB_HOME => app.page_up_issue(PAGE_STEP),
+        Key::PageDown if app.active_tab == TAB_HOME => app.page_down_issue(PAGE_STEP),
+        Key::Home if app.active_tab == TAB_HOME => app.first_issue(),
+        Key::End if app.active_tab == TAB_HOME => app.last_issue(),
 
-        Key::Char('/') if app.active_tab == TAB_TRIAGE => app.focus_search = true,
-        Key::Char('c') | Key::Char('C') if app.active_tab == TAB_TRIAGE => {
+        Key::Char('/') if app.active_tab == TAB_HOME => app.focus_search = true,
+        Key::Char('c') | Key::Char('C') if app.active_tab == TAB_HOME => {
             app.toggle_severity_filter(Severity::Critical);
         }
-        Key::Char('w') | Key::Char('W') if app.active_tab == TAB_TRIAGE => {
+        Key::Char('w') | Key::Char('W') if app.active_tab == TAB_HOME => {
             app.toggle_severity_filter(Severity::Warning);
         }
-        Key::Char('i') | Key::Char('I') if app.active_tab == TAB_TRIAGE => {
+        Key::Char('i') | Key::Char('I') if app.active_tab == TAB_HOME => {
             app.toggle_severity_filter(Severity::Info);
         }
-        Key::Char('m') | Key::Char('M') if app.active_tab == TAB_TRIAGE => {
+        Key::Char('m') | Key::Char('M') if app.active_tab == TAB_HOME => {
             app.cycle_module_filter();
         }
-        Key::Char('x') | Key::Char('X') if app.active_tab == TAB_TRIAGE => {
+        Key::Char('x') | Key::Char('X') if app.active_tab == TAB_HOME => {
             app.clear_filters();
         }
 
@@ -246,14 +241,14 @@ pub fn handle_key(app: &mut App, code: Key) {
         }
 
         // Esc unwinds one layer at a time: filters, then backup focus, then a
-        // running operation, then the tab itself.
+        // running operation, then the settings view itself.
         Key::Esc => {
-            if app.active_tab == TAB_TRIAGE && app.has_active_filters() {
+            if app.active_tab == TAB_HOME && app.has_active_filters() {
                 app.clear_filters();
             } else if app.active_tab == TAB_SETTINGS && app.backups_focused() {
                 app.toggle_safety_focus();
-            } else if !app.cancel_current_operation() && app.active_tab != TAB_DASHBOARD {
-                app.active_tab = TAB_DASHBOARD;
+            } else if !app.cancel_current_operation() && app.active_tab != TAB_HOME {
+                app.goto_tab(TAB_HOME);
             }
         }
 
@@ -380,11 +375,11 @@ mod tests {
     fn help_overlay_only_responds_to_its_own_keys() {
         let mut app = app();
         app.show_help = true;
-        app.active_tab = TAB_DASHBOARD;
+        app.active_tab = TAB_HOME;
 
-        handle_key(&mut app, Key::Char('3'));
+        handle_key(&mut app, Key::Char('2'));
         assert!(app.show_help, "still open");
-        assert_eq!(app.active_tab, TAB_DASHBOARD, "tab switch was swallowed");
+        assert_eq!(app.active_tab, TAB_HOME, "tab switch was swallowed");
 
         handle_key(&mut app, Key::Esc);
         assert!(!app.show_help);
@@ -392,14 +387,14 @@ mod tests {
 
     /// `/` asks for the search box; it does not start capturing text itself.
     #[test]
-    fn slash_requests_the_search_box_only_on_the_triage_tab() {
+    fn slash_requests_the_search_box_only_on_the_findings_view() {
         let mut app = app_with_issues();
 
-        app.active_tab = TAB_DASHBOARD;
+        app.active_tab = TAB_SETTINGS;
         handle_key(&mut app, Key::Char('/'));
-        assert!(!app.focus_search, "nothing to focus outside triage");
+        assert!(!app.focus_search, "nothing to focus on the settings view");
 
-        app.active_tab = TAB_TRIAGE;
+        app.active_tab = TAB_HOME;
         handle_key(&mut app, Key::Char('/'));
         assert!(app.focus_search);
         assert_eq!(app.search_query, "", "and types nothing by itself");
@@ -426,16 +421,16 @@ mod tests {
         handle_key(&mut app, Key::Right);
         assert_eq!(app.active_tab, 1);
 
+        // 'h' goes back
+        handle_key(&mut app, Key::Char('h'));
+        assert_eq!(app.active_tab, 0);
+
         // 'l' advances tab
         handle_key(&mut app, Key::Char('l'));
-        assert_eq!(app.active_tab, 2);
+        assert_eq!(app.active_tab, 1);
 
         // Left arrow goes back
         handle_key(&mut app, Key::Left);
-        assert_eq!(app.active_tab, 1);
-
-        // 'h' goes back
-        handle_key(&mut app, Key::Char('h'));
         assert_eq!(app.active_tab, 0);
 
         // Left arrow wraps to last tab
@@ -468,14 +463,17 @@ mod tests {
     }
 
     #[test]
-    fn severity_filter_keys_only_apply_on_the_triage_tab() {
+    fn severity_filter_keys_only_apply_on_the_findings_view() {
         let mut app = app_with_issues();
 
-        app.active_tab = TAB_DASHBOARD;
+        app.active_tab = TAB_SETTINGS;
         handle_key(&mut app, Key::Char('c'));
-        assert_eq!(app.severity_filter, None, "no filtering outside triage");
+        assert_eq!(
+            app.severity_filter, None,
+            "no filtering on the settings view"
+        );
 
-        app.active_tab = TAB_TRIAGE;
+        app.active_tab = TAB_HOME;
         handle_key(&mut app, Key::Char('c'));
         assert_eq!(app.severity_filter, Some(Severity::Critical));
 
@@ -487,21 +485,22 @@ mod tests {
     #[test]
     fn escape_clears_filters_before_it_navigates_away() {
         let mut app = app_with_issues();
-        app.active_tab = TAB_TRIAGE;
+        app.active_tab = TAB_HOME;
         app.toggle_severity_filter(Severity::Critical);
 
         handle_key(&mut app, Key::Esc);
         assert!(!app.has_active_filters(), "first Esc clears the filter");
-        assert_eq!(app.active_tab, TAB_TRIAGE, "and stays put");
+        assert_eq!(app.active_tab, TAB_HOME, "and stays put");
 
+        app.active_tab = TAB_SETTINGS;
         handle_key(&mut app, Key::Esc);
-        assert_eq!(app.active_tab, TAB_DASHBOARD, "second Esc navigates back");
+        assert_eq!(app.active_tab, TAB_HOME, "Esc on settings navigates back");
     }
 
     #[test]
     fn u_means_rollback_on_settings_and_update_notice_everywhere_else() {
         let mut app = app();
-        app.active_tab = TAB_DASHBOARD;
+        app.active_tab = TAB_HOME;
         app.available_update = None;
 
         // Nothing parked, so this is a no-op rather than a modal.
@@ -550,46 +549,42 @@ mod tests {
         assert_eq!(app.active_tab, TAB_SETTINGS, "and stays on the tab");
 
         handle_key(&mut app, Key::Esc);
-        assert_eq!(app.active_tab, TAB_DASHBOARD);
+        assert_eq!(app.active_tab, TAB_HOME);
     }
 
     #[test]
     fn b_does_nothing_outside_the_settings_tab() {
         let mut app = app();
-        app.active_tab = TAB_TRIAGE;
+        app.active_tab = TAB_HOME;
 
         handle_key(&mut app, Key::Char('b'));
         assert!(!app.backups_focused());
     }
 
     #[test]
-    fn number_keys_reach_every_tab_and_ignore_the_retired_sixth() {
+    fn number_keys_reach_both_views_and_ignore_the_retired_ones() {
         let mut app = app();
 
-        for (key, expected) in [
-            ('1', TAB_DASHBOARD),
-            ('2', TAB_SCANNER),
-            ('3', TAB_TRIAGE),
-            ('4', TAB_REPAIR),
-            ('5', TAB_SETTINGS),
-        ] {
+        for (key, expected) in [('1', TAB_HOME), ('2', TAB_SETTINGS)] {
             handle_key(&mut app, Key::Char(key));
             assert_eq!(
                 app.active_tab, expected,
-                "'{key}' should open tab {expected}"
+                "'{key}' should open view {expected}"
             );
         }
 
-        // '6' used to be Settings. It now points past the last tab and must not
-        // move the user anywhere.
-        handle_key(&mut app, Key::Char('6'));
-        assert_eq!(app.active_tab, TAB_SETTINGS, "'6' is no longer bound");
+        // '3' to '5' used to reach the triage, repair and settings tabs, which
+        // are gone. They must not move the user anywhere.
+        for key in ['3', '4', '5'] {
+            handle_key(&mut app, Key::Char(key));
+            assert_eq!(app.active_tab, TAB_SETTINGS, "'{key}' is no longer bound");
+        }
     }
 
     #[test]
-    fn space_toggles_the_selected_issue_on_triage() {
+    fn space_toggles_the_selected_issue_on_the_findings_view() {
         let mut app = app_with_issues();
-        app.active_tab = TAB_TRIAGE;
+        app.active_tab = TAB_HOME;
         app.selected_filtered_index = 0;
         assert!(app.issues[0].is_selected, "issues start selected");
 
@@ -683,7 +678,7 @@ mod tests {
     #[test]
     fn triage_navigation_keys() {
         let mut app = app();
-        app.active_tab = TAB_TRIAGE;
+        app.active_tab = TAB_HOME;
         for i in 0..15 {
             app.issues.push(Issue::new(
                 format!("iss_{i}"),
