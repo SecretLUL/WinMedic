@@ -217,7 +217,7 @@ impl DiagnosticModule for EventLogModule {
                 sample,
                 "Analyse the cause in Windows Event Viewer and repair the affected services",
                 vec!["Review the listed events in Event Viewer (eventvwr.msc)".to_string()],
-            ));
+            ).with_advice_only());
         } else {
             Self::send_progress(
                 &progress_tx,
@@ -272,7 +272,7 @@ impl DiagnosticModule for EventLogModule {
                     .join("\n"),
                 "Apply a BIOS/UEFI update, reset any overclock and run a RAM diagnostic",
                 vec!["Schedule the Windows memory diagnostic (mdsched.exe)".to_string()],
-            ));
+            ).with_advice_only());
         } else {
             Self::send_progress(
                 &progress_tx,
@@ -304,7 +304,7 @@ impl DiagnosticModule for EventLogModule {
         if let Some(test) = latest_memtest {
             let when = test.summary();
             if memory_test_found_errors(test.event_id) {
-                let mut issue = Issue::new(
+                issues.push(Issue::new(
                     "evt_memory_test_failed",
                     self.id(),
                     "The Windows Memory Diagnostic found hardware errors",
@@ -321,9 +321,7 @@ impl DiagnosticModule for EventLogModule {
                             .to_string(),
                         "Replace the faulty module".to_string(),
                     ],
-                );
-                issue.is_selected = false;
-                issues.push(issue);
+                ).with_advice_only());
             } else {
                 Self::send_progress(
                     &progress_tx,
@@ -352,27 +350,25 @@ impl DiagnosticModule for EventLogModule {
                 let minidump_dir = Path::new(r"C:\Windows\Minidump");
                 let mut removed = 0;
                 if minidump_dir.exists()
-                    && let Ok(entries) = std::fs::read_dir(minidump_dir) {
-                        for entry in entries.flatten() {
-                            let path = entry.path();
-                            if path.extension().map(|e| e.to_string_lossy().to_lowercase()) == Some("dmp".to_string())
-                                && std::fs::remove_file(path).is_ok() {
-                                    removed += 1;
-                                }
+                    && let Ok(entries) = std::fs::read_dir(minidump_dir)
+                {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().map(|e| e.to_string_lossy().to_lowercase())
+                            == Some("dmp".to_string())
+                            && std::fs::remove_file(path).is_ok()
+                        {
+                            removed += 1;
                         }
                     }
-                Ok(format!("Safely cleaned up {} stale minidump files.", removed))
+                }
+                Ok(format!(
+                    "Safely cleaned up {} stale minidump files.",
+                    removed
+                ))
             }
-            "evt_system_critical_events" => {
-                Ok("Events analysed and recorded in the WinMedic audit log.".to_string())
-            }
-            "evt_whea_hardware_error" => {
-                Ok("WHEA warning recorded. Recommendation: run the Windows Memory Diagnostic (mdsched.exe).".to_string())
-            }
-            "evt_memory_test_failed" => Ok(
-                "Recorded in the audit log. Only replacing the faulty module clears this; a memory test that then finds no errors removes the finding."
-                    .to_string(),
-            ),
+            // The critical-event, WHEA and memory-test findings are advice:
+            // nothing here can repair them, so a repair run never asks.
             _ => Err(format!("Unknown issue id: {}", issue_id)),
         }
     }
@@ -402,6 +398,10 @@ mod tests {
         assert_eq!(whea_issue.severity, Severity::Critical);
         assert!(whea_issue.technical_details.contains("ApicId: 4"));
         assert!(!whea_issue.technical_details.contains("RawData"));
+        assert!(
+            whea_issue.advice_only,
+            "a hardware fault is not repaired in software"
+        );
     }
 
     #[tokio::test]
@@ -418,6 +418,7 @@ mod tests {
             .iter()
             .find(|i| i.id == "evt_system_critical_events")
             .expect("five real error events are a finding");
+        assert!(issue.advice_only, "reading the log repairs nothing");
         assert!(
             issue.description.contains("at least 5 errors"),
             "{}",
@@ -499,7 +500,8 @@ mod tests {
                 .find(|i| i.id == "evt_memory_test_failed")
                 .unwrap_or_else(|| panic!("event {id} is a failed test"));
             assert_eq!(issue.severity, Severity::Critical);
-            assert!(!issue.is_selected, "no software repair fixes RAM");
+            assert!(issue.advice_only, "no software repair fixes RAM");
+            assert!(!issue.is_selected);
             assert!(issue.technical_details.contains("2026-09-20"));
         }
     }

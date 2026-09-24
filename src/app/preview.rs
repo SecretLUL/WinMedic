@@ -121,15 +121,9 @@ fn size(bytes: u64) -> String {
     }
 }
 
-/// The findings the Repair button would run: ticked, not yet fixed, not
-/// already waiting on a restart.
-fn will_repair(issue: &Issue) -> bool {
-    issue.is_selected && !issue.is_fixed && !issue.is_reboot_pending
-}
-
 impl App {
     pub fn repair_preview(&self) -> RepairPreview {
-        let planned: Vec<&Issue> = self.issues.iter().filter(|i| will_repair(i)).collect();
+        let planned: Vec<&Issue> = self.issues.iter().filter(|i| i.will_repair()).collect();
 
         let mut benefits: Vec<Benefit> = planned.iter().filter_map(|i| Benefit::of(i)).collect();
         benefits.sort();
@@ -140,7 +134,7 @@ impl App {
             .iter()
             .map(|issue| {
                 let mut issue = issue.clone();
-                if will_repair(&issue) {
+                if issue.will_repair() {
                     issue.is_fixed = true;
                 }
                 issue
@@ -242,6 +236,16 @@ mod tests {
             issue("sched_failing_foo", Severity::Info),
         ]);
         assert!(app.repair_preview().benefits.is_empty());
+    }
+
+    /// Advice is never repaired, so it is left in the health forecast even
+    /// when something ticked it.
+    #[test]
+    fn advice_raises_no_health_forecast() {
+        let mut advice = issue("evt_system_critical_events", Severity::Warning).with_advice_only();
+        advice.is_selected = true;
+        let app = app_with(vec![advice]);
+        assert_eq!(app.repair_preview().health_after, 90);
     }
 
     #[test]

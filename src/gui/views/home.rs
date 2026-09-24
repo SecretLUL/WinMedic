@@ -42,10 +42,7 @@ fn open_findings(app: &App) -> usize {
 }
 
 pub(super) fn selected_for_repair(app: &App) -> usize {
-    app.issues
-        .iter()
-        .filter(|i| i.is_selected && !i.is_fixed && !i.is_reboot_pending)
-        .count()
+    app.issues.iter().filter(|i| i.will_repair()).count()
 }
 
 /// What the repair button says: how many, and whether it only simulates.
