@@ -1204,99 +1204,33 @@ mod tests {
         assert!(!issue.is_selected, "the PC is online through 'Ethernet'");
     }
 
-    /// Answers every query with `before` until the repair command ran, then
-    /// with `after` - what a repair's read-back sees on a real machine.
-    struct RepairRunner {
-        repair: &'static str,
-        repair_output: CmdOutput,
-        before: CmdOutput,
-        after: CmdOutput,
-        repaired: std::sync::atomic::AtomicBool,
-        executed: std::sync::Mutex<Vec<String>>,
-    }
-
-    impl RepairRunner {
-        fn new(repair: &'static str, before: CmdOutput, after: CmdOutput) -> Self {
-            Self {
-                repair,
-                repair_output: CmdOutput::ok(""),
-                before,
-                after,
-                repaired: Default::default(),
-                executed: Default::default(),
-            }
-        }
-
-        fn repair_answers(mut self, output: CmdOutput) -> Self {
-            self.repair_output = output;
-            self
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl CommandRunner for RepairRunner {
-        async fn run(
-            &self,
-            program: &str,
-            args: &[&str],
-            _timeout: Duration,
-        ) -> Result<CmdOutput, String> {
-            use std::sync::atomic::Ordering;
-            self.executed
-                .lock()
-                .unwrap()
-                .push(format!("{program} {}", args.join(" ")));
-            if program == self.repair {
-                self.repaired.store(true, Ordering::SeqCst);
-                return Ok(self.repair_output.clone());
-            }
-            Ok(if self.repaired.load(Ordering::SeqCst) {
-                self.after.clone()
-            } else {
-                self.before.clone()
-            })
-        }
-
-        async fn run_streaming(
-            &self,
-            program: &str,
-            args: &[&str],
-            _log_tx: Option<Sender<String>>,
-            timeout: Duration,
-        ) -> Result<CmdOutput, String> {
-            self.run(program, args, timeout).await
-        }
+    /// The adapter query answers `before` until `ipconfig` ran, then `after`.
+    fn renew_mock(before: String, after: String) -> MockCommandRunner {
+        let mock = MockCommandRunner::new();
+        mock.add_response("Get-NetAdapter", CmdOutput::ok(before));
+        mock.add_response("ipconfig.exe", CmdOutput::ok(""));
+        mock.add_response_after("ipconfig.exe", "Get-NetAdapter", CmdOutput::ok(after));
+        mock
     }
 
     #[tokio::test]
     async fn a_renewed_lease_is_read_back() {
-        let runner = Arc::new(RepairRunner::new(
-            "ipconfig.exe",
-            CmdOutput::ok(apipa_adapters()),
-            CmdOutput::ok(real_adapters()),
-        ));
-        let msg = NetworkModule::with_runner(runner.clone())
+        let mock = renew_mock(apipa_adapters(), real_adapters());
+        let msg = NetworkModule::with_runner(Arc::new(mock.clone()))
             .fix("net_no_dhcp_ethernet", None)
             .await
             .unwrap();
         assert!(msg.contains("192.168.1.10"), "{msg}");
         assert!(
-            runner
-                .executed
-                .lock()
-                .unwrap()
+            mock.executed()
                 .contains(&"ipconfig.exe /renew Ethernet".to_string())
         );
     }
 
     #[tokio::test]
     async fn a_renew_nobody_answered_is_a_failure() {
-        let runner = RepairRunner::new(
-            "ipconfig.exe",
-            CmdOutput::ok(apipa_adapters()),
-            CmdOutput::ok(apipa_adapters()),
-        );
-        let err = NetworkModule::with_runner(Arc::new(runner))
+        let mock = renew_mock(apipa_adapters(), apipa_adapters());
+        let err = NetworkModule::with_runner(Arc::new(mock))
             .fix("net_no_dhcp_ethernet", None)
             .await
             .unwrap_err();
@@ -1433,17 +1367,24 @@ mod tests {
         );
     }
 
-    fn winhttp_repair(before: String, after: String) -> RepairRunner {
-        RepairRunner::new("netsh.exe", CmdOutput::ok(before), CmdOutput::ok(after))
+    /// `reg` answers `before` until the reset ran, then `after`; the reset
+    /// itself answers `reset`.
+    fn winhttp_repair(before: String, reset: CmdOutput, after: String) -> MockCommandRunner {
+        let mock = MockCommandRunner::new();
+        mock.add_response("reg.exe", CmdOutput::ok(before));
+        mock.add_response("reset proxy", reset);
+        mock.add_response_after("reset proxy", "reg.exe", CmdOutput::ok(after));
+        mock
     }
 
     #[tokio::test]
     async fn a_reset_proxy_is_read_back_and_can_be_put_back() {
-        let runner = Arc::new(winhttp_repair(
+        let mock = winhttp_repair(
             winhttp_with_proxy("proxy.corp:8080", "<local>"),
+            CmdOutput::ok(""),
             real_winhttp_direct(),
-        ));
-        let msg = NetworkModule::with_runner(runner.clone())
+        );
+        let msg = NetworkModule::with_runner(Arc::new(mock.clone()))
             .fix("net_winhttp_proxy_dead", None)
             .await
             .unwrap();
@@ -1452,10 +1393,7 @@ mod tests {
             "the message has to say how to undo it: {msg}"
         );
         assert!(
-            runner
-                .executed
-                .lock()
-                .unwrap()
+            mock.executed()
                 .contains(&"netsh.exe winhttp reset proxy".to_string())
         );
     }
@@ -1463,7 +1401,8 @@ mod tests {
     #[tokio::test]
     async fn a_proxy_that_comes_back_is_a_failure() {
         let proxy = winhttp_with_proxy("proxy.corp:8080", "");
-        let err = NetworkModule::with_runner(Arc::new(winhttp_repair(proxy.clone(), proxy)))
+        let mock = winhttp_repair(proxy.clone(), CmdOutput::ok(""), proxy);
+        let err = NetworkModule::with_runner(Arc::new(mock))
             .fix("net_winhttp_proxy_dead", None)
             .await
             .unwrap_err();
@@ -1473,12 +1412,10 @@ mod tests {
     #[tokio::test]
     async fn a_refused_reset_says_what_netsh_said() {
         let proxy = winhttp_with_proxy("proxy.corp:8080", "");
-        let runner = winhttp_repair(proxy.clone(), proxy).repair_answers(CmdOutput::with_output(
-            1,
-            "Error writing proxy settings. (5) Access is denied.",
-            "",
-        ));
-        let err = NetworkModule::with_runner(Arc::new(runner))
+        let refused =
+            CmdOutput::with_output(1, "Error writing proxy settings. (5) Access is denied.", "");
+        let mock = winhttp_repair(proxy.clone(), refused, proxy);
+        let err = NetworkModule::with_runner(Arc::new(mock))
             .fix("net_winhttp_proxy_dead", None)
             .await
             .unwrap_err();
