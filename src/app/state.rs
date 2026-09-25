@@ -501,6 +501,13 @@ impl App {
             .map(|since| since.elapsed())
     }
 
+    /// About how long the running repair step still needs: the time it took
+    /// to get as far as its tool says, stretched to the rest of the way.
+    /// `None` while the tool has said nothing, or too little to go on.
+    pub fn repair_step_remaining(&self) -> Option<Duration> {
+        time_left(self.repair_step_elapsed()?, self.repair_step_percent?)
+    }
+
     /// How much of the repair run is done, counting the part of the running
     /// step its tool reports. The bar moves while DISM works instead of
     /// standing still for ten minutes.
@@ -656,11 +663,41 @@ impl App {
     }
 }
 
+/// What is left of a step that got to `percent` in `elapsed`, if it keeps its
+/// pace. Below one percent there is no pace to speak of, and more than two
+/// hours is past the point where WinMedic stops the tool anyway.
+fn time_left(elapsed: Duration, percent: f32) -> Option<Duration> {
+    if percent >= 100.0 {
+        return Some(Duration::ZERO);
+    }
+    if percent < 1.0 {
+        return None;
+    }
+    let percent = f64::from(percent);
+    let left = elapsed.as_secs_f64() * (100.0 - percent) / percent;
+    (left <= 2.0 * 60.0 * 60.0).then(|| Duration::from_secs_f64(left.round()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::MAX_LOG_LINES;
     use crate::engine::issue::RiskScore;
+
+    #[test]
+    fn the_time_left_follows_the_pace_so_far() {
+        let minutes = |m: u64| Duration::from_secs(m * 60);
+        assert_eq!(time_left(minutes(3), 30.0), Some(minutes(7)));
+        assert_eq!(time_left(minutes(4), 80.0), Some(minutes(1)));
+        assert_eq!(time_left(minutes(9), 100.0), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn too_little_progress_gives_no_estimate() {
+        let minutes = |m: u64| Duration::from_secs(m * 60);
+        assert_eq!(time_left(minutes(2), 0.5), None);
+        assert_eq!(time_left(minutes(30), 10.0), None, "4h30m is no estimate");
+    }
 
     #[test]
     fn test_app_export_report() {

@@ -14,6 +14,7 @@ use crate::engine::issue::Severity;
 use crate::gui::theme;
 use crate::modules::ModuleStatus;
 use eframe::egui::{self, RichText};
+use std::time::Duration;
 
 /// Wide enough for the forecast's longest line, narrow enough to read at a
 /// glance on a wide window.
@@ -120,6 +121,52 @@ fn repairing(ui: &mut egui::Ui, app: &mut App) {
     if ui.button("Cancel").on_hover_text("Esc").clicked() {
         app.cancel_current_operation();
     }
+    // Below the button, so it does not move away from the pointer when this
+    // appears.
+    if let Some(elapsed) = app.repair_step_elapsed().filter(|e| *e >= PATIENCE) {
+        ui.add_space(16.0);
+        patience(ui, app, elapsed);
+    }
+}
+
+/// How long one repair runs before the page says that this is normal. DISM
+/// takes ten minutes and more, with a bar that hardly moves.
+const PATIENCE: Duration = Duration::from_secs(2 * 60);
+
+/// Nothing is wrong, and about how long it still takes.
+fn patience(ui: &mut egui::Ui, app: &App, elapsed: Duration) {
+    let when = match app.repair_step_remaining() {
+        Some(left) if left < Duration::from_secs(60) => {
+            "Less than a minute left for this step.".to_string()
+        }
+        Some(left) => match (left.as_secs_f64() / 60.0).round() as usize {
+            1 => "About a minute left for this step.".to_string(),
+            minutes => format!("About {minutes} minutes left for this step."),
+        },
+        // The tool reports no progress, so there is nothing to go on.
+        None => format!(
+            "Running for {}.",
+            plural(elapsed.as_secs() as usize / 60, "minute")
+        ),
+    };
+    egui::Frame::NONE
+        .fill(ui.visuals().faint_bg_color)
+        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+        .corner_radius(6)
+        .inner_margin(12)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_top(|ui| {
+                theme::severity_mark(ui, Severity::Info, 18.0);
+                ui.vertical(|ui| {
+                    line(
+                        ui,
+                        "Don't worry, everything is fine. WinMedic needs some time to heal.",
+                    );
+                    note(ui, when);
+                });
+            });
+        });
 }
 
 /// After a scan or a repair: how the PC is doing, and the next step.

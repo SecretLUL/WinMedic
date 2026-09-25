@@ -910,6 +910,48 @@ mod tests {
         );
     }
 
+    /// Easy mode repairing, with the running step started `minutes` ago and
+    /// its tool at `percent`.
+    fn easy_repairing(minutes: u64, percent: Option<f32>) -> Harness<'static, App> {
+        let mut app = easy_scanned_app();
+        app.is_fixing = true;
+        app.total_to_fix = 8;
+        app.fixed_count = 1;
+        app.failed_count = 0;
+        app.repair_step_since = Instant::now().checked_sub(Duration::from_secs(minutes * 60));
+        app.repair_step_percent = percent;
+        window(app)
+    }
+
+    const PATIENCE: &str = "Don't worry, everything is fine. WinMedic needs some time to heal.";
+
+    /// A step that takes minutes gets a word that this is normal, and how long
+    /// it will take at the pace its tool reports.
+    #[test]
+    fn a_long_repair_in_easy_mode_says_all_is_well_and_how_long_it_takes() {
+        let harness = easy_repairing(3, Some(30.0));
+        assert!(harness.query_by_label(PATIENCE).is_some());
+        assert!(
+            harness
+                .query_by_label("About 7 minutes left for this step.")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_long_repair_without_progress_says_how_long_it_has_run() {
+        let harness = easy_repairing(3, None);
+        assert!(harness.query_by_label(PATIENCE).is_some());
+        assert!(harness.query_by_label("Running for 3 minutes.").is_some());
+    }
+
+    #[test]
+    fn a_short_repair_needs_no_reassurance() {
+        let harness = easy_repairing(1, Some(30.0));
+        assert!(harness.query_by_label("Repairing...").is_some());
+        assert!(harness.query_by_label(PATIENCE).is_none());
+    }
+
     /// Once only restarts are left, that is the one thing the page asks for,
     /// once, and it offers to do it.
     #[test]
