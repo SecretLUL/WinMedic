@@ -1,0 +1,692 @@
+2026-09-25 11:01:48, Info                  CBS    TiWorker: Client requests SFP repair object.
+2026-09-25 11:01:48, Info                  CSI    00000012@2026/9/25:09:01:48.625 WcpInitialize: wcp.dll version 10.0.26100.9441 (WinBuild.160101.0800)
+2026-09-25 11:01:49, Info                  CSI    00000013 [SR] Verifying 100 components
+2026-09-25 11:01:49, Info                  CSI    00000014 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:49, Info                  CSI    00000015 [SR] Verify complete
+2026-09-25 11:01:49, Info                  CSI    00000016 [SR] Verifying 100 components
+2026-09-25 11:01:49, Info                  CSI    00000017 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:49, Info                  CSI    00000018 [SR] Verify complete
+2026-09-25 11:01:50, Info                  CSI    00000019 [SR] Verifying 100 components
+2026-09-25 11:01:50, Info                  CSI    0000001a [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:50, Info                  CSI    0000001b [SR] Verify complete
+2026-09-25 11:01:50, Info                  CSI    0000001c [SR] Verifying 100 components
+2026-09-25 11:01:50, Info                  CSI    0000001d [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:50, Info                  CSI    0000001e [SR] Verify complete
+2026-09-25 11:01:50, Info                  CSI    0000001f [SR] Verifying 100 components
+2026-09-25 11:01:50, Info                  CSI    00000020 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:50, Info                  CSI    00000021 [SR] Verify complete
+2026-09-25 11:01:50, Info                  CSI    00000022 [SR] Verifying 100 components
+2026-09-25 11:01:50, Info                  CSI    00000023 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:50, Info                  CSI    00000024 [SR] Verify complete
+2026-09-25 11:01:50, Info                  CSI    00000025 [SR] Verifying 100 components
+2026-09-25 11:01:50, Info                  CSI    00000026 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:50, Info                  CSI    00000027 [SR] Verify complete
+2026-09-25 11:01:50, Info                  CSI    00000028 [SR] Verifying 100 components
+2026-09-25 11:01:50, Info                  CSI    00000029 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:50, Info                  CSI    0000002a [SR] Verify complete
+2026-09-25 11:01:50, Info                  CSI    0000002b [SR] Verifying 100 components
+2026-09-25 11:01:50, Info                  CSI    0000002c [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:50, Info                  CSI    0000002d [SR] Verify complete
+2026-09-25 11:01:51, Info                  CSI    0000002e [SR] Verifying 100 components
+2026-09-25 11:01:51, Info                  CSI    0000002f [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:51, Info                  CSI    00000030 [SR] Verify complete
+2026-09-25 11:01:51, Info                  CSI    00000031 [SR] Verifying 100 components
+2026-09-25 11:01:51, Info                  CSI    00000032 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:51, Info                  CSI    00000033 [SR] Verify complete
+2026-09-25 11:01:51, Info                  CSI    00000034 [SR] Verifying 100 components
+2026-09-25 11:01:51, Info                  CSI    00000035 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:51, Info                  CSI    00000036 [SR] Verify complete
+2026-09-25 11:01:51, Info                  CSI    00000037 [SR] Verifying 100 components
+2026-09-25 11:01:51, Info                  CSI    00000038 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:51, Info                  CSI    00000039 [SR] Verify complete
+2026-09-25 11:01:51, Info                  CSI    0000003a [SR] Verifying 100 components
+2026-09-25 11:01:51, Info                  CSI    0000003b [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:52, Info                  CSI    0000003c [SR] Verify complete
+2026-09-25 11:01:52, Info                  CSI    0000003d [SR] Verifying 100 components
+2026-09-25 11:01:52, Info                  CSI    0000003e [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:52, Info                  CSI    0000003f [SR] Verify complete
+2026-09-25 11:01:52, Info                  CSI    00000040 [SR] Verifying 100 components
+2026-09-25 11:01:52, Info                  CSI    00000041 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:54, Info                  CSI    00000042 [SR] Verify complete
+2026-09-25 11:01:54, Info                  CSI    00000043 [SR] Verifying 100 components
+2026-09-25 11:01:54, Info                  CSI    00000044 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:55, Info                  CSI    00000045 [SR] Verify complete
+2026-09-25 11:01:55, Info                  CSI    00000046 [SR] Verifying 100 components
+2026-09-25 11:01:55, Info                  CSI    00000047 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:55, Info                  CSI    00000048 [SR] Verify complete
+2026-09-25 11:01:55, Info                  CSI    00000049 [SR] Verifying 100 components
+2026-09-25 11:01:55, Info                  CSI    0000004a [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:55, Info                  CSI    0000004b [SR] Verify complete
+2026-09-25 11:01:55, Info                  CSI    0000004c [SR] Verifying 100 components
+2026-09-25 11:01:55, Info                  CSI    0000004d [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:55, Info                  CSI    0000004e [SR] Verify complete
+2026-09-25 11:01:55, Info                  CSI    0000004f [SR] Verifying 100 components
+2026-09-25 11:01:55, Info                  CSI    00000050 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:55, Info                  CSI    00000051 [SR] Verify complete
+2026-09-25 11:01:55, Info                  CSI    00000052 [SR] Verifying 100 components
+2026-09-25 11:01:55, Info                  CSI    00000053 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:55, Info                  CSI    00000054 [SR] Verify complete
+2026-09-25 11:01:55, Info                  CSI    00000055 [SR] Verifying 100 components
+2026-09-25 11:01:55, Info                  CSI    00000056 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:56, Info                  CSI    00000057 [SR] Verify complete
+2026-09-25 11:01:56, Info                  CSI    00000058 [SR] Verifying 100 components
+2026-09-25 11:01:56, Info                  CSI    00000059 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:56, Info                  CSI    0000005a [SR] Verify complete
+2026-09-25 11:01:56, Info                  CSI    0000005b [SR] Verifying 100 components
+2026-09-25 11:01:56, Info                  CSI    0000005c [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:57, Info                  CSI    0000005d CSIPERF - FilePI Queue 419ms
+2026-09-25 11:01:57, Info                  CSI    0000005e [SR] Verify complete
+2026-09-25 11:01:57, Info                  CSI    0000005f [SR] Verifying 100 components
+2026-09-25 11:01:57, Info                  CSI    00000060 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:57, Info                  CSI    00000061 [SR] Verify complete
+2026-09-25 11:01:57, Info                  CSI    00000062 [SR] Verifying 100 components
+2026-09-25 11:01:57, Info                  CSI    00000063 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:57, Info                  CSI    00000064 [SR] Verify complete
+2026-09-25 11:01:57, Info                  CSI    00000065 [SR] Verifying 100 components
+2026-09-25 11:01:57, Info                  CSI    00000066 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:57, Info                  CSI    00000067 [SR] Verify complete
+2026-09-25 11:01:57, Info                  CSI    00000068 [SR] Verifying 100 components
+2026-09-25 11:01:57, Info                  CSI    00000069 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:58, Info                  CSI    0000006a [SR] Verify complete
+2026-09-25 11:01:58, Info                  CSI    0000006b [SR] Verifying 100 components
+2026-09-25 11:01:58, Info                  CSI    0000006c [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:58, Info                  CSI    0000006d [SR] Verify complete
+2026-09-25 11:01:58, Info                  CSI    0000006e [SR] Verifying 100 components
+2026-09-25 11:01:58, Info                  CSI    0000006f [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:58, Info                  CSI    00000070 [SR] Verify complete
+2026-09-25 11:01:58, Info                  CSI    00000071 [SR] Verifying 100 components
+2026-09-25 11:01:58, Info                  CSI    00000072 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:58, Info                  CSI    00000073 [SR] Verify complete
+2026-09-25 11:01:58, Info                  CSI    00000074 [SR] Verifying 100 components
+2026-09-25 11:01:58, Info                  CSI    00000075 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:58, Info                  CSI    00000076 [SR] Verify complete
+2026-09-25 11:01:58, Info                  CSI    00000077 [SR] Verifying 100 components
+2026-09-25 11:01:58, Info                  CSI    00000078 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:58, Info                  CSI    00000079 [SR] Verify complete
+2026-09-25 11:01:58, Info                  CSI    0000007a [SR] Verifying 100 components
+2026-09-25 11:01:58, Info                  CSI    0000007b [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:59, Info                  CSI    0000007c [SR] Verify complete
+2026-09-25 11:01:59, Info                  CSI    0000007d [SR] Verifying 100 components
+2026-09-25 11:01:59, Info                  CSI    0000007e [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:59, Info                  CSI    0000007f [SR] Verify complete
+2026-09-25 11:01:59, Info                  CSI    00000080 [SR] Verifying 100 components
+2026-09-25 11:01:59, Info                  CSI    00000081 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:59, Info                  CSI    00000082 [SR] Verify complete
+2026-09-25 11:01:59, Info                  CSI    00000083 [SR] Verifying 100 components
+2026-09-25 11:01:59, Info                  CSI    00000084 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:01:59, Info                  CSI    00000085 [SR] Verify complete
+2026-09-25 11:02:00, Info                  CSI    00000086 [SR] Verifying 100 components
+2026-09-25 11:02:00, Info                  CSI    00000087 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:00, Info                  CSI    00000088 [SR] Verify complete
+2026-09-25 11:02:00, Info                  CSI    00000089 [SR] Verifying 100 components
+2026-09-25 11:02:00, Info                  CSI    0000008a [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:00, Info                  CSI    0000008b [SR] Verify complete
+2026-09-25 11:02:00, Info                  CSI    0000008c [SR] Verifying 100 components
+2026-09-25 11:02:00, Info                  CSI    0000008d [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:00, Info                  CSI    0000008e [SR] Verify complete
+2026-09-25 11:02:00, Info                  CSI    0000008f [SR] Verifying 100 components
+2026-09-25 11:02:00, Info                  CSI    00000090 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:00, Info                  CSI    00000091 [SR] Verify complete
+2026-09-25 11:02:00, Info                  CSI    00000092 [SR] Verifying 100 components
+2026-09-25 11:02:00, Info                  CSI    00000093 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:01, Info                  CSI    00000094 [SR] Verify complete
+2026-09-25 11:02:01, Info                  CSI    00000095 [SR] Verifying 100 components
+2026-09-25 11:02:01, Info                  CSI    00000096 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:01, Info                  CSI    00000097 [SR] Verify complete
+2026-09-25 11:02:01, Info                  CSI    00000098 [SR] Verifying 100 components
+2026-09-25 11:02:01, Info                  CSI    00000099 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:01, Info                  CSI    0000009a [SR] Verify complete
+2026-09-25 11:02:01, Info                  CSI    0000009b [SR] Verifying 100 components
+2026-09-25 11:02:01, Info                  CSI    0000009c [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:01, Info                  CSI    0000009d [SR] Verify complete
+2026-09-25 11:02:01, Info                  CSI    0000009e [SR] Verifying 100 components
+2026-09-25 11:02:01, Info                  CSI    0000009f [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:02, Info                  CSI    000000a0 [SR] Verify complete
+2026-09-25 11:02:02, Info                  CSI    000000a1 [SR] Verifying 100 components
+2026-09-25 11:02:02, Info                  CSI    000000a2 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:02, Info                  CSI    000000a3 [SR] Verify complete
+2026-09-25 11:02:02, Info                  CSI    000000a4 [SR] Verifying 100 components
+2026-09-25 11:02:02, Info                  CSI    000000a5 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:02, Info                  CSI    000000a6 [SR] Verify complete
+2026-09-25 11:02:02, Info                  CSI    000000a7 [SR] Verifying 100 components
+2026-09-25 11:02:02, Info                  CSI    000000a8 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:02, Info                  CSI    000000a9 [SR] Verify complete
+2026-09-25 11:02:02, Info                  CSI    000000aa [SR] Verifying 100 components
+2026-09-25 11:02:02, Info                  CSI    000000ab [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:02, Info                  CSI    000000ac [SR] Verify complete
+2026-09-25 11:02:02, Info                  CSI    000000ad [SR] Verifying 100 components
+2026-09-25 11:02:02, Info                  CSI    000000ae [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:02, Info                  CSI    000000af [SR] Verify complete
+2026-09-25 11:02:03, Info                  CSI    000000b0 [SR] Verifying 100 components
+2026-09-25 11:02:03, Info                  CSI    000000b1 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:03, Info                  CSI    000000b2 [SR] Verify complete
+2026-09-25 11:02:03, Info                  CSI    000000b3 [SR] Verifying 100 components
+2026-09-25 11:02:03, Info                  CSI    000000b4 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:03, Info                  CSI    000000b5 [SR] Verify complete
+2026-09-25 11:02:03, Info                  CSI    000000b6 [SR] Verifying 100 components
+2026-09-25 11:02:03, Info                  CSI    000000b7 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:03, Info                  CSI    000000b8 [SR] Verify complete
+2026-09-25 11:02:03, Info                  CSI    000000b9 [SR] Verifying 100 components
+2026-09-25 11:02:03, Info                  CSI    000000ba [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:03, Info                  CSI    000000bb [SR] Verify complete
+2026-09-25 11:02:03, Info                  CSI    000000bc [SR] Verifying 100 components
+2026-09-25 11:02:03, Info                  CSI    000000bd [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:03, Info                  CSI    000000be [SR] Verify complete
+2026-09-25 11:02:03, Info                  CSI    000000bf [SR] Verifying 100 components
+2026-09-25 11:02:03, Info                  CSI    000000c0 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:04, Info                  CSI    000000c1 [SR] Verify complete
+2026-09-25 11:02:04, Info                  CSI    000000c2 [SR] Verifying 100 components
+2026-09-25 11:02:04, Info                  CSI    000000c3 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:04, Info                  CSI    000000c4 [SR] Verify complete
+2026-09-25 11:02:04, Info                  CSI    000000c5 [SR] Verifying 100 components
+2026-09-25 11:02:04, Info                  CSI    000000c6 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:04, Info                  CSI    000000c7 [SR] Verify complete
+2026-09-25 11:02:04, Info                  CSI    000000c8 [SR] Verifying 100 components
+2026-09-25 11:02:04, Info                  CSI    000000c9 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:04, Info                  CSI    000000ca [SR] Verify complete
+2026-09-25 11:02:04, Info                  CSI    000000cb [SR] Verifying 100 components
+2026-09-25 11:02:04, Info                  CSI    000000cc [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:04, Info                  CSI    000000cd [SR] Verify complete
+2026-09-25 11:02:05, Info                  CSI    000000ce [SR] Verifying 100 components
+2026-09-25 11:02:05, Info                  CSI    000000cf [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:05, Info                  CSI    000000d0 [SR] Verify complete
+2026-09-25 11:02:05, Info                  CSI    000000d1 [SR] Verifying 100 components
+2026-09-25 11:02:05, Info                  CSI    000000d2 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:05, Info                  CSI    000000d3 [SR] Verify complete
+2026-09-25 11:02:05, Info                  CSI    000000d4 [SR] Verifying 100 components
+2026-09-25 11:02:05, Info                  CSI    000000d5 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:05, Info                  CSI    000000d6 [SR] Verify complete
+2026-09-25 11:02:05, Info                  CSI    000000d7 [SR] Verifying 100 components
+2026-09-25 11:02:05, Info                  CSI    000000d8 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:05, Info                  CSI    000000d9 [SR] Verify complete
+2026-09-25 11:02:05, Info                  CSI    000000da [SR] Verifying 100 components
+2026-09-25 11:02:05, Info                  CSI    000000db [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:06, Info                  CSI    000000dc [SR] Verify complete
+2026-09-25 11:02:06, Info                  CSI    000000dd [SR] Verifying 100 components
+2026-09-25 11:02:06, Info                  CSI    000000de [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:06, Info                  CSI    000000df [SR] Verify complete
+2026-09-25 11:02:06, Info                  CSI    000000e0 [SR] Verifying 100 components
+2026-09-25 11:02:06, Info                  CSI    000000e1 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:06, Info                  CSI    000000e2 CSIPERF - FilePI Queue 147ms
+2026-09-25 11:02:06, Info                  CSI    000000e3 [SR] Verify complete
+2026-09-25 11:02:07, Info                  CSI    000000e4 [SR] Verifying 100 components
+2026-09-25 11:02:07, Info                  CSI    000000e5 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:07, Info                  CSI    000000e6 [SR] Verify complete
+2026-09-25 11:02:07, Info                  CSI    000000e7 [SR] Verifying 100 components
+2026-09-25 11:02:07, Info                  CSI    000000e8 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:07, Info                  CSI    000000e9 [SR] Verify complete
+2026-09-25 11:02:07, Info                  CSI    000000ea [SR] Verifying 100 components
+2026-09-25 11:02:07, Info                  CSI    000000eb [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:07, Info                  CSI    000000ec [SR] Verify complete
+2026-09-25 11:02:07, Info                  CSI    000000ed [SR] Verifying 100 components
+2026-09-25 11:02:07, Info                  CSI    000000ee [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:07, Info                  CSI    000000ef [SR] Verify complete
+2026-09-25 11:02:07, Info                  CSI    000000f0 [SR] Verifying 100 components
+2026-09-25 11:02:07, Info                  CSI    000000f1 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:08, Info                  CSI    000000f2 [SR] Verify complete
+2026-09-25 11:02:08, Info                  CSI    000000f3 [SR] Verifying 100 components
+2026-09-25 11:02:08, Info                  CSI    000000f4 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:08, Info                  CSI    000000f5 [SR] Verify complete
+2026-09-25 11:02:08, Info                  CSI    000000f6 [SR] Verifying 100 components
+2026-09-25 11:02:08, Info                  CSI    000000f7 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:08, Info                  CSI    000000f8 [SR] Verify complete
+2026-09-25 11:02:08, Info                  CSI    000000f9 [SR] Verifying 100 components
+2026-09-25 11:02:08, Info                  CSI    000000fa [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:08, Info                  CSI    000000fb [SR] Verify complete
+2026-09-25 11:02:08, Info                  CSI    000000fc [SR] Verifying 100 components
+2026-09-25 11:02:08, Info                  CSI    000000fd [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:09, Info                  CSI    000000fe [SR] Verify complete
+2026-09-25 11:02:09, Info                  CSI    000000ff [SR] Verifying 100 components
+2026-09-25 11:02:09, Info                  CSI    00000100 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:09, Info                  CSI    00000101 [SR] Verify complete
+2026-09-25 11:02:09, Info                  CSI    00000102 [SR] Verifying 100 components
+2026-09-25 11:02:09, Info                  CSI    00000103 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:09, Info                  CSI    00000104 [SR] Verify complete
+2026-09-25 11:02:09, Info                  CSI    00000105 [SR] Verifying 100 components
+2026-09-25 11:02:09, Info                  CSI    00000106 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:09, Info                  CSI    00000107 [SR] Verify complete
+2026-09-25 11:02:09, Info                  CSI    00000108 [SR] Verifying 100 components
+2026-09-25 11:02:09, Info                  CSI    00000109 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:09, Info                  CSI    0000010a [SR] Verify complete
+2026-09-25 11:02:09, Info                  CSI    0000010b [SR] Verifying 100 components
+2026-09-25 11:02:09, Info                  CSI    0000010c [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:10, Info                  CSI    0000010d [SR] Verify complete
+2026-09-25 11:02:10, Info                  CSI    0000010e [SR] Verifying 100 components
+2026-09-25 11:02:10, Info                  CSI    0000010f [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:10, Info                  CSI    00000110 [SR] Verify complete
+2026-09-25 11:02:10, Info                  CSI    00000111 [SR] Verifying 100 components
+2026-09-25 11:02:10, Info                  CSI    00000112 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:10, Info                  CSI    00000113 [SR] Verify complete
+2026-09-25 11:02:10, Info                  CSI    00000114 [SR] Verifying 100 components
+2026-09-25 11:02:10, Info                  CSI    00000115 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:10, Info                  CSI    00000116 [SR] Verify complete
+2026-09-25 11:02:10, Info                  CSI    00000117 [SR] Verifying 100 components
+2026-09-25 11:02:10, Info                  CSI    00000118 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:10, Info                  CSI    00000119 [SR] Verify complete
+2026-09-25 11:02:10, Info                  CSI    0000011a [SR] Verifying 100 components
+2026-09-25 11:02:10, Info                  CSI    0000011b [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:11, Info                  CSI    0000011c [SR] Verify complete
+2026-09-25 11:02:11, Info                  CSI    0000011d [SR] Verifying 100 components
+2026-09-25 11:02:11, Info                  CSI    0000011e [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:11, Info                  CSI    0000011f [SR] Verify complete
+2026-09-25 11:02:11, Info                  CSI    00000120 [SR] Verifying 100 components
+2026-09-25 11:02:11, Info                  CSI    00000121 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:11, Info                  CSI    00000122 [SR] Verify complete
+2026-09-25 11:02:11, Info                  CSI    00000123 [SR] Verifying 100 components
+2026-09-25 11:02:11, Info                  CSI    00000124 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:11, Info                  CSI    00000125 [SR] Verify complete
+2026-09-25 11:02:11, Info                  CSI    00000126 [SR] Verifying 100 components
+2026-09-25 11:02:11, Info                  CSI    00000127 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:12, Info                  CSI    00000128 [SR] Verify complete
+2026-09-25 11:02:12, Info                  CSI    00000129 [SR] Verifying 100 components
+2026-09-25 11:02:12, Info                  CSI    0000012a [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:12, Info                  CSI    0000012b [SR] Verify complete
+2026-09-25 11:02:12, Info                  CSI    0000012c [SR] Verifying 100 components
+2026-09-25 11:02:12, Info                  CSI    0000012d [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:12, Info                  CSI    0000012e [SR] Verify complete
+2026-09-25 11:02:12, Info                  CSI    0000012f [SR] Verifying 100 components
+2026-09-25 11:02:12, Info                  CSI    00000130 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:12, Info                  CSI    00000131 [SR] Verify complete
+2026-09-25 11:02:12, Info                  CSI    00000132 [SR] Verifying 100 components
+2026-09-25 11:02:12, Info                  CSI    00000133 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:12, Info                  CSI    00000134 [SR] Verify complete
+2026-09-25 11:02:13, Info                  CSI    00000135 [SR] Verifying 100 components
+2026-09-25 11:02:13, Info                  CSI    00000136 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:13, Info                  CSI    00000137 [SR] Verify complete
+2026-09-25 11:02:13, Info                  CSI    00000138 [SR] Verifying 100 components
+2026-09-25 11:02:13, Info                  CSI    00000139 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:13, Info                  CSI    0000013a [SR] Verify complete
+2026-09-25 11:02:13, Info                  CSI    0000013b [SR] Verifying 100 components
+2026-09-25 11:02:13, Info                  CSI    0000013c [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:13, Info                  CSI    0000013d [SR] Verify complete
+2026-09-25 11:02:13, Info                  CSI    0000013e [SR] Verifying 100 components
+2026-09-25 11:02:13, Info                  CSI    0000013f [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:14, Info                  CSI    00000140 [SR] Verify complete
+2026-09-25 11:02:14, Info                  CSI    00000141 [SR] Verifying 100 components
+2026-09-25 11:02:14, Info                  CSI    00000142 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:14, Info                  CSI    00000143 [SR] Verify complete
+2026-09-25 11:02:14, Info                  CSI    00000144 [SR] Verifying 100 components
+2026-09-25 11:02:14, Info                  CSI    00000145 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:14, Info                  CSI    00000146 [SR] Verify complete
+2026-09-25 11:02:14, Info                  CSI    00000147 [SR] Verifying 100 components
+2026-09-25 11:02:14, Info                  CSI    00000148 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:14, Info                  CSI    00000149 [SR] Verify complete
+2026-09-25 11:02:14, Info                  CSI    0000014a [SR] Verifying 100 components
+2026-09-25 11:02:14, Info                  CSI    0000014b [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:14, Info                  CSI    0000014c [SR] Verify complete
+2026-09-25 11:02:15, Info                  CSI    0000014d [SR] Verifying 100 components
+2026-09-25 11:02:15, Info                  CSI    0000014e [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:15, Info                  CSI    0000014f [SR] Verify complete
+2026-09-25 11:02:15, Info                  CSI    00000150 [SR] Verifying 100 components
+2026-09-25 11:02:15, Info                  CSI    00000151 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:15, Info                  CSI    00000152 [SR] Verify complete
+2026-09-25 11:02:15, Info                  CSI    00000153 [SR] Verifying 100 components
+2026-09-25 11:02:15, Info                  CSI    00000154 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:15, Info                  CSI    00000155 [SR] Verify complete
+2026-09-25 11:02:15, Info                  CSI    00000156 [SR] Verifying 100 components
+2026-09-25 11:02:15, Info                  CSI    00000157 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:15, Info                  CSI    00000158 [SR] Verify complete
+2026-09-25 11:02:15, Info                  CSI    00000159 [SR] Verifying 100 components
+2026-09-25 11:02:15, Info                  CSI    0000015a [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:16, Info                  CSI    0000015b [SR] Verify complete
+2026-09-25 11:02:16, Info                  CSI    0000015c [SR] Verifying 100 components
+2026-09-25 11:02:16, Info                  CSI    0000015d [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:16, Info                  CSI    0000015e [SR] Verify complete
+2026-09-25 11:02:16, Info                  CSI    0000015f [SR] Verifying 100 components
+2026-09-25 11:02:16, Info                  CSI    00000160 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:16, Info                  CSI    00000161 [SR] Verify complete
+2026-09-25 11:02:16, Info                  CSI    00000162 [SR] Verifying 100 components
+2026-09-25 11:02:16, Info                  CSI    00000163 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:16, Info                  CSI    00000164 [SR] Verify complete
+2026-09-25 11:02:16, Info                  CSI    00000165 [SR] Verifying 100 components
+2026-09-25 11:02:16, Info                  CSI    00000166 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:16, Info                  CSI    00000167 [SR] Verify complete
+2026-09-25 11:02:17, Info                  CSI    00000168 [SR] Verifying 100 components
+2026-09-25 11:02:17, Info                  CSI    00000169 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:17, Info                  CSI    0000016a [SR] Verify complete
+2026-09-25 11:02:17, Info                  CSI    0000016b [SR] Verifying 100 components
+2026-09-25 11:02:17, Info                  CSI    0000016c [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:17, Info                  CSI    0000016d [SR] Verify complete
+2026-09-25 11:02:17, Info                  CSI    0000016e [SR] Verifying 100 components
+2026-09-25 11:02:17, Info                  CSI    0000016f [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:17, Info                  CSI    00000170 [SR] Verify complete
+2026-09-25 11:02:17, Info                  CSI    00000171 [SR] Verifying 100 components
+2026-09-25 11:02:17, Info                  CSI    00000172 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:17, Info                  CSI    00000173 [SR] Verify complete
+2026-09-25 11:02:17, Info                  CSI    00000174 [SR] Verifying 100 components
+2026-09-25 11:02:17, Info                  CSI    00000175 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:18, Info                  CSI    00000176 [SR] Verify complete
+2026-09-25 11:02:18, Info                  CSI    00000177 [SR] Verifying 100 components
+2026-09-25 11:02:18, Info                  CSI    00000178 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:18, Info                  CSI    00000179 [SR] Verify complete
+2026-09-25 11:02:18, Info                  CSI    0000017a [SR] Verifying 100 components
+2026-09-25 11:02:18, Info                  CSI    0000017b [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:18, Info                  CSI    0000017c [SR] Verify complete
+2026-09-25 11:02:18, Info                  CSI    0000017d [SR] Verifying 100 components
+2026-09-25 11:02:18, Info                  CSI    0000017e [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:19, Info                  CSI    0000017f [SR] Verify complete
+2026-09-25 11:02:19, Info                  CSI    00000180 [SR] Verifying 100 components
+2026-09-25 11:02:19, Info                  CSI    00000181 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:19, Info                  CSI    00000182 [SR] Verify complete
+2026-09-25 11:02:19, Info                  CSI    00000183 [SR] Verifying 100 components
+2026-09-25 11:02:19, Info                  CSI    00000184 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:19, Info                  CSI    00000185 [SR] Verify complete
+2026-09-25 11:02:19, Info                  CSI    00000186 [SR] Verifying 100 components
+2026-09-25 11:02:19, Info                  CSI    00000187 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:19, Info                  CSI    00000188 [SR] Verify complete
+2026-09-25 11:02:19, Info                  CSI    00000189 [SR] Verifying 100 components
+2026-09-25 11:02:19, Info                  CSI    0000018a [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:20, Info                  CSI    0000018b [SR] Verify complete
+2026-09-25 11:02:20, Info                  CSI    0000018c [SR] Verifying 100 components
+2026-09-25 11:02:20, Info                  CSI    0000018d [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:20, Info                  CSI    0000018e [SR] Verify complete
+2026-09-25 11:02:20, Info                  CSI    0000018f [SR] Verifying 100 components
+2026-09-25 11:02:20, Info                  CSI    00000190 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:20, Info                  CSI    00000191 [SR] Verify complete
+2026-09-25 11:02:20, Info                  CSI    00000192 [SR] Verifying 100 components
+2026-09-25 11:02:20, Info                  CSI    00000193 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:20, Info                  CSI    00000194 [SR] Verify complete
+2026-09-25 11:02:20, Info                  CSI    00000195 [SR] Verifying 100 components
+2026-09-25 11:02:20, Info                  CSI    00000196 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:20, Info                  CSI    00000197 [SR] Verify complete
+2026-09-25 11:02:21, Info                  CSI    00000198 [SR] Verifying 100 components
+2026-09-25 11:02:21, Info                  CSI    00000199 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:21, Info                  CSI    0000019a [SR] Verify complete
+2026-09-25 11:02:21, Info                  CSI    0000019b [SR] Verifying 100 components
+2026-09-25 11:02:21, Info                  CSI    0000019c [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:21, Info                  CSI    0000019d [SR] Verify complete
+2026-09-25 11:02:21, Info                  CSI    0000019e [SR] Verifying 100 components
+2026-09-25 11:02:21, Info                  CSI    0000019f [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:21, Info                  CSI    000001a0 [SR] Verify complete
+2026-09-25 11:02:21, Info                  CSI    000001a1 [SR] Verifying 100 components
+2026-09-25 11:02:21, Info                  CSI    000001a2 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:21, Info                  CSI    000001a3 [SR] Verify complete
+2026-09-25 11:02:22, Info                  CSI    000001a4 [SR] Verifying 100 components
+2026-09-25 11:02:22, Info                  CSI    000001a5 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:22, Info                  CSI    000001a6 [SR] Verify complete
+2026-09-25 11:02:22, Info                  CSI    000001a7 [SR] Verifying 100 components
+2026-09-25 11:02:22, Info                  CSI    000001a8 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:22, Info                  CSI    000001a9 [SR] Verify complete
+2026-09-25 11:02:22, Info                  CSI    000001aa [SR] Verifying 100 components
+2026-09-25 11:02:22, Info                  CSI    000001ab [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:22, Info                  CSI    000001ac [SR] Verify complete
+2026-09-25 11:02:22, Info                  CSI    000001ad [SR] Verifying 100 components
+2026-09-25 11:02:22, Info                  CSI    000001ae [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:22, Info                  CSI    000001af [SR] Verify complete
+2026-09-25 11:02:22, Info                  CSI    000001b0 [SR] Verifying 100 components
+2026-09-25 11:02:22, Info                  CSI    000001b1 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:22, Info                  CSI    000001b2 [SR] Verify complete
+2026-09-25 11:02:23, Info                  CSI    000001b3 [SR] Verifying 100 components
+2026-09-25 11:02:23, Info                  CSI    000001b4 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:23, Info                  CSI    000001b5 [SR] Verify complete
+2026-09-25 11:02:23, Info                  CSI    000001b6 [SR] Verifying 100 components
+2026-09-25 11:02:23, Info                  CSI    000001b7 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:23, Info                  CSI    000001b8 [SR] Verify complete
+2026-09-25 11:02:23, Info                  CSI    000001b9 [SR] Verifying 100 components
+2026-09-25 11:02:23, Info                  CSI    000001ba [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:23, Info                  CSI    000001bb [SR] Verify complete
+2026-09-25 11:02:23, Info                  CSI    000001bc [SR] Verifying 100 components
+2026-09-25 11:02:23, Info                  CSI    000001bd [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:23, Info                  CSI    000001be [SR] Verify complete
+2026-09-25 11:02:23, Info                  CSI    000001bf [SR] Verifying 100 components
+2026-09-25 11:02:23, Info                  CSI    000001c0 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:24, Info                  CSI    000001c1 [SR] Verify complete
+2026-09-25 11:02:24, Info                  CSI    000001c2 [SR] Verifying 100 components
+2026-09-25 11:02:24, Info                  CSI    000001c3 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:24, Info                  CSI    000001c4 [SR] Verify complete
+2026-09-25 11:02:24, Info                  CSI    000001c5 [SR] Verifying 100 components
+2026-09-25 11:02:24, Info                  CSI    000001c6 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:24, Info                  CSI    000001c7 [SR] Verify complete
+2026-09-25 11:02:24, Info                  CSI    000001c8 [SR] Verifying 100 components
+2026-09-25 11:02:24, Info                  CSI    000001c9 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:24, Info                  CSI    000001ca [SR] Verify complete
+2026-09-25 11:02:24, Info                  CSI    000001cb [SR] Verifying 100 components
+2026-09-25 11:02:24, Info                  CSI    000001cc [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:24, Info                  CSI    000001cd [SR] Verify complete
+2026-09-25 11:02:24, Info                  CSI    000001ce [SR] Verifying 100 components
+2026-09-25 11:02:24, Info                  CSI    000001cf [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:24, Info                  CSI    000001d0 [SR] Verify complete
+2026-09-25 11:02:25, Info                  CSI    000001d1 [SR] Verifying 100 components
+2026-09-25 11:02:25, Info                  CSI    000001d2 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:25, Info                  CSI    000001d3 [SR] Verify complete
+2026-09-25 11:02:25, Info                  CSI    000001d4 [SR] Verifying 100 components
+2026-09-25 11:02:25, Info                  CSI    000001d5 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:25, Info                  CSI    000001d6 [SR] Verify complete
+2026-09-25 11:02:25, Info                  CSI    000001d7 [SR] Verifying 100 components
+2026-09-25 11:02:25, Info                  CSI    000001d8 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:25, Info                  CSI    000001d9 [SR] Verify complete
+2026-09-25 11:02:25, Info                  CSI    000001da [SR] Verifying 100 components
+2026-09-25 11:02:25, Info                  CSI    000001db [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:25, Info                  CSI    000001dc [SR] Verify complete
+2026-09-25 11:02:26, Info                  CSI    000001dd [SR] Verifying 100 components
+2026-09-25 11:02:26, Info                  CSI    000001de [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:26, Info                  CSI    000001df [SR] Verify complete
+2026-09-25 11:02:26, Info                  CSI    000001e0 [SR] Verifying 100 components
+2026-09-25 11:02:26, Info                  CSI    000001e1 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:26, Info                  CSI    000001e2 [SR] Verify complete
+2026-09-25 11:02:26, Info                  CSI    000001e3 [SR] Verifying 100 components
+2026-09-25 11:02:26, Info                  CSI    000001e4 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:26, Info                  CSI    000001e5 [SR] Verify complete
+2026-09-25 11:02:26, Info                  CSI    000001e6 [SR] Verifying 100 components
+2026-09-25 11:02:26, Info                  CSI    000001e7 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:26, Info                  CSI    000001e8 [SR] Verify complete
+2026-09-25 11:02:26, Info                  CSI    000001e9 [SR] Verifying 100 components
+2026-09-25 11:02:26, Info                  CSI    000001ea [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:27, Info                  CSI    000001eb [SR] Verify complete
+2026-09-25 11:02:27, Info                  CSI    000001ec [SR] Verifying 100 components
+2026-09-25 11:02:27, Info                  CSI    000001ed [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:27, Info                  CSI    000001ee [SR] Verify complete
+2026-09-25 11:02:27, Info                  CSI    000001ef [SR] Verifying 100 components
+2026-09-25 11:02:27, Info                  CSI    000001f0 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:27, Info                  CSI    000001f1 [SR] Verify complete
+2026-09-25 11:02:27, Info                  CSI    000001f2 [SR] Verifying 100 components
+2026-09-25 11:02:27, Info                  CSI    000001f3 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:27, Info                  CSI    000001f4 [SR] Verify complete
+2026-09-25 11:02:27, Info                  CSI    000001f5 [SR] Verifying 100 components
+2026-09-25 11:02:27, Info                  CSI    000001f6 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:27, Info                  CSI    000001f7 [SR] Verify complete
+2026-09-25 11:02:28, Info                  CSI    000001f8 [SR] Verifying 100 components
+2026-09-25 11:02:28, Info                  CSI    000001f9 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:28, Info                  CSI    000001fa [SR] Verify complete
+2026-09-25 11:02:28, Info                  CSI    000001fb [SR] Verifying 100 components
+2026-09-25 11:02:28, Info                  CSI    000001fc [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:28, Info                  CSI    000001fd [SR] Verify complete
+2026-09-25 11:02:28, Info                  CSI    000001fe [SR] Verifying 100 components
+2026-09-25 11:02:28, Info                  CSI    000001ff [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:29, Info                  CSI    00000200 CSIPERF - FilePI Queue 119ms
+2026-09-25 11:02:29, Info                  CSI    00000201 CSIPERF - FilePI Queue 168ms
+2026-09-25 11:02:30, Info                  CSI    00000202 CSIPERF - FilePI Queue 252ms
+2026-09-25 11:02:30, Info                  CSI    00000203 CSIPERF - FilePI Queue 462ms
+2026-09-25 11:02:30, Info                  CSI    00000204 CSIPERF - FilePI Queue 152ms
+2026-09-25 11:02:31, Info                  CSI    00000205 [SR] Verify complete
+2026-09-25 11:02:31, Info                  CSI    00000206 [SR] Verifying 100 components
+2026-09-25 11:02:31, Info                  CSI    00000207 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:31, Info                  CSI    00000208 CSIPERF - FilePI Queue 113ms
+2026-09-25 11:02:31, Info                  CSI    00000209 [SR] Verify complete
+2026-09-25 11:02:31, Info                  CSI    0000020a [SR] Verifying 100 components
+2026-09-25 11:02:31, Info                  CSI    0000020b [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:32, Info                  CSI    0000020c [SR] Verify complete
+2026-09-25 11:02:32, Info                  CSI    0000020d [SR] Verifying 100 components
+2026-09-25 11:02:32, Info                  CSI    0000020e [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:32, Info                  CSI    0000020f CSIPERF - FilePI Queue 241ms
+2026-09-25 11:02:32, Info                  CSI    00000210 [SR] Verify complete
+2026-09-25 11:02:32, Info                  CSI    00000211 [SR] Verifying 100 components
+2026-09-25 11:02:32, Info                  CSI    00000212 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:33, Info                  CSI    00000213 [SR] Verify complete
+2026-09-25 11:02:33, Info                  CSI    00000214 [SR] Verifying 100 components
+2026-09-25 11:02:33, Info                  CSI    00000215 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:33, Info                  CSI    00000216 [SR] Verify complete
+2026-09-25 11:02:33, Info                  CSI    00000217 [SR] Verifying 100 components
+2026-09-25 11:02:33, Info                  CSI    00000218 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:33, Info                  CSI    00000219 [SR] Verify complete
+2026-09-25 11:02:33, Info                  CSI    0000021a [SR] Verifying 100 components
+2026-09-25 11:02:33, Info                  CSI    0000021b [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:33, Info                  CSI    0000021c [SR] Verify complete
+2026-09-25 11:02:33, Info                  CSI    0000021d [SR] Verifying 100 components
+2026-09-25 11:02:33, Info                  CSI    0000021e [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:33, Info                  CSI    0000021f [SR] Verify complete
+2026-09-25 11:02:33, Info                  CSI    00000220 [SR] Verifying 100 components
+2026-09-25 11:02:33, Info                  CSI    00000221 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:34, Info                  CSI    00000222 [SR] Verify complete
+2026-09-25 11:02:34, Info                  CSI    00000223 [SR] Verifying 100 components
+2026-09-25 11:02:34, Info                  CSI    00000224 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:34, Info                  CSI    00000225 [SR] Verify complete
+2026-09-25 11:02:34, Info                  CSI    00000226 [SR] Verifying 100 components
+2026-09-25 11:02:34, Info                  CSI    00000227 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:34, Info                  CSI    00000228 [SR] Verify complete
+2026-09-25 11:02:34, Info                  CSI    00000229 [SR] Verifying 100 components
+2026-09-25 11:02:34, Info                  CSI    0000022a [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:34, Info                  CSI    0000022b [SR] Verify complete
+2026-09-25 11:02:34, Info                  CSI    0000022c [SR] Verifying 100 components
+2026-09-25 11:02:34, Info                  CSI    0000022d [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:35, Info                  CSI    0000022e [SR] Verify complete
+2026-09-25 11:02:35, Info                  CSI    0000022f [SR] Verifying 100 components
+2026-09-25 11:02:35, Info                  CSI    00000230 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:35, Info                  CSI    00000231 [SR] Verify complete
+2026-09-25 11:02:35, Info                  CSI    00000232 [SR] Verifying 100 components
+2026-09-25 11:02:35, Info                  CSI    00000233 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:35, Info                  CSI    00000234 [SR] Verify complete
+2026-09-25 11:02:35, Info                  CSI    00000235 [SR] Verifying 100 components
+2026-09-25 11:02:35, Info                  CSI    00000236 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:35, Info                  CSI    00000237 [SR] Verify complete
+2026-09-25 11:02:35, Info                  CSI    00000238 [SR] Verifying 100 components
+2026-09-25 11:02:35, Info                  CSI    00000239 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:35, Info                  CSI    0000023a [SR] Verify complete
+2026-09-25 11:02:35, Info                  CSI    0000023b [SR] Verifying 100 components
+2026-09-25 11:02:35, Info                  CSI    0000023c [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:36, Info                  CSI    0000023d [SR] Verify complete
+2026-09-25 11:02:36, Info                  CSI    0000023e [SR] Verifying 100 components
+2026-09-25 11:02:36, Info                  CSI    0000023f [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:36, Info                  CSI    00000240 [SR] Verify complete
+2026-09-25 11:02:36, Info                  CSI    00000241 [SR] Verifying 100 components
+2026-09-25 11:02:36, Info                  CSI    00000242 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:36, Info                  CSI    00000243 [SR] Verify complete
+2026-09-25 11:02:36, Info                  CSI    00000244 [SR] Verifying 100 components
+2026-09-25 11:02:36, Info                  CSI    00000245 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:36, Info                  CSI    00000246 [SR] Verify complete
+2026-09-25 11:02:36, Info                  CSI    00000247 [SR] Verifying 100 components
+2026-09-25 11:02:36, Info                  CSI    00000248 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:36, Info                  CSI    00000249 [SR] Verify complete
+2026-09-25 11:02:36, Info                  CSI    0000024a [SR] Verifying 100 components
+2026-09-25 11:02:36, Info                  CSI    0000024b [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:37, Info                  CSI    0000024c [SR] Verify complete
+2026-09-25 11:02:37, Info                  CSI    0000024d [SR] Verifying 100 components
+2026-09-25 11:02:37, Info                  CSI    0000024e [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:37, Info                  CSI    0000024f [SR] Verify complete
+2026-09-25 11:02:37, Info                  CSI    00000250 [SR] Verifying 100 components
+2026-09-25 11:02:37, Info                  CSI    00000251 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:37, Info                  CSI    00000252 [SR] Verify complete
+2026-09-25 11:02:37, Info                  CSI    00000253 [SR] Verifying 100 components
+2026-09-25 11:02:37, Info                  CSI    00000254 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:37, Info                  CSI    00000255 [SR] Verify complete
+2026-09-25 11:02:37, Info                  CSI    00000256 [SR] Verifying 100 components
+2026-09-25 11:02:37, Info                  CSI    00000257 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:37, Info                  CSI    00000258 [SR] Verify complete
+2026-09-25 11:02:38, Info                  CSI    00000259 [SR] Verifying 100 components
+2026-09-25 11:02:38, Info                  CSI    0000025a [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:38, Info                  CSI    0000025b [SR] Verify complete
+2026-09-25 11:02:38, Info                  CSI    0000025c [SR] Verifying 100 components
+2026-09-25 11:02:38, Info                  CSI    0000025d [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:38, Info                  CSI    0000025e [SR] Verify complete
+2026-09-25 11:02:38, Info                  CSI    0000025f [SR] Verifying 100 components
+2026-09-25 11:02:38, Info                  CSI    00000260 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:38, Info                  CSI    00000261 [SR] Verify complete
+2026-09-25 11:02:38, Info                  CSI    00000262 [SR] Verifying 100 components
+2026-09-25 11:02:38, Info                  CSI    00000263 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:38, Info                  CSI    00000264 [SR] Verify complete
+2026-09-25 11:02:38, Info                  CSI    00000265 [SR] Verifying 100 components
+2026-09-25 11:02:38, Info                  CSI    00000266 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:39, Info                  CSI    00000267 [SR] Verify complete
+2026-09-25 11:02:39, Info                  CSI    00000268 [SR] Verifying 100 components
+2026-09-25 11:02:39, Info                  CSI    00000269 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:39, Info                  CSI    0000026a [SR] Verify complete
+2026-09-25 11:02:39, Info                  CSI    0000026b [SR] Verifying 100 components
+2026-09-25 11:02:39, Info                  CSI    0000026c [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:39, Info                  CSI    0000026d [SR] Verify complete
+2026-09-25 11:02:39, Info                  CSI    0000026e [SR] Verifying 100 components
+2026-09-25 11:02:39, Info                  CSI    0000026f [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:39, Info                  CSI    00000270 [SR] Verify complete
+2026-09-25 11:02:39, Info                  CSI    00000271 [SR] Verifying 100 components
+2026-09-25 11:02:39, Info                  CSI    00000272 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:40, Info                  CSI    00000273 [SR] Verify complete
+2026-09-25 11:02:40, Info                  CSI    00000274 [SR] Verifying 100 components
+2026-09-25 11:02:40, Info                  CSI    00000275 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:40, Info                  CSI    00000276 [SR] Verify complete
+2026-09-25 11:02:40, Info                  CSI    00000277 [SR] Verifying 100 components
+2026-09-25 11:02:40, Info                  CSI    00000278 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:40, Info                  CSI    00000279 [SR] Verify complete
+2026-09-25 11:02:40, Info                  CSI    0000027a [SR] Verifying 100 components
+2026-09-25 11:02:40, Info                  CSI    0000027b [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:40, Info                  CSI    0000027c [SR] Verify complete
+2026-09-25 11:02:40, Info                  CSI    0000027d [SR] Verifying 100 components
+2026-09-25 11:02:40, Info                  CSI    0000027e [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:40, Info                  CSI    0000027f [SR] Verify complete
+2026-09-25 11:02:41, Info                  CSI    00000280 [SR] Verifying 100 components
+2026-09-25 11:02:41, Info                  CSI    00000281 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:41, Info                  CSI    00000282 [SR] Verify complete
+2026-09-25 11:02:41, Info                  CSI    00000283 [SR] Verifying 100 components
+2026-09-25 11:02:41, Info                  CSI    00000284 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:41, Info                  CSI    00000285 [SR] Verify complete
+2026-09-25 11:02:41, Info                  CSI    00000286 [SR] Verifying 100 components
+2026-09-25 11:02:41, Info                  CSI    00000287 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:41, Info                  CSI    00000288 [SR] Verify complete
+2026-09-25 11:02:41, Info                  CSI    00000289 [SR] Verifying 100 components
+2026-09-25 11:02:41, Info                  CSI    0000028a [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:41, Info                  CSI    0000028b [SR] Verify complete
+2026-09-25 11:02:41, Info                  CSI    0000028c [SR] Verifying 100 components
+2026-09-25 11:02:41, Info                  CSI    0000028d [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:42, Info                  CSI    0000028e [SR] Verify complete
+2026-09-25 11:02:42, Info                  CSI    0000028f [SR] Verifying 100 components
+2026-09-25 11:02:42, Info                  CSI    00000290 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:42, Info                  CSI    00000291 [SR] Verify complete
+2026-09-25 11:02:42, Info                  CSI    00000292 [SR] Verifying 100 components
+2026-09-25 11:02:42, Info                  CSI    00000293 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:42, Info                  CSI    00000294 [SR] Verify complete
+2026-09-25 11:02:42, Info                  CSI    00000295 [SR] Verifying 100 components
+2026-09-25 11:02:42, Info                  CSI    00000296 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:42, Info                  CSI    00000297 [SR] Verify complete
+2026-09-25 11:02:42, Info                  CSI    00000298 [SR] Verifying 100 components
+2026-09-25 11:02:42, Info                  CSI    00000299 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:43, Info                  CSI    0000029a [SR] Verify complete
+2026-09-25 11:02:43, Info                  CSI    0000029b [SR] Verifying 100 components
+2026-09-25 11:02:43, Info                  CSI    0000029c [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:43, Info                  CSI    0000029d [SR] Verify complete
+2026-09-25 11:02:43, Info                  CSI    0000029e [SR] Verifying 100 components
+2026-09-25 11:02:43, Info                  CSI    0000029f [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:43, Info                  CSI    000002a0 [SR] Verify complete
+2026-09-25 11:02:43, Info                  CSI    000002a1 [SR] Verifying 100 components
+2026-09-25 11:02:43, Info                  CSI    000002a2 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:43, Info                  CSI    000002a3 [SR] Verify complete
+2026-09-25 11:02:43, Info                  CSI    000002a4 [SR] Verifying 100 components
+2026-09-25 11:02:43, Info                  CSI    000002a5 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:43, Info                  CSI    000002a6 [SR] Verify complete
+2026-09-25 11:02:44, Info                  CSI    000002a7 [SR] Verifying 100 components
+2026-09-25 11:02:44, Info                  CSI    000002a8 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:44, Info                  CSI    000002a9 [SR] Verify complete
+2026-09-25 11:02:44, Info                  CSI    000002aa [SR] Verifying 100 components
+2026-09-25 11:02:44, Info                  CSI    000002ab [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:44, Info                  CSI    000002ac [SR] Verify complete
+2026-09-25 11:02:44, Info                  CSI    000002ad [SR] Verifying 100 components
+2026-09-25 11:02:44, Info                  CSI    000002ae [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:44, Info                  CSI    000002af [SR] Verify complete
+2026-09-25 11:02:44, Info                  CSI    000002b0 [SR] Verifying 100 components
+2026-09-25 11:02:44, Info                  CSI    000002b1 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:44, Info                  CSI    000002b2 [SR] Verify complete
+2026-09-25 11:02:44, Info                  CSI    000002b3 [SR] Verifying 100 components
+2026-09-25 11:02:44, Info                  CSI    000002b4 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:44, Info                  CSI    000002b5 [SR] Verify complete
+2026-09-25 11:02:44, Info                  CSI    000002b6 [SR] Verifying 100 components
+2026-09-25 11:02:44, Info                  CSI    000002b7 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:45, Info                  CSI    000002b8 [SR] Verify complete
+2026-09-25 11:02:45, Info                  CSI    000002b9 [SR] Verifying 100 components
+2026-09-25 11:02:45, Info                  CSI    000002ba [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:45, Info                  CSI    000002bb [SR] Verify complete
+2026-09-25 11:02:45, Info                  CSI    000002bc [SR] Verifying 100 components
+2026-09-25 11:02:45, Info                  CSI    000002bd [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:45, Info                  CSI    000002be [SR] Verify complete
+2026-09-25 11:02:45, Info                  CSI    000002bf [SR] Verifying 2 components
+2026-09-25 11:02:45, Info                  CSI    000002c0 [SR] Beginning Verify and Repair transaction
+2026-09-25 11:02:45, Info                  CSI    000002c1 [SR] Verify complete
+2026-09-25 11:02:45, Info                  DEPLOY [Pnp] Corrupt file: C:\WINDOWS\System32\drivers\BthA2dp.sys
+2026-09-25 11:02:45, Info                  DEPLOY [Pnp] Corrupt file: C:\WINDOWS\System32\drivers\BthHfEnum.sys
+2026-09-25 11:02:45, Info                  DEPLOY [Pnp] Corrupt file: C:\WINDOWS\System32\drivers\bthmodem.sys

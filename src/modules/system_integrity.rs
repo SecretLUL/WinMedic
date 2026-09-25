@@ -75,7 +75,8 @@ impl ComponentStoreHealth {
 /// "Total Detected Corruption: 0" says the opposite — so every DISM run,
 /// WinMedic's own repair included, made the next scan report damaged system
 /// files. Only statements of an unrepaired file count here: SFC giving up on
-/// one, or a DISM summary that detected more than it repaired.
+/// one, a driver file SFC found damaged and did not put back, or a DISM
+/// summary that detected more than it repaired.
 pub fn cbs_unrepaired_corruption(tail: &str) -> Option<String> {
     const SFC_GAVE_UP: [&str; 2] = [
         "Cannot repair member file",
@@ -87,6 +88,20 @@ pub fn cbs_unrepaired_corruption(tail: &str) -> Option<String> {
         .take(3)
         .map(|line| line.trim().to_string())
         .collect();
+
+    let damaged: Vec<String> = pnp_files(tail)
+        .into_iter()
+        .filter_map(|(path, damaged)| damaged.then_some(path))
+        .collect();
+    evidence.extend(
+        damaged
+            .iter()
+            .take(3)
+            .map(|path| format!("Damaged and not repaired: {path}")),
+    );
+    if damaged.len() > 3 {
+        evidence.push(format!("... and {} more", damaged.len() - 3));
+    }
 
     let count_after = |label: &str, text: &str| -> Option<(usize, u32)> {
         let at = text.rfind(label)?;
@@ -110,6 +125,36 @@ pub fn cbs_unrepaired_corruption(tail: &str) -> Option<String> {
     }
 
     (!evidence.is_empty()).then(|| evidence.join("\n"))
+}
+
+/// Every driver file SFC wrote about in `log`, and whether the last thing it
+/// said was that the file is damaged.
+///
+/// On Windows 11 SFC logs a damaged driver file as `DEPLOY [Pnp] Corrupt
+/// file: <path>` and, once it has put the original back, as `... Repaired
+/// file: <path>`; `/verifyonly` writes only the first. Neither is an `[SR]`
+/// line, which is all SFC wrote about files before.
+fn pnp_files(log: &str) -> Vec<(String, bool)> {
+    const CORRUPT: &str = "[Pnp] Corrupt file: ";
+    const REPAIRED: &str = "[Pnp] Repaired file: ";
+    let mut files: Vec<(String, bool)> = Vec::new();
+    for line in log.lines() {
+        let (path, damaged) = if let Some((_, path)) = line.split_once(CORRUPT) {
+            (path.trim(), true)
+        } else if let Some((_, path)) = line.split_once(REPAIRED) {
+            (path.trim(), false)
+        } else {
+            continue;
+        };
+        match files
+            .iter_mut()
+            .find(|(known, _)| known.eq_ignore_ascii_case(path))
+        {
+            Some(file) => file.1 = damaged,
+            None => files.push((path.to_string(), damaged)),
+        }
+    }
+    files
 }
 
 fn read_tail(path: &Path, max_bytes: u64) -> std::io::Result<String> {
@@ -955,5 +1000,50 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         assert!(!issues.iter().any(|i| i.id == "sys_sfc_corrupt"));
+    }
+
+    // What single SFC runs added to CBS.log on the capture machine, which
+    // had three damaged Bluetooth drivers; see tests/fixtures/README.md.
+    const CBS_SFC_FOUND_DAMAGE: &[u8] =
+        include_bytes!("../../tests/fixtures/files/cbs_sfc_verifyonly_found_damage.bin");
+    const CBS_SFC_REPAIRED: &[u8] =
+        include_bytes!("../../tests/fixtures/files/cbs_sfc_scannow_repaired.bin");
+
+    const BLUETOOTH: [&str; 3] = [
+        r"C:\WINDOWS\System32\drivers\BthA2dp.sys",
+        r"C:\WINDOWS\System32\drivers\BthHfEnum.sys",
+        r"C:\WINDOWS\System32\drivers\bthmodem.sys",
+    ];
+
+    fn text(bytes: &[u8]) -> String {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+
+    #[test]
+    fn a_driver_file_is_judged_by_the_last_run_that_named_it() {
+        let repaired_later = text(CBS_SFC_FOUND_DAMAGE) + &text(CBS_SFC_REPAIRED);
+        assert_eq!(cbs_unrepaired_corruption(&repaired_later), None);
+        let damaged_again = text(CBS_SFC_REPAIRED) + &text(CBS_SFC_FOUND_DAMAGE);
+        assert!(cbs_unrepaired_corruption(&damaged_again).is_some());
+    }
+
+    #[tokio::test]
+    async fn a_driver_file_sfc_found_damaged_is_a_finding() {
+        let path =
+            std::env::temp_dir().join(format!("winmedic-cbs-damaged-{}.log", std::process::id()));
+        std::fs::write(&path, CBS_SFC_FOUND_DAMAGE).unwrap();
+        let mock = MockCommandRunner::new();
+        mock.add_response("dism.exe", dism_says(HEALTHY));
+        healthy_vss(&mock);
+        let module = SystemIntegrityModule::with_runner_and_cbs_log(Arc::new(mock), path.clone());
+        let issues = module.scan(None).await.unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        let issue = issues.iter().find(|i| i.id == "sys_sfc_corrupt").unwrap();
+        assert!(
+            issue.technical_details.contains(BLUETOOTH[0]),
+            "{}",
+            issue.technical_details
+        );
     }
 }

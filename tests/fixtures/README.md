@@ -63,6 +63,8 @@ of the pipe arrived:
 | File | Content |
 | --- | --- |
 | `reagent_enabled.xml` | `C:\Windows\System32\Recovery\ReAgent.xml` of the capture machine, unchanged: the recovery environment's configuration, readable without elevation, with `InstallState state="1"` (enabled). |
+| `cbs_sfc_verifyonly_found_damage.bin` | What the `sfc /verifyonly` run of `sfc_verifyonly_progress_de.bin` added to `C:\Windows\Logs\CBS\CBS.log`, cut out byte for byte (CRLF). Only `[SR] Verify` lines, then `DEPLOY [Pnp] Corrupt file: ...\BthA2dp.sys` and two more Bluetooth drivers: the damage SFC reported, in a format the older `[SR] Cannot repair member file` check never saw. |
+| `cbs_sfc_scannow_repaired.bin` | What `sfc /scannow` (`sfc_scannow_repaired_de.bin`) added to CBS.log, captured elevated on 2026-09-25: `[SR] Repairing 0 components`, then `Corrupt file:` and `Repaired file:` for each of the three drivers. |
 | `hosts_blocking_update.bin` | The hosts file of the capture machine, byte for byte (UTF-8 with BOM, CRLF), its LAN address replaced with `192.168.1.10`. Next to telemetry blocks it blocks `fe3.delivery.mp.microsoft.com` — Windows Update's and the Store's metadata endpoint — and `ocsp.digicert.com`, which is what the hosts check exists to find. |
 
 The English DISM verdicts used in `src/modules/system_integrity.rs` are DISM's
