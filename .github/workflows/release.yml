@@ -305,21 +305,26 @@ jobs:
           $reasons = @()
 
           $remote = 'origin'
+          $auth   = @()
           if ($env:RELEASE_TOKEN) {
             # actions/checkout pins GITHUB_TOKEN to every github.com request via
-            # an http.extraheader, which outranks credentials in the URL.
-            git config --unset-all 'http.https://github.com/.extraheader'
+            # an http.extraheader, which outranks credentials in the URL. Since
+            # v6 that header lives in a file .git/config only includes, so
+            # `git config --unset-all` finds nothing there and the push still
+            # went out as GITHUB_TOKEN. An empty value on the command line
+            # resets the header list instead.
+            $auth   = @('-c', 'http.https://github.com/.extraheader=')
             $remote = "https://x-access-token:$env:RELEASE_TOKEN@github.com/$env:REPO.git"
           } else {
             $reasons += 'No RELEASE_TOKEN secret is set, so the direct push can only succeed while the branch is unprotected.'
           }
 
-          git push $remote "HEAD:refs/heads/$env:BRANCH"
+          git @auth push $remote "HEAD:refs/heads/$env:BRANCH"
           if ($LASTEXITCODE -ne 0) {
             Write-Host "::warning::Branch protection rejected the push to $env:BRANCH. Falling back to a pull request, which will leave this step red until it is merged."
             $reasons += "The direct push to $env:BRANCH was rejected."
 
-            git push --force $remote "HEAD:refs/heads/$head"
+            git @auth push --force $remote "HEAD:refs/heads/$head"
             if ($LASTEXITCODE -ne 0) {
               $reasons += "The fallback branch $head could not be pushed either, so the bump exists only inside this run."
             } else {
@@ -348,7 +353,7 @@ jobs:
           # The one question that matters, asked of the remote. Reading it back
           # also covers a push that reported success but did not end up where
           # this step believes it did.
-          git fetch --no-tags $remote "+refs/heads/$($env:BRANCH):refs/remotes/verify/$($env:BRANCH)"
+          git @auth fetch --no-tags $remote "+refs/heads/$($env:BRANCH):refs/remotes/verify/$($env:BRANCH)"
           if ($LASTEXITCODE -ne 0) {
             Write-Host "::error::Could not read $env:BRANCH back from the remote, so whether $env:TAG landed on it is unknown. Check it by hand before the next release."
             exit 1
