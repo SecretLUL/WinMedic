@@ -1,0 +1,50 @@
+name: Labels
+
+# Every pull request carries one of the labels CONTRIBUTING.md lists.
+#
+# `documentation` also switches off the build and the tests in ci.yml, so this
+# is where that label is held to its word: a pull request that carries it may
+# change nothing but documentation. Without this check the label alone would
+# be enough to merge code nothing had built.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+
+concurrency:
+  group: labels-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  label:
+    name: Pull Request Label
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          allowed='["bug","enhancement","documentation","github_actions","dependencies","maintenance"]'
+          if ! jq -e --argjson allowed "$allowed" 'any(.[]; . as $label | $allowed | index($label))' <<<"$LABELS" >/dev/null; then
+            echo "::error::Label this pull request with one of: $(jq -r 'join(", ")' <<<"$allowed"). CONTRIBUTING.md says which fits."
+            exit 1
+          fi
+
+          if jq -e 'index("documentation")' <<<"$LABELS" >/dev/null; then
+            # A renamed file counts with its old name too: moving code into
+            # docs/ changes code.
+            other=$(gh api "repos/$REPO/pulls/$PR/files" --paginate \
+              --jq '.[] | .filename, (.previous_filename // empty)' \
+              | grep -Ev '^(.*\.md|docs/.*|LICENSE|\.github/ISSUE_TEMPLATE/.*)$' || true)
+            if [ -n "$other" ]; then
+              echo "::error::The documentation label skips the build and the tests, but this pull request also changes code or configuration. Use the label that fits it."
+              echo "$other"
+              exit 1
+            fi
+          fi
