@@ -498,25 +498,30 @@ pub async fn run_cmd_streaming(
         stderr_lines
     });
 
-    let wait_result = timeout(timeout_duration, child.wait()).await;
-
-    let (stdout_out, stderr_out) = tokio::join!(stdout_handle, stderr_handle);
-    let stdout_combined = stdout_out.unwrap_or_default().join("\n");
-    let stderr_combined = stderr_out.unwrap_or_default().join("\n");
-
-    match wait_result {
-        Ok(Ok(status)) => Ok(CmdOutput {
-            success: status.success(),
-            exit_code: status.code(),
-            stdout: stdout_combined,
-            stderr: stderr_combined,
-        }),
-        Ok(Err(e)) => Err(format!("Command error: {}", e)),
+    // The readers end when the pipes close, which is when the process has
+    // ended. Waiting for them before killing a process that ran out of time
+    // waited for it to finish after all: a DISM run past its limit went on to
+    // the end and was then reported as timed out, whatever it had achieved.
+    // They are dropped rather than awaited, in case something the process
+    // started still holds its pipes.
+    let status = match timeout(timeout_duration, child.wait()).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(e)) => return Err(format!("Command error: {}", e)),
         Err(_) => {
             let _ = child.kill().await;
-            Err(timed_out(program, timeout_duration))
+            stdout_handle.abort();
+            stderr_handle.abort();
+            return Err(timed_out(program, timeout_duration));
         }
-    }
+    };
+
+    let (stdout_out, stderr_out) = tokio::join!(stdout_handle, stderr_handle);
+    Ok(CmdOutput {
+        success: status.success(),
+        exit_code: status.code(),
+        stdout: stdout_out.unwrap_or_default().join("\n"),
+        stderr: stderr_out.unwrap_or_default().join("\n"),
+    })
 }
 
 /// Read `pipe` to the end, decoding it line by line, and hand each line to the
@@ -689,6 +694,26 @@ mod tests {
         ) -> Result<CmdOutput, String> {
             self.run(program, args, timeout).await
         }
+    }
+
+    /// ping writes a line a second for half a minute, so its pipe stays open
+    /// long past the limit. Loopback only, no window.
+    #[tokio::test]
+    async fn a_streamed_command_is_stopped_when_its_time_is_up() {
+        let started = std::time::Instant::now();
+        let result = run_cmd_streaming(
+            "ping.exe",
+            &["-n", "30", "127.0.0.1"],
+            None,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert!(result.is_err_and(|err| is_timeout(&err)));
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "returned after {:?}",
+            started.elapsed()
+        );
     }
 
     const QUERY_TIMEOUT: Duration = Duration::from_secs(20);
