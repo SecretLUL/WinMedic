@@ -78,6 +78,9 @@ component store is repairable." is also in `dism_scanhealth_progress.bin`.
 
 `wevtutil qe System /q:<query> /f:xml /rd:true` on the same machine. The
 `<Computer>` element was replaced with `WINMEDIC-TEST`; nothing else was changed.
+The `.bin` files are the bytes wevtutil wrote, captured on 2026-09-25 from the
+System and Application logs; in them a user's SID was also replaced, with
+`S-1-5-21-0-0-0-<RID>`.
 
 | File | Content |
 | --- | --- |
@@ -85,6 +88,10 @@ component store is repairable." is also in `dism_scanhealth_progress.bin`.
 | `wer_bugcheck_1001.xml` | A real 0x9F bugcheck, logged by `Microsoft-Windows-WER-SystemErrorReporting` — not by `BugCheck`, which a query for that provider proves by returning nothing. |
 | `system_errors.xml` | Five real level-2 events (Service Control Manager, DCOM). |
 | `wevtutil_wu_installed_19_de.bin` | Every event 19 of `Microsoft-Windows-WindowsUpdateClient` ("installed") from 10 to 26 July 2026, captured 2026-09-25 as the bytes wevtutil wrote: in the ANSI code page, `für` as `f\xFCr` and the dash as `\x96`. Defender signature updates (KB2267602), Store apps (`serviceGuid` `{855e8a7c-…}`) and one Visual C++ security update. |
+| `wevtutil_crashes_july.bin` | The crash events (Kernel-Power 41, WER-SystemErrorReporting 1001) of 26 and 27 July 2026: the first crashes of that machine's series, the first at `2026-07-26T20:02:01.0258131Z`. |
+| `wevtutil_service_installed_7045.bin` | Every event 7045 of the Service Control Manager ("a service was installed") from 10 to 26 July 2026. `BEDaisy.sys` (BattlEye) first on the 25th, then again on every start of a game; Samsung Magician's `magdrvamd64.sys` on nearly every day; services that run an `.exe`. `ServiceType` is translated ("Kernelmodustreiber"), `ImagePath` is not. |
+| `wevtutil_msi_installed_1033.bin` | Every event 1033 of `MsiInstaller` over the same days. Its `<Data>` elements have no names: product, version, language, status, manufacturer. |
+| `wevtutil_system_oldest_event.bin` | `wevtutil qe System /c:1 /rd:false`: the oldest event in that System log, from 16 July 2026 — how far back it reaches. |
 | `whea_constructed.xml` | **Constructed.** The capture machine has never logged a WHEA event. Built in the exact shape of the real events above, with the `EventData` field names WHEA-Logger uses (`ApicId`, `MCABank`, `MciStat`, `MciAddr`, `Bus`/`Device`/`Function`, `PhysicalAddress`). Replace it with a capture when one turns up. |
 
 ## Capturing more

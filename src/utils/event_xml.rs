@@ -28,10 +28,20 @@ use crate::utils::cmd::CmdOutput;
 /// Either one alone left the event checks blind, and neither showed, because a
 /// refused query was read as an empty log. [`read_events`] no longer does that.
 pub fn system_log_query(filter: &str, lookback_ms: u64, max_events: usize) -> Vec<String> {
+    event_query(
+        "System",
+        &format!("{filter} and TimeCreated[timediff(@SystemTime) <= {lookback_ms}]"),
+        max_events,
+    )
+}
+
+/// The `wevtutil` arguments for the newest `max_events` events of `log` that
+/// match `filter`, the inside of `System[...]`, as XML.
+pub fn event_query(log: &str, filter: &str, max_events: usize) -> Vec<String> {
     vec![
         "qe".to_string(),
-        "System".to_string(),
-        format!("/q:*[System[{filter} and TimeCreated[timediff(@SystemTime) <= {lookback_ms}]]]"),
+        log.to_string(),
+        format!("/q:*[System[{filter}]]"),
         "/f:xml".to_string(),
         format!("/c:{max_events}"),
         // Newest first, so a capped result is the most recent events.

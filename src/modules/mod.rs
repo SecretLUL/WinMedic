@@ -1,5 +1,7 @@
 pub mod clock_restart;
 pub mod crash_analysis;
+/// What changed before the crashes began, for the crash analysis.
+pub mod crash_timeline;
 pub mod devices;
 pub mod event_log;
 pub mod network;
