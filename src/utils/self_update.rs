@@ -714,6 +714,29 @@ pub fn clean_leftovers_beside_current_exe() -> usize {
     }
 }
 
+/// Start the binary an update installed, as the desktop window.
+///
+/// No arguments: the user asked for the update from the window, so the window
+/// is what comes back, even when this process was started minimized by
+/// `--autostart`. It inherits this process's token, so an elevated WinMedic
+/// comes back elevated without a second UAC prompt.
+///
+/// `CREATE_NO_WINDOW` because this process has already given its console back
+/// (see [`crate::utils::console`]): a plain spawn would open a console window
+/// for the new process that flashes up before it gives that one back too.
+pub fn start_installed(exe: &Path) -> Result<(), String> {
+    let mut cmd = std::process::Command::new(exe);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not start {}: {e}", exe.display()))
+}
+
 /// The app's seam onto replacing its own executable.
 ///
 /// Same shape and same reason as
