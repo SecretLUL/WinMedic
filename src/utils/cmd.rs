@@ -1,4 +1,5 @@
 use crate::utils::decode::{LineDecoder, decode_output};
+use crate::utils::pnp::PnpDevice;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -79,6 +80,13 @@ pub trait CommandRunner: Send + Sync {
             timeout_duration,
         )
         .await
+    }
+
+    /// Every device connected now, with the problem code Device Manager
+    /// shows. Only the real runner asks Windows; any other knows no devices
+    /// unless a test gives it some.
+    async fn connected_devices(&self) -> Result<Vec<PnpDevice>, String> {
+        Ok(Vec::new())
     }
 
     /// [`Self::run_powershell`] for a script that only reads: a timeout is
@@ -189,6 +197,12 @@ impl CommandRunner for SystemCommandRunner {
         )
         .await
     }
+
+    async fn connected_devices(&self) -> Result<Vec<PnpDevice>, String> {
+        tokio::task::spawn_blocking(crate::utils::pnp::connected_devices)
+            .await
+            .map_err(|e| format!("The device list could not be read: {e}"))?
+    }
 }
 
 /// Mock runner allowing tests to inject canned command outputs and verify executed commands.
@@ -199,7 +213,12 @@ pub struct MockCommandRunner {
     responses_after: Arc<Mutex<Vec<(String, String, CmdOutput)>>>,
     default_response: Arc<Mutex<Option<CmdOutput>>>,
     executed_commands: Arc<Mutex<Vec<String>>>,
+    devices: Arc<Mutex<Vec<PnpDevice>>>,
+    devices_after: Arc<Mutex<Vec<DevicesAfter>>>,
 }
+
+/// `(trigger, devices)`, see [`MockCommandRunner::set_devices_after`].
+type DevicesAfter = (String, Vec<PnpDevice>);
 
 impl MockCommandRunner {
     pub fn new() -> Self {
@@ -238,6 +257,20 @@ impl MockCommandRunner {
     /// Retrieve all executed command strings.
     pub fn executed(&self) -> Vec<String> {
         self.executed_commands.lock().unwrap().clone()
+    }
+
+    /// The devices [`CommandRunner::connected_devices`] answers with.
+    pub fn set_devices(&self, devices: Vec<PnpDevice>) {
+        *self.devices.lock().unwrap() = devices;
+    }
+
+    /// Like [`Self::set_devices`], but only once a command matching `trigger`
+    /// has run. Takes precedence over `set_devices`.
+    pub fn set_devices_after(&self, trigger: impl Into<String>, devices: Vec<PnpDevice>) {
+        self.devices_after
+            .lock()
+            .unwrap()
+            .push((trigger.into(), devices));
     }
 }
 
@@ -303,6 +336,18 @@ impl CommandRunner for MockCommandRunner {
             }
         }
         Ok(res)
+    }
+
+    async fn connected_devices(&self) -> Result<Vec<PnpDevice>, String> {
+        let executed = self.executed_commands.lock().unwrap();
+        let after = self
+            .devices_after
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(trigger, _)| executed.iter().any(|done| done.contains(trigger.as_str())))
+            .map(|(_, devices)| devices.clone());
+        Ok(after.unwrap_or_else(|| self.devices.lock().unwrap().clone()))
     }
 }
 

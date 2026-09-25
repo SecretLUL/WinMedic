@@ -1,5 +1,0 @@
-22	System	ACPI\PNP0103\2&DABA3FF&0	Hochpräzisionsereigniszeitgeber
-22	System	ROOT\HVSERVICE\0000	Microsoft-Hypervisor-Dienst
-28		USB\VID_046D&PID_0943&MI_05\9&B24F85A&0&0005	Brio 500
-22	System	ROOT\NDISVIRTUALBUS\0000	Enumerator für virtuelle NDIS-Netzwerkadapter
-28		ACPI\AMDI0204\2&DABA3FF&0	

@@ -5,43 +5,22 @@
 //! shows up there with a problem code, and restarting the device - what
 //! unplugging it and plugging it back in does - often brings it back.
 //!
-//! Only numbers and device instance IDs are read, which are the same in every
-//! display language; the device's name is for showing only.
+//! Only problem codes and device instance IDs decide, which are the same in
+//! every display language; the device's name is for showing only. They come
+//! from the device manager itself, see [`crate::utils::pnp`].
 
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
-use crate::utils::cmd::{CommandRunner, SystemCommandRunner, ps_single_quoted};
+use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
+use crate::utils::pnp::PnpDevice;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 
-/// Every present device with a problem code, one line each: code, setup
-/// class, instance ID, name, separated by tabs - a character no instance ID
-/// can hold. `Win32_PnPEntity` lists only devices that are connected.
-const PROBLEM_DEVICES_SCRIPT: &str = "Get-CimInstance -ClassName Win32_PnPEntity -Filter 'ConfigManagerErrorCode <> 0' | ForEach-Object { @($_.ConfigManagerErrorCode, $_.PNPClass, $_.PNPDeviceID, $_.Name) -join [char]9 }";
-
-/// The same line for one device, whatever its state; nothing when it is no
-/// longer connected.
-fn device_script(instance_id: &str) -> String {
-    format!(
-        "Get-CimInstance -ClassName Win32_PnPEntity | Where-Object PNPDeviceID -eq {} | ForEach-Object {{ @($_.ConfigManagerErrorCode, $_.PNPClass, $_.PNPDeviceID, $_.Name) -join [char]9 }}",
-        ps_single_quoted(instance_id)
-    )
-}
-
 /// `CM_PROB_FAILED_INSTALL`: Windows found the device but has no driver for it.
 const NO_DRIVER: u32 = 28;
 
-/// One line of [`PROBLEM_DEVICES_SCRIPT`]'s output.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Device {
-    pub problem: u32,
-    /// Empty for a device without a driver: the driver brings the class.
-    pub class: String,
-    pub instance_id: String,
-    /// Empty for some devices without a driver.
-    pub name: String,
-}
+pub type Device = PnpDevice;
 
 impl Device {
     /// `'Brio 500'`, or `an unknown device (ACPI\AMDI0204)` for one without
@@ -106,26 +85,6 @@ impl Device {
 const NO_DRIVER_ID: &str = "dev_no_driver_";
 const FAILED_ID: &str = "dev_failed_";
 const CANNOT_START_ID: &str = "dev_cannot_start_";
-
-/// The devices in [`PROBLEM_DEVICES_SCRIPT`]'s output.
-pub fn parse_devices(output: &str) -> Vec<Device> {
-    output
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.trim_end_matches('\r').splitn(4, '\t');
-            let problem = fields.next()?.trim().parse().ok()?;
-            let class = fields.next()?.to_string();
-            let instance_id = fields.next()?.to_string();
-            let name = fields.next().unwrap_or_default().to_string();
-            (!instance_id.is_empty()).then_some(Device {
-                problem,
-                class,
-                instance_id,
-                name,
-            })
-        })
-        .collect()
-}
 
 /// What WinMedic can do about a problem code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,26 +172,18 @@ impl DevicesModule {
         Self { runner }
     }
 
-    async fn query(&self, script: &str) -> Result<Vec<Device>, String> {
-        let out = self
-            .runner
-            .query_powershell(script, Duration::from_secs(30))
-            .await?;
-        if !out.success {
-            return Err(format!(
-                "the device query failed (exit code {:?}): {}",
-                out.exit_code,
-                out.stderr.trim()
-            ));
-        }
-        Ok(parse_devices(&out.stdout))
+    /// The connected devices that report a problem.
+    async fn problem_devices(&self) -> Result<Vec<Device>, String> {
+        let mut devices = self.runner.connected_devices().await?;
+        devices.retain(|d| d.problem != 0);
+        Ok(devices)
     }
 
     /// The device a finding is about, if it still has the problem the finding
     /// was raised for.
     async fn device_for(&self, issue_id: &str) -> Result<Option<Device>, String> {
         Ok(self
-            .query(PROBLEM_DEVICES_SCRIPT)
+            .problem_devices()
             .await?
             .into_iter()
             .find(|d| d.finding_id().as_deref() == Some(issue_id)))
@@ -241,10 +192,11 @@ impl DevicesModule {
     /// The device again after a repair, or `None` when it is gone.
     async fn read_back(&self, device: &Device) -> Result<Option<Device>, String> {
         Ok(self
-            .query(&device_script(&device.instance_id))
+            .runner
+            .connected_devices()
             .await?
             .into_iter()
-            .next())
+            .find(|d| d.instance_id.eq_ignore_ascii_case(&device.instance_id)))
     }
 
     /// `pnputil /restart-device`, then the problem code again.
@@ -428,10 +380,10 @@ impl DiagnosticModule for DevicesModule {
             &progress_tx,
             10,
             "Asking Windows for devices with a problem...",
-            Some("Win32_PnPEntity, ConfigManagerErrorCode"),
+            Some("Device Manager's problem codes (SetupAPI, CfgMgr32)"),
         )
         .await;
-        let devices = self.query(PROBLEM_DEVICES_SCRIPT).await?;
+        let devices = self.problem_devices().await?;
         let issues: Vec<Issue> = devices.iter().filter_map(|d| self.finding(d)).collect();
 
         let summary = format!(
@@ -465,9 +417,8 @@ mod tests {
     use crate::utils::cmd::{CmdOutput, MockCommandRunner};
     use crate::utils::decode::decode_output;
 
-    // Captured on a German Windows 11; see tests/fixtures/README.md.
-    const PROBLEM_DEVICES: &[u8] =
-        include_bytes!("../../tests/fixtures/console/powershell_pnp_problem_devices.bin");
+    // pnputil's answers, captured on a German Windows 11; see
+    // tests/fixtures/README.md.
     const RESTART_DENIED: &[u8] =
         include_bytes!("../../tests/fixtures/console/pnputil_restart_device_denied_de.bin");
     const RESTARTED: &[u8] = include_bytes!(
@@ -481,27 +432,59 @@ mod tests {
     const BRIO: &str = r"USB\VID_046D&PID_0943&MI_05\9&B24F85A&0&0005";
     const AMD: &str = r"ACPI\AMDI0204\2&DABA3FF&0";
 
-    fn captured() -> String {
-        decode_output(PROBLEM_DEVICES)
-    }
-
-    /// The captured list with the Brio's interface reporting `code` instead
-    /// of lacking a driver.
-    fn brio_reporting(code: u32) -> String {
-        captured().replace("28\t\tUSB\\", &format!("{code}\tImage\tUSB\\"))
-    }
-
-    fn brio(code: u32) -> Device {
+    fn device(problem: u32, class: &str, instance_id: &str, name: &str) -> Device {
         Device {
-            problem: code,
-            class: "Image".to_string(),
-            instance_id: BRIO.to_string(),
-            name: "Brio 500".to_string(),
+            problem,
+            class: class.to_string(),
+            instance_id: instance_id.to_string(),
+            name: name.to_string(),
         }
     }
 
-    fn brio_line(code: u32) -> String {
-        format!("{code}\tImage\t{BRIO}\tBrio 500\r\n")
+    /// The development PC's devices with a problem, as Device Manager listed
+    /// them on 2026-09-25 - three disabled, two without a driver - and one
+    /// that works.
+    fn dev_pc() -> Vec<Device> {
+        vec![
+            device(
+                0,
+                "System",
+                r"ACPI\PNP0000\4&1D401FB5&0",
+                "Programmierbarer Interruptcontroller",
+            ),
+            device(
+                22,
+                "System",
+                r"ACPI\PNP0103\2&DABA3FF&0",
+                "Hochpräzisionsereigniszeitgeber",
+            ),
+            device(
+                22,
+                "System",
+                r"ROOT\HVSERVICE\0000",
+                "Microsoft-Hypervisor-Dienst",
+            ),
+            device(28, "", BRIO, "Brio 500"),
+            device(
+                22,
+                "System",
+                r"ROOT\NDISVIRTUALBUS\0000",
+                "Enumerator für virtuelle NDIS-Netzwerkadapter",
+            ),
+            device(28, "", AMD, ""),
+        ]
+    }
+
+    fn brio(code: u32) -> Device {
+        device(code, "Image", BRIO, "Brio 500")
+    }
+
+    /// The development PC with the Brio's interface reporting `code`.
+    fn brio_reporting(code: u32) -> Vec<Device> {
+        dev_pc()
+            .into_iter()
+            .map(|d| if d.instance_id == BRIO { brio(code) } else { d })
+            .collect()
     }
 
     /// The id of the finding about the Brio while it reports `code`.
@@ -513,35 +496,19 @@ mod tests {
         DevicesModule::with_runner(Arc::new(mock.clone()))
     }
 
-    async fn scan(listing: String) -> Vec<Issue> {
+    async fn scan(devices: Vec<Device>) -> Vec<Issue> {
         let mock = MockCommandRunner::new();
-        mock.add_response("Win32_PnPEntity", CmdOutput::ok(listing));
+        mock.set_devices(devices);
         module(&mock).scan(None).await.unwrap()
     }
 
     #[test]
-    fn the_captured_devices_parse() {
-        let devices = parse_devices(&captured());
-        assert_eq!(devices.len(), 5);
-        assert_eq!(devices[0].problem, 22);
-        // Written as UTF-8 by PowerShell.
-        assert_eq!(devices[0].name, "Hochpräzisionsereigniszeitgeber");
-        assert_eq!(
-            devices[2],
-            Device {
-                class: String::new(),
-                ..brio(28)
-            }
-        );
-        assert_eq!(devices[4].instance_id, AMD);
-        assert_eq!(devices[4].name, "");
-    }
-
-    #[test]
     fn a_device_without_a_name_is_named_by_its_hardware() {
-        let devices = parse_devices(&captured());
-        assert_eq!(devices[2].label(), "'Brio 500'");
-        assert_eq!(devices[4].label(), r"an unknown device (ACPI\AMDI0204)");
+        assert_eq!(brio(28).label(), "'Brio 500'");
+        assert_eq!(
+            device(28, "", AMD, "").label(),
+            r"an unknown device (ACPI\AMDI0204)"
+        );
     }
 
     #[test]
@@ -571,7 +538,7 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_devices_are_left_alone_and_missing_drivers_are_information() {
-        let issues = scan(captured()).await;
+        let issues = scan(dev_pc()).await;
 
         // The three disabled devices are not findings; the two without a
         // driver are, unticked.
@@ -624,45 +591,27 @@ mod tests {
         assert_eq!(issue.recommended_fix, "Restart Windows");
     }
 
-    #[tokio::test]
-    async fn a_failed_query_fails_the_module() {
-        let mock = MockCommandRunner::new();
-        mock.add_response("Win32_PnPEntity", CmdOutput::failed(1, "Invalid class"));
-        let err = module(&mock).scan(None).await.unwrap_err();
-        assert!(err.contains("Invalid class"), "{err}");
-    }
-
     /// A machine whose Brio fails with code 43 until pnputil ran, printing
-    /// `pnputil` with exit 0 as it does either way, and then reads `after`
-    /// for the device on its own.
-    fn restart_mock(pnputil: &[u8], after: CmdOutput) -> MockCommandRunner {
+    /// `pnputil` with exit 0 as it does either way, and then lists `after`.
+    fn restart_mock(pnputil: &[u8], after: Vec<Device>) -> MockCommandRunner {
         let mock = MockCommandRunner::new();
-        mock.add_response(
-            "ConfigManagerErrorCode <> 0",
-            CmdOutput::ok(brio_reporting(43)),
-        );
+        mock.set_devices(brio_reporting(43));
         mock.add_response(
             "pnputil.exe /restart-device",
             CmdOutput::ok(decode_output(pnputil)),
         );
-        mock.add_response_after("/restart-device", "Where-Object PNPDeviceID", after);
+        mock.set_devices_after("/restart-device", after);
         mock
     }
 
     #[tokio::test]
     async fn a_restarted_device_is_read_back() {
-        let mock = restart_mock(RESTARTED, CmdOutput::ok(brio_line(0)));
+        let mock = restart_mock(RESTARTED, brio_reporting(0));
         let msg = module(&mock).fix(&brio_id(43), None).await.unwrap();
         assert_eq!(msg, "'Brio 500' was restarted and works again.");
-        assert!(
-            mock.executed()
-                .contains(&format!("pnputil.exe /restart-device {BRIO}"))
-        );
-        // The read-back names the device as a quoted value.
-        assert!(
-            mock.executed()
-                .iter()
-                .any(|c| c.contains(&format!("Where-Object PNPDeviceID -eq '{BRIO}'")))
+        assert_eq!(
+            mock.executed(),
+            vec![format!("pnputil.exe /restart-device {BRIO}")]
         );
     }
 
@@ -672,7 +621,7 @@ mod tests {
     #[tokio::test]
     async fn pnputil_is_not_believed() {
         for pnputil in [RESTARTED, RESTART_DENIED] {
-            let mock = restart_mock(pnputil, CmdOutput::ok(brio_line(43)));
+            let mock = restart_mock(pnputil, brio_reporting(43));
             let err = module(&mock).fix(&brio_id(43), None).await.unwrap_err();
             assert!(
                 err.starts_with("'Brio 500' was restarted but still reports problem code 43"),
@@ -683,38 +632,42 @@ mod tests {
 
     #[tokio::test]
     async fn a_device_that_is_gone_is_not_a_failure() {
-        let mock = restart_mock(RESTARTED, CmdOutput::ok(""));
+        let unplugged = dev_pc()
+            .into_iter()
+            .filter(|d| d.instance_id != BRIO)
+            .collect();
+        let mock = restart_mock(RESTARTED, unplugged);
         let msg = module(&mock).fix(&brio_id(43), None).await.unwrap();
         assert!(msg.contains("no longer connected"), "{msg}");
     }
 
     #[tokio::test]
     async fn a_device_whose_problem_changed_is_not_restarted() {
-        for listing in [String::new(), brio_reporting(22)] {
+        for devices in [Vec::new(), brio_reporting(22)] {
             let mock = MockCommandRunner::new();
-            mock.add_response("Win32_PnPEntity", CmdOutput::ok(listing));
+            mock.set_devices(devices);
             let msg = module(&mock).fix(&brio_id(43), None).await.unwrap();
             assert!(msg.contains("nothing to restart"), "{msg}");
-            assert!(!mock.executed().iter().any(|c| c.contains("pnputil")));
+            assert!(mock.executed().is_empty());
         }
     }
 
     #[tokio::test]
     async fn a_device_that_cannot_start_is_never_restarted() {
         let mock = MockCommandRunner::new();
-        mock.add_response("Win32_PnPEntity", CmdOutput::ok(brio_reporting(52)));
+        mock.set_devices(brio_reporting(52));
         let err = module(&mock).fix(&brio_id(52), None).await.unwrap_err();
         assert!(err.starts_with("Unknown device issue id"), "{err}");
         assert!(mock.executed().is_empty());
     }
 
-    /// The captured machine, whose scan for hardware changes prints `pnputil`
-    /// and then reads `after` for the device on its own.
-    fn scan_devices_mock(pnputil: CmdOutput, after: CmdOutput) -> MockCommandRunner {
+    /// The development PC, whose scan for hardware changes prints `pnputil`
+    /// and then lists `after`.
+    fn scan_devices_mock(pnputil: CmdOutput, after: Vec<Device>) -> MockCommandRunner {
         let mock = MockCommandRunner::new();
-        mock.add_response("ConfigManagerErrorCode <> 0", CmdOutput::ok(captured()));
+        mock.set_devices(dev_pc());
         mock.add_response("pnputil.exe /scan-devices", pnputil);
-        mock.add_response_after("/scan-devices", "Where-Object PNPDeviceID", after);
+        mock.set_devices_after("/scan-devices", after);
         mock
     }
 
@@ -724,24 +677,21 @@ mod tests {
 
     #[tokio::test]
     async fn a_driver_found_by_a_scan_is_read_back() {
-        let mock = scan_devices_mock(scanned(), CmdOutput::ok(brio_line(0)));
+        let mock = scan_devices_mock(scanned(), brio_reporting(0));
         let msg = module(&mock).fix(&brio_id(28), None).await.unwrap();
         assert_eq!(
             msg,
             "Windows found a driver for 'Brio 500' and installed it."
         );
-        assert!(
-            mock.executed()
-                .contains(&"pnputil.exe /scan-devices".to_string())
-        );
+        assert_eq!(mock.executed(), vec!["pnputil.exe /scan-devices"]);
     }
 
-    /// What happened on the capture machine: the scan finished at once with
+    /// What happened on the development PC: the scan finished at once with
     /// exit 0 and both devices still had no driver.
     #[tokio::test]
     async fn still_no_driver_says_where_to_get_one() {
-        let amd = parse_devices(&captured()).remove(4);
-        let mock = scan_devices_mock(scanned(), CmdOutput::ok(format!("28\t\t{AMD}\t\r\n")));
+        let amd = device(28, "", AMD, "");
+        let mock = scan_devices_mock(scanned(), dev_pc());
         let err = module(&mock)
             .fix(&amd.finding_id().unwrap(), None)
             .await
@@ -758,7 +708,7 @@ mod tests {
     #[tokio::test]
     async fn a_refused_scan_leaves_the_finding_open() {
         let refused = CmdOutput::with_output(5, decode_output(SCAN_DENIED), "");
-        let mock = scan_devices_mock(refused, CmdOutput::ok(brio_line(28)));
+        let mock = scan_devices_mock(refused, dev_pc());
         assert!(module(&mock).fix(&brio_id(28), None).await.is_err());
     }
 }
