@@ -1,5 +1,7 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
-use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress, SERVICING_TIMEOUT};
+use crate::modules::{
+    DiagnosticModule, FixProgress, ModuleProgress, SERVICING_TIMEOUT, console_lines,
+};
 use crate::utils::cmd::{CmdOutput, CommandRunner, SystemCommandRunner};
 use crate::utils::service::{self, SERVICE_DISABLED};
 use std::path::{Path, PathBuf};
@@ -513,27 +515,7 @@ impl DiagnosticModule for SystemIntegrityModule {
         issue_id: &str,
         progress_tx: Option<Sender<FixProgress>>,
     ) -> Result<String, String> {
-        let log_tx = if let Some(ref tx) = progress_tx {
-            let (str_tx, mut str_rx) = tokio::sync::mpsc::channel::<String>(100);
-            let tx_clone = tx.clone();
-            let issue_id_clone = issue_id.to_string();
-            tokio::spawn(async move {
-                while let Some(line) = str_rx.recv().await {
-                    let _ = tx_clone
-                        .send(FixProgress {
-                            issue_id: issue_id_clone.clone(),
-                            step_description: "Repair in progress...".to_string(),
-                            is_success: true,
-                            error: None,
-                            console_line: Some(line),
-                        })
-                        .await;
-                }
-            });
-            Some(str_tx)
-        } else {
-            None
-        };
+        let log_tx = console_lines(issue_id, progress_tx.as_ref());
 
         match issue_id {
             "sys_dism_corrupt" => {

@@ -110,6 +110,31 @@ pub struct FixProgress {
     pub console_line: Option<String>,
 }
 
+/// A channel for a repair command's output that hands every line on to the
+/// repair's progress channel, which puts it in the repair log.
+pub fn console_lines(
+    issue_id: &str,
+    progress_tx: Option<&Sender<FixProgress>>,
+) -> Option<Sender<String>> {
+    let progress_tx = progress_tx?.clone();
+    let issue_id = issue_id.to_string();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(100);
+    tokio::spawn(async move {
+        while let Some(line) = rx.recv().await {
+            let _ = progress_tx
+                .send(FixProgress {
+                    issue_id: issue_id.clone(),
+                    step_description: "Repair in progress...".to_string(),
+                    is_success: true,
+                    error: None,
+                    console_line: Some(line),
+                })
+                .await;
+        }
+    });
+    Some(tx)
+}
+
 #[async_trait::async_trait]
 pub trait DiagnosticModule: Send + Sync {
     fn id(&self) -> &'static str;

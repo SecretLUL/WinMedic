@@ -288,19 +288,40 @@ impl DebugTrace {
         args: &[&str],
         timeout: Duration,
     ) -> Result<CmdOutput, String> {
-        if self.enabled {
-            self.emit(
-                DebugTag::Exec,
-                format!("{} {}", program, args.join(" ")).trim_end(),
-            )
-            .await;
-            self.kv("timeout", format!("{:?}", timeout)).await;
-        }
-
+        self.trace_exec(program, args, timeout).await;
         let started = Instant::now();
         let result = runner.run(program, args, timeout).await;
         self.trace_outcome(program, started, &result).await;
         result
+    }
+
+    /// [`Self::run`] for a command whose output goes to `lines` as it
+    /// arrives, progress bar included.
+    pub async fn run_streaming(
+        &self,
+        runner: &Arc<dyn CommandRunner>,
+        program: &str,
+        args: &[&str],
+        lines: Option<Sender<String>>,
+        timeout: Duration,
+    ) -> Result<CmdOutput, String> {
+        self.trace_exec(program, args, timeout).await;
+        let started = Instant::now();
+        let result = runner.run_streaming(program, args, lines, timeout).await;
+        self.trace_outcome(program, started, &result).await;
+        result
+    }
+
+    async fn trace_exec(&self, program: &str, args: &[&str], timeout: Duration) {
+        if !self.enabled {
+            return;
+        }
+        self.emit(
+            DebugTag::Exec,
+            format!("{} {}", program, args.join(" ")).trim_end(),
+        )
+        .await;
+        self.kv("timeout", format!("{:?}", timeout)).await;
     }
 
     /// Run a PowerShell script and trace the script itself alongside the result.
