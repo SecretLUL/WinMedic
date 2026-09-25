@@ -1085,7 +1085,23 @@ mod tests {
         mock.add_response("Level=1", CmdOutput::ok(""));
         mock.add_response("WHEA-Logger", CmdOutput::ok(""));
 
-        let engine = DiagnosticEngine::with_runner(&AppConfig::default(), Arc::new(mock));
+        // The integrity module reads no CBS.log or ReAgent.xml of the machine
+        // running the tests: what DISM last wrote there decides whether
+        // "repairable" is damage.
+        let runner: Arc<dyn CommandRunner> = Arc::new(mock);
+        let mut modules =
+            get_all_modules_with_runner(&ModuleConfig::from(&AppConfig::default()), runner.clone());
+        modules.retain(|module| module.id() != "system_integrity");
+        let nowhere = std::env::temp_dir().join("winmedic-engine-test-no-such-file");
+        modules.push(Arc::new(
+            crate::modules::system_integrity::SystemIntegrityModule::with_runner_and_cbs_log(
+                runner,
+                nowhere.clone(),
+            )
+            .with_reagent_xml(nowhere)
+            .with_downloads(None),
+        ));
+        let engine = DiagnosticEngine::with_modules(modules);
         let (tx, _rx) = channel::<ScanEvent>(200);
 
         let issues = engine.run_scan(tx, CancellationToken::new()).await;

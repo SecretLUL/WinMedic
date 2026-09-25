@@ -56,6 +56,90 @@ fn dism_failure(out: &CmdOutput) -> String {
 /// sits at the very end.
 const CBS_TAIL_BYTES: u64 = 64 * 1024;
 
+/// How much of the end of CBS.log is searched for DISM's last report. Its list
+/// of damaged files comes before the summary and runs to a hundred kilobytes
+/// for a few hundred files.
+const STORE_REPORT_TAIL_BYTES: u64 = 8 * 1024 * 1024;
+
+/// What the last DISM scan or repair reported about the component store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreReport {
+    pub detected: u32,
+    pub repaired: u32,
+    /// Damaged payloads left unrepaired that are backup copies: the reverse
+    /// differentials in a component's `r` folder, which let Windows go back
+    /// to an older version of a file.
+    pub missing_backups: u32,
+    /// Everything else it listed as damaged and left unrepaired.
+    pub other_unrepaired: u32,
+}
+
+impl StoreReport {
+    /// Whether all DISM left unrepaired are backup copies.
+    ///
+    /// On Windows 11 24H2 and later, `DISM /RestoreHealth` repairs file flags
+    /// and marks files as having a backup copy it never writes; the next scan
+    /// reports those copies missing, and no source holds them. On the
+    /// development PC a repair that ended "2049 repaired" set the flag on 328
+    /// files, and the scan after it listed exactly those 328 as missing in
+    /// their component's `r` folder. The files Windows runs are intact, so
+    /// this is no damage to repair.
+    pub fn only_backups_left(&self) -> bool {
+        self.detected > self.repaired
+            && self.other_unrepaired == 0
+            && self.missing_backups == self.detected - self.repaired
+    }
+}
+
+/// The last report of a DISM scan or repair in `log`: from "Checking System
+/// Update Readiness." to its summary, one `(p)` line per damaged item. CBS
+/// writes it in English on every system.
+pub fn last_store_report(log: &str) -> Option<StoreReport> {
+    let report = &log[log.rfind("Checking System Update Readiness.")?..];
+    let counted =
+        |line: &str, label: &str| -> Option<u32> { line.split_once(label)?.1.trim().parse().ok() };
+    let (mut detected, mut repaired) = (None, None);
+    let (mut missing_backups, mut other_unrepaired) = (0, 0);
+    for line in report.lines() {
+        if let Some(count) = counted(line, "Total Detected Corruption:") {
+            detected = Some(count);
+        } else if let Some(count) = counted(line, "Total Repaired Corruption:") {
+            repaired = Some(count);
+            break;
+        } else if let Some((_, item)) = line.split_once("(p)\t") {
+            // `CSI Payload Corrupt\t(n)\t\t\t<component>\r\<file>`, or with
+            // `(w)\t(Fixed)` once repaired.
+            let fields: Vec<&str> = item.split('\t').collect();
+            if fields.contains(&"(Fixed)") {
+                continue;
+            }
+            let backup = fields[0] == "CSI Payload Corrupt"
+                && fields
+                    .last()
+                    .and_then(|path| path.trim().split_once('\\'))
+                    .is_some_and(|(_, in_component)| in_component.starts_with("r\\"));
+            if backup {
+                missing_backups += 1;
+            } else {
+                other_unrepaired += 1;
+            }
+        }
+    }
+    Some(StoreReport {
+        detected: detected?,
+        repaired: repaired?,
+        missing_backups,
+        other_unrepaired,
+    })
+}
+
+/// What the user reads when all DISM left are backup copies.
+fn only_backups_missing(count: u32) -> String {
+    format!(
+        "Windows itself is intact. DISM still lists {count} backup copies inside the component store as missing; Windows 11 24H2 and later leaves these behind, and they need no repair."
+    )
+}
+
 /// What `DISM /CheckHealth` said about the component store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComponentStoreHealth {
@@ -111,6 +195,12 @@ impl ComponentStoreHealth {
 /// one, a driver file SFC found damaged and did not put back, or a DISM
 /// summary that detected more than it repaired.
 pub fn cbs_unrepaired_corruption(tail: &str) -> Option<String> {
+    unrepaired_evidence(tail, true)
+}
+
+/// [`cbs_unrepaired_corruption`], with DISM's summary left out unless
+/// `dism_summary` - for when that summary counts only backup copies.
+fn unrepaired_evidence(tail: &str, dism_summary: bool) -> Option<String> {
     const SFC_GAVE_UP: [&str; 2] = [
         "Cannot repair member file",
         "Could not reproject corrupted file",
@@ -146,7 +236,9 @@ pub fn cbs_unrepaired_corruption(tail: &str) -> Option<String> {
             .ok()?;
         Some((at, value))
     };
-    if let Some((at, detected)) = count_after("Total Detected Corruption:", tail) {
+    if let Some((at, detected)) =
+        count_after("Total Detected Corruption:", tail).filter(|_| dism_summary)
+    {
         let repaired = count_after("Total Repaired Corruption:", &tail[at..])
             .map(|(_, repaired)| repaired)
             .unwrap_or(0);
@@ -358,6 +450,17 @@ impl SystemIntegrityModule {
         self
     }
 
+    fn cbs_log_len(&self) -> u64 {
+        std::fs::metadata(&self.cbs_log).map_or(0, |m| m.len())
+    }
+
+    /// How many backup copies DISM left unrepaired, if that is all its run
+    /// left: from the report the run added to CBS.log after `before` bytes.
+    fn only_backups_left_since(&self, before: u64) -> Option<u32> {
+        let report = last_store_report(&read_since(&self.cbs_log, before).ok()?)?;
+        report.only_backups_left().then_some(report.missing_backups)
+    }
+
     /// `DISM /RestoreHealth` from Windows installation media, for when
     /// Windows Update could not deliver the files: an ISO in Downloads,
     /// mounted for the run, or media that is mounted or inserted already.
@@ -443,6 +546,7 @@ impl SystemIntegrityModule {
         let source = image.dism_source();
         let mut args = DISM_RESTORE_HEALTH_ARGS.to_vec();
         args.extend([source.as_str(), "/LimitAccess"]);
+        let before = self.cbs_log_len();
         let out = self
             .runner
             .run_streaming("dism.exe", &args, log_tx, SERVICING_TIMEOUT)
@@ -452,13 +556,20 @@ impl SystemIntegrityModule {
                 "DISM repaired the component store from {origin}; Windows Update could not deliver the files."
             ))
         } else if install_media::source_missing(&out) {
-            // The ISO is of the right edition, so what it lacks is the
-            // version: the damage is in files of updates newer than the ISO,
-            // or of older ones later updates replaced. A repair install puts
-            // in the ISO's whole store, and Windows Update follows up.
-            Err(format!(
-                "{origin} does not hold the damaged files' versions either. A repair install from it replaces them and keeps apps and files: open {origin} and run setup.exe."
-            ))
+            match self.only_backups_left_since(before) {
+                Some(count) => Ok(format!(
+                    "DISM repaired what it could from {origin}. {}",
+                    only_backups_missing(count)
+                )),
+                // The ISO is of the right edition, so what it lacks is the
+                // version: the damage is in files of updates newer than the
+                // ISO, or of older ones later updates replaced. A repair
+                // install puts in the ISO's whole store, and Windows Update
+                // follows up.
+                None => Err(format!(
+                    "{origin} does not hold the damaged files' versions either. A repair install from it replaces them and keeps apps and files: open {origin} and run setup.exe."
+                )),
+            }
         } else {
             Err(format!(
                 "DISM could not repair from {origin}: {}",
@@ -529,9 +640,28 @@ impl DiagnosticModule for SystemIntegrityModule {
             .runner
             .run("dism.exe", DISM_CHECK_HEALTH_ARGS, Duration::from_secs(45))
             .await;
+        // CheckHealth only repeats what the last scan or repair found, and
+        // that one's report says what it was.
+        let missing_backups = read_tail(&self.cbs_log, STORE_REPORT_TAIL_BYTES)
+            .ok()
+            .and_then(|tail| last_store_report(&tail))
+            .filter(StoreReport::only_backups_left)
+            .map(|report| report.missing_backups);
 
         match dism_check {
             Ok(output) => match ComponentStoreHealth::from_dism(&output) {
+                ComponentStoreHealth::Repairable if missing_backups.is_some() => {
+                    Self::send_progress(
+                        &progress_tx,
+                        35,
+                        "DISM component store is intact",
+                        Some(&format!(
+                            "DISM CheckHealth: repairable, but its last report lists only missing backup copies. {}",
+                            only_backups_missing(missing_backups.unwrap_or_default())
+                        )),
+                    )
+                    .await;
+                }
                 ComponentStoreHealth::Repairable => {
                     issues.push(Issue::new(
                         "sys_dism_corrupt",
@@ -657,7 +787,7 @@ impl DiagnosticModule for SystemIntegrityModule {
         sleep(Duration::from_millis(150)).await;
 
         if let Ok(tail) = read_tail(&self.cbs_log, CBS_TAIL_BYTES) {
-            if let Some(evidence) = cbs_unrepaired_corruption(&tail) {
+            if let Some(evidence) = unrepaired_evidence(&tail, missing_backups.is_none()) {
                 issues.push(Issue::new(
                     "sys_sfc_corrupt",
                     self.id(),
@@ -771,6 +901,7 @@ impl DiagnosticModule for SystemIntegrityModule {
 
         match issue_id {
             "sys_dism_corrupt" => {
+                let before = self.cbs_log_len();
                 let out = self
                     .runner
                     .run_streaming(
@@ -786,7 +917,12 @@ impl DiagnosticModule for SystemIntegrityModule {
                             .to_string(),
                     )
                 } else if install_media::source_missing(&out) {
-                    self.restore_health_from_media(&out, log_tx).await
+                    // No source holds backup copies DISM never wrote, so an
+                    // ISO is not looked for then.
+                    match self.only_backups_left_since(before) {
+                        Some(count) => Ok(only_backups_missing(count)),
+                        None => self.restore_health_from_media(&out, log_tx).await,
+                    }
                 } else {
                     Err(format!("DISM repair failed with {}", dism_failure(&out)))
                 }
@@ -1088,6 +1224,232 @@ mod tests {
             "DISM repair failed with error 740: Elevated permissions are required to run DISM."
         );
         assert_eq!(mock.executed().len(), 1);
+    }
+
+    // The reports of the scan at 11:01 and of the ISO repair at 21:56 on the
+    // development PC, cut from its CBS.log: 328 backup copies missing, all
+    // of them files the repair in the morning had flagged, and nothing else.
+    const CBS_SCAN_BACKUPS_MISSING: &[u8] =
+        include_bytes!("../../tests/fixtures/files/cbs_scanhealth_backups_missing.bin");
+    const CBS_REPAIR_BACKUPS_MISSING: &[u8] =
+        include_bytes!("../../tests/fixtures/files/cbs_restorehealth_backups_missing.bin");
+
+    /// `report` with one missing backup copy turned into a missing file of
+    /// the component itself. Constructed: no PC here showed that.
+    fn with_real_damage(report: &[u8]) -> String {
+        text(report).replacen(
+            r"3d9125d57cc0da9e\r\WMIC.exe",
+            r"3d9125d57cc0da9e\WMIC.exe",
+            1,
+        )
+    }
+
+    #[test]
+    fn a_report_of_only_missing_backups_is_recognised() {
+        for report in [CBS_SCAN_BACKUPS_MISSING, CBS_REPAIR_BACKUPS_MISSING] {
+            let report = last_store_report(&text(report)).unwrap();
+            assert_eq!(
+                report,
+                StoreReport {
+                    detected: 328,
+                    repaired: 0,
+                    missing_backups: 328,
+                    other_unrepaired: 0,
+                }
+            );
+            assert!(report.only_backups_left());
+        }
+
+        let damaged = last_store_report(&with_real_damage(CBS_SCAN_BACKUPS_MISSING)).unwrap();
+        assert_eq!(
+            (damaged.missing_backups, damaged.other_unrepaired),
+            (327, 1)
+        );
+        assert!(!damaged.only_backups_left());
+
+        let all_repaired = text(CBS_SCAN_BACKUPS_MISSING).replace(
+            "Total Repaired Corruption:\t0",
+            "Total Repaired Corruption:\t328",
+        );
+        assert!(
+            !last_store_report(&all_repaired)
+                .unwrap()
+                .only_backups_left()
+        );
+    }
+
+    #[test]
+    fn only_the_last_report_counts() {
+        let log = with_real_damage(CBS_SCAN_BACKUPS_MISSING) + &text(CBS_REPAIR_BACKUPS_MISSING);
+        assert!(last_store_report(&log).unwrap().only_backups_left());
+        assert_eq!(last_store_report("no DISM run in here"), None);
+    }
+
+    fn cbs_file(name: &str, content: &[u8]) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("winmedic-cbs-{name}-{}.log", std::process::id()));
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    /// A scan while DISM calls the store repairable and CBS.log holds `cbs`.
+    async fn scan_repairable_with(name: &str, cbs: &[u8]) -> Vec<String> {
+        let mock = MockCommandRunner::new();
+        mock.add_response("dism.exe", dism_says(REPAIRABLE));
+        healthy_vss(&mock);
+        let path = cbs_file(name, cbs);
+        let issues = SystemIntegrityModule::with_runner_and_cbs_log(Arc::new(mock), path.clone())
+            .with_reagent_xml(std::env::temp_dir().join("winmedic-test-no-such-ReAgent.xml"))
+            .with_downloads(None)
+            .scan(None)
+            .await
+            .unwrap();
+        let _ = std::fs::remove_file(&path);
+        issues.into_iter().map(|issue| issue.id).collect()
+    }
+
+    /// What the development PC showed: no repair clears it, so offering one
+    /// made a loop.
+    #[tokio::test]
+    async fn a_store_that_misses_only_backups_is_not_damaged() {
+        let found = scan_repairable_with("scan-backups", CBS_REPAIR_BACKUPS_MISSING).await;
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    #[tokio::test]
+    async fn damage_next_to_missing_backups_is_reported() {
+        let found = scan_repairable_with(
+            "scan-damage",
+            with_real_damage(CBS_REPAIR_BACKUPS_MISSING).as_bytes(),
+        )
+        .await;
+        assert_eq!(found, vec!["sys_dism_corrupt", "sys_sfc_corrupt"]);
+    }
+
+    /// Stands in for DISM and the media search: each DISM run adds the next
+    /// report to the CBS.log the module reads and answers with its output.
+    /// Every command is recorded in `others`, which answers all but DISM.
+    struct Servicing {
+        cbs_log: PathBuf,
+        dism_runs: std::sync::Mutex<Vec<(Vec<u8>, CmdOutput)>>,
+        others: MockCommandRunner,
+    }
+
+    #[async_trait::async_trait]
+    impl CommandRunner for Servicing {
+        async fn run(
+            &self,
+            program: &str,
+            args: &[&str],
+            timeout: Duration,
+        ) -> Result<CmdOutput, String> {
+            self.others.run(program, args, timeout).await
+        }
+
+        async fn run_streaming(
+            &self,
+            program: &str,
+            args: &[&str],
+            _: Option<Sender<String>>,
+            timeout: Duration,
+        ) -> Result<CmdOutput, String> {
+            use std::io::Write;
+            assert_eq!(program, "dism.exe");
+            let _ = self.others.run(program, args, timeout).await;
+            let (report, out) = self.dism_runs.lock().unwrap().remove(0);
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&self.cbs_log)
+                .and_then(|mut log| log.write_all(&report))
+                .unwrap();
+            Ok(out)
+        }
+    }
+
+    async fn repair_with(
+        name: &str,
+        dism_runs: Vec<(Vec<u8>, CmdOutput)>,
+        others: MockCommandRunner,
+    ) -> Result<String, String> {
+        let path = cbs_file(name, b"");
+        let servicing = Servicing {
+            cbs_log: path.clone(),
+            dism_runs: std::sync::Mutex::new(dism_runs),
+            others,
+        };
+        let result =
+            SystemIntegrityModule::with_runner_and_cbs_log(Arc::new(servicing), path.clone())
+                .with_reagent_xml(std::env::temp_dir().join("winmedic-test-no-such-ReAgent.xml"))
+                .with_downloads(None)
+                .fix("sys_dism_corrupt", None)
+                .await;
+        let _ = std::fs::remove_file(&path);
+        result
+    }
+
+    #[tokio::test]
+    async fn a_repair_that_leaves_only_backups_is_done() {
+        let others = MockCommandRunner::with_default_success();
+        let msg = repair_with(
+            "dism-only-backups",
+            vec![(
+                CBS_REPAIR_BACKUPS_MISSING.to_vec(),
+                repair_content_missing(),
+            )],
+            others.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            msg,
+            "Windows itself is intact. DISM still lists 328 backup copies inside the component store as missing; Windows 11 24H2 and later leaves these behind, and they need no repair."
+        );
+        assert!(
+            !others
+                .executed()
+                .iter()
+                .any(|c| c.contains("Get-WindowsImage")),
+            "no ISO holds them, so none is looked for"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_iso_repair_that_leaves_only_backups_is_done() {
+        let others = MockCommandRunner::with_default_success();
+        others.add_response(
+            "Get-WindowsImage",
+            CmdOutput::ok(decode_output(MEDIA_MOUNTED_IT)),
+        );
+        let msg = repair_with(
+            "dism-iso-backups",
+            vec![
+                (
+                    with_real_damage(CBS_REPAIR_BACKUPS_MISSING).into_bytes(),
+                    repair_content_missing(),
+                ),
+                (
+                    CBS_REPAIR_BACKUPS_MISSING.to_vec(),
+                    repair_content_missing(),
+                ),
+            ],
+            others.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            msg,
+            format!(
+                "DISM repaired what it could from Win11_25H2_German_x64_v2.iso. {}",
+                only_backups_missing(328)
+            )
+        );
+        assert!(
+            others
+                .executed()
+                .last()
+                .unwrap()
+                .contains("Dismount-DiskImage")
+        );
     }
 
     /// The ReAgent.xml of a real Windows 11 with the recovery environment on.
