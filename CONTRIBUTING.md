@@ -71,4 +71,10 @@ WinMedic runs in every display language.
   something, say so.
 - Code, comments, docs and every user-facing string are in English.
 
+## AI agents
+
+AI coding agents are very welcome, as long as they keep to everything in this
+file. [AGENTS.md](AGENTS.md) adds what they need on top: when to ask, how to
+chain pull requests, and what a test must never touch.
+
 Cutting a release: [.github/RELEASING.md](.github/RELEASING.md).
