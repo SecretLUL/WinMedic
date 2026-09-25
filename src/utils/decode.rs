@@ -295,8 +295,9 @@ mod tests {
             ),
             "{wevtutil}"
         );
-        // Read in the OEM code page, as all output was before.
-        assert!(decode_output(WEVTUTIL_DE).contains("Update f³r Microsoft"));
+        // Read in the OEM code page, as all output was before, the ü is lost
+        // ("f³r" in 850, "fⁿr" in 437).
+        assert!(!decode_output(WEVTUTIL_DE).contains("für"));
     }
 
     #[test]
