@@ -4,27 +4,28 @@ Maintainer notes. Nothing here is needed to use or build WinMedic.
 
 ## A release
 
-1. `./scripts/prepare-release.ps1 0.5.1` opens the `chore(release): v0.5.1`
-   pull request with every version site updated. Add
-   `docs/release-notes/v0.5.1.md` to that branch; without it the notes are
-   generated from the commit list.
-2. Merge it, wait for CI on `main`, then:
+```powershell
+gh workflow run release.yml --ref main -f version=0.5.2
+```
 
-   ```powershell
-   gh workflow run release.yml --ref main -f version=0.5.1
-   ```
+Or **Run workflow** on `release.yml` in the Actions tab. It writes the version
+into every file that states it, tags, builds, refuses a binary that does not
+report the tagged version, publishes the release with its `.sha256`, pushes the
+version bump to `main`, and calls `winget.yml`.
 
-`release.yml` tags `main`, builds, refuses a binary that does not report the
-tagged version, publishes the release with its `.sha256`, and calls
-`winget.yml`.
-
+- Release notes go in `docs/release-notes/v0.5.2.md`, merged before the run.
+  Without it the notes are generated from the commit list.
+- The bump reaches `main` through the repository secret `RELEASE_TOKEN`: a
+  fine-grained personal access token for this repository only, with
+  **Contents: Read and write**. `main` takes changes only through pull requests
+  with green checks; the workflow's own token cannot get past that, this one
+  can because its owner is the admin the ruleset lets bypass. Once it has
+  expired, the run ends red and leaves the bump on a `release/<tag>` branch:
+  renew the secret and merge that branch with a pull request.
 - Never change the version by hand: `env!("CARGO_PKG_VERSION")` feeds the
   header, `--version`, the report and the update check, and `Cargo.lock` and the
-  issue template repeat it. `./scripts/set-version.ps1 0.5.1 -Check` lists every
+  issue template repeat it. `./scripts/set-version.ps1 0.5.2 -Check` lists every
   place that disagrees.
-- The bump goes through a pull request because `main` is protected and the
-  workflow's token cannot pass its required checks. Skipping step 1 still
-  publishes, but the run ends red, as it did for v0.4.0.
 - A hand-pushed `v*` tag still releases, and fails if the tagged tree states a
   different version.
 
