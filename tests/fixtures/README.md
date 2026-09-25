@@ -45,6 +45,9 @@ Captured on Windows 11 Pro 10.0.26200, German display language, OEM code page
 | `reg_query_power.bin` | `reg query "HKLM\SYSTEM\CurrentControlSet\Control\Power"` | CP850 | `HibernateEnabled` 1, subkeys listed without values. |
 | `reg_query_memory_management.bin` | `reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management"` | CP850 | Captured 2026-09-25. `PagingFiles` is `?:\pagefile.sys` while `Win32_ComputerSystem` reports `AutomaticManagedPagefile` True: "Automatically manage paging file size for all drives". The tests replace it with an empty list. A `REG_MULTI_SZ` with several entries prints them joined by a literal `\0` (seen on `ServiceGroupOrder\List`). |
 | `reg_query_missing_key_de.bin` | `reg query` of a key that does not exist (stderr, exit 1) | CP850 | The only translated part of `reg`'s output. |
+| `powershell_pnp_problem_devices.bin` | The devices module's query: `Win32_PnPEntity` with `ConfigManagerErrorCode <> 0`, code, class, instance ID and name joined by tabs | UTF-8 | Captured 2026-09-25. Three disabled devices (code 22) and two without a driver (code 28): an interface of a Logitech Brio 500 webcam and `ACPI\AMDI0204`. A device without a driver has no class, and the AMD one no name either. Disconnected devices (code 45) are not in `Win32_PnPEntity` at all; `Get-PnpDevice` lists 112 of them on the same machine. |
+| `pnputil_restart_device_denied_de.bin` | `pnputil /restart-device` of the Brio's interface, unelevated | Windows-1252 | Captured 2026-09-25. "Zugriff verweigert", yet **exit 0**: only the device's state afterwards tells whether a restart worked. pnputil writes in the ANSI code page (`ä` is `0xE4`), not the OEM one. |
+| `pnputil_scan_devices_denied_de.bin` | `pnputil /scan-devices`, unelevated | Windows-1252 | Captured 2026-09-25. Exit 5 (access denied). |
 
 Captured elevated on 2026-09-25, read-only commands, with the time each piece
 of the pipe arrived:

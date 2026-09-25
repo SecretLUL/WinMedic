@@ -1,5 +1,6 @@
 pub mod clock_restart;
 pub mod crash_analysis;
+pub mod devices;
 pub mod event_log;
 pub mod network;
 pub mod page_file;
@@ -199,8 +200,9 @@ pub fn get_all_modules_with_runner(
         )),
         Arc::new(clock_restart::ClockRestartModule::with_runner(
             cfg.clone(),
-            runner,
+            runner.clone(),
         )),
+        Arc::new(devices::DevicesModule::with_runner(runner)),
     ]
 }
 
