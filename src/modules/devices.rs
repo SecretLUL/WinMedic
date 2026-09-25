@@ -249,8 +249,9 @@ impl DevicesModule {
 
     /// `pnputil /restart-device`, then the problem code again.
     ///
-    /// pnputil's exit code says nothing: refused with "access denied", it
-    /// still exits 0. Only the device's state afterwards does.
+    /// pnputil says nothing: refused with "access denied" it still exits 0,
+    /// and it reports a successful restart for a device that goes on
+    /// failing. Only the device's state afterwards counts.
     async fn restart(&self, issue_id: &str) -> Result<String, String> {
         let Some(device) = self.device_for(issue_id).await? else {
             return Ok(
@@ -469,8 +470,13 @@ mod tests {
         include_bytes!("../../tests/fixtures/console/powershell_pnp_problem_devices.bin");
     const RESTART_DENIED: &[u8] =
         include_bytes!("../../tests/fixtures/console/pnputil_restart_device_denied_de.bin");
+    const RESTARTED: &[u8] = include_bytes!(
+        "../../tests/fixtures/console/pnputil_restart_device_no_driver_elevated_de.bin"
+    );
     const SCAN_DENIED: &[u8] =
         include_bytes!("../../tests/fixtures/console/pnputil_scan_devices_denied_de.bin");
+    const SCANNED: &[u8] =
+        include_bytes!("../../tests/fixtures/console/pnputil_scan_devices_elevated_de.bin");
 
     const BRIO: &str = r"USB\VID_046D&PID_0943&MI_05\9&B24F85A&0&0005";
     const AMD: &str = r"ACPI\AMDI0204\2&DABA3FF&0";
@@ -626,18 +632,18 @@ mod tests {
         assert!(err.contains("Invalid class"), "{err}");
     }
 
-    /// A machine whose Brio fails with code 43 until pnputil ran, and then
-    /// reads `after` for the device on its own.
-    fn restart_mock(after: CmdOutput) -> MockCommandRunner {
+    /// A machine whose Brio fails with code 43 until pnputil ran, printing
+    /// `pnputil` with exit 0 as it does either way, and then reads `after`
+    /// for the device on its own.
+    fn restart_mock(pnputil: &[u8], after: CmdOutput) -> MockCommandRunner {
         let mock = MockCommandRunner::new();
         mock.add_response(
             "ConfigManagerErrorCode <> 0",
             CmdOutput::ok(brio_reporting(43)),
         );
-        // Exit 0 although it was refused, as captured.
         mock.add_response(
             "pnputil.exe /restart-device",
-            CmdOutput::ok(decode_output(RESTART_DENIED)),
+            CmdOutput::ok(decode_output(pnputil)),
         );
         mock.add_response_after("/restart-device", "Where-Object PNPDeviceID", after);
         mock
@@ -645,7 +651,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_restarted_device_is_read_back() {
-        let mock = restart_mock(CmdOutput::ok(brio_line(0)));
+        let mock = restart_mock(RESTARTED, CmdOutput::ok(brio_line(0)));
         let msg = module(&mock).fix(&brio_id(43), None).await.unwrap();
         assert_eq!(msg, "'Brio 500' was restarted and works again.");
         assert!(
@@ -660,19 +666,24 @@ mod tests {
         );
     }
 
+    /// Elevated, pnputil reported "Das Gerät wurde erfolgreich neu gestartet"
+    /// for the Brio's interface, which went on reporting code 28; refused, it
+    /// exits 0 as well. Neither is believed.
     #[tokio::test]
-    async fn pnputils_exit_code_is_not_believed() {
-        let mock = restart_mock(CmdOutput::ok(brio_line(43)));
-        let err = module(&mock).fix(&brio_id(43), None).await.unwrap_err();
-        assert!(
-            err.starts_with("'Brio 500' was restarted but still reports problem code 43"),
-            "{err}"
-        );
+    async fn pnputil_is_not_believed() {
+        for pnputil in [RESTARTED, RESTART_DENIED] {
+            let mock = restart_mock(pnputil, CmdOutput::ok(brio_line(43)));
+            let err = module(&mock).fix(&brio_id(43), None).await.unwrap_err();
+            assert!(
+                err.starts_with("'Brio 500' was restarted but still reports problem code 43"),
+                "{err}"
+            );
+        }
     }
 
     #[tokio::test]
     async fn a_device_that_is_gone_is_not_a_failure() {
-        let mock = restart_mock(CmdOutput::ok(""));
+        let mock = restart_mock(RESTARTED, CmdOutput::ok(""));
         let msg = module(&mock).fix(&brio_id(43), None).await.unwrap();
         assert!(msg.contains("no longer connected"), "{msg}");
     }
@@ -697,20 +708,23 @@ mod tests {
         assert!(mock.executed().is_empty());
     }
 
-    fn scan_devices_mock(after: CmdOutput) -> MockCommandRunner {
+    /// The captured machine, whose scan for hardware changes prints `pnputil`
+    /// and then reads `after` for the device on its own.
+    fn scan_devices_mock(pnputil: CmdOutput, after: CmdOutput) -> MockCommandRunner {
         let mock = MockCommandRunner::new();
         mock.add_response("ConfigManagerErrorCode <> 0", CmdOutput::ok(captured()));
-        mock.add_response(
-            "pnputil.exe /scan-devices",
-            CmdOutput::with_output(5, decode_output(SCAN_DENIED), ""),
-        );
+        mock.add_response("pnputil.exe /scan-devices", pnputil);
         mock.add_response_after("/scan-devices", "Where-Object PNPDeviceID", after);
         mock
     }
 
+    fn scanned() -> CmdOutput {
+        CmdOutput::ok(decode_output(SCANNED))
+    }
+
     #[tokio::test]
     async fn a_driver_found_by_a_scan_is_read_back() {
-        let mock = scan_devices_mock(CmdOutput::ok(brio_line(0)));
+        let mock = scan_devices_mock(scanned(), CmdOutput::ok(brio_line(0)));
         let msg = module(&mock).fix(&brio_id(28), None).await.unwrap();
         assert_eq!(
             msg,
@@ -722,10 +736,12 @@ mod tests {
         );
     }
 
+    /// What happened on the capture machine: the scan finished at once with
+    /// exit 0 and both devices still had no driver.
     #[tokio::test]
     async fn still_no_driver_says_where_to_get_one() {
         let amd = parse_devices(&captured()).remove(4);
-        let mock = scan_devices_mock(CmdOutput::ok(format!("28\t\t{AMD}\t\r\n")));
+        let mock = scan_devices_mock(scanned(), CmdOutput::ok(format!("28\t\t{AMD}\t\r\n")));
         let err = module(&mock)
             .fix(&amd.finding_id().unwrap(), None)
             .await
@@ -737,5 +753,12 @@ mod tests {
             "{err}"
         );
         assert!(err.contains("Optional updates"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_refused_scan_leaves_the_finding_open() {
+        let refused = CmdOutput::with_output(5, decode_output(SCAN_DENIED), "");
+        let mock = scan_devices_mock(refused, CmdOutput::ok(brio_line(28)));
+        assert!(module(&mock).fix(&brio_id(28), None).await.is_err());
     }
 }
