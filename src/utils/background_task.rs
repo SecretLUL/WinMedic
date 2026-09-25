@@ -2,6 +2,7 @@
 //! "Start with Windows" Run entry.
 
 use crate::config::AppConfig;
+use std::path::Path;
 
 pub const HELPER_TASK_NAME: &str = "WinMedicHelper";
 pub const AUTOSTART_KEY_NAME: &str = "WinMedic";
@@ -54,7 +55,7 @@ pub fn helper_schedule(frequency_hours: u32) -> Option<(&'static str, u32)> {
 /// open a console window on the user's desktop on every run. `conhost
 /// --headless` hosts that console without one.
 #[cfg(windows)]
-fn helper_command(exe: &std::path::Path) -> String {
+fn helper_command(exe: &Path) -> String {
     format!(
         r#"%SystemRoot%\System32\conhost.exe --headless "{}" --helper"#,
         exe.display()
@@ -62,7 +63,7 @@ fn helper_command(exe: &std::path::Path) -> String {
 }
 
 #[cfg(windows)]
-fn autostart_command(exe: &std::path::Path) -> String {
+fn autostart_command(exe: &Path) -> String {
     format!("\"{}\" --autostart", exe.display())
 }
 
@@ -102,30 +103,35 @@ fn query_helper_task(name: &str) -> Option<String> {
         .then(|| crate::utils::decode::decode_output(&output.stdout))
 }
 
+/// Create or replace the helper task so that it runs `exe`.
+#[cfg(windows)]
+fn register_helper_task(exe: &Path, frequency_hours: u32) -> Result<(), String> {
+    let (schedule, modifier) = helper_schedule(frequency_hours).ok_or_else(|| {
+        format!(
+            "Task Scheduler cannot repeat every {frequency_hours} h: use 1-23 hours or whole days"
+        )
+    })?;
+    let output = schtasks(&[
+        "/create",
+        "/tn",
+        &helper_task_name(),
+        "/tr",
+        &helper_command(exe),
+        "/sc",
+        schedule,
+        "/mo",
+        &modifier.to_string(),
+        "/f",
+    ])?;
+    check(output, "Could not create the scheduled task")
+}
+
 pub fn sync_helper_task(enabled: bool, frequency_hours: u32) -> Result<(), String> {
     #[cfg(windows)]
     {
         let name = helper_task_name();
         if enabled {
-            let (schedule, modifier) = helper_schedule(frequency_hours).ok_or_else(|| {
-                format!(
-                    "Task Scheduler cannot repeat every {frequency_hours} h: use 1-23 hours or whole days"
-                )
-            })?;
-            let exe_path = current_exe()?;
-            let output = schtasks(&[
-                "/create",
-                "/tn",
-                &name,
-                "/tr",
-                &helper_command(&exe_path),
-                "/sc",
-                schedule,
-                "/mo",
-                &modifier.to_string(),
-                "/f",
-            ])?;
-            check(output, "Could not create the scheduled task")
+            register_helper_task(&current_exe()?, frequency_hours)
         } else if query_helper_task(&name).is_some() {
             // Only a task that exists is deleted, so a failure here is a real
             // one (access denied, say) rather than "there was nothing to delete".
@@ -145,20 +151,30 @@ pub fn sync_helper_task(enabled: bool, frequency_hours: u32) -> Result<(), Strin
     }
 }
 
-/// Whether the helper task exists and runs this executable.
+/// Whether the helper task exists and runs `exe`.
 #[cfg(windows)]
-fn helper_task_is_current() -> bool {
+fn helper_task_is_current(exe: &Path) -> bool {
     let Some(xml) = query_helper_task(&helper_task_name()) else {
         return false;
-    };
-    let Ok(exe) = std::env::current_exe() else {
-        return true;
     };
     let exe = exe.display().to_string();
     // schtasks writes the XML in the console code page, so a path outside ASCII
     // cannot be compared byte for byte. Such a task is taken as current rather
     // than re-created, and its schedule restarted, on every launch.
     !exe.is_ascii() || xml.to_lowercase().contains(&exe.to_lowercase())
+}
+
+/// Write the Run entry so that it starts `exe`.
+#[cfg(windows)]
+fn register_autostart(exe: &Path) -> Result<(), String> {
+    use winreg::RegKey;
+    use winreg::enums::HKEY_CURRENT_USER;
+
+    let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
+        .create_subkey(RUN_KEY)
+        .map_err(|e| format!("Failed to open Run registry key: {e}"))?;
+    key.set_value(AUTOSTART_KEY_NAME, &autostart_command(exe))
+        .map_err(|e| format!("Failed to write autostart registry entry: {e}"))
 }
 
 pub fn sync_autostart(enabled: bool) -> Result<(), String> {
@@ -170,12 +186,7 @@ pub fn sync_autostart(enabled: bool) -> Result<(), String> {
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
 
         if enabled {
-            let exe_path = current_exe()?;
-            let (key, _) = hkcu
-                .create_subkey(RUN_KEY)
-                .map_err(|e| format!("Failed to open Run registry key: {e}"))?;
-            key.set_value(AUTOSTART_KEY_NAME, &autostart_command(&exe_path))
-                .map_err(|e| format!("Failed to write autostart registry entry: {e}"))?;
+            register_autostart(&current_exe()?)?;
         } else if let Ok(key) = hkcu.open_subkey_with_flags(RUN_KEY, KEY_WRITE) {
             match key.delete_value(AUTOSTART_KEY_NAME) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
@@ -196,40 +207,37 @@ pub fn sync_autostart(enabled: bool) -> Result<(), String> {
     }
 }
 
-/// Whether the Run entry exists and starts this executable.
+/// Whether the Run entry exists and starts `exe`.
 #[cfg(windows)]
-fn autostart_is_current() -> bool {
+fn autostart_is_current(exe: &Path) -> bool {
     use winreg::RegKey;
     use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
 
-    let Ok(exe) = std::env::current_exe() else {
-        return true;
-    };
     RegKey::predef(HKEY_CURRENT_USER)
         .open_subkey_with_flags(RUN_KEY, KEY_READ)
         .and_then(|key| key.get_value::<String, _>(AUTOSTART_KEY_NAME))
-        .is_ok_and(|value| value.eq_ignore_ascii_case(&autostart_command(&exe)))
+        .is_ok_and(|value| value.eq_ignore_ascii_case(&autostart_command(exe)))
 }
 
-/// Repair the task and the Run entry for the settings that are on.
+/// Point the task and the Run entry at `exe`, for the settings that are on.
 ///
-/// Run once when the window opens. Both remember the executable that was
-/// running when the setting last changed, and releases carry the version in the
-/// file name, so the next download would leave them pointing at a file that is
-/// gone — which WinMedic's own startup check then reports, and removes.
+/// Run when the window opens, for the running executable, and right after an
+/// update that renamed the file, for the new one. Both remember the executable
+/// that was running when the setting last changed, and a hand-downloaded
+/// release carries the version in its file name.
 ///
 /// It only repairs, never removes: with a corrupt config every setting reads as
 /// off, and that must not delete what the user set up. An entry left behind is
 /// inert anyway, because `--helper` and `--autostart` both check the setting.
-pub fn reconcile(config: &AppConfig) -> Result<(), String> {
+pub fn reconcile(config: &AppConfig, exe: &Path) -> Result<(), String> {
     #[cfg(windows)]
     {
         let mut problems = Vec::new();
-        if config.helper_enabled && !helper_task_is_current() {
-            problems.extend(sync_helper_task(true, config.helper_frequency_hours).err());
+        if config.helper_enabled && !helper_task_is_current(exe) {
+            problems.extend(register_helper_task(exe, config.helper_frequency_hours).err());
         }
-        if config.autostart && !autostart_is_current() {
-            problems.extend(sync_autostart(true).err());
+        if config.autostart && !autostart_is_current(exe) {
+            problems.extend(register_autostart(exe).err());
         }
         if problems.is_empty() {
             Ok(())
@@ -240,7 +248,7 @@ pub fn reconcile(config: &AppConfig) -> Result<(), String> {
 
     #[cfg(not(windows))]
     {
-        let _ = config;
+        let _ = (config, exe);
         Ok(())
     }
 }
