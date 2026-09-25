@@ -12,7 +12,8 @@ get a higher bar than the rest.
 
 ## Before you push
 
-CI runs exactly this, on every pull request into any branch:
+CI runs exactly this, on every pull request into any branch that is not
+labelled `documentation`:
 
 ```powershell
 cargo fmt -- --check
@@ -70,6 +71,24 @@ WinMedic runs in every display language.
 - Say why, and what you verified on which Windows. If you could not test
   something, say so.
 - Code, comments, docs and every user-facing string are in English.
+
+### Labels
+
+Every pull request gets the label of its main change when it is opened. The
+check "Pull Request Label" fails without one.
+
+| Label | For | Commit prefix |
+| --- | --- | --- |
+| `bug` | Something did not work and now does | `fix:` |
+| `enhancement` | New or changed behaviour | `feat:` |
+| `documentation` | Documentation only: Markdown, `docs/`, `LICENSE`, issue templates | `docs:` |
+| `github_actions` | Workflows and other CI configuration | `ci:` |
+| `dependencies` | Dependency updates; Dependabot sets it itself | `deps:` |
+| `maintenance` | Refactoring, tests, releases and other upkeep | `chore:`, `test:` |
+
+A pull request labelled `documentation` skips the build and the tests, so
+the label check fails when such a pull request changes anything else. Set the
+label when you open the pull request: added later, it no longer stops CI.
 
 ## AI agents
 
