@@ -99,10 +99,12 @@ impl LineDecoder {
 
     /// The progress the line still being written shows right now.
     ///
-    /// DISM and SFC draw their progress into one line, returning to its start
-    /// with a carriage return for every update, and end that line only when
-    /// they are done. Split on newlines alone, none of it arrived until the
-    /// tool had finished. This is the last redraw that carries a percentage.
+    /// SFC draws its progress into one line, ending every update with a
+    /// carriage return and the line itself only at 100 %. Split on newlines
+    /// alone, none of it arrived before SFC had finished. This is the last
+    /// finished redraw that carries a percentage; what follows the last
+    /// carriage return can stop mid-word, where a 4 KB block of SFC's output
+    /// ended.
     pub fn progress(&self) -> Option<String> {
         let utf16 = self.utf16?;
         let mut start = self.pending.len().saturating_sub(PROGRESS_TAIL);
@@ -115,8 +117,8 @@ impl LineDecoder {
         } else {
             decode_byte_line(tail)
         };
-        text.split('\r')
-            .rev()
+        text.rsplit('\r')
+            .skip(1)
             .map(str::trim)
             .find(|redraw| percent(redraw).is_some())
             .map(str::to_string)
@@ -224,6 +226,10 @@ mod tests {
         include_bytes!("../../tests/fixtures/console/netsh_winsock_catalog_de.bin");
     const POWERSHELL_UTF8: &[u8] =
         include_bytes!("../../tests/fixtures/console/powershell_utf8.bin");
+    const DISM_PROGRESS: &[u8] =
+        include_bytes!("../../tests/fixtures/console/dism_scanhealth_progress.bin");
+    const SFC_PROGRESS: &[u8] =
+        include_bytes!("../../tests/fixtures/console/sfc_verifyonly_progress_de.bin");
 
     #[test]
     fn dism_output_in_the_oem_code_page_keeps_its_umlauts() {
@@ -336,6 +342,72 @@ mod tests {
         assert_eq!(
             decoder.progress().as_deref(),
             Some("Verification 6% complete.")
+        );
+    }
+
+    /// Into a pipe, DISM writes each step of its bar as a line of its own,
+    /// `\r[==  4.9%  ] \r\n`, flushed as it goes, in 64-byte pieces.
+    #[test]
+    fn dism_writes_every_step_of_its_bar_as_a_line() {
+        let mut decoder = LineDecoder::new();
+        let mut lines = Vec::new();
+        for chunk in DISM_PROGRESS.chunks(64) {
+            lines.extend(decoder.push(chunk));
+        }
+        lines.extend(decoder.finish());
+
+        assert!(lines.iter().all(|l| !l.contains('\r')), "{lines:?}");
+        let steps: Vec<f32> = lines.iter().filter_map(|l| percent(l)).collect();
+        assert_eq!(steps.len(), 118);
+        assert_eq!((steps[0], steps[117]), (4.9, 100.0));
+        assert!(steps.windows(2).all(|pair| pair[0] <= pair[1]));
+        assert_eq!(
+            lines[lines.len() - 2..],
+            [
+                "The component store is repairable.",
+                "The operation completed successfully."
+            ]
+        );
+    }
+
+    /// SFC redraws its progress within one line and ends it at 100 %. Into
+    /// a pipe it writes in 4 KB blocks, fed here as they arrived; each shows
+    /// how far SFC had got long before the line was finished. The first block
+    /// ends in the middle of "Überprüfung 27 % abgeschl", so it reports 26.
+    #[test]
+    fn sfc_progress_is_seen_block_by_block() {
+        let mut decoder = LineDecoder::new();
+        let mut lines = Vec::new();
+        let mut seen = Vec::new();
+        for block in [
+            &SFC_PROGRESS[..4104],
+            &SFC_PROGRESS[4104..8200],
+            &SFC_PROGRESS[8200..12296],
+        ] {
+            lines.extend(decoder.push(block));
+            seen.extend(decoder.progress());
+        }
+        assert_eq!(
+            seen,
+            [
+                "Überprüfung 26 % abgeschlossen.",
+                "Überprüfung 55 % abgeschlossen.",
+                "Überprüfung 83 % abgeschlossen.",
+            ]
+        );
+
+        lines.extend(decoder.push(&SFC_PROGRESS[12296..]));
+        lines.extend(decoder.finish());
+        assert!(lines.iter().all(|l| !l.contains('\r')), "{lines:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l == "Überprüfung 100 % abgeschlossen.")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("Integritätsverletzungen gefunden"))
         );
     }
 

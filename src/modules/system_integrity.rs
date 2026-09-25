@@ -638,6 +638,19 @@ mod tests {
     const REPAIRABLE: &str = "The component store is repairable.";
     const NOT_REPAIRABLE: &str = "The component store cannot be repaired.";
 
+    /// A real, elevated DISM run, progress bar and all, says the same
+    /// sentence the resources above do.
+    #[test]
+    fn the_verdict_of_a_captured_dism_run_is_read() {
+        let captured = decode_output(include_bytes!(
+            "../../tests/fixtures/console/dism_scanhealth_progress.bin"
+        ));
+        assert_eq!(
+            ComponentStoreHealth::from_dism(&CmdOutput::ok(captured)),
+            ComponentStoreHealth::Repairable
+        );
+    }
+
     /// A module that reads no CBS.log, so the machine running the tests does
     /// not decide what they see.
     fn module_with(mock: MockCommandRunner) -> SystemIntegrityModule {

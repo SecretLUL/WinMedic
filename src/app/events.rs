@@ -951,6 +951,44 @@ mod tests {
         assert_eq!(app.repair_fraction(), 1.0 / 4.0);
     }
 
+    /// A real DISM run writes its bar as 118 lines; the log keeps one.
+    #[tokio::test]
+    async fn a_dism_bar_takes_one_line_of_the_log() {
+        let captured: &[u8] =
+            include_bytes!("../../tests/fixtures/console/dism_scanhealth_progress.bin");
+        let mut decoder = crate::utils::decode::LineDecoder::new();
+        let mut lines = decoder.push(captured);
+        lines.extend(decoder.finish());
+
+        let (mut app, tx) = repairing_app(1);
+        app.repair_console_lines.clear();
+        tx.send(RepairEvent::FixStarted {
+            issue_id: "sys_dism_corrupt".to_string(),
+            title: "Windows component store is corrupted".to_string(),
+        })
+        .await
+        .unwrap();
+        // Drained as it fills, the way the window does every frame: the
+        // channel holds fewer lines than DISM writes.
+        for line in lines {
+            tx.send(output(&line)).await.unwrap();
+            app.process_background_events();
+        }
+
+        assert_eq!(app.repair_step_percent, Some(100.0));
+        let bars: Vec<&String> = app
+            .repair_console_lines
+            .iter()
+            .filter(|l| l.contains('%'))
+            .collect();
+        assert_eq!(bars.len(), 1, "{:?}", app.repair_console_lines);
+        assert!(bars[0].contains("100.0%"));
+        assert!(
+            app.repair_console_lines
+                .contains(&"The component store is repairable.".to_string())
+        );
+    }
+
     /// The next step's first bar is a line of its own, not a redraw of the
     /// last step's.
     #[tokio::test]

@@ -708,6 +708,28 @@ mod tests {
         }
     }
 
+    /// SFC's progress reaches the log while its one progress line is still
+    /// being written, and only the finished line becomes its output.
+    #[tokio::test]
+    async fn sfc_progress_is_forwarded_before_its_line_ends() {
+        let captured: &[u8] =
+            include_bytes!("../../tests/fixtures/console/sfc_verifyonly_progress_de.bin");
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(256);
+        let mut lines = Vec::new();
+        forward_lines(captured, Some(tx), "", &mut lines).await;
+
+        let mut forwarded = Vec::new();
+        while let Ok(line) = rx.try_recv() {
+            forwarded.push(line);
+        }
+        let done = forwarded
+            .iter()
+            .position(|l| l == "Überprüfung 100 % abgeschlossen.")
+            .expect("the finished line is forwarded");
+        assert!(done >= 3, "progress before the end: {forwarded:?}");
+        assert_eq!(lines.iter().filter(|l| l.contains('%')).count(), 1);
+    }
+
     /// ping writes a line a second for half a minute, so its pipe stays open
     /// long past the limit. Loopback only, no window.
     #[tokio::test]
