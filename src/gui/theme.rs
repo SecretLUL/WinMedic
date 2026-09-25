@@ -118,6 +118,15 @@ pub fn severity_color(ui: &egui::Ui, severity: Severity) -> Color32 {
     }
 }
 
+/// The background of a Windows 11 caution bar: something to do, not an error.
+pub fn caution_fill(ui: &egui::Ui) -> Color32 {
+    if ui.visuals().dark_mode {
+        Color32::from_rgb(67, 53, 25)
+    } else {
+        Color32::from_rgb(255, 244, 206)
+    }
+}
+
 pub fn health_color(ui: &egui::Ui, score: u8) -> Color32 {
     let palette = palette(ui);
     match score {

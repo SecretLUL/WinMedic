@@ -25,6 +25,7 @@ use crate::app::{App, TAB_SETTINGS, handle_key};
 use crate::utils::updater::UpdateInfo;
 use eframe::egui::{self, RichText};
 use std::time::{Duration, Instant};
+use views::home::plural;
 
 /// Navigation destinations, in the order of the `TAB_*` constants.
 const TABS: [&str; 2] = ["Scan & Repair", "Settings"];
@@ -66,13 +67,14 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
         ui.add_space(4.0);
     });
 
+    // Easy mode's page is the restart prompt itself once nothing else is left.
+    let page_asks = app.active_tab != TAB_SETTINGS && views::easy::asks_for_restart(app);
+    if app.restart_pending() && !page_asks {
+        banner_panel("restart_banner", theme::caution_fill(ui))
+            .show(ui, |ui| restart_banner(ui, app));
+    }
     if let Some(update) = app.available_update.clone() {
-        egui::Panel::top("update_banner")
-            .frame(
-                egui::Frame::NONE
-                    .fill(ui.visuals().selection.bg_fill)
-                    .inner_margin(egui::Margin::symmetric(12, 8)),
-            )
+        banner_panel("update_banner", ui.visuals().selection.bg_fill)
             .show(ui, |ui| update_banner(ui, app, &update));
     }
 
@@ -195,6 +197,37 @@ fn update_banner(ui: &mut egui::Ui, app: &mut App, update: &UpdateInfo) {
             }
         });
     });
+}
+
+/// Windows waits for a restart, across the top of both modes until it has had
+/// one. WinMedic notices the restart the next time it starts, and only then
+/// takes this down.
+fn restart_banner(ui: &mut egui::Ui, app: &mut App) {
+    let text = ui.visuals().strong_text_color();
+    let repairs = app.issues.iter().filter(|i| i.is_reboot_pending).count();
+    let detail = if repairs > 0 {
+        format!("Restart Windows to finish {}.", plural(repairs, "repair"))
+    } else {
+        "Windows is waiting for a restart to finish its updates.".to_string()
+    };
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(detail).strong().size(15.0).color(text));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let restart = egui::Button::new(RichText::new("Restart now").strong());
+            if ui.add_enabled(!app.is_busy(), restart).clicked() {
+                app.show_reboot_notice();
+            }
+        });
+    });
+}
+
+/// A banner across the top of the window, below the navigation.
+fn banner_panel(id: &'static str, fill: egui::Color32) -> egui::Panel {
+    egui::Panel::top(id).frame(
+        egui::Frame::NONE
+            .fill(fill)
+            .inner_margin(egui::Margin::symmetric(12, 8)),
+    )
 }
 
 /// `v0.5.3`, however the release was tagged.
@@ -1079,6 +1112,74 @@ mod tests {
         let harness = window(app);
         assert!(harness.query_by_label(BOOSTER).is_some());
         assert!(harness.query_by_label("Update now").is_some());
+    }
+
+    /// A repair waiting for a restart: the banner says so in either mode and
+    /// its button asks to restart.
+    #[test]
+    fn a_pending_restart_gets_a_banner_that_asks_to_restart() {
+        for mut app in [scanned_app(), easy_scanned_app()] {
+            app.issues[0].is_reboot_pending = true;
+            let mut harness = window(app);
+            assert!(
+                harness
+                    .query_by_label("Restart Windows to finish 1 repair.")
+                    .is_some()
+            );
+
+            harness.get_by_label("Restart now").click();
+            harness.run_steps(2);
+            assert!(matches!(
+                harness.state().pending_confirm,
+                Some(ConfirmRequest::RestartRequired { .. })
+            ));
+        }
+    }
+
+    /// Restart work Windows queued itself, found by the scan, gets the banner
+    /// too, and the restart dialog names it.
+    #[test]
+    fn windows_waiting_for_a_restart_gets_the_banner_too() {
+        let mut app = scanned_app();
+        app.issues.push(issue(
+            crate::modules::windows_updates::REBOOT_PENDING,
+            "System reboot pending after updates",
+            Severity::Info,
+        ));
+        let mut harness = window(app);
+        assert!(
+            harness
+                .query_by_label("Windows is waiting for a restart to finish its updates.")
+                .is_some()
+        );
+
+        harness.get_by_label("Restart now").click();
+        harness.run_steps(2);
+        match &harness.state().pending_confirm {
+            Some(ConfirmRequest::RestartRequired { issues }) => {
+                assert_eq!(issues, &["System reboot pending after updates"]);
+            }
+            other => panic!("expected the restart dialog, got {other:?}"),
+        }
+    }
+
+    /// Once a restart is all that is left, Easy mode's page is the prompt,
+    /// and the banner would only say it twice. On the Settings tab the page
+    /// shows something else, so the banner is back.
+    #[test]
+    fn easy_mode_asks_for_the_restart_on_the_page_or_in_the_banner() {
+        let mut app = easy_scanned_app();
+        for issue in &mut app.issues {
+            issue.is_reboot_pending = true;
+        }
+        const BANNER: &str = "Restart Windows to finish 2 repairs.";
+        let harness = window(app);
+        assert!(harness.query_by_label("Almost done").is_some());
+        assert!(harness.query_by_label(BANNER).is_none());
+
+        let mut app = harness.into_state();
+        app.active_tab = TAB_SETTINGS;
+        assert!(window(app).query_by_label(BANNER).is_some());
     }
 
     #[test]

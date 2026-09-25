@@ -8,6 +8,7 @@ use crate::engine::issue::{Issue, Severity};
 use crate::engine::reporter::DiagnosticReporter;
 use crate::engine::runner::{DiagnosticEngine, RepairEvent, ScanEvent};
 use crate::modules::ModuleStatus;
+use crate::modules::windows_updates::REBOOT_PENDING;
 use crate::safety::audit::{AuditEntry, AuditLogger};
 use crate::safety::reg_backup::{BackupRecord, RegBackupManager};
 use crate::utils::admin::is_admin;
@@ -246,12 +247,7 @@ impl App {
             let current_boot = sysinfo::System::boot_time();
             let rebooted = saved.boot_time_secs.is_some_and(|b| current_boot > b);
             if rebooted {
-                for issue in &mut saved.issues {
-                    if issue.is_reboot_pending {
-                        issue.is_reboot_pending = false;
-                        issue.is_fixed = true;
-                    }
-                }
+                settle_after_restart(&mut saved.issues);
             }
             let health = DiagnosticEngine::calculate_health_score(&saved.issues);
             let open_count = saved.issues.iter().filter(|i| !i.is_fixed).count();
@@ -425,6 +421,12 @@ impl App {
         self.issues.iter().any(|i| i.is_reboot_pending)
     }
 
+    /// Whether Windows waits for a restart: a repair needs one, or the scan
+    /// found restart work Windows queued itself.
+    pub fn restart_pending(&self) -> bool {
+        self.issues.iter().any(waits_for_restart)
+    }
+
     /// Open the restart confirmation dialog if there are issues pending a reboot.
     pub fn show_reboot_notice(&mut self) {
         if self.pending_confirm.is_some() || self.is_fixing || self.is_scanning {
@@ -433,7 +435,7 @@ impl App {
         let reboot_issues: Vec<String> = self
             .issues
             .iter()
-            .filter(|i| i.is_reboot_pending)
+            .filter(|i| waits_for_restart(i))
             .map(|i| i.title.clone())
             .collect();
         if !reboot_issues.is_empty() {
@@ -678,11 +680,71 @@ fn time_left(elapsed: Duration, percent: f32) -> Option<Duration> {
     (left <= 2.0 * 60.0 * 60.0).then(|| Duration::from_secs_f64(left.round()))
 }
 
+/// Whether `issue` is settled by restarting Windows: a repair that needs the
+/// restart to finish, or Windows' own queued restart work. A restart settles
+/// both; if Windows queued more, the next scan finds it again.
+fn waits_for_restart(issue: &Issue) -> bool {
+    issue.is_reboot_pending || (issue.id == REBOOT_PENDING && !issue.is_fixed)
+}
+
+/// Windows has restarted since the saved scan: what waited for it is done.
+fn settle_after_restart(issues: &mut [Issue]) {
+    for issue in issues.iter_mut().filter(|i| waits_for_restart(i)) {
+        issue.is_reboot_pending = false;
+        issue.is_fixed = true;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::MAX_LOG_LINES;
     use crate::engine::issue::RiskScore;
+
+    fn finding(id: &str) -> Issue {
+        Issue::new(
+            id,
+            "windows_updates",
+            id,
+            "Windows Update & Services",
+            Severity::Info,
+            RiskScore::Low,
+            "",
+            "",
+            "",
+            vec![],
+        )
+    }
+
+    /// A repair waiting for the restart and the restart Windows queued itself
+    /// both keep the restart pending; nothing else does.
+    #[test]
+    fn a_restart_is_pending_for_repairs_and_for_windows() {
+        let mut app = App::new();
+        app.issues = vec![finding("dns")];
+        assert!(!app.restart_pending());
+
+        app.issues.push(finding(REBOOT_PENDING));
+        assert!(app.restart_pending(), "Windows' own restart work");
+
+        app.issues = vec![finding("chkdsk")];
+        app.issues[0].is_reboot_pending = true;
+        assert!(app.restart_pending(), "a repair waiting for it");
+    }
+
+    /// A restart settles what waited for it, and nothing else.
+    #[test]
+    fn a_restart_settles_what_waited_for_it() {
+        let mut issues = vec![finding("chkdsk"), finding(REBOOT_PENDING), finding("dns")];
+        issues[0].is_reboot_pending = true;
+
+        settle_after_restart(&mut issues);
+
+        assert!(issues[0].is_fixed && !issues[0].is_reboot_pending);
+        assert!(issues[1].is_fixed);
+        assert!(!issues[2].is_fixed, "a finding a restart does not touch");
+        assert!(!issues.iter().any(waits_for_restart));
+    }
 
     #[test]
     fn the_time_left_follows_the_pace_so_far() {

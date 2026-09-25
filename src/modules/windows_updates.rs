@@ -15,6 +15,10 @@ pub struct WindowsUpdatesModule {
     runner: Arc<dyn CommandRunner>,
 }
 
+/// The finding for restart work Windows has queued. The restart itself is
+/// what settles it, so the app treats it like a repair waiting on one.
+pub const REBOOT_PENDING: &str = "wu_reboot_pending";
+
 /// Where Component Based Servicing parks the work a restart has to finish.
 const CBS_REBOOT_PENDING_KEY: &str =
     r"SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending";
@@ -306,7 +310,7 @@ impl DiagnosticModule for WindowsUpdatesModule {
         match pending_reboot_reason(&signals) {
             Some(evidence) => issues.push(
                 Issue::new(
-                    "wu_reboot_pending",
+                    REBOOT_PENDING,
                     self.id(),
                     "System reboot pending after updates",
                     "Windows Update & Services",
@@ -484,7 +488,7 @@ impl DiagnosticModule for WindowsUpdatesModule {
 
                 Ok("SoftwareDistribution download cache cleaned and services restarted successfully.".to_string())
             }
-            "wu_reboot_pending" => Ok(
+            REBOOT_PENDING => Ok(
                 "Pending reboot recorded. Please restart the system once the run has finished."
                     .to_string(),
             ),
