@@ -84,6 +84,7 @@ component store is repairable." is also in `dism_scanhealth_progress.bin`.
 | `kernel_power_41.xml` | Two real unexpected shutdowns, `BugcheckCode` 0. |
 | `wer_bugcheck_1001.xml` | A real 0x9F bugcheck, logged by `Microsoft-Windows-WER-SystemErrorReporting` — not by `BugCheck`, which a query for that provider proves by returning nothing. |
 | `system_errors.xml` | Five real level-2 events (Service Control Manager, DCOM). |
+| `wevtutil_wu_installed_19_de.bin` | Every event 19 of `Microsoft-Windows-WindowsUpdateClient` ("installed") from 10 to 26 July 2026, captured 2026-09-25 as the bytes wevtutil wrote: in the ANSI code page, `für` as `f\xFCr` and the dash as `\x96`. Defender signature updates (KB2267602), Store apps (`serviceGuid` `{855e8a7c-…}`) and one Visual C++ security update. |
 | `whea_constructed.xml` | **Constructed.** The capture machine has never logged a WHEA event. Built in the exact shape of the real events above, with the `EventData` field names WHEA-Logger uses (`ApicId`, `MCABank`, `MciStat`, `MciAddr`, `Bus`/`Device`/`Function`, `PhysicalAddress`). Replace it with a capture when one turns up. |
 
 ## Capturing more
