@@ -56,6 +56,7 @@ of the pipe arrived:
 | `dism_scanhealth_progress.bin` | `dism /English /Online /Cleanup-Image /ScanHealth` | ASCII | Every step of the bar is a line of its own, `\r[====  4.9%  ] \r\n`, written the moment it changes: 64-byte pieces over 65 seconds, 4.9% to 100.0%. Ends with "The component store is repairable." |
 | `pnputil_scan_devices_elevated_de.bin` | `pnputil /scan-devices` | Windows-1252 | Exit 0 in under a second. The two devices without a driver still had none afterwards. |
 | `pnputil_restart_device_no_driver_elevated_de.bin` | `pnputil /restart-device` of the Brio's interface without a driver | Windows-1252 | "Das Gerät wurde erfolgreich neu gestartet.", exit 0 - and the device went on reporting code 28. |
+| `sfc_scannow_repaired_de.bin` | `sfc /scannow`, 80 seconds | UTF-16LE | "Der Windows-Ressourcenschutz hat beschädigte Dateien gefunden und erfolgreich repariert." Exit 0, like every SFC run captured here. |
 | `sfc_verifyonly_progress_de.bin` | `sfc /verifyonly` | UTF-16LE | The bar is one line redrawn after `\r`, `Überprüfung 26 % abgeschlossen.`, ended only at 100 %. SFC writes into a pipe in 4 KB blocks, which arrived after 16, 31, 49 and 57 seconds and reach 26, 55, 83 and 100 %; the first one stops mid-word. Exit code 0 although it reports integrity violations. |
 
 ## Files — `files/`
@@ -63,6 +64,9 @@ of the pipe arrived:
 | File | Content |
 | --- | --- |
 | `reagent_enabled.xml` | `C:\Windows\System32\Recovery\ReAgent.xml` of the capture machine, unchanged: the recovery environment's configuration, readable without elevation, with `InstallState state="1"` (enabled). |
+| `cbs_sfc_verifyonly_found_damage.bin` | What the `sfc /verifyonly` run of `sfc_verifyonly_progress_de.bin` added to `C:\Windows\Logs\CBS\CBS.log`, cut out byte for byte (CRLF). Only `[SR] Verify` lines, then `DEPLOY [Pnp] Corrupt file: ...\BthA2dp.sys` and two more Bluetooth drivers: the damage SFC reported, in a format the older `[SR] Cannot repair member file` check never saw. |
+| `cbs_sfc_scannow_repaired.bin` | What `sfc /scannow` (`sfc_scannow_repaired_de.bin`) added to CBS.log, captured elevated on 2026-09-25: `[SR] Repairing 0 components`, then `Corrupt file:` and `Repaired file:` for each of the three drivers. |
+| `cbs_sfc_verifyonly_clean.bin` | What an `sfc /verifyonly` run right after it added: no `DEPLOY` line; SFC said "keine Integritätsverletzungen". |
 | `hosts_blocking_update.bin` | The hosts file of the capture machine, byte for byte (UTF-8 with BOM, CRLF), its LAN address replaced with `192.168.1.10`. Next to telemetry blocks it blocks `fe3.delivery.mp.microsoft.com` — Windows Update's and the Store's metadata endpoint — and `ocsp.digicert.com`, which is what the hosts check exists to find. |
 
 The English DISM verdicts used in `src/modules/system_integrity.rs` are DISM's
