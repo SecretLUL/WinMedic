@@ -552,6 +552,29 @@ mod tests {
         );
     }
 
+    /// A repair step that runs for minutes says how far its tool got and how
+    /// long it has been at it, so it does not look hung.
+    #[test]
+    fn a_running_repair_says_how_far_its_step_got() {
+        let mut app = scanned_app();
+        app.is_fixing = true;
+        app.total_to_fix = 8;
+        app.fixed_count = 1;
+        app.failed_count = 0;
+        app.current_fix_title = "Windows component store is corrupted".to_string();
+        app.repair_step_percent = Some(62.3);
+        app.repair_step_since = Instant::now().checked_sub(Duration::from_secs(252));
+        let harness = window(app);
+
+        assert!(
+            harness
+                .query_by_label_contains(
+                    "1 of 8 done · now: Windows component store is corrupted · 62% · running for 4m 1"
+                )
+                .is_some()
+        );
+    }
+
     /// The logs are folded away, and one click away.
     #[test]
     fn both_logs_are_one_click_away() {

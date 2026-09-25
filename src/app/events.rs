@@ -10,6 +10,8 @@ use super::state::{App, ModuleScanProgress};
 use super::{BackgroundEvent, push_bounded_log};
 use crate::engine::runner::{DiagnosticEngine, RepairEvent, ScanEvent};
 use crate::modules::ModuleStatus;
+use crate::utils::progress::percent;
+use std::time::Instant;
 
 impl App {
     pub fn process_background_events(&mut self) {
@@ -169,9 +171,42 @@ impl App {
         }
     }
 
+    /// A step of the repair run begins; its clock and percentage start over.
+    fn start_repair_step(&mut self, title: &str) {
+        self.current_fix_title = title.to_string();
+        self.repair_step_since = Some(Instant::now());
+        self.repair_step_percent = None;
+    }
+
+    fn end_repair_step(&mut self) {
+        self.repair_step_since = None;
+        self.repair_step_percent = None;
+    }
+
+    /// DISM and SFC redraw their progress on one line, and so does the log:
+    /// the step's newest percentage replaces the one before it rather than
+    /// adding a line for every tenth of a percent.
+    fn push_fix_output(&mut self, line: String) {
+        if let Some(step_percent) = percent(&line) {
+            let redraw = self.repair_step_percent.is_some()
+                && self
+                    .repair_console_lines
+                    .back()
+                    .is_some_and(|last| percent(last).is_some());
+            self.repair_step_percent = Some(step_percent);
+            if redraw && let Some(last) = self.repair_console_lines.back_mut() {
+                *last = line;
+                return;
+            }
+        }
+        push_bounded_log(&mut self.repair_console_lines, line);
+    }
+
     fn process_repair_events(&mut self) {
         let mut repair_ended = false;
-        if let Some(ref mut rx) = self.repair_event_rx {
+        // Taken out while it drains, so that handling an event can reach the
+        // rest of `App`; see `process_scan_events`.
+        if let Some(mut rx) = self.repair_event_rx.take() {
             while let Ok(event) = rx.try_recv() {
                 match event {
                     RepairEvent::DryRunStarted { issue_count } => {
@@ -185,6 +220,7 @@ impl App {
                         );
                     }
                     RepairEvent::VssStarted => {
+                        self.start_repair_step("Creating a restore point");
                         self.vss_status = "Creating restore point...".to_string();
                         push_bounded_log(
                             &mut self.repair_console_lines,
@@ -203,7 +239,7 @@ impl App {
                         );
                     }
                     RepairEvent::FixStarted { issue_id: _, title } => {
-                        self.current_fix_title = title.clone();
+                        self.start_repair_step(&title);
                         push_bounded_log(
                             &mut self.repair_console_lines,
                             if self.dry_run {
@@ -214,13 +250,14 @@ impl App {
                         );
                     }
                     RepairEvent::FixOutput { issue_id: _, line } => {
-                        push_bounded_log(&mut self.repair_console_lines, line);
+                        self.push_fix_output(line);
                     }
                     RepairEvent::FixFinished {
                         issue_id,
                         success,
                         message,
                     } => {
+                        self.end_repair_step();
                         // A simulation must never flip an issue to "fixed".
                         if !self.dry_run
                             && let Some(issue) = self.issues.iter_mut().find(|i| i.id == issue_id)
@@ -309,8 +346,11 @@ impl App {
                     }
                 }
             }
+            self.repair_event_rx = Some(rx);
         }
         if repair_ended {
+            self.current_fix_title.clear();
+            self.end_repair_step();
             self.repair_event_rx = None;
             self.cancel_token = None;
             self.audit_entries = self.audit_logger.get_history();
@@ -842,6 +882,100 @@ mod tests {
         assert!(frozen >= Duration::from_secs(90));
         std::thread::sleep(Duration::from_millis(20));
         assert_eq!(app.scan_elapsed(), Some(frozen), "and it stays put");
+    }
+
+    /// An app repairing `total` findings, and the sender feeding it.
+    fn repairing_app(total: usize) -> (App, tokio::sync::mpsc::Sender<RepairEvent>) {
+        let mut app = App::new();
+        let (tx, rx) = channel::<RepairEvent>(64);
+        app.repair_event_rx = Some(rx);
+        app.is_fixing = true;
+        app.total_to_fix = total;
+        (app, tx)
+    }
+
+    fn output(line: &str) -> RepairEvent {
+        RepairEvent::FixOutput {
+            issue_id: "sys_dism_corrupt".to_string(),
+            line: line.to_string(),
+        }
+    }
+
+    /// DISM's bar reaches the step, the progress bar and the log, where it
+    /// takes one line however often it is redrawn.
+    #[tokio::test]
+    async fn a_step_follows_its_tools_percentage() {
+        let (mut app, tx) = repairing_app(4);
+        app.repair_console_lines.clear();
+        tx.send(RepairEvent::FixStarted {
+            issue_id: "sys_dism_corrupt".to_string(),
+            title: "Windows component store is corrupted".to_string(),
+        })
+        .await
+        .unwrap();
+        for line in [
+            "Image Version: 10.0.26200.9457",
+            "[=   10.0%   ]",
+            "[==  50.0%   ]",
+        ] {
+            tx.send(output(line)).await.unwrap();
+        }
+        app.process_background_events();
+
+        assert_eq!(
+            app.current_fix_title,
+            "Windows component store is corrupted"
+        );
+        assert_eq!(app.repair_step_percent, Some(50.0));
+        assert!(app.repair_step_elapsed().is_some());
+        assert_eq!(app.repair_fraction(), 0.5 / 4.0);
+        assert_eq!(
+            Vec::from(app.repair_console_lines.clone()),
+            [
+                "Repairing: Windows component store is corrupted",
+                "Image Version: 10.0.26200.9457",
+                "[==  50.0%   ]",
+            ]
+        );
+
+        tx.send(RepairEvent::FixFinished {
+            issue_id: "sys_dism_corrupt".to_string(),
+            success: true,
+            message: "done".to_string(),
+        })
+        .await
+        .unwrap();
+        app.process_background_events();
+        assert_eq!(app.repair_step_percent, None);
+        assert_eq!(app.repair_step_elapsed(), None);
+        assert_eq!(app.repair_fraction(), 1.0 / 4.0);
+    }
+
+    /// The next step's first bar is a line of its own, not a redraw of the
+    /// last step's.
+    #[tokio::test]
+    async fn a_new_step_starts_its_own_progress_line() {
+        let (mut app, tx) = repairing_app(2);
+        app.repair_console_lines.clear();
+        for title in ["first", "second"] {
+            tx.send(RepairEvent::FixStarted {
+                issue_id: title.to_string(),
+                title: title.to_string(),
+            })
+            .await
+            .unwrap();
+            tx.send(output("[==========100.0%==========]"))
+                .await
+                .unwrap();
+        }
+        app.process_background_events();
+
+        let bars = app
+            .repair_console_lines
+            .iter()
+            .filter(|l| l.contains("100.0%"))
+            .count();
+        assert_eq!(bars, 2);
     }
 
     #[tokio::test]

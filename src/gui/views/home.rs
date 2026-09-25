@@ -111,12 +111,18 @@ fn header(ui: &mut egui::Ui, app: &mut App) {
         let done = app.fixed_count + app.failed_count;
         progress(
             ui,
-            done as f32 / app.total_to_fix.max(1) as f32,
+            app.repair_fraction(),
             (app.failed_count > 0).then_some(palette.amber),
         );
         let mut line = format!("{done} of {} done", app.total_to_fix);
         if !app.current_fix_title.is_empty() {
             line.push_str(&format!(" · now: {}", app.current_fix_title));
+        }
+        if let Some(percent) = app.repair_step_percent {
+            line.push_str(&format!(" · {percent:.0}%"));
+        }
+        if let Some(elapsed) = app.repair_step_elapsed() {
+            line.push_str(&format!(" · running for {}", format_duration(elapsed)));
         }
         ui.add(egui::Label::new(line).truncate());
         ui.add_space(4.0);

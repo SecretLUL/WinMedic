@@ -19,6 +19,8 @@
 //! text with a byte above 0x7F is almost never valid UTF-8, so the two cannot
 //! be mistaken for each other in practice.
 
+use super::progress::percent;
+
 /// Decode a complete output buffer, line endings included.
 pub fn decode_output(bytes: &[u8]) -> String {
     if looks_like_utf16le(bytes) {
@@ -95,14 +97,52 @@ impl LineDecoder {
         Some(self.decode_line(&rest))
     }
 
+    /// The progress the line still being written shows right now.
+    ///
+    /// DISM and SFC draw their progress into one line, returning to its start
+    /// with a carriage return for every update, and end that line only when
+    /// they are done. Split on newlines alone, none of it arrived until the
+    /// tool had finished. This is the last redraw that carries a percentage.
+    pub fn progress(&self) -> Option<String> {
+        let utf16 = self.utf16?;
+        let mut start = self.pending.len().saturating_sub(PROGRESS_TAIL);
+        if utf16 {
+            start += start % 2;
+        }
+        let tail = &self.pending[start..];
+        let text = if utf16 {
+            decode_utf16le(tail)
+        } else {
+            decode_byte_line(tail)
+        };
+        text.split('\r')
+            .rev()
+            .map(str::trim)
+            .find(|redraw| percent(redraw).is_some())
+            .map(str::to_string)
+    }
+
     fn decode_line(&self, line: &[u8]) -> String {
         let text = if self.utf16 == Some(true) {
             decode_utf16le(line)
         } else {
             decode_byte_line(line.strip_prefix(UTF8_BOM).unwrap_or(line))
         };
-        text.trim_end_matches('\r').to_string()
+        shown(&text).to_string()
     }
+}
+
+/// How much of an unfinished line [`LineDecoder::progress`] looks at: the
+/// newest few redraws, not the thousand before them.
+const PROGRESS_TAIL: usize = 1024;
+
+/// What a console shows of a line: the last thing written over it after a
+/// carriage return. A line DISM redrew a thousand times is its final bar.
+fn shown(text: &str) -> &str {
+    let text = text.trim_end_matches('\r');
+    text.rsplit('\r')
+        .find(|redraw| !redraw.trim().is_empty())
+        .unwrap_or(text)
 }
 
 /// Whether `bytes` are UTF-16LE text: a byte order mark, or mostly code units
@@ -257,6 +297,53 @@ mod tests {
         assert_eq!(decoder.push(b"first\r\nsec"), vec!["first".to_string()]);
         assert_eq!(decoder.push(b"ond"), Vec::<String>::new());
         assert_eq!(decoder.finish().as_deref(), Some("second"));
+    }
+
+    fn utf16(text: &str) -> Vec<u8> {
+        text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
+    #[test]
+    fn a_redrawn_line_is_what_the_console_shows() {
+        let mut decoder = LineDecoder::new();
+        assert_eq!(
+            decoder.push(b"[=   10.0%   ]\r[==  20.0%   ]\r\nDone.\r\n"),
+            vec!["[==  20.0%   ]".to_string(), "Done.".to_string()]
+        );
+    }
+
+    #[test]
+    fn progress_arrives_before_its_line_ends() {
+        let mut decoder = LineDecoder::new();
+        assert_eq!(
+            decoder
+                .push(b"Image Version: 10.0\r\n\r\n[=   10.0%   ]\r[==  2")
+                .len(),
+            2
+        );
+        assert_eq!(decoder.progress().as_deref(), Some("[=   10.0%   ]"));
+        decoder.push(b"0.0%   ]\r");
+        assert_eq!(decoder.progress().as_deref(), Some("[==  20.0%   ]"));
+    }
+
+    #[test]
+    fn utf16_progress_arrives_before_its_line_ends() {
+        let mut decoder = LineDecoder::new();
+        let bytes = utf16("\r\nVerification 5% complete.\rVerification 6% complete.\r");
+        for chunk in bytes.chunks(5) {
+            decoder.push(chunk);
+        }
+        assert_eq!(
+            decoder.progress().as_deref(),
+            Some("Verification 6% complete.")
+        );
+    }
+
+    #[test]
+    fn a_line_without_a_percentage_shows_no_progress() {
+        let mut decoder = LineDecoder::new();
+        decoder.push(b"Beginning system scan.");
+        assert_eq!(decoder.progress(), None);
     }
 
     #[test]

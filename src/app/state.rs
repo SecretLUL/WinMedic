@@ -156,6 +156,12 @@ pub struct App {
     /// Simulate repairs instead of executing them.
     pub dry_run: bool,
     pub current_fix_title: String,
+    /// When the running step of the repair run began: the restore point,
+    /// then each repair. DISM runs for many minutes with nothing else to show,
+    /// so how long it has been at it is what tells working from hung.
+    pub repair_step_since: Option<Instant>,
+    /// How far the running step's tool says it got, when it says.
+    pub repair_step_percent: Option<f32>,
     pub fixed_count: usize,
     pub failed_count: usize,
     pub total_to_fix: usize,
@@ -300,6 +306,8 @@ impl App {
             is_fixing: false,
             dry_run: false,
             current_fix_title: String::new(),
+            repair_step_since: None,
+            repair_step_percent: None,
             fixed_count: 0,
             failed_count: 0,
             total_to_fix: 0,
@@ -484,6 +492,22 @@ impl App {
             Some(start) => Some(start.elapsed()),
             None => self.scan_duration,
         }
+    }
+
+    /// How long the running repair step has been at it.
+    pub fn repair_step_elapsed(&self) -> Option<Duration> {
+        self.repair_step_since
+            .filter(|_| self.is_fixing)
+            .map(|since| since.elapsed())
+    }
+
+    /// How much of the repair run is done, counting the part of the running
+    /// step its tool reports. The bar moves while DISM works instead of
+    /// standing still for ten minutes.
+    pub fn repair_fraction(&self) -> f32 {
+        let done = (self.fixed_count + self.failed_count) as f32;
+        let step = self.repair_step_percent.unwrap_or(0.0) / 100.0;
+        ((done + step) / self.total_to_fix.max(1) as f32).clamp(0.0, 1.0)
     }
 
     /// True while a scan or a repair run is in flight.

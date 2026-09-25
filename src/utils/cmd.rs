@@ -530,6 +530,9 @@ pub async fn run_cmd_streaming(
 /// Reads raw bytes rather than `lines()`: that reader stops at the first line
 /// that is not UTF-8, and German DISM or SFC output has one within the first
 /// few lines — everything after it, the verdict included, was lost.
+///
+/// A progress bar the tool is still redrawing goes to the channel as well,
+/// each time it changes; only finished lines become the command's output.
 async fn forward_lines(
     mut pipe: impl tokio::io::AsyncRead + Unpin,
     tx: Option<Sender<String>>,
@@ -538,6 +541,7 @@ async fn forward_lines(
 ) {
     let mut decoder = LineDecoder::new();
     let mut buf = [0u8; 4096];
+    let mut sent_progress = None;
     loop {
         let read = match pipe.read(&mut buf).await {
             Ok(0) | Err(_) => break,
@@ -548,6 +552,14 @@ async fn forward_lines(
                 let _ = tx.send(format!("{prefix}{line}")).await;
             }
             lines.push(line);
+            sent_progress = None;
+        }
+        let progress = decoder.progress();
+        if progress.is_some() && progress != sent_progress {
+            if let (Some(tx), Some(text)) = (&tx, &progress) {
+                let _ = tx.send(format!("{prefix}{text}")).await;
+            }
+            sent_progress = progress;
         }
     }
     if let Some(line) = decoder.finish() {

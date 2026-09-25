@@ -114,7 +114,7 @@ fn repairing(ui: &mut egui::Ui, app: &mut App) {
     );
     ui.add_space(10.0);
     let done = app.fixed_count + app.failed_count;
-    progress(ui, done as f32 / app.total_to_fix.max(1) as f32);
+    progress(ui, app.repair_fraction());
     note(ui, format!("{done} of {} done", app.total_to_fix));
     ui.add_space(16.0);
     if ui.button("Cancel").on_hover_text("Esc").clicked() {
