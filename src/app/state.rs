@@ -187,6 +187,9 @@ pub struct App {
     /// True from the moment the user accepts an update until the download has
     /// either been installed or given up on.
     pub is_updating: bool,
+    /// The installed update to restart into, once no scan, repair or restore
+    /// is running.
+    pub restart_into: Option<std::path::PathBuf>,
     /// What this app is allowed to do to the machine it runs on: browser
     /// windows, UAC prompts, restore points.
     ///
@@ -331,6 +334,7 @@ impl App {
             },
             available_update: None,
             is_updating: false,
+            restart_into: None,
             system_actions,
             should_quit: false,
             scan_event_rx: None,

@@ -73,7 +73,7 @@ Settings live in the **`[2]` Settings** view and are persisted to `%APPDATA%\Win
 
 On startup WinMedic asks GitHub for the latest release and, if a newer version exists, announces it in the status line. Nothing happens until you press **`[U]`**, which opens a dialog describing exactly what it is about to do; nothing is ever downloaded or installed without that explicit yes.
 
-When the release publishes both the binary and its `.sha256` — every release cut by the release workflow does — the dialog offers to **download, verify and install it in place**:
+When the release publishes both the binary and its `.sha256` — every release cut by the release workflow does — the dialog offers **Download and restart**, which installs it in place:
 
 1. `winmedic-<tag>.exe` is downloaded to a staging file *next to the current executable*
 2. the `.sha256` published with the release is downloaded as well
@@ -81,7 +81,7 @@ When the release publishes both the binary and its `.sha256` — every release c
 4. if the download carries an Authenticode signature Windows rejects, it is refused
 5. only then is the running binary renamed aside and the new one moved into its place
 
-The old binary stays parked as `winmedic.exe.old-<tag>` until the next start — a running image cannot delete itself — and is swept up automatically then. **The running process is still the old version**; restart WinMedic to actually run the new one, which is what the confirmation message says.
+WinMedic then starts the new version and closes itself; a scan or repair still running is finished first. The old binary stays parked as `winmedic.exe.old-<tag>` — a running image cannot delete itself — and the new version deletes it as soon as the old process has exited.
 
 If *any* of that fails — the download never arrives, the checksum does not match, the file cannot be replaced — nothing is touched, the release page opens in your browser instead, and the status line states the reason. Successful and refused updates are both written to `%APPDATA%\WinMedic\logs\history.jsonl`.
 

@@ -16,6 +16,7 @@ impl App {
         self.process_scan_events();
         self.process_repair_events();
         self.process_bg_events();
+        self.restart_into_update_when_idle();
     }
 
     fn module_progress_mut(&mut self, module_id: &str) -> Option<&mut ModuleScanProgress> {
@@ -388,22 +389,23 @@ impl App {
                                 ),
                             );
                             self.available_update = None;
-                            // Deliberately explicit about the restart: the
-                            // process still running is the old build, and a
-                            // "done" that let someone believe otherwise would be
-                            // a lie about which code is executing.
+                            let installed_as = match installed.installed.file_name() {
+                                Some(name) if installed.installed != installed.replaced => {
+                                    format!(" as {}", name.to_string_lossy())
+                                }
+                                _ => String::new(),
+                            };
+                            // A run in flight keeps the window open until it
+                            // ends; see `restart_into_update_when_idle`.
+                            let restart = if self.is_busy() || self.is_restoring {
+                                "WinMedic restarts when the current run is finished."
+                            } else {
+                                "Restarting..."
+                            };
                             let mut message = format!(
-                                "WinMedic v{} installed and SHA256-verified. Restart WinMedic to run it.",
-                                version
+                                "WinMedic v{version} installed and SHA256-verified{installed_as}. {restart}"
                             );
                             if installed.installed != installed.replaced {
-                                if let Some(name) = installed.installed.file_name() {
-                                    message = format!(
-                                        "WinMedic v{} installed and SHA256-verified as {}. Restart WinMedic to run it.",
-                                        version,
-                                        name.to_string_lossy()
-                                    );
-                                }
                                 // The task and the Run entry still name the
                                 // file that is now gone.
                                 if let Err(e) = (self.system_actions.reconcile_background)(
@@ -416,6 +418,7 @@ impl App {
                                 }
                             }
                             self.status_message = Some(message);
+                            self.restart_into = Some(installed.installed);
                         }
                         Err(err) => {
                             self.audit_logger.log(
@@ -596,13 +599,19 @@ mod tests {
         }
     }
 
-    /// The process still running is the *old* build — the new one only starts
-    /// existing at the next launch. Saying "updated" and stopping there would be
-    /// a claim about which code is executing that is simply not true.
+    /// The process still running is the *old* build, so the new one is started
+    /// and this one closes: after "Download and restart" the user is running
+    /// the version they just installed.
     #[tokio::test]
-    async fn an_installed_update_clears_the_notice_and_asks_for_a_restart() {
+    async fn an_installed_update_clears_the_notice_and_restarts_into_it() {
+        static STARTED: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
         let (mut app, dir) = app_with_scratch_audit_log();
         app.available_update = None;
+        app.system_actions.start_installed_update = |exe| {
+            *STARTED.lock().unwrap() = Some(exe.to_path_buf());
+            Ok(())
+        };
 
         app.bg_tx
             .send(BackgroundEvent::UpdateInstallFinished {
@@ -619,7 +628,11 @@ mod tests {
         let message = app.status_message.clone().unwrap();
         assert!(message.contains("v0.2.0"), "{}", message);
         assert!(message.contains("SHA256-verified"), "{}", message);
-        assert!(message.contains("Restart"), "{}", message);
+        assert_eq!(
+            STARTED.lock().unwrap().as_deref(),
+            Some(std::path::Path::new(r"C:\Tools\winmedic.exe"))
+        );
+        assert!(app.should_quit);
 
         // Replacing the binary is exactly the kind of change this tool records.
         let entry = app
@@ -633,15 +646,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// A file that took the new release's name says so, and the task and the
-    /// Run entry follow it before anything tries to start the old name.
+    /// A file that took the new release's name says so, the task and the Run
+    /// entry follow it, and the restart starts it under that name.
     #[tokio::test]
     async fn a_renamed_install_names_the_new_file_and_moves_the_background_entries() {
         static RETARGETED: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+        static STARTED: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 
         let (mut app, dir) = app_with_scratch_audit_log();
         app.system_actions.reconcile_background = |_, exe| {
             *RETARGETED.lock().unwrap() = Some(exe.to_path_buf());
+            Ok(())
+        };
+        app.system_actions.start_installed_update = |exe| {
+            *STARTED.lock().unwrap() = Some(exe.to_path_buf());
             Ok(())
         };
         let mut installed = installed_update();
@@ -664,6 +682,67 @@ mod tests {
             RETARGETED.lock().unwrap().as_deref(),
             Some(std::path::Path::new(r"C:\Tools\winmedic-v0.2.0.exe"))
         );
+        assert_eq!(
+            STARTED.lock().unwrap().as_deref(),
+            Some(std::path::Path::new(r"C:\Tools\winmedic-v0.2.0.exe"))
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Closing the window under a repair run would leave the repair half done,
+    /// so the restart waits for the run to end.
+    #[tokio::test]
+    async fn a_run_in_flight_holds_the_restart_until_it_ends() {
+        let (mut app, dir) = app_with_scratch_audit_log();
+        app.is_fixing = true;
+
+        app.bg_tx
+            .send(BackgroundEvent::UpdateInstallFinished {
+                version: "v0.2.0".to_string(),
+                release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0"
+                    .to_string(),
+                result: Ok(installed_update()),
+            })
+            .unwrap();
+        app.process_background_events();
+
+        assert!(!app.should_quit, "the restart cut the repair run short");
+        let message = app.status_message.clone().unwrap();
+        assert!(
+            message.contains("when the current run is finished"),
+            "{message}"
+        );
+
+        app.is_fixing = false;
+        app.process_background_events();
+        assert!(app.should_quit);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An update that is installed but cannot be started leaves the window
+    /// open and says how to get to the new version.
+    #[tokio::test]
+    async fn a_restart_that_cannot_start_the_update_stays_open_and_says_so() {
+        let (mut app, dir) = app_with_scratch_audit_log();
+        app.system_actions.start_installed_update = |_| Err("access denied".to_string());
+
+        app.bg_tx
+            .send(BackgroundEvent::UpdateInstallFinished {
+                version: "v0.2.0".to_string(),
+                release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0"
+                    .to_string(),
+                result: Ok(installed_update()),
+            })
+            .unwrap();
+        app.process_background_events();
+
+        assert!(!app.should_quit);
+        assert!(app.restart_into.is_none(), "it would retry every frame");
+        let message = app.status_message.clone().unwrap();
+        assert!(message.contains("access denied"), "{message}");
+        assert!(message.contains("Restart WinMedic"), "{message}");
 
         let _ = std::fs::remove_dir_all(dir);
     }

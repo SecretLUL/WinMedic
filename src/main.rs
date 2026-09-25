@@ -120,10 +120,11 @@ fn main() -> ExitCode {
 /// Each branch therefore owns its own.
 fn run(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     // A binary replaced by an in-place update is still mapped by the process
-    // that replaced it, so it cannot delete itself; the next start is the first
-    // moment it can go. Best-effort and silent: leftover junk beside the
-    // executable is untidy, never a reason to refuse to run.
-    utils::self_update::clean_leftovers_beside_current_exe();
+    // that replaced it, so it cannot delete itself; the new version, started by
+    // that process as it closes, is the first that can. Best-effort and silent:
+    // leftover junk beside the executable is untidy, never a reason to refuse
+    // to run.
+    utils::self_update::sweep_leftovers_beside_current_exe();
 
     if args.elevate {
         if !is_admin() {

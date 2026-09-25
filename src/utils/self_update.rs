@@ -26,10 +26,10 @@
 //!
 //! The swap itself is the standard Windows dance. A running image can be
 //! renamed but neither deleted nor overwritten, so the current executable moves
-//! aside to `<name>.old-<tag>`, the staged file takes its place, and the retired
-//! image is deleted by [`clean_leftovers`] on the next start — by which point
-//! nothing has it mapped any more. A file still named after its release takes
-//! the new release's name on the way ([`install_target`]).
+//! aside to `<name>.old-<tag>`, the staged file takes its place, and the new
+//! version deletes the retired image once the process that ran it has exited
+//! ([`sweep_leftovers_beside_current_exe`]). A file still named after its
+//! release takes the new release's name on the way ([`install_target`]).
 
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner, ps_single_quoted};
 use crate::utils::updater::{
@@ -354,7 +354,8 @@ pub struct InstalledUpdate {
     /// the file took the new release's name.
     pub replaced: PathBuf,
     /// Where the replaced image was parked. Still mapped by the running
-    /// process, so it is deleted on the next start by [`clean_leftovers`].
+    /// process, so the new version deletes it once that process has exited
+    /// ([`sweep_leftovers_beside_current_exe`]).
     pub retired: PathBuf,
     /// The digest the download and the release's manifest agreed on.
     pub sha256: String,
@@ -666,34 +667,39 @@ pub fn swap_in_place(
 /// Returns how many files were removed. Every failure is ignored: leftover junk
 /// is untidy, not a reason to refuse to start.
 pub fn clean_leftovers(exe: &Path) -> usize {
+    leftovers(exe, &[STAGING_INFIX, RETIRED_INFIX])
+        .iter()
+        .filter(|path| fs::remove_file(path).is_ok())
+        .count()
+}
+
+/// The files beside `exe` that an update wrote under one of `infixes`.
+fn leftovers(exe: &Path, infixes: &[&str]) -> Vec<PathBuf> {
     let (Some(dir), Some(name)) = (exe.parent(), exe.file_name().and_then(|n| n.to_str())) else {
-        return 0;
+        return Vec::new();
     };
     let Ok(entries) = fs::read_dir(dir) else {
-        return 0;
+        return Vec::new();
     };
 
-    let mut removed = 0;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let Some(candidate) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        if is_update_leftover(candidate, name) && fs::remove_file(&path).is_ok() {
-            removed += 1;
-        }
-    }
-    removed
+    entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|candidate| is_update_leftover(candidate, name, infixes))
+        })
+        .collect()
 }
 
 /// `<name><infix><tag>` for the running executable's own name, or for a
 /// release's name: an update that renamed the file left the replaced binary
 /// under the name it had before.
-fn is_update_leftover(candidate: &str, own_name: &str) -> bool {
-    [STAGING_INFIX, RETIRED_INFIX].into_iter().any(|infix| {
+fn is_update_leftover(candidate: &str, own_name: &str, infixes: &[&str]) -> bool {
+    infixes.iter().any(|infix| {
         candidate.starts_with(&format!("{own_name}{infix}"))
             || candidate
                 .split_once(infix)
@@ -701,17 +707,70 @@ fn is_update_leftover(candidate: &str, own_name: &str) -> bool {
     })
 }
 
-/// [`clean_leftovers`] for the running executable.
+/// How many more tries, how far apart, a restarted WinMedic gives the binary
+/// its update replaced. Five seconds is far longer than closing a window takes.
+const RETIRED_ATTEMPTS: u32 = 10;
+const RETIRED_RETRY_INTERVAL: Duration = Duration::from_millis(500);
+
+/// [`clean_leftovers`] for the running executable, plus more tries at a
+/// replaced binary that is still in use.
+///
+/// An update restarts WinMedic while the process it replaced is still closing,
+/// and until that process has exited it keeps the binary mapped. The retries
+/// run on a thread of their own, so the start does not wait for them. Staging
+/// files are not retried: one still in use belongs to an update in flight.
 ///
 /// Best-effort by design and safe to call before anything else in `main`: it
 /// only ever removes files whose name starts with the running executable's own
 /// file name, or a release's `winmedic-v<version>.exe`, plus an update infix
 /// this module writes.
-pub fn clean_leftovers_beside_current_exe() -> usize {
-    match std::env::current_exe() {
-        Ok(exe) => clean_leftovers(&exe),
-        Err(_) => 0,
+pub fn sweep_leftovers_beside_current_exe() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    clean_leftovers(&exe);
+    if leftovers(&exe, &[RETIRED_INFIX]).is_empty() {
+        return;
     }
+    std::thread::spawn(move || delete_retired(&exe, RETIRED_ATTEMPTS, RETIRED_RETRY_INTERVAL));
+}
+
+/// Try up to `attempts` times, `interval` apart, to delete the replaced
+/// binaries beside `exe`. Returns whether none is left.
+fn delete_retired(exe: &Path, attempts: u32, interval: Duration) -> bool {
+    for _ in 0..attempts {
+        std::thread::sleep(interval);
+        if leftovers(exe, &[RETIRED_INFIX])
+            .iter()
+            .all(|path| fs::remove_file(path).is_ok())
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Start the binary an update installed, as the desktop window.
+///
+/// No arguments: the user asked for the update from the window, so the window
+/// is what comes back, even when this process was started minimized by
+/// `--autostart`. It inherits this process's token, so an elevated WinMedic
+/// comes back elevated without a second UAC prompt.
+///
+/// `CREATE_NO_WINDOW` because this process has already given its console back
+/// (see [`crate::utils::console`]): a plain spawn would open a console window
+/// for the new process that flashes up before it gives that one back too.
+pub fn start_installed(exe: &Path) -> Result<(), String> {
+    let mut cmd = std::process::Command::new(exe);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not start {}: {e}", exe.display()))
 }
 
 /// The app's seam onto replacing its own executable.
@@ -1206,8 +1265,42 @@ mod tests {
         let planted = PathBuf::from(planted);
         fs::write(&planted, "a retired build").expect("failed to plant a leftover");
 
-        assert!(clean_leftovers_beside_current_exe() >= 1);
+        sweep_leftovers_beside_current_exe();
         assert!(!planted.exists(), "the startup sweep missed {:?}", planted);
+    }
+
+    /// The process an update replaced is still closing when the new one
+    /// starts, and holds the retired binary until it has exited. The retry
+    /// waits that out, and never touches a staging file.
+    #[cfg(windows)]
+    #[test]
+    fn a_retired_binary_still_in_use_is_deleted_once_it_is_released() {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 0x1;
+
+        let dir = TempDir::new("retired_in_use");
+        let exe = dir.file("winmedic.exe", "current");
+        let retired = dir.file("winmedic.exe.old-v0.3.1", "retired");
+        let staged = dir.file("winmedic.exe.new-v0.3.2", "staged");
+
+        // No FILE_SHARE_DELETE: refuses deletion the way a mapped image does.
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&retired)
+            .unwrap();
+        assert!(!delete_retired(&exe, 2, Duration::from_millis(10)));
+        assert!(retired.exists());
+
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            drop(held);
+        });
+        assert!(delete_retired(&exe, 40, Duration::from_millis(50)));
+        release.join().unwrap();
+
+        assert!(!retired.exists());
+        assert!(staged.exists(), "the retry deleted a staging file");
     }
 
     #[test]

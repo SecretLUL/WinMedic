@@ -8,7 +8,7 @@ use crate::config::AppConfig;
 use crate::safety::reg_backup::RegBackupManager;
 use crate::safety::restore_point::RestorePointService;
 use crate::utils::admin::relaunch_as_admin;
-use crate::utils::self_update::{InstallPlan, SelfUpdateService};
+use crate::utils::self_update::{self, InstallPlan, SelfUpdateService};
 use crate::utils::updater::{self, UpdateDownload};
 
 use super::BackgroundEvent;
@@ -43,6 +43,9 @@ pub struct SystemActions {
     /// test that accepts the update dialog must not start downloading
     /// executables onto the machine running the suite.
     pub self_update: SelfUpdateService,
+    /// Start the executable an update just installed, so the new version is
+    /// running without the user starting it again.
+    pub start_installed_update: fn(&std::path::Path) -> Result<(), String>,
     /// Where a repair run's restore point comes from. Read when the engine is
     /// built, so changing it means rebuilding the engine — which is why
     /// [`App::enable_real_system_actions`] exists instead of a plain
@@ -92,6 +95,7 @@ impl SystemActions {
             open_release_page: updater::launch_browser,
             relaunch_elevated: relaunch_as_admin,
             self_update: SelfUpdateService::real(),
+            start_installed_update: self_update::start_installed,
             restore_point: RestorePointService::real(),
             restart_system: real_restart_system,
             persist_scan_state: true,
@@ -108,6 +112,7 @@ impl SystemActions {
             open_release_page: |_| Ok(()),
             relaunch_elevated: || Ok(()),
             self_update: SelfUpdateService::inert(),
+            start_installed_update: |_| Ok(()),
             restore_point: RestorePointService::inert(),
             restart_system: || Ok(()),
             persist_scan_state: false,
@@ -171,7 +176,7 @@ impl ConfirmRequest {
             ConfirmRequest::Elevate => "Restart as Administrator now",
             ConfirmRequest::UpdateAvailable {
                 download: Some(_), ..
-            } => "Download, verify and install it",
+            } => "Download and restart",
             ConfirmRequest::UpdateAvailable { download: None, .. } => {
                 "Open the release page in a browser"
             }
@@ -243,8 +248,6 @@ impl ConfirmRequest {
                         String::new(),
                         "If the checksum does not match, nothing is replaced and the".to_string(),
                         "release page opens in your browser instead.".to_string(),
-                        String::new(),
-                        "The running WinMedic keeps working until you restart it.".to_string(),
                     ]),
                     // No checksum, no in-place install: there would be nothing
                     // to hold the downloaded bytes to.
@@ -453,6 +456,29 @@ impl App {
         });
     }
 
+    /// Start the installed update and close this window, once nothing is
+    /// running that closing it would cut short.
+    ///
+    /// The download can finish in the middle of a scan, a repair run or a
+    /// registry restore, and ending the process there would leave a repair half
+    /// done. So the restart waits for it; this runs every frame.
+    pub(super) fn restart_into_update_when_idle(&mut self) {
+        if self.is_busy() || self.is_restoring {
+            return;
+        }
+        let Some(exe) = self.restart_into.take() else {
+            return;
+        };
+        match (self.system_actions.start_installed_update)(&exe) {
+            Ok(()) => self.should_quit = true,
+            Err(e) => {
+                self.status_message = Some(format!(
+                    "The update is installed, but it could not be started ({e}). Restart WinMedic to run it."
+                ));
+            }
+        }
+    }
+
     /// Execute whatever action the confirmation dialog was asking about.
     pub fn confirm_pending_action(&mut self) {
         let Some(request) = self.pending_confirm.take() else {
@@ -538,6 +564,11 @@ mod tests {
         assert!(
             (actions.relaunch_elevated)().is_ok(),
             "App::new installed the real UAC relaunch"
+        );
+        // The real one fails to start a file that does not exist.
+        assert!(
+            (actions.start_installed_update)(std::path::Path::new("definitely not an exe")).is_ok(),
+            "App::new installed the real restart into an update"
         );
         assert!(
             !actions.restore_point.is_live(),
@@ -630,10 +661,7 @@ mod tests {
     #[test]
     fn the_dialog_offers_an_install_only_when_the_release_can_be_verified() {
         let verifiable = update_request(Some(a_download()));
-        assert_eq!(
-            verifiable.confirm_label(),
-            "Download, verify and install it"
-        );
+        assert_eq!(verifiable.confirm_label(), "Download and restart");
         let body = verifiable.body().join("\n");
         assert!(body.contains("winmedic-v0.2.0.exe"), "{}", body);
         assert!(body.contains("SHA256"), "{}", body);
