@@ -22,7 +22,8 @@ pub mod views;
 pub mod window;
 
 use crate::app::{App, TAB_SETTINGS, handle_key};
-use eframe::egui;
+use crate::utils::updater::UpdateInfo;
+use eframe::egui::{self, RichText};
 use std::time::{Duration, Instant};
 
 /// Navigation destinations, in the order of the `TAB_*` constants.
@@ -64,6 +65,16 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
         navigation(ui, app);
         ui.add_space(4.0);
     });
+
+    if let Some(update) = app.available_update.clone() {
+        egui::Panel::top("update_banner")
+            .frame(
+                egui::Frame::NONE
+                    .fill(ui.visuals().selection.bg_fill)
+                    .inner_margin(egui::Margin::symmetric(12, 8)),
+            )
+            .show(ui, |ui| update_banner(ui, app, &update));
+    }
 
     egui::Panel::bottom("status_bar").show(ui, |ui| status_bar(ui, app));
 
@@ -145,6 +156,50 @@ fn navigation(ui: &mut egui::Ui, app: &mut App) {
             }
         });
     });
+}
+
+/// An update WinMedic has not installed yet, across the top of both modes.
+///
+/// A repair tool that is behind repairs with yesterday's fixes, so this is
+/// not left to the status line, which the next message overwrites. It stays
+/// until the update is installed: "Remind me later" closes the dialog, not
+/// this. It does not open the dialog by itself — a dialog that appears while
+/// someone types takes the keystrokes meant for something else.
+fn update_banner(ui: &mut egui::Ui, app: &mut App, update: &UpdateInfo) {
+    let text = ui.visuals().selection.stroke.color;
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new("Even medics need their booster shot.")
+                .strong()
+                .size(15.0)
+                .color(text),
+        );
+        ui.label(
+            RichText::new(format!(
+                "WinMedic {} is ready, you have {}.",
+                version(&update.latest_version),
+                version(&update.current_version)
+            ))
+            .color(text),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if app.is_updating {
+                ui.label(RichText::new("Updating...").color(text));
+                ui.spinner();
+            } else if ui
+                .add(egui::Button::new(RichText::new("Update now").strong()))
+                .on_hover_text("U")
+                .clicked()
+            {
+                app.show_update_notice();
+            }
+        });
+    });
+}
+
+/// `v0.5.3`, however the release was tagged.
+fn version(tag: &str) -> String {
+    format!("v{}", tag.trim_start_matches(['v', 'V']))
 }
 
 fn status_bar(ui: &mut egui::Ui, app: &mut App) {
@@ -976,6 +1031,70 @@ mod tests {
             harness.state().pending_confirm,
             Some(ConfirmRequest::RestartRequired { .. })
         ));
+    }
+
+    fn with_update(mut app: App) -> App {
+        app.available_update = Some(UpdateInfo {
+            current_version: "0.5.2".to_string(),
+            latest_version: "v0.5.3".to_string(),
+            release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.5.3".to_string(),
+            release_name: None,
+            release_body: None,
+            download: None,
+        });
+        app
+    }
+
+    const BOOSTER: &str = "Even medics need their booster shot.";
+
+    /// An update is announced across the top of either mode, not only in the
+    /// status line, and the banner leads to the update dialog.
+    #[test]
+    fn an_available_update_gets_a_banner_that_opens_the_dialog() {
+        for app in [with_update(scanned_app()), with_update(easy_scanned_app())] {
+            let mut harness = window(app);
+            assert!(harness.query_by_label(BOOSTER).is_some());
+            assert!(
+                harness
+                    .query_by_label("WinMedic v0.5.3 is ready, you have v0.5.2.")
+                    .is_some()
+            );
+
+            harness.get_by_label("Update now").click();
+            harness.run_steps(2);
+            assert!(matches!(
+                harness.state().pending_confirm,
+                Some(ConfirmRequest::UpdateAvailable { .. })
+            ));
+        }
+    }
+
+    /// "Remind me later" closes the dialog; the banner stays until the update
+    /// is installed.
+    #[test]
+    fn the_banner_stays_after_remind_me_later() {
+        let mut app = with_update(scanned_app());
+        app.show_update_notice();
+        app.dismiss_confirm();
+        let harness = window(app);
+        assert!(harness.query_by_label(BOOSTER).is_some());
+        assert!(harness.query_by_label("Update now").is_some());
+    }
+
+    #[test]
+    fn no_update_no_banner() {
+        let harness = window(scanned_app());
+        assert!(harness.query_by_label(BOOSTER).is_none());
+    }
+
+    /// Easy mode locks the window at its smallest size; the banner has to fit.
+    #[test]
+    fn the_banner_fits_the_smallest_window() {
+        let size = (window::MIN_SIZE.x, window::MIN_SIZE.y);
+        let harness = sized_window(with_update(easy_scanned_app()), size);
+        let button = harness.get_by_label("Update now").rect();
+        assert!(button.right() <= size.0, "{button:?}");
+        assert!(harness.query_by_label("Help").is_some());
     }
 
     /// Where the user asked for it: top right, left of "Export report". It is
