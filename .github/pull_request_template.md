@@ -2,6 +2,8 @@
 
 <!-- What is different after this pull request, and why is it needed? -->
 
+<!-- Label it: see "Labels" in CONTRIBUTING.md. Without a label the check fails. -->
+
 ## Related issue
 
 <!-- e.g. Closes #12 -->

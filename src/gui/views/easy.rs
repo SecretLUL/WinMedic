@@ -169,6 +169,18 @@ fn patience(ui: &mut egui::Ui, app: &App, elapsed: Duration) {
         });
 }
 
+/// Whether the page is the restart prompt itself: after a scan or a repair,
+/// with a restart all that is left. The restart banner stays away then, or
+/// the window would ask twice.
+pub(crate) fn asks_for_restart(app: &App) -> bool {
+    !app.config.advanced_mode
+        && !app.is_scanning
+        && !app.is_fixing
+        && has_scanned(app)
+        && app.has_pending_reboot()
+        && app.issues.iter().all(|i| i.is_fixed || i.is_reboot_pending)
+}
+
 /// After a scan or a repair: how the PC is doing, and the next step.
 fn result(ui: &mut egui::Ui, app: &mut App) {
     let palette = theme::palette(ui);
@@ -180,9 +192,8 @@ fn result(ui: &mut egui::Ui, app: &mut App) {
         .collect();
     let problems = open.len();
     let to_repair = selected_for_repair(app);
-    let restarts = app.issues.iter().filter(|i| i.is_reboot_pending).count();
 
-    if problems == 0 && restarts > 0 {
+    if asks_for_restart(app) {
         headline(ui, "Almost done", Some(palette.amber));
         ui.add_space(4.0);
         line(ui, "Restart Windows to finish the repair.");

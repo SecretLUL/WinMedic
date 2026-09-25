@@ -280,14 +280,6 @@ fn notices(ui: &mut egui::Ui, app: &mut App) {
         });
     }
 
-    let restarts = app.issues.iter().filter(|i| i.is_reboot_pending).count();
-    if restarts > 0 {
-        ui.colored_label(
-            palette.amber,
-            format!("Restart Windows to finish {}.", plural(restarts, "repair")),
-        );
-    }
-
     if !app.is_scanning {
         for (_, name, _, status) in &app.module_statuses {
             if let ModuleStatus::Failed(reason) = status {
@@ -394,7 +386,7 @@ fn checks(ui: &mut egui::Ui, app: &mut App) {
         });
 }
 
-pub(super) fn plural(count: usize, noun: &str) -> String {
+pub(crate) fn plural(count: usize, noun: &str) -> String {
     if count == 1 {
         format!("1 {noun}")
     } else {
