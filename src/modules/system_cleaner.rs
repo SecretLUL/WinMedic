@@ -919,15 +919,329 @@ impl DiagnosticModule for SystemCleanerModule {
             .await;
         }
 
-        // 1. WinSxS Component Store Deep Clean
+        // 1. Delivery Optimization (WUDO) Cache
+        Self::send_progress(
+            &progress_tx,
+            22,
+            "Checking the Delivery Optimization (WUDO) cache...",
+            Some("Scanning the WUDO cache directories..."),
+        )
+        .await;
+
+        let sys_root = self.paths.sys_root.clone();
+        let wudo_dirs = discover_delivery_optimization_dirs(&sys_root);
+        let wudo_stats = Self::scan_dirs(wudo_dirs).await;
+
+        if worth_reporting(wudo_stats, MIN_REPORTABLE_CLEANUP_BYTES) {
+            issues.push(Issue::new(
+                "sys_clean_delivery_optimization",
+                self.id(),
+                format!(
+                    "Delivery Optimization (WUDO) cache ({}, {} files)",
+                    format_bytes(wudo_stats.bytes),
+                    wudo_stats.files
+                ),
+                "System & Cache Cleaner",
+                Severity::Info,
+                RiskScore::Low,
+                "Windows Update Delivery Optimization (WUDO) stores downloaded update fragments for peer-to-peer distribution on the local network.",
+                format!(
+                    "WUDO cache size: {} across {} files",
+                    format_bytes(wudo_stats.bytes),
+                    wudo_stats.files
+                ),
+                "Clean the WUDO cache files and run the cleanup cmdlet",
+                vec![
+                    "Empty the Delivery Optimization cache directories".to_string(),
+                    "Run PowerShell Delete-DeliveryOptimizationCache -Force".to_string(),
+                ],
+            ).with_reclaimable_bytes(wudo_stats.bytes));
+        }
+
+        // 2. Package Cache Audit
+        Self::send_progress(
+            &progress_tx,
+            34,
+            "Checking the installer package cache...",
+            Some("Scanning %ProgramData%\\Package Cache..."),
+        )
+        .await;
+
+        let prog_data = self.paths.prog_data.clone();
+        let pkg_cache_dir = prog_data.join("Package Cache");
+        let pkg_stats = Self::scan_dirs(vec![pkg_cache_dir]).await;
+
+        if worth_reporting(pkg_stats, MIN_REPORTABLE_CLEANUP_BYTES) {
+            let mut pkg_issue = Issue::new(
+                "sys_clean_package_cache",
+                self.id(),
+                format!(
+                    "Installer package cache ({}, {} files)",
+                    format_bytes(pkg_stats.bytes),
+                    pkg_stats.files
+                ),
+                "System & Cache Cleaner",
+                Severity::Warning,
+                // The fix empties the directory wholesale, including the payloads
+                // of *installed* products — not a low-risk operation.
+                RiskScore::High,
+                "The package cache (%ProgramData%\\Package Cache) holds the install and update payloads (.msi, .cab, .exe) of Visual Studio, WiX, VC++ redistributables and .NET. WARNING: this cleanup removes the entire folder contents, not just orphaned packages.",
+                format!(
+                    "Package cache size: {} across {} files under %ProgramData%\\Package Cache",
+                    format_bytes(pkg_stats.bytes),
+                    pkg_stats.files
+                ),
+                "Empty the whole package cache — repairing, changing or uninstalling the affected products then requires the original installers",
+                vec![
+                    "Empty %ProgramData%\\Package Cache completely (locked files are skipped)".to_string(),
+                    "Re-download the Visual Studio / VC++ redistributable installers afterwards if needed".to_string(),
+                ],
+            );
+            // Not reversible by the VSS checkpoint, so it never runs unattended
+            // under `--auto-fix`; the user has to select it deliberately.
+            pkg_issue.is_selected = false;
+            issues.push(pkg_issue.with_reclaimable_bytes(pkg_stats.bytes));
+        }
+
+        // 3. Browser Caches
+        Self::send_progress(
+            &progress_tx,
+            46,
+            "Checking browser caches (Chrome, Edge, Brave, Opera, Firefox)...",
+            Some("Scanning the installed Chromium and Firefox profiles..."),
+        )
+        .await;
+
+        let local_app_data = self.paths.local_app_data.clone();
+        let app_data = self.paths.app_data.clone();
+        let browser_dirs = discover_browser_cache_dirs(&local_app_data, &app_data);
+        let browser_stats = Self::scan_dirs(browser_dirs).await;
+
+        if worth_reporting(browser_stats, MIN_REPORTABLE_BROWSER_CACHE_BYTES) {
+            issues.push(Issue::new(
+                "sys_clean_browser_cache",
+                self.id(),
+                format!(
+                    "Browser caches (Chrome, Edge, Brave, Opera, Firefox) ({}, {} files)",
+                    format_bytes(browser_stats.bytes),
+                    browser_stats.files
+                ),
+                "System & Cache Cleaner",
+                Severity::Info,
+                RiskScore::Low,
+                "Browsers keep HTTP and script caches for faster load times. These caches can grow to several gigabytes. Chrome, Edge, Brave, every installed Opera flavour and Firefox are covered, across all of their profiles.",
+                format!(
+                    "Total browser cache size: {} across {} files in the detected profiles",
+                    format_bytes(browser_stats.bytes),
+                    browser_stats.files
+                ),
+                "Clean browser caches (files held by active browser sessions are safely skipped)",
+                vec![
+                    "Empty the Chrome / Edge / Brave / Opera / Firefox cache directories".to_string(),
+                ],
+            ).with_reclaimable_bytes(browser_stats.bytes));
+        }
+
+        // 4. Windows Setup & System Logs
+        Self::send_progress(
+            &progress_tx,
+            58,
+            "Checking Windows setup & system logs...",
+            Some("Scanning the Panther, CBS, DISM and MoSetup logs..."),
+        )
+        .await;
+
+        let setup_log_dirs = discover_setup_log_dirs(&sys_root);
+        let setup_log_stats = Self::scan_log_dirs(setup_log_dirs).await;
+
+        if worth_reporting(setup_log_stats, MIN_REPORTABLE_CLEANUP_BYTES) {
+            issues.push(Issue::new(
+                "sys_clean_setup_logs",
+                self.id(),
+                format!(
+                    "Windows setup & system logs ({}, {} files)",
+                    format_bytes(setup_log_stats.bytes),
+                    setup_log_stats.files
+                ),
+                "System & Cache Cleaner",
+                Severity::Info,
+                RiskScore::Low,
+                "Windows setup (Panther/MoSetup), CBS and DISM servicing logs accumulate historical diagnostic reports.",
+                format!(
+                    "Setup and system logs: {} across {} files",
+                    format_bytes(setup_log_stats.bytes),
+                    setup_log_stats.files
+                ),
+                "Remove archived setup, CBS and DISM logs (active system logs are left alone)",
+                vec!["Clean the Panther, CBS, DISM and MoSetup log directories".to_string()],
+            ).with_reclaimable_bytes(setup_log_stats.bytes));
+        }
+
+        // 5. Error Reporting & Crash Dumps
+        Self::send_progress(
+            &progress_tx,
+            70,
+            "Checking Windows error reports & crash dumps...",
+            Some("Scanning the WER archives and CrashDumps..."),
+        )
+        .await;
+
+        let wer_dirs = discover_wer_and_dump_dirs(&local_app_data, &prog_data);
+        let wer_stats = Self::scan_dirs(wer_dirs).await;
+
+        if worth_reporting(wer_stats, MIN_REPORTABLE_CLEANUP_BYTES) {
+            issues.push(Issue::new(
+                "sys_clean_error_reporting",
+                self.id(),
+                format!(
+                    "Windows error reports & crash dumps ({}, {} files)",
+                    format_bytes(wer_stats.bytes),
+                    wer_stats.files
+                ),
+                "System & Cache Cleaner",
+                Severity::Info,
+                RiskScore::Low,
+                "Windows Error Reporting (WER) and minidumps/CrashDumps store crash reports and memory images.",
+                format!(
+                    "Error reports & crash dumps: {} across {} files",
+                    format_bytes(wer_stats.bytes),
+                    wer_stats.files
+                ),
+                "Delete stored crash dumps and WER report archives",
+                vec!["Empty WER ReportArchive, ReportQueue and %LOCALAPPDATA%\\CrashDumps".to_string()],
+            ).with_reclaimable_bytes(wer_stats.bytes));
+        }
+
+        // 6. DirectX Shader & Certificate Caches
+        Self::send_progress(
+            &progress_tx,
+            80,
+            "Checking DirectX shader & certificate caches...",
+            Some("Scanning D3DSCache, DirectX ShaderCache and CryptnetUrlCache..."),
+        )
+        .await;
+
+        let user_profile = self.paths.user_profile.clone();
+        let shader_dirs = discover_shader_and_cert_dirs(&local_app_data, &user_profile);
+        let shader_stats = Self::scan_dirs(shader_dirs).await;
+
+        if worth_reporting(shader_stats, MIN_REPORTABLE_CLEANUP_BYTES) {
+            issues.push(Issue::new(
+                "sys_clean_shader_certs",
+                self.id(),
+                format!(
+                    "DirectX shader & certificate caches ({}, {} files)",
+                    format_bytes(shader_stats.bytes),
+                    shader_stats.files
+                ),
+                "System & Cache Cleaner",
+                Severity::Info,
+                RiskScore::Low,
+                "DirectX shader caches and CryptnetUrlCache (CRL/OCSP certificate validation) store compiled shader bytecode and certificate metadata.",
+                format!(
+                    "Shader & certificate caches: {} across {} files",
+                    format_bytes(shader_stats.bytes),
+                    shader_stats.files
+                ),
+                "Empty stale shader builds and the CRL cache",
+                vec!["Empty D3DSCache, DirectX ShaderCache and CryptnetUrlCache".to_string()],
+            ).with_reclaimable_bytes(shader_stats.bytes));
+        }
+
+        // 7. Windows Recycle Bin
+        Self::send_progress(
+            &progress_tx,
+            90,
+            "Checking the Windows Recycle Bin...",
+            Some("Scanning $Recycle.Bin on the system drives..."),
+        )
+        .await;
+
+        let recycle_dirs = self.paths.recycle_bins.clone();
+        let recycle_stats = Self::scan_dirs_with(recycle_dirs, scan_recycle_bin_contents).await;
+
+        if worth_reporting(recycle_stats, MIN_REPORTABLE_CLEANUP_BYTES) {
+            let mut recycle_issue = Issue::new(
+                "sys_clean_recycle_bin",
+                self.id(),
+                format!(
+                    "Windows Recycle Bin ({}, {} files)",
+                    format_bytes(recycle_stats.bytes),
+                    recycle_stats.files
+                ),
+                "System & Cache Cleaner",
+                Severity::Info,
+                // Emptying the bin destroys user documents outright. The VSS
+                // checkpoint taken before a repair run does not restore user
+                // files, so there is no way back from this one.
+                RiskScore::High,
+                "The Windows Recycle Bin holds deleted files from every local partition. WARNING: emptying it is permanent — not even the system restore point brings these files back.",
+                format!(
+                    "Recycle Bin contents: {} across {} files on the detected drives",
+                    format_bytes(recycle_stats.bytes),
+                    recycle_stats.files
+                ),
+                "Permanently empty the Recycle Bin on every drive (irreversible)",
+                vec!["Run PowerShell Clear-RecycleBin -Force".to_string()],
+            );
+            // Never runs unattended under `--auto-fix` / [A] auto-fix all: the
+            // user has to tick this one themselves.
+            recycle_issue.is_selected = false;
+            issues.push(recycle_issue.with_reclaimable_bytes(recycle_stats.bytes));
+        }
+
+        // 8. Extended System Temp Directories
+        Self::send_progress(
+            &progress_tx,
+            95,
+            "Checking the extended system temp directories...",
+            Some("Scanning systemprofile Temp and SystemTemp..."),
+        )
+        .await;
+
+        let system_temp_dirs = discover_system_temp_dirs(&sys_root);
+        let system_temp_stats = Self::scan_dirs(system_temp_dirs).await;
+
+        if worth_reporting(system_temp_stats, MIN_REPORTABLE_CLEANUP_BYTES) {
+            issues.push(Issue::new(
+                "sys_clean_system_temp",
+                self.id(),
+                format!(
+                    "Extended system temp directories ({}, {} files)",
+                    format_bytes(system_temp_stats.bytes),
+                    system_temp_stats.files
+                ),
+                "System & Cache Cleaner",
+                Severity::Info,
+                RiskScore::Low,
+                "System services (systemprofile) and the Windows SystemTemp directory accumulate temporary data from background services.",
+                format!(
+                    "Extended system temp directories: {} across {} files",
+                    format_bytes(system_temp_stats.bytes),
+                    system_temp_stats.files
+                ),
+                "Clean the extended system temp directories (locked files are skipped)",
+                vec!["Clean systemprofile\\AppData\\Local\\Temp and SystemTemp".to_string()],
+            ).with_reclaimable_bytes(system_temp_stats.bytes));
+        }
+
+        // 9. WinSxS Component Store Deep Clean
         //
         // Reliably the longest step in the whole scan: DISM walks the component
         // store itself and routinely takes a minute or two, during which it says
         // nothing. The step text carries that expectation, because a bar parked
-        // at 10% with no explanation reads as a hang rather than as patience.
+        // with no explanation reads as a hang rather than as patience.
+        //
+        // Last, and only once the other modules' PowerShell calls are through:
+        // it reads the store in small pieces and keeps the disk busy while it
+        // does. As the first step it ran next to them, and on CI runners the
+        // disk's latency rose from 3 ms to 52 ms on average - Task Scheduler,
+        // WMI and even fsutil queries timed out twice over, at a few percent
+        // CPU.
+        self.runner.after_pending_powershell().await;
         Self::send_progress(
             &progress_tx,
-            10,
+            97,
             "Analysing the WinSxS component store (DISM, 1-2 min)...",
             Some("dism.exe /Online /Cleanup-Image /AnalyzeComponentStore /English"),
         )
@@ -991,7 +1305,7 @@ impl DiagnosticModule for SystemCleanerModule {
             } else if analysis.cleanup_recommended {
                 Self::send_progress(
                     &progress_tx,
-                    18,
+                    99,
                     "Component store cleanup has nothing to reclaim",
                     Some(&format!(
                         "DISM recommends a component store cleanup but reports 0 reclaimable packages{}. StartComponentCleanup has nothing to remove; that size sits in backups and disabled features, which only '/ResetBase' reclaims - at the price of no longer being able to uninstall any installed update. No finding raised.",
@@ -1004,312 +1318,6 @@ impl DiagnosticModule for SystemCleanerModule {
                 )
                 .await;
             }
-        }
-
-        // 2. Delivery Optimization (WUDO) Cache
-        Self::send_progress(
-            &progress_tx,
-            22,
-            "Checking the Delivery Optimization (WUDO) cache...",
-            Some("Scanning the WUDO cache directories..."),
-        )
-        .await;
-
-        let sys_root = self.paths.sys_root.clone();
-        let wudo_dirs = discover_delivery_optimization_dirs(&sys_root);
-        let wudo_stats = Self::scan_dirs(wudo_dirs).await;
-
-        if worth_reporting(wudo_stats, MIN_REPORTABLE_CLEANUP_BYTES) {
-            issues.push(Issue::new(
-                "sys_clean_delivery_optimization",
-                self.id(),
-                format!(
-                    "Delivery Optimization (WUDO) cache ({}, {} files)",
-                    format_bytes(wudo_stats.bytes),
-                    wudo_stats.files
-                ),
-                "System & Cache Cleaner",
-                Severity::Info,
-                RiskScore::Low,
-                "Windows Update Delivery Optimization (WUDO) stores downloaded update fragments for peer-to-peer distribution on the local network.",
-                format!(
-                    "WUDO cache size: {} across {} files",
-                    format_bytes(wudo_stats.bytes),
-                    wudo_stats.files
-                ),
-                "Clean the WUDO cache files and run the cleanup cmdlet",
-                vec![
-                    "Empty the Delivery Optimization cache directories".to_string(),
-                    "Run PowerShell Delete-DeliveryOptimizationCache -Force".to_string(),
-                ],
-            ).with_reclaimable_bytes(wudo_stats.bytes));
-        }
-
-        // 3. Package Cache Audit
-        Self::send_progress(
-            &progress_tx,
-            34,
-            "Checking the installer package cache...",
-            Some("Scanning %ProgramData%\\Package Cache..."),
-        )
-        .await;
-
-        let prog_data = self.paths.prog_data.clone();
-        let pkg_cache_dir = prog_data.join("Package Cache");
-        let pkg_stats = Self::scan_dirs(vec![pkg_cache_dir]).await;
-
-        if worth_reporting(pkg_stats, MIN_REPORTABLE_CLEANUP_BYTES) {
-            let mut pkg_issue = Issue::new(
-                "sys_clean_package_cache",
-                self.id(),
-                format!(
-                    "Installer package cache ({}, {} files)",
-                    format_bytes(pkg_stats.bytes),
-                    pkg_stats.files
-                ),
-                "System & Cache Cleaner",
-                Severity::Warning,
-                // The fix empties the directory wholesale, including the payloads
-                // of *installed* products — not a low-risk operation.
-                RiskScore::High,
-                "The package cache (%ProgramData%\\Package Cache) holds the install and update payloads (.msi, .cab, .exe) of Visual Studio, WiX, VC++ redistributables and .NET. WARNING: this cleanup removes the entire folder contents, not just orphaned packages.",
-                format!(
-                    "Package cache size: {} across {} files under %ProgramData%\\Package Cache",
-                    format_bytes(pkg_stats.bytes),
-                    pkg_stats.files
-                ),
-                "Empty the whole package cache — repairing, changing or uninstalling the affected products then requires the original installers",
-                vec![
-                    "Empty %ProgramData%\\Package Cache completely (locked files are skipped)".to_string(),
-                    "Re-download the Visual Studio / VC++ redistributable installers afterwards if needed".to_string(),
-                ],
-            );
-            // Not reversible by the VSS checkpoint, so it never runs unattended
-            // under `--auto-fix`; the user has to select it deliberately.
-            pkg_issue.is_selected = false;
-            issues.push(pkg_issue.with_reclaimable_bytes(pkg_stats.bytes));
-        }
-
-        // 4. Browser Caches
-        Self::send_progress(
-            &progress_tx,
-            46,
-            "Checking browser caches (Chrome, Edge, Brave, Opera, Firefox)...",
-            Some("Scanning the installed Chromium and Firefox profiles..."),
-        )
-        .await;
-
-        let local_app_data = self.paths.local_app_data.clone();
-        let app_data = self.paths.app_data.clone();
-        let browser_dirs = discover_browser_cache_dirs(&local_app_data, &app_data);
-        let browser_stats = Self::scan_dirs(browser_dirs).await;
-
-        if worth_reporting(browser_stats, MIN_REPORTABLE_BROWSER_CACHE_BYTES) {
-            issues.push(Issue::new(
-                "sys_clean_browser_cache",
-                self.id(),
-                format!(
-                    "Browser caches (Chrome, Edge, Brave, Opera, Firefox) ({}, {} files)",
-                    format_bytes(browser_stats.bytes),
-                    browser_stats.files
-                ),
-                "System & Cache Cleaner",
-                Severity::Info,
-                RiskScore::Low,
-                "Browsers keep HTTP and script caches for faster load times. These caches can grow to several gigabytes. Chrome, Edge, Brave, every installed Opera flavour and Firefox are covered, across all of their profiles.",
-                format!(
-                    "Total browser cache size: {} across {} files in the detected profiles",
-                    format_bytes(browser_stats.bytes),
-                    browser_stats.files
-                ),
-                "Clean browser caches (files held by active browser sessions are safely skipped)",
-                vec![
-                    "Empty the Chrome / Edge / Brave / Opera / Firefox cache directories".to_string(),
-                ],
-            ).with_reclaimable_bytes(browser_stats.bytes));
-        }
-
-        // 5. Windows Setup & System Logs
-        Self::send_progress(
-            &progress_tx,
-            58,
-            "Checking Windows setup & system logs...",
-            Some("Scanning the Panther, CBS, DISM and MoSetup logs..."),
-        )
-        .await;
-
-        let setup_log_dirs = discover_setup_log_dirs(&sys_root);
-        let setup_log_stats = Self::scan_log_dirs(setup_log_dirs).await;
-
-        if worth_reporting(setup_log_stats, MIN_REPORTABLE_CLEANUP_BYTES) {
-            issues.push(Issue::new(
-                "sys_clean_setup_logs",
-                self.id(),
-                format!(
-                    "Windows setup & system logs ({}, {} files)",
-                    format_bytes(setup_log_stats.bytes),
-                    setup_log_stats.files
-                ),
-                "System & Cache Cleaner",
-                Severity::Info,
-                RiskScore::Low,
-                "Windows setup (Panther/MoSetup), CBS and DISM servicing logs accumulate historical diagnostic reports.",
-                format!(
-                    "Setup and system logs: {} across {} files",
-                    format_bytes(setup_log_stats.bytes),
-                    setup_log_stats.files
-                ),
-                "Remove archived setup, CBS and DISM logs (active system logs are left alone)",
-                vec!["Clean the Panther, CBS, DISM and MoSetup log directories".to_string()],
-            ).with_reclaimable_bytes(setup_log_stats.bytes));
-        }
-
-        // 6. Error Reporting & Crash Dumps
-        Self::send_progress(
-            &progress_tx,
-            70,
-            "Checking Windows error reports & crash dumps...",
-            Some("Scanning the WER archives and CrashDumps..."),
-        )
-        .await;
-
-        let wer_dirs = discover_wer_and_dump_dirs(&local_app_data, &prog_data);
-        let wer_stats = Self::scan_dirs(wer_dirs).await;
-
-        if worth_reporting(wer_stats, MIN_REPORTABLE_CLEANUP_BYTES) {
-            issues.push(Issue::new(
-                "sys_clean_error_reporting",
-                self.id(),
-                format!(
-                    "Windows error reports & crash dumps ({}, {} files)",
-                    format_bytes(wer_stats.bytes),
-                    wer_stats.files
-                ),
-                "System & Cache Cleaner",
-                Severity::Info,
-                RiskScore::Low,
-                "Windows Error Reporting (WER) and minidumps/CrashDumps store crash reports and memory images.",
-                format!(
-                    "Error reports & crash dumps: {} across {} files",
-                    format_bytes(wer_stats.bytes),
-                    wer_stats.files
-                ),
-                "Delete stored crash dumps and WER report archives",
-                vec!["Empty WER ReportArchive, ReportQueue and %LOCALAPPDATA%\\CrashDumps".to_string()],
-            ).with_reclaimable_bytes(wer_stats.bytes));
-        }
-
-        // 7. DirectX Shader & Certificate Caches
-        Self::send_progress(
-            &progress_tx,
-            80,
-            "Checking DirectX shader & certificate caches...",
-            Some("Scanning D3DSCache, DirectX ShaderCache and CryptnetUrlCache..."),
-        )
-        .await;
-
-        let user_profile = self.paths.user_profile.clone();
-        let shader_dirs = discover_shader_and_cert_dirs(&local_app_data, &user_profile);
-        let shader_stats = Self::scan_dirs(shader_dirs).await;
-
-        if worth_reporting(shader_stats, MIN_REPORTABLE_CLEANUP_BYTES) {
-            issues.push(Issue::new(
-                "sys_clean_shader_certs",
-                self.id(),
-                format!(
-                    "DirectX shader & certificate caches ({}, {} files)",
-                    format_bytes(shader_stats.bytes),
-                    shader_stats.files
-                ),
-                "System & Cache Cleaner",
-                Severity::Info,
-                RiskScore::Low,
-                "DirectX shader caches and CryptnetUrlCache (CRL/OCSP certificate validation) store compiled shader bytecode and certificate metadata.",
-                format!(
-                    "Shader & certificate caches: {} across {} files",
-                    format_bytes(shader_stats.bytes),
-                    shader_stats.files
-                ),
-                "Empty stale shader builds and the CRL cache",
-                vec!["Empty D3DSCache, DirectX ShaderCache and CryptnetUrlCache".to_string()],
-            ).with_reclaimable_bytes(shader_stats.bytes));
-        }
-
-        // 8. Windows Recycle Bin
-        Self::send_progress(
-            &progress_tx,
-            90,
-            "Checking the Windows Recycle Bin...",
-            Some("Scanning $Recycle.Bin on the system drives..."),
-        )
-        .await;
-
-        let recycle_dirs = self.paths.recycle_bins.clone();
-        let recycle_stats = Self::scan_dirs_with(recycle_dirs, scan_recycle_bin_contents).await;
-
-        if worth_reporting(recycle_stats, MIN_REPORTABLE_CLEANUP_BYTES) {
-            let mut recycle_issue = Issue::new(
-                "sys_clean_recycle_bin",
-                self.id(),
-                format!(
-                    "Windows Recycle Bin ({}, {} files)",
-                    format_bytes(recycle_stats.bytes),
-                    recycle_stats.files
-                ),
-                "System & Cache Cleaner",
-                Severity::Info,
-                // Emptying the bin destroys user documents outright. The VSS
-                // checkpoint taken before a repair run does not restore user
-                // files, so there is no way back from this one.
-                RiskScore::High,
-                "The Windows Recycle Bin holds deleted files from every local partition. WARNING: emptying it is permanent — not even the system restore point brings these files back.",
-                format!(
-                    "Recycle Bin contents: {} across {} files on the detected drives",
-                    format_bytes(recycle_stats.bytes),
-                    recycle_stats.files
-                ),
-                "Permanently empty the Recycle Bin on every drive (irreversible)",
-                vec!["Run PowerShell Clear-RecycleBin -Force".to_string()],
-            );
-            // Never runs unattended under `--auto-fix` / [A] auto-fix all: the
-            // user has to tick this one themselves.
-            recycle_issue.is_selected = false;
-            issues.push(recycle_issue.with_reclaimable_bytes(recycle_stats.bytes));
-        }
-
-        // 9. Extended System Temp Directories
-        Self::send_progress(
-            &progress_tx,
-            95,
-            "Checking the extended system temp directories...",
-            Some("Scanning systemprofile Temp and SystemTemp..."),
-        )
-        .await;
-
-        let system_temp_dirs = discover_system_temp_dirs(&sys_root);
-        let system_temp_stats = Self::scan_dirs(system_temp_dirs).await;
-
-        if worth_reporting(system_temp_stats, MIN_REPORTABLE_CLEANUP_BYTES) {
-            issues.push(Issue::new(
-                "sys_clean_system_temp",
-                self.id(),
-                format!(
-                    "Extended system temp directories ({}, {} files)",
-                    format_bytes(system_temp_stats.bytes),
-                    system_temp_stats.files
-                ),
-                "System & Cache Cleaner",
-                Severity::Info,
-                RiskScore::Low,
-                "System services (systemprofile) and the Windows SystemTemp directory accumulate temporary data from background services.",
-                format!(
-                    "Extended system temp directories: {} across {} files",
-                    format_bytes(system_temp_stats.bytes),
-                    system_temp_stats.files
-                ),
-                "Clean the extended system temp directories (locked files are skipped)",
-                vec!["Clean systemprofile\\AppData\\Local\\Temp and SystemTemp".to_string()],
-            ).with_reclaimable_bytes(system_temp_stats.bytes));
         }
 
         Self::send_progress(
@@ -1977,6 +1985,31 @@ The operation completed successfully.";
         let td = TestDir::new("no_browsers");
         let dirs = discover_browser_cache_dirs(&td.path.join("Local"), &td.path.join("Roaming"));
         assert!(dirs.is_empty());
+    }
+
+    /// DISM keeps the disk busy for minutes. Run next to the other modules'
+    /// PowerShell calls, it made them time out on CI runners; it waits for
+    /// them and comes last.
+    #[tokio::test]
+    async fn the_component_store_is_analysed_last_after_the_powershell_calls() {
+        let mock = MockCommandRunner::with_default_success();
+        let td = TestDir::new("winsxs_last");
+        sandboxed(&td, Arc::new(mock.clone()))
+            .scan(None)
+            .await
+            .unwrap();
+
+        let executed = mock.executed();
+        let dism = executed
+            .iter()
+            .position(|cmd| cmd.contains("AnalyzeComponentStore"))
+            .expect("DISM ran");
+        assert_eq!(dism, executed.len() - 1, "{executed:?}");
+        assert_eq!(
+            executed[dism - 1],
+            MockCommandRunner::WAITED_FOR_POWERSHELL,
+            "{executed:?}"
+        );
     }
 
     #[tokio::test]
