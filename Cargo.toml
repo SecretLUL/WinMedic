@@ -41,6 +41,7 @@ colored = "3.0"
 regex = "1.11"
 dirs = "7.0"
 windows-sys = { version = "0.61", features = [
+    "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Foundation",
     "Win32_Globalization",
     "Win32_Security",

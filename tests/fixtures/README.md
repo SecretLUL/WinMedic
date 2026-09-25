@@ -45,6 +45,8 @@ Captured on Windows 11 Pro 10.0.26200, German display language, OEM code page
 | `reg_query_power.bin` | `reg query "HKLM\SYSTEM\CurrentControlSet\Control\Power"` | CP850 | `HibernateEnabled` 1, subkeys listed without values. |
 | `reg_query_memory_management.bin` | `reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management"` | CP850 | Captured 2026-09-25. `PagingFiles` is `?:\pagefile.sys` while `Win32_ComputerSystem` reports `AutomaticManagedPagefile` True: "Automatically manage paging file size for all drives". The tests replace it with an empty list. A `REG_MULTI_SZ` with several entries prints them joined by a literal `\0` (seen on `ServiceGroupOrder\List`). |
 | `reg_query_missing_key_de.bin` | `reg query` of a key that does not exist (stderr, exit 1) | CP850 | The only translated part of `reg`'s output. |
+| `pnputil_restart_device_denied_de.bin` | `pnputil /restart-device` of the Brio's interface, unelevated | Windows-1252 | Captured 2026-09-25. "Zugriff verweigert", yet **exit 0**: only the device's state afterwards tells whether a restart worked. pnputil writes in the ANSI code page (`ä` is `0xE4`), not the OEM one. |
+| `pnputil_scan_devices_denied_de.bin` | `pnputil /scan-devices`, unelevated | Windows-1252 | Captured 2026-09-25. Exit 5 (access denied). |
 
 Captured elevated on 2026-09-25, read-only commands, with the time each piece
 of the pipe arrived:
@@ -52,6 +54,8 @@ of the pipe arrived:
 | File | Command | Encoding | Notes |
 | --- | --- | --- | --- |
 | `dism_scanhealth_progress.bin` | `dism /English /Online /Cleanup-Image /ScanHealth` | ASCII | Every step of the bar is a line of its own, `\r[====  4.9%  ] \r\n`, written the moment it changes: 64-byte pieces over 65 seconds, 4.9% to 100.0%. Ends with "The component store is repairable." |
+| `pnputil_scan_devices_elevated_de.bin` | `pnputil /scan-devices` | Windows-1252 | Exit 0 in under a second. The two devices without a driver still had none afterwards. |
+| `pnputil_restart_device_no_driver_elevated_de.bin` | `pnputil /restart-device` of the Brio's interface without a driver | Windows-1252 | "Das Gerät wurde erfolgreich neu gestartet.", exit 0 - and the device went on reporting code 28. |
 | `sfc_verifyonly_progress_de.bin` | `sfc /verifyonly` | UTF-16LE | The bar is one line redrawn after `\r`, `Überprüfung 26 % abgeschlossen.`, ended only at 100 %. SFC writes into a pipe in 4 KB blocks, which arrived after 16, 31, 49 and 57 seconds and reach 26, 55, 83 and 100 %; the first one stops mid-word. Exit code 0 although it reports integrity violations. |
 
 ## Files — `files/`

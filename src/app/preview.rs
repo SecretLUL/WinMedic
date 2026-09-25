@@ -16,6 +16,7 @@ pub enum Benefit {
     Updates,
     SystemFiles,
     Internet,
+    Devices,
     WindowsParts,
     Recovery,
     Disk,
@@ -31,6 +32,7 @@ impl Benefit {
             Benefit::Updates => "Windows Update works again",
             Benefit::SystemFiles => "Damaged Windows files are repaired",
             Benefit::Internet => "The internet connection is repaired",
+            Benefit::Devices => "Stopped devices are started again",
             Benefit::WindowsParts => "Switched-off Windows services work again",
             Benefit::Recovery => "Restore points and recovery work again",
             Benefit::Disk => "The disk is checked for errors",
@@ -66,6 +68,8 @@ impl Benefit {
             | "net_proxy_active"
             | "net_offline_warning" => Benefit::Internet,
             _ if id.starts_with("net_no_dhcp_") => Benefit::Internet,
+            // A missing driver is only looked for again, which promises nothing.
+            _ if id.starts_with("dev_failed_") => Benefit::Devices,
             "storage_dirty_bit" => Benefit::Disk,
             "clock_offset" => Benefit::Clock,
             _ if id.starts_with("reg_orphaned_") || id.starts_with("sched_orphaned_") => {
@@ -270,6 +274,18 @@ mod tests {
             Some(Benefit::FreshStart)
         );
         assert_eq!(Benefit::of(&issue("restart_overdue", Severity::Info)), None);
+    }
+
+    #[test]
+    fn a_stopped_device_promises_a_restart_and_a_missing_driver_nothing() {
+        assert_eq!(
+            Benefit::of(&issue("dev_failed_usb_vid_046d", Severity::Warning)),
+            Some(Benefit::Devices)
+        );
+        assert_eq!(
+            Benefit::of(&issue("dev_no_driver_acpi_amdi0204", Severity::Info)),
+            None
+        );
     }
 
     #[test]

@@ -6,6 +6,7 @@ pub mod debug_log;
 pub mod decode;
 pub mod event_xml;
 pub mod fs_stats;
+pub mod pnp;
 pub mod progress;
 pub mod registry;
 pub mod self_update;
