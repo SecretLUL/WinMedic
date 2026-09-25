@@ -17,12 +17,21 @@ on:
       - 'v*'
   release:
     types: [published]
+  # A release takes nothing but the mouse. The dropdown names the kind of step
+  # rather than the number it lands on, because its options are fixed in this
+  # file: showing 0.5.3 there would mean every release rewriting a workflow
+  # file, which RELEASE_TOKEN is deliberately not allowed to do.
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Version to release, e.g. 0.3.3 (a leading "v" is fine)'
+      bump:
+        description: 'Which number of the newest release goes up by one (major.minor.patch)'
         required: true
-        type: string
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
       dry_run:
         description: 'Rehearsal: build and verify everything, but push no tag and publish no release'
         required: false
@@ -65,14 +74,30 @@ jobs:
         id: v
         shell: pwsh
         env:
-          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_BUMP: ${{ inputs.bump }}
           EVENT_TAG: ${{ github.event.release.tag_name }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
           $ErrorActionPreference = 'Stop'
 
           if ($env:EVENT_NAME -eq 'workflow_dispatch') {
-            $version = $env:INPUT_VERSION
+            # Counted from the newest tag, not from Cargo.toml: after a run that
+            # could not bring the branch up, the branch still states the
+            # release before, and counting from it would pick one that shipped.
+            # Pre-release tags such as v1.0.0-rc1 do not count.
+            $latest = git ls-remote --tags origin 'refs/tags/v*' |
+              ForEach-Object { if ($_ -match 'refs/tags/v(\d+\.\d+\.\d+)$') { [version]$Matches[1] } } |
+              Sort-Object -Descending |
+              Select-Object -First 1
+            if (-not $latest) { throw 'No release tag to count from.' }
+
+            $version = switch ($env:INPUT_BUMP) {
+              'major' { "$($latest.Major + 1).0.0" }
+              'minor' { "$($latest.Major).$($latest.Minor + 1).0" }
+              'patch' { "$($latest.Major).$($latest.Minor).$($latest.Build + 1)" }
+              default { throw "Unknown bump: '$env:INPUT_BUMP'" }
+            }
+            Write-Host "$env:INPUT_BUMP after v$latest"
           } else {
             $version = if ($env:EVENT_TAG) { $env:EVENT_TAG } else { $env:GITHUB_REF_NAME }
           }
@@ -88,7 +113,7 @@ jobs:
           # build helps nobody.
           if ($env:EVENT_NAME -eq 'workflow_dispatch') {
             if (git ls-remote --tags origin "refs/tags/$tag") {
-              throw "$tag already exists. Pick a version that has not shipped yet."
+              throw "$tag already exists."
             }
           }
 

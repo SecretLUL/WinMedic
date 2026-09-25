@@ -4,16 +4,20 @@ Maintainer notes. Nothing here is needed to use or build WinMedic.
 
 ## A release
 
+**Run workflow** on `release.yml` in the Actions tab and pick which number goes
+up, counted from the newest release tag: `patch` (0.5.2 → 0.5.3), `minor`
+(→ 0.6.0) or `major` (→ 1.0.0). The same from a terminal:
+
 ```powershell
-gh workflow run release.yml --ref main -f version=0.5.2
+gh workflow run release.yml --ref main -f bump=patch
 ```
 
-Or **Run workflow** on `release.yml` in the Actions tab. It writes the version
-into every file that states it, tags, builds, refuses a binary that does not
-report the tagged version, publishes the release with its `.sha256`, pushes the
-version bump to `main`, and calls `winget.yml`.
+The run writes the version into every file that states it, tags, builds,
+refuses a binary that does not report the tagged version, publishes the release
+with its `.sha256`, pushes the version bump to `main`, and calls `winget.yml`.
+`dry_run` rehearses all of it without tagging or publishing.
 
-- Release notes go in `docs/release-notes/v0.5.2.md`, merged before the run.
+- Release notes go in `docs/release-notes/v0.5.3.md`, merged before the run.
   Without it the notes are generated from the commit list.
 - The bump reaches `main` through the repository secret `RELEASE_TOKEN`: a
   fine-grained personal access token for this repository only, with
