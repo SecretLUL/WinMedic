@@ -99,8 +99,9 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # TEMPORARY, to find out why PowerShell calls in the scan sometimes time
-      # out: every 2 s the CPU load, the busiest processes and how many
-      # powershell.exe are running, from before the build to the end. It
+      # out: every 2 s the CPU load, the disk's throughput, latency and queue,
+      # the processes with the most CPU and I/O, and how many powershell.exe
+      # are running, from before the build to the end. It
       # starts no PowerShell 5.1, WMI or Task Scheduler call itself, so it does
       # not warm up what it is watching.
       - name: Sample the runner (temporary)
@@ -118,29 +119,48 @@ jobs:
           $sampler = Join-Path $env:RUNNER_TEMP 'sampler.ps1'
           Set-Content -Path $sampler -Value @'
           $log = Join-Path $env:RUNNER_TEMP 'runner-samples.txt'
+          Add-Type -Namespace Sampler -Name Io -MemberDefinition '[StructLayout(LayoutKind.Sequential)] public struct Counters { public ulong ReadOps, WriteOps, OtherOps, ReadBytes, WriteBytes, OtherBytes; } [DllImport("kernel32.dll")] public static extern bool GetProcessIoCounters(IntPtr process, out Counters counters);'
+          $disk = '\PhysicalDisk(_Total)\Disk Bytes/sec', '\PhysicalDisk(_Total)\Avg. Disk sec/Transfer', '\PhysicalDisk(_Total)\Current Disk Queue Length'
           $cores = [Environment]::ProcessorCount
-          $seen = @{}
+          $seenCpu = @{}
+          $seenIo = @{}
           $last = [DateTime]::UtcNow
           while ($true) {
-              Start-Sleep -Seconds 2
+              # Get-Counter takes its one-second sample, then a second more.
+              $values = (Get-Counter -Counter $disk -SampleInterval 1 -MaxSamples 1 -ErrorAction SilentlyContinue).CounterSamples.CookedValue
+              Start-Sleep -Seconds 1
               $now = [DateTime]::UtcNow
               $span = ($now - $last).TotalSeconds
               $last = $now
-              $byName = @{}
+              $cpuByName = @{}
+              $ioByName = @{}
               $processes = Get-Process
               foreach ($p in $processes) {
                   $cpu = $p.TotalProcessorTime.TotalSeconds
-                  if ($null -eq $cpu) { continue }
-                  $before = $seen[$p.Id]
-                  $seen[$p.Id] = $cpu
-                  if ($null -eq $before) { continue }
-                  $byName[$p.ProcessName] = ($byName[$p.ProcessName] ?? 0) + ($cpu - $before)
+                  if ($null -ne $cpu) {
+                      $before = $seenCpu[$p.Id]
+                      $seenCpu[$p.Id] = $cpu
+                      if ($null -ne $before) { $cpuByName[$p.ProcessName] = ($cpuByName[$p.ProcessName] ?? 0) + ($cpu - $before) }
+                  }
+                  $counters = [Sampler.Io+Counters]::new()
+                  try { $ok = [Sampler.Io]::GetProcessIoCounters($p.Handle, [ref]$counters) } catch { $ok = $false }
+                  if ($ok) {
+                      $bytes = $counters.ReadBytes + $counters.WriteBytes
+                      $before = $seenIo[$p.Id]
+                      $seenIo[$p.Id] = $bytes
+                      if ($null -ne $before) { $ioByName[$p.ProcessName] = ($ioByName[$p.ProcessName] ?? 0) + ($bytes - $before) }
+                  }
               }
-              $busy = [math]::Round(100 * (($byName.Values | Measure-Object -Sum).Sum) / ($span * $cores))
-              $top = ($byName.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 5 |
+              $busy = [math]::Round(100 * (($cpuByName.Values | Measure-Object -Sum).Sum) / ($span * $cores))
+              $topCpu = ($cpuByName.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 3 |
                   ForEach-Object { '{0} {1:N1}s' -f $_.Key, $_.Value }) -join ', '
+              $topIo = ($ioByName.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 3 |
+                  ForEach-Object { '{0} {1:N1}MB' -f $_.Key, ($_.Value / 1MB) }) -join ', '
               $shells = @($processes | Where-Object ProcessName -eq 'powershell').Count
-              '{0:HH:mm:ss.fff} cpu {1,3}% | powershell.exe {2} | {3}' -f $now, $busy, $shells, $top | Add-Content $log
+              $diskText = if ($values.Count -eq 3) {
+                  '{0,5:N1} MB/s {1,5:N0} ms queue {2,2:N0}' -f ($values[0] / 1MB), ($values[1] * 1000), $values[2]
+              } else { 'no disk counters' }
+              '{0:HH:mm:ss.fff} cpu {1,3}% | disk {2} | powershell.exe {3} | cpu: {4} | io: {5}' -f $now, $busy, $diskText, $shells, $topCpu, $topIo | Add-Content $log
           }
           '@
           Start-Process pwsh -ArgumentList '-NoProfile', '-File', $sampler -WindowStyle Hidden
