@@ -1,4 +1,5 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
+use crate::modules::install_media::{self, Media};
 use crate::modules::{
     DiagnosticModule, FixProgress, ModuleProgress, SERVICING_TIMEOUT, console_lines,
 };
@@ -17,6 +18,38 @@ use tokio::time::sleep;
 const DISM_CHECK_HEALTH_ARGS: &[&str] = &["/English", "/Online", "/Cleanup-Image", "/CheckHealth"];
 const DISM_RESTORE_HEALTH_ARGS: &[&str] =
     &["/English", "/Online", "/Cleanup-Image", "/RestoreHealth"];
+
+/// How long mounting the ISOs and listing their images may take.
+const MEDIA_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// DISM's exit code as it prints it: an HRESULT in hex, a Windows error
+/// number in decimal.
+fn dism_code(code: i32) -> String {
+    if code < 0 {
+        format!("0x{:08X}", code as u32)
+    } else {
+        code.to_string()
+    }
+}
+
+/// Why a DISM run failed: its error code and the message it printed after
+/// `Error: <code>`.
+fn dism_failure(out: &CmdOutput) -> String {
+    let Some(code) = out.exit_code else {
+        return "DISM was terminated".to_string();
+    };
+    let message = out
+        .stdout
+        .lines()
+        .map(str::trim)
+        .skip_while(|line| !line.starts_with("Error:"))
+        .skip(1)
+        .find(|line| !line.is_empty());
+    match message {
+        Some(message) => format!("error {}: {message}", dism_code(code)),
+        None => format!("error {}", dism_code(code)),
+    }
+}
 
 /// How much of the end of CBS.log to read. The log grows to hundreds of
 /// megabytes; the last SFC or DISM run is all that matters, and its summary
@@ -284,6 +317,8 @@ pub struct SystemIntegrityModule {
     runner: Arc<dyn CommandRunner>,
     cbs_log: PathBuf,
     reagent_xml: PathBuf,
+    /// Where a Windows ISO to repair from is looked for.
+    downloads: Option<PathBuf>,
 }
 
 impl Default for SystemIntegrityModule {
@@ -307,6 +342,7 @@ impl SystemIntegrityModule {
             runner,
             cbs_log,
             reagent_xml: default_reagent_xml(),
+            downloads: dirs::download_dir(),
         }
     }
 
@@ -314,6 +350,121 @@ impl SystemIntegrityModule {
     pub fn with_reagent_xml(mut self, path: PathBuf) -> Self {
         self.reagent_xml = path;
         self
+    }
+
+    /// For tests: look for ISOs in `folder` instead of the user's Downloads.
+    pub fn with_downloads(mut self, folder: Option<PathBuf>) -> Self {
+        self.downloads = folder;
+        self
+    }
+
+    /// `DISM /RestoreHealth` from Windows installation media, for when
+    /// Windows Update could not deliver the files: an ISO in Downloads,
+    /// mounted for the run, or media that is mounted or inserted already.
+    async fn restore_health_from_media(
+        &self,
+        first_run: &CmdOutput,
+        log_tx: Option<Sender<String>>,
+    ) -> Result<String, String> {
+        if let Some(tx) = &log_tx {
+            let _ = tx
+                .send(format!(
+                    "Windows Update could not deliver the files ({}). Looking for a Windows ISO in Downloads and on inserted media...",
+                    dism_failure(first_run)
+                ))
+                .await;
+        }
+        let isos = self
+            .downloads
+            .as_deref()
+            .map(install_media::isos_in)
+            .unwrap_or_default();
+        let found = self
+            .runner
+            .run_powershell(&install_media::find_script(&isos), MEDIA_TIMEOUT)
+            .await?;
+        let media = Media::parse(&found.stdout);
+        if let Some(tx) = &log_tx {
+            for failure in &media.failed {
+                let _ = tx.send(format!("Not usable: {failure}")).await;
+            }
+        }
+
+        let result = self.repair_from(&media, first_run, log_tx).await;
+        if !media.mounted.is_empty() {
+            let _ = self
+                .runner
+                .run_powershell(
+                    &install_media::dismount_script(&media.mounted),
+                    Duration::from_secs(60),
+                )
+                .await;
+        }
+        result
+    }
+
+    async fn repair_from(
+        &self,
+        media: &Media,
+        first_run: &CmdOutput,
+        log_tx: Option<Sender<String>>,
+    ) -> Result<String, String> {
+        let (this_windows, page) = media
+            .windows
+            .as_ref()
+            .map_or(("the Windows of this PC".to_string(), "windows11"), |w| {
+                (w.describe(), w.download_page())
+            });
+        let download = format!(
+            "Save the {this_windows} ISO from microsoft.com/software-download/{page} in your Downloads folder, then run this repair again."
+        );
+        let Some(image) = media.best() else {
+            let found = if media.images.is_empty() {
+                String::new()
+            } else {
+                " The Windows installation media found holds no image of this PC's edition."
+                    .to_string()
+            };
+            return Err(format!(
+                "Windows Update could not deliver the files DISM needs (error {}).{found} {download}",
+                dism_code(first_run.exit_code.unwrap_or_default())
+            ));
+        };
+
+        let origin = media.origin(image);
+        if let Some(tx) = &log_tx {
+            let _ = tx
+                .send(format!(
+                    "Repairing from {origin}: image {} ({}, {}, {})",
+                    image.index, image.edition, image.version, image.languages
+                ))
+                .await;
+        }
+        let source = image.dism_source();
+        let mut args = DISM_RESTORE_HEALTH_ARGS.to_vec();
+        args.extend([source.as_str(), "/LimitAccess"]);
+        let out = self
+            .runner
+            .run_streaming("dism.exe", &args, log_tx, SERVICING_TIMEOUT)
+            .await?;
+        if out.success {
+            Ok(format!(
+                "DISM repaired the component store from {origin}; Windows Update could not deliver the files."
+            ))
+        } else if install_media::source_missing(&out) {
+            // The ISO is of the right edition, so what it lacks is the
+            // version: the damage is in files of updates newer than the ISO,
+            // or of older ones later updates replaced. A repair install puts
+            // in the ISO's whole store, and Windows Update follows up.
+            Err(format!(
+                "{origin} does not hold the damaged files' versions either. A repair install from it replaces them and keeps apps and files: open {origin} and run setup.exe."
+            ))
+        } else {
+            Err(format!(
+                "DISM could not repair from {origin}: {}",
+                dism_failure(&out)
+            ))
+        }
     }
 
     fn winre_state(&self) -> Option<bool> {
@@ -394,7 +545,7 @@ impl DiagnosticModule for SystemIntegrityModule {
                         "Repair automatically via DISM /Online /Cleanup-Image /RestoreHealth",
                         vec![
                             "Run DISM RestoreHealth with Windows Update as the repair source".to_string(),
-                            "Synchronise the component store and refresh its cache".to_string(),
+                            "If Windows Update cannot deliver the files: repair from a Windows ISO in Downloads, or from an inserted installation USB stick or DVD".to_string(),
                         ],
                     ));
                 }
@@ -625,7 +776,7 @@ impl DiagnosticModule for SystemIntegrityModule {
                     .run_streaming(
                         "dism.exe",
                         DISM_RESTORE_HEALTH_ARGS,
-                        log_tx,
+                        log_tx.clone(),
                         SERVICING_TIMEOUT,
                     )
                     .await?;
@@ -634,8 +785,10 @@ impl DiagnosticModule for SystemIntegrityModule {
                         "DISM /RestoreHealth completed successfully. Component store repaired."
                             .to_string(),
                     )
+                } else if install_media::source_missing(&out) {
+                    self.restore_health_from_media(&out, log_tx).await
                 } else {
-                    Err(format!("DISM repair failed: {}", out.stderr))
+                    Err(format!("DISM repair failed with {}", dism_failure(&out)))
                 }
             }
             "sys_vss_disabled" => {
@@ -780,6 +933,161 @@ mod tests {
             std::env::temp_dir().join("winmedic-test-no-such-cbs.log"),
         )
         .with_reagent_xml(std::env::temp_dir().join("winmedic-test-no-such-ReAgent.xml"))
+        .with_downloads(None)
+    }
+
+    // DISM /RestoreHealth from the German 25H2 ISO on the development PC,
+    // whose damage was in component versions the ISO does not carry: exit
+    // -2146498283, "Error: 0x800f0915". See tests/fixtures/README.md.
+    const DISM_REPAIR_CONTENT_MISSING: &[u8] = include_bytes!(
+        "../../tests/fixtures/console/dism_restorehealth_repair_content_missing.bin"
+    );
+    // What the media search printed for that ISO, which it mounted, and for
+    // the same ISO mounted already.
+    const MEDIA_MOUNTED_IT: &[u8] =
+        include_bytes!("../../tests/fixtures/console/powershell_install_media_mount.bin");
+    const MEDIA_MOUNTED_ALREADY: &[u8] =
+        include_bytes!("../../tests/fixtures/console/powershell_install_media_mounted.bin");
+    const ISO: &str = r"C:\Users\user\Downloads\Win11_25H2_German_x64_v2.iso";
+
+    /// DISM's answer when it found the repair content nowhere.
+    fn repair_content_missing() -> CmdOutput {
+        CmdOutput::with_output(-2146498283, decode_output(DISM_REPAIR_CONTENT_MISSING), "")
+    }
+
+    /// Windows Update cannot deliver the files; the media search answers
+    /// `media`, and DISM run from it answers `from_media`.
+    fn update_cannot_deliver(media: &str, from_media: CmdOutput) -> MockCommandRunner {
+        let mock = MockCommandRunner::new();
+        mock.add_response("Dismount-DiskImage", CmdOutput::ok(""));
+        mock.add_response("Get-WindowsImage", CmdOutput::ok(media));
+        mock.add_response_after("Get-WindowsImage", "dism.exe", from_media);
+        mock.add_response("dism.exe", repair_content_missing());
+        mock
+    }
+
+    #[test]
+    fn dism_says_why_it_failed_after_its_error_code() {
+        assert_eq!(
+            dism_failure(&repair_content_missing()),
+            "error 0x800F0915: The repair content could not be found anywhere."
+        );
+        let not_a_wim = CmdOutput::with_output(
+            11,
+            decode_output(include_bytes!(
+                "../../tests/fixtures/console/dism_get_wiminfo_not_a_wim.bin"
+            )),
+            "",
+        );
+        assert_eq!(
+            dism_failure(&not_a_wim),
+            "error 11: An attempt was made to load a program with an incorrect format."
+        );
+    }
+
+    #[tokio::test]
+    async fn a_store_windows_update_cannot_repair_is_repaired_from_an_iso() {
+        let mock = update_cannot_deliver(&decode_output(MEDIA_MOUNTED_IT), CmdOutput::ok(""));
+        let msg = module_with(mock.clone())
+            .fix("sys_dism_corrupt", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            msg,
+            "DISM repaired the component store from Win11_25H2_German_x64_v2.iso; Windows Update could not deliver the files."
+        );
+        let ran = mock.executed();
+        let from_iso = ran
+            .iter()
+            .find(|c| c.contains("/Source:"))
+            .expect("DISM ran from the ISO");
+        assert!(
+            from_iso.ends_with(r"/RestoreHealth /Source:wim:D:\sources\install.wim:5 /LimitAccess"),
+            "{from_iso}"
+        );
+        let dismount = ran.last().unwrap();
+        assert!(
+            dismount.contains("Dismount-DiskImage") && dismount.contains(ISO),
+            "{dismount}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_iso_the_user_mounted_stays_mounted() {
+        let mock = update_cannot_deliver(&decode_output(MEDIA_MOUNTED_ALREADY), CmdOutput::ok(""));
+        module_with(mock.clone())
+            .fix("sys_dism_corrupt", None)
+            .await
+            .unwrap();
+        assert!(!mock.executed().iter().any(|c| c.contains("Dismount")));
+    }
+
+    #[tokio::test]
+    async fn without_an_iso_the_repair_says_where_to_get_one() {
+        let this_pc = decode_output(MEDIA_MOUNTED_IT)
+            .lines()
+            .next()
+            .unwrap()
+            .to_string();
+        let mock = update_cannot_deliver(&this_pc, CmdOutput::ok(""));
+        let err = module_with(mock.clone())
+            .fix("sys_dism_corrupt", None)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "Windows Update could not deliver the files DISM needs (error 0x800F0915). Save the Windows 11 25H2 (build 26200) ISO from microsoft.com/software-download/windows11 in your Downloads folder, then run this repair again."
+        );
+        assert!(!mock.executed().iter().any(|c| c.contains("/Source:")));
+        assert!(
+            !mock.executed().iter().any(|c| c.contains("Dismount")),
+            "nothing was mounted"
+        );
+    }
+
+    /// What happened on the development PC.
+    #[tokio::test]
+    async fn an_iso_without_the_damaged_versions_points_to_a_repair_install() {
+        let mock =
+            update_cannot_deliver(&decode_output(MEDIA_MOUNTED_IT), repair_content_missing());
+        let err = module_with(mock.clone())
+            .fix("sys_dism_corrupt", None)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "Win11_25H2_German_x64_v2.iso does not hold the damaged files' versions either. A repair install from it replaces them and keeps apps and files: open Win11_25H2_German_x64_v2.iso and run setup.exe."
+        );
+        assert!(
+            mock.executed()
+                .last()
+                .unwrap()
+                .contains("Dismount-DiskImage")
+        );
+    }
+
+    #[tokio::test]
+    async fn only_a_missing_source_sends_dism_to_the_iso() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "dism.exe",
+            CmdOutput::with_output(
+                740,
+                decode_output(include_bytes!(
+                    "../../tests/fixtures/console/dism_elevation_required_english.bin"
+                )),
+                "",
+            ),
+        );
+        let err = module_with(mock.clone())
+            .fix("sys_dism_corrupt", None)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "DISM repair failed with error 740: Elevated permissions are required to run DISM."
+        );
+        assert_eq!(mock.executed().len(), 1);
     }
 
     /// The ReAgent.xml of a real Windows 11 with the recovery environment on.

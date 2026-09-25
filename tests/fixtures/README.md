@@ -59,6 +59,19 @@ of the pipe arrived:
 | `sfc_scannow_repaired_de.bin` | `sfc /scannow`, 80 seconds | UTF-16LE | "Der Windows-Ressourcenschutz hat beschädigte Dateien gefunden und erfolgreich repariert." Exit 0, like every SFC run captured here. |
 | `sfc_verifyonly_progress_de.bin` | `sfc /verifyonly` | UTF-16LE | The bar is one line redrawn after `\r`, `Überprüfung 26 % abgeschlossen.`, ended only at 100 %. SFC writes into a pipe in 4 KB blocks, which arrived after 16, 31, 49 and 57 seconds and reach 26, 55, 83 and 100 %; the first one stops mid-word. Exit code 0 although it reports integrity violations. |
 
+Captured elevated on 2026-09-25 with the German Windows 11 25H2 ISO from
+microsoft.com (`Win11_25H2_German_x64_v2.iso`, 7.9 GB, its images version
+10.0.26200.8037) in Downloads. The user folder name in the paths was replaced
+with `user`.
+
+| File | Command | Encoding | Notes |
+| --- | --- | --- | --- |
+| `powershell_install_media_mount.bin` | `install_media::find_script` with that ISO, not mounted yet | UTF-8 | `MOUNTED`, the ISO on `D`, and ten `IMAGE` lines from `Core` to `ProfessionalWorkstationN`: the edition id, not the name, tells Pro from Pro N. 27 seconds, most of it PowerShell preparing the storage and DISM modules. |
+| `powershell_install_media_mounted.bin` | the same with the ISO mounted already | UTF-8 | No `MOUNTED` line, so WinMedic leaves it mounted. |
+| `powershell_install_media_not_an_iso.bin` | the same with a text file named `not-an-iso.iso` | UTF-8 | `FAILED` with Windows' translated message. The real ISO was still mounted and is found as drive `D`. |
+| `dism_restorehealth_repair_content_missing.bin` | `dism /English /Online /Cleanup-Image /RestoreHealth /Source:wim:D:\sources\install.wim:5 /LimitAccess` | ASCII | Exit -2146498283, `Error: 0x800f0915` "The repair content could not be found anywhere.", after 81 seconds. CBS.log: 328 damaged payloads, all in 10.0.26100.1591 components that .9278 ones had replaced; the ISO holds neither version, so none was repaired. |
+| `dism_get_wiminfo_not_a_wim.bin` | `dism /English /Get-WimInfo /WimFile:C:\Windows\notepad.exe` | ASCII | Exit 11 for `Error: 11`: DISM exits with the code it prints, an HRESULT as the negative number above. |
+
 ## Files — `files/`
 
 | File | Content |

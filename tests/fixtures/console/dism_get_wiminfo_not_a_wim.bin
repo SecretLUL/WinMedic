@@ -1,0 +1,10 @@
+
+Deployment Image Servicing and Management tool
+Version: 10.0.26100.8972
+
+
+Error: 11
+
+An attempt was made to load a program with an incorrect format.
+
+The DISM log file can be found at C:\WINDOWS\Logs\DISM\dism.log
