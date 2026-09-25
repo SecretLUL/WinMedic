@@ -157,6 +157,62 @@ fn pnp_files(log: &str) -> Vec<(String, bool)> {
     files
 }
 
+/// What an `sfc /scannow` run did, from the lines it added to CBS.log.
+///
+/// SFC exits 0 whether it found nothing, repaired everything or gave up on a
+/// file, and says which in the display language. CBS.log says it in English
+/// on every system.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SfcOutcome {
+    /// Nothing damaged is left. `repaired` holds the files SFC put back, as
+    /// far as it names them.
+    Intact { repaired: Vec<String> },
+    /// SFC could not repair everything; the lines that say what.
+    Unrepaired(String),
+    /// SFC checked nothing: it wrote no `[SR]` line.
+    NotRun,
+}
+
+pub fn sfc_outcome(run_log: &str) -> SfcOutcome {
+    if !run_log.contains("[SR] ") {
+        return SfcOutcome::NotRun;
+    }
+    if let Some(evidence) = cbs_unrepaired_corruption(run_log) {
+        return SfcOutcome::Unrepaired(evidence);
+    }
+    SfcOutcome::Intact {
+        repaired: pnp_files(run_log)
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect(),
+    }
+}
+
+/// What SFC printed after its progress bar, or all of it when it had none:
+/// the paragraph that says why it checked nothing, in the display language.
+fn sfc_message(stdout: &str) -> String {
+    let lines: Vec<&str> = stdout.lines().map(str::trim).collect();
+    let after_progress = lines
+        .iter()
+        .rposition(|line| line.contains('%'))
+        .map_or(0, |at| at + 1);
+    lines[after_progress..]
+        .iter()
+        .skip_while(|line| line.is_empty())
+        .take_while(|line| !line.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// What was added to `path` after it was `from` bytes long. CBS archives a
+/// full log and starts a new one, so a file that got shorter is read whole.
+fn read_since(path: &Path, from: u64) -> std::io::Result<String> {
+    let len = std::fs::metadata(path)?.len();
+    let from = if len >= from { from } else { 0 };
+    read_tail(path, len - from)
+}
+
 fn read_tail(path: &Path, max_bytes: u64) -> std::io::Result<String> {
     use std::io::{Read, Seek, SeekFrom};
 
@@ -650,14 +706,34 @@ impl DiagnosticModule for SystemIntegrityModule {
                 }
             }
             "sys_sfc_corrupt" => {
+                let before = std::fs::metadata(&self.cbs_log).map_or(0, |m| m.len());
                 let out = self
                     .runner
                     .run_streaming("sfc.exe", &["/scannow"], log_tx, SERVICING_TIMEOUT)
                     .await?;
-                if out.success {
-                    Ok("SFC /scannow completed successfully. System files repaired.".to_string())
-                } else {
-                    Ok(format!("SFC ran: {}", out.stdout))
+                let run_log = read_since(&self.cbs_log, before).unwrap_or_default();
+                match sfc_outcome(&run_log) {
+                    SfcOutcome::Intact { repaired } if repaired.is_empty() => Ok(
+                        "SFC checked every protected system file and left none damaged."
+                            .to_string(),
+                    ),
+                    SfcOutcome::Intact { repaired } => Ok(format!(
+                        "SFC repaired {} damaged system file(s): {}.",
+                        repaired.len(),
+                        repaired
+                            .iter()
+                            .map(|path| path.rsplit('\\').next().unwrap_or(path))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )),
+                    SfcOutcome::Unrepaired(evidence) => Err(format!(
+                        "SFC could not repair every damaged file. Repair the component store first (DISM /RestoreHealth), then run SFC again.\n{evidence}"
+                    )),
+                    SfcOutcome::NotRun => Err(format!(
+                        "SFC checked no files (exit code {:?}): {}",
+                        out.exit_code,
+                        sfc_message(&out.stdout)
+                    )),
                 }
             }
             _ => Err(format!("Unknown issue ID: {}", issue_id)),
@@ -1008,6 +1084,14 @@ mod tests {
         include_bytes!("../../tests/fixtures/files/cbs_sfc_verifyonly_found_damage.bin");
     const CBS_SFC_REPAIRED: &[u8] =
         include_bytes!("../../tests/fixtures/files/cbs_sfc_scannow_repaired.bin");
+    const CBS_SFC_CLEAN: &[u8] =
+        include_bytes!("../../tests/fixtures/files/cbs_sfc_verifyonly_clean.bin");
+    const SFC_REPAIRED: &[u8] =
+        include_bytes!("../../tests/fixtures/console/sfc_scannow_repaired_de.bin");
+    const SFC_FOUND_DAMAGE: &[u8] =
+        include_bytes!("../../tests/fixtures/console/sfc_verifyonly_progress_de.bin");
+    const SFC_NOT_ELEVATED: &[u8] =
+        include_bytes!("../../tests/fixtures/console/sfc_elevation_required_de.bin");
 
     const BLUETOOTH: [&str; 3] = [
         r"C:\WINDOWS\System32\drivers\BthA2dp.sys",
@@ -1020,11 +1104,60 @@ mod tests {
     }
 
     #[test]
+    fn an_sfc_run_is_judged_by_what_it_logged() {
+        assert_eq!(
+            sfc_outcome(&text(CBS_SFC_REPAIRED)),
+            SfcOutcome::Intact {
+                repaired: BLUETOOTH.map(str::to_string).to_vec()
+            }
+        );
+        assert_eq!(
+            sfc_outcome(&text(CBS_SFC_CLEAN)),
+            SfcOutcome::Intact { repaired: vec![] }
+        );
+        let SfcOutcome::Unrepaired(evidence) = sfc_outcome(&text(CBS_SFC_FOUND_DAMAGE)) else {
+            panic!("the verify run left three files damaged");
+        };
+        for file in BLUETOOTH {
+            assert!(
+                evidence.contains(&format!("Damaged and not repaired: {file}")),
+                "{evidence}"
+            );
+        }
+        assert_eq!(sfc_outcome(""), SfcOutcome::NotRun);
+    }
+
+    #[test]
     fn a_driver_file_is_judged_by_the_last_run_that_named_it() {
         let repaired_later = text(CBS_SFC_FOUND_DAMAGE) + &text(CBS_SFC_REPAIRED);
         assert_eq!(cbs_unrepaired_corruption(&repaired_later), None);
         let damaged_again = text(CBS_SFC_REPAIRED) + &text(CBS_SFC_FOUND_DAMAGE);
         assert!(cbs_unrepaired_corruption(&damaged_again).is_some());
+    }
+
+    #[test]
+    fn sfcs_message_is_the_paragraph_after_its_progress() {
+        assert!(
+            sfc_message(&decode_output(SFC_REPAIRED)).starts_with(
+                "Der Windows-Ressourcenschutz hat beschädigte Dateien gefunden und erfolgreich repariert. "
+            )
+        );
+        assert_eq!(
+            sfc_message(&decode_output(SFC_NOT_ELEVATED)),
+            "Sie müssen als Administrator angemeldet sein und eine Konsolensitzung ausführen, um das SFC-Hilfsprogramm verwenden zu können."
+        );
+    }
+
+    #[test]
+    fn a_cbs_log_archived_during_the_run_is_read_whole() {
+        let path =
+            std::env::temp_dir().join(format!("winmedic-cbs-since-{}.log", std::process::id()));
+        std::fs::write(&path, "new log\n").unwrap();
+        let grown = read_since(&path, 4).unwrap();
+        let archived = read_since(&path, 1_000_000).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(grown, "log\n");
+        assert_eq!(archived, "new log\n");
     }
 
     #[tokio::test]
@@ -1044,6 +1177,120 @@ mod tests {
             issue.technical_details.contains(BLUETOOTH[0]),
             "{}",
             issue.technical_details
+        );
+    }
+
+    /// Stands in for `sfc /scannow`: prints `stdout` and adds `run_log` to
+    /// the CBS.log the module reads, as a real run does.
+    struct Sfc {
+        cbs_log: PathBuf,
+        run_log: Vec<u8>,
+        stdout: String,
+    }
+
+    #[async_trait::async_trait]
+    impl CommandRunner for Sfc {
+        async fn run(
+            &self,
+            program: &str,
+            args: &[&str],
+            _: Duration,
+        ) -> Result<CmdOutput, String> {
+            Err(format!("not expected: {program} {args:?}"))
+        }
+
+        async fn run_streaming(
+            &self,
+            program: &str,
+            args: &[&str],
+            _: Option<Sender<String>>,
+            _: Duration,
+        ) -> Result<CmdOutput, String> {
+            use std::io::Write;
+            assert_eq!((program, args), ("sfc.exe", &["/scannow"][..]));
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&self.cbs_log)
+                .and_then(|mut log| log.write_all(&self.run_log))
+                .unwrap();
+            Ok(CmdOutput::ok(self.stdout.clone()))
+        }
+    }
+
+    /// The SFC repair on a CBS.log that already holds `earlier`, while SFC
+    /// prints `stdout` and logs `run_log`.
+    async fn repair_with_sfc(
+        name: &str,
+        earlier: &[u8],
+        run_log: &[u8],
+        stdout: &[u8],
+    ) -> Result<String, String> {
+        let path =
+            std::env::temp_dir().join(format!("winmedic-cbs-{name}-{}.log", std::process::id()));
+        std::fs::write(&path, earlier).unwrap();
+        let sfc = Sfc {
+            cbs_log: path.clone(),
+            run_log: run_log.to_vec(),
+            stdout: decode_output(stdout),
+        };
+        let module = SystemIntegrityModule::with_runner_and_cbs_log(Arc::new(sfc), path.clone());
+        let result = module.fix("sys_sfc_corrupt", None).await;
+        let _ = std::fs::remove_file(&path);
+        result
+    }
+
+    /// The damage the earlier verify run found is still in the log; only
+    /// what this run added counts.
+    #[tokio::test]
+    async fn an_sfc_repair_names_the_files_it_put_back() {
+        let msg = repair_with_sfc(
+            "repaired",
+            CBS_SFC_FOUND_DAMAGE,
+            CBS_SFC_REPAIRED,
+            SFC_REPAIRED,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            msg,
+            "SFC repaired 3 damaged system file(s): BthA2dp.sys, BthHfEnum.sys, bthmodem.sys."
+        );
+    }
+
+    #[tokio::test]
+    async fn an_sfc_run_with_nothing_to_repair_says_so() {
+        let msg = repair_with_sfc("clean", b"", CBS_SFC_CLEAN, b"")
+            .await
+            .unwrap();
+        assert_eq!(
+            msg,
+            "SFC checked every protected system file and left none damaged."
+        );
+    }
+
+    /// Exit 0 either way; the old repair called this "System files
+    /// repaired".
+    #[tokio::test]
+    async fn an_sfc_run_that_leaves_damage_is_a_failure() {
+        let err = repair_with_sfc("damage", b"", CBS_SFC_FOUND_DAMAGE, SFC_FOUND_DAMAGE)
+            .await
+            .unwrap_err();
+        assert!(
+            err.starts_with("SFC could not repair every damaged file."),
+            "{err}"
+        );
+        assert!(err.contains(BLUETOOTH[0]), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_sfc_run_that_checked_nothing_says_why() {
+        let err = repair_with_sfc("refused", CBS_SFC_CLEAN, b"", SFC_NOT_ELEVATED)
+            .await
+            .unwrap_err();
+        assert!(err.starts_with("SFC checked no files"), "{err}");
+        assert!(
+            err.contains("Sie müssen als Administrator angemeldet sein"),
+            "{err}"
         );
     }
 }
