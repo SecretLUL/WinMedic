@@ -14,6 +14,9 @@ for it. Talk to the maintainer in the language they write in.
 
 - One commit per concern, with a conventional prefix. The message says why,
   and what was verified.
+- Label every pull request as it is opened
+  (`gh pr create --label <label>`), by the table under "Labels" in
+  CONTRIBUTING.md. `documentation` only for documentation, never to skip CI.
 - **Several pull requests form a chain.** The first targets `main`; each next
   branch starts from the previous one and targets it
   (`gh pr create --base <previous-branch>`). Opened side by side against
