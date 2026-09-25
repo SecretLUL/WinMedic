@@ -30,7 +30,7 @@ on:
         type: string
     secrets:
       WINGET_TOKEN:
-        description: Classic PAT with the public_repo scope, used to push to the winget-pkgs fork and open the pull request
+        description: Classic PAT with the public_repo and workflow scopes, used to push to the winget-pkgs fork and open the pull request
         required: false
   workflow_dispatch:
     inputs:
@@ -100,17 +100,17 @@ jobs:
           # is finished and correct by the time this workflow runs, so nothing
           # is lost by saying so loudly.
           if (-not $env:WINGET_TOKEN) {
-            Write-Host "::error::No WINGET_TOKEN secret is set, so $env:TAG cannot be submitted to WinGet. See docs/winget.md."
+            Write-Host "::error::No WINGET_TOKEN secret is set, so $env:TAG cannot be submitted to WinGet. See .github/RELEASING.md."
             Add-Summary @(
               "### ``$env:TAG`` was not submitted to WinGet"
               ''
               'The release shipped correctly — this is only the WinGet submission, and it needs one-time setup that has not been done:'
               ''
               '1. Fork [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) under the `SecretLUL` account.'
-              '2. Create a **classic** personal access token with the `public_repo` scope (fine-grained tokens are not supported by the action).'
+              '2. Create a **classic** personal access token with the `public_repo` and `workflow` scopes.'
               '3. Save it as the repository secret `WINGET_TOKEN`.'
               ''
-              'Then re-run this workflow from the Actions tab with the tag `' + $env:TAG + '`. `docs/winget.md` has the full walkthrough, including the first submission, which has to be opened by hand.'
+              'Then re-run this workflow from the Actions tab with the tag `' + $env:TAG + '`. `.github/RELEASING.md` has the rest.'
             )
             exit 1
           }

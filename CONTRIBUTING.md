@@ -71,4 +71,4 @@ WinMedic runs in every display language.
   something, say so.
 - Code, comments, docs and every user-facing string are in English.
 
-Cutting a release: [docs/releasing.md](docs/releasing.md).
+Cutting a release: [.github/RELEASING.md](.github/RELEASING.md).

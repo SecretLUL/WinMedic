@@ -261,7 +261,7 @@ jobs:
       #     "Write the version into the tree" finds nothing to write, this step
       #     confirms what is already true, and no credential anywhere is allowed
       #     past branch protection. This is the supported path — see
-      #     docs/releasing.md; or
+      #     .github/RELEASING.md; or
       #   * set a RELEASE_TOKEN secret — a PAT with `contents: write` owned by
       #     an account with admin rights, which "Do not allow bypassing" leaves
       #     unblocked — and the bump lands on the branch directly. Convenient,
