@@ -24,6 +24,8 @@ pub mod window;
 use crate::app::{App, TAB_SETTINGS, handle_key};
 use crate::utils::updater::UpdateInfo;
 use eframe::egui::{self, RichText};
+use std::hash::{BuildHasher, RandomState};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use views::home::plural;
 
@@ -160,6 +162,36 @@ fn navigation(ui: &mut egui::Ui, app: &mut App) {
     });
 }
 
+/// What the update banner says to get the update installed, one at a time.
+const UPDATE_QUOTES: [&str; 6] = [
+    "Even medics need their booster shot.",
+    "Physician, heal thyself.",
+    "An update a day keeps the bluescreen away.",
+    "Doctor's orders: one update, to be taken now.",
+    "This medic is still reading last year's textbook.",
+    "Fresh medicine just arrived. No appointment needed.",
+];
+
+/// How long the update banner keeps one quote before the next.
+const QUOTE_SECONDS: u64 = 30;
+
+/// The update banner's quote right now: the quotes take turns in an order
+/// shuffled once per start, so none comes twice in a row.
+fn update_quote() -> &'static str {
+    static TURNS: OnceLock<(Instant, [usize; UPDATE_QUOTES.len()])> = OnceLock::new();
+    let (since, order) = TURNS.get_or_init(|| (Instant::now(), shuffled(&RandomState::new())));
+    let turn = since.elapsed().as_secs() / QUOTE_SECONDS;
+    UPDATE_QUOTES[order[turn as usize % order.len()]]
+}
+
+/// The quotes' positions in an order `seed` decides. The standard library
+/// seeds every `RandomState` at random, which is all the dice this needs.
+fn shuffled(seed: &RandomState) -> [usize; UPDATE_QUOTES.len()] {
+    let mut order = std::array::from_fn(|i| i);
+    order.sort_by_key(|&i| seed.hash_one(i));
+    order
+}
+
 /// An update WinMedic has not installed yet, across the top of both modes.
 ///
 /// A repair tool that is behind repairs with yesterday's fixes, so this is
@@ -171,7 +203,7 @@ fn update_banner(ui: &mut egui::Ui, app: &mut App, update: &UpdateInfo) {
     let text = ui.visuals().selection.stroke.color;
     ui.horizontal(|ui| {
         ui.label(
-            RichText::new("Even medics need their booster shot.")
+            RichText::new(update_quote())
                 .strong()
                 .size(15.0)
                 .color(text),
@@ -1078,7 +1110,51 @@ mod tests {
         app
     }
 
-    const BOOSTER: &str = "Even medics need their booster shot.";
+    /// Whether the window shows one of the update banner's quotes.
+    fn shows_a_quote(harness: &Harness<'static, App>) -> bool {
+        UPDATE_QUOTES
+            .iter()
+            .any(|quote| harness.query_by_label(quote).is_some())
+    }
+
+    /// Every quote comes once per round, in an order of its own.
+    #[test]
+    fn the_quotes_take_turns() {
+        let mut order = shuffled(&RandomState::new());
+        order.sort();
+        assert_eq!(order, [0, 1, 2, 3, 4, 5]);
+    }
+
+    /// Whichever quote comes up, the facts and the button still fit next to
+    /// it at the smallest window; they take a little over 400 pixels.
+    #[test]
+    fn every_quote_fits_the_smallest_window() {
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, widths: &mut Vec<f32>| {
+                *widths = UPDATE_QUOTES
+                    .iter()
+                    .map(|quote| {
+                        ui.painter()
+                            .layout_no_wrap(
+                                quote.to_string(),
+                                egui::FontId::proportional(15.0),
+                                egui::Color32::WHITE,
+                            )
+                            .size()
+                            .x
+                    })
+                    .collect();
+            },
+            Vec::new(),
+        );
+        theme::apply(&harness.ctx);
+        harness.run_steps(2);
+        let widest = harness.state().iter().copied().fold(0.0, f32::max);
+        assert!(
+            widest > 0.0 && widest < window::MIN_SIZE.x - 450.0,
+            "{widest}"
+        );
+    }
 
     /// An update is announced across the top of either mode, not only in the
     /// status line, and the banner leads to the update dialog.
@@ -1086,7 +1162,7 @@ mod tests {
     fn an_available_update_gets_a_banner_that_opens_the_dialog() {
         for app in [with_update(scanned_app()), with_update(easy_scanned_app())] {
             let mut harness = window(app);
-            assert!(harness.query_by_label(BOOSTER).is_some());
+            assert!(shows_a_quote(&harness));
             assert!(
                 harness
                     .query_by_label("WinMedic v0.5.3 is ready, you have v0.5.2.")
@@ -1110,7 +1186,7 @@ mod tests {
         app.show_update_notice();
         app.dismiss_confirm();
         let harness = window(app);
-        assert!(harness.query_by_label(BOOSTER).is_some());
+        assert!(shows_a_quote(&harness));
         assert!(harness.query_by_label("Update now").is_some());
     }
 
@@ -1185,7 +1261,7 @@ mod tests {
     #[test]
     fn no_update_no_banner() {
         let harness = window(scanned_app());
-        assert!(harness.query_by_label(BOOSTER).is_none());
+        assert!(!shows_a_quote(&harness));
     }
 
     /// Easy mode locks the window at its smallest size; the banner has to fit.
