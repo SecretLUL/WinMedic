@@ -1,5 +1,7 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
-use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
+use crate::modules::{
+    DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress, SERVICING_TIMEOUT,
+};
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
 use crate::utils::debug_log::DebugTrace;
 use crate::utils::fs_stats::dir_stats_recursive;
@@ -1338,7 +1340,7 @@ impl DiagnosticModule for SystemCleanerModule {
                         &self.runner,
                         "dism.exe",
                         DISM_CLEANUP_ARGS,
-                        Duration::from_secs(300),
+                        SERVICING_TIMEOUT,
                     )
                     .await?;
                 if out.success {

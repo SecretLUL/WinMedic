@@ -1,5 +1,5 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
-use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
+use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress, SERVICING_TIMEOUT};
 use crate::utils::cmd::{CmdOutput, CommandRunner, SystemCommandRunner};
 use crate::utils::service::{self, SERVICE_DISABLED};
 use std::path::{Path, PathBuf};
@@ -543,7 +543,7 @@ impl DiagnosticModule for SystemIntegrityModule {
                         "dism.exe",
                         DISM_RESTORE_HEALTH_ARGS,
                         log_tx,
-                        Duration::from_secs(600),
+                        SERVICING_TIMEOUT,
                     )
                     .await?;
                 if out.success {
@@ -625,7 +625,7 @@ impl DiagnosticModule for SystemIntegrityModule {
             "sys_sfc_corrupt" => {
                 let out = self
                     .runner
-                    .run_streaming("sfc.exe", &["/scannow"], log_tx, Duration::from_secs(600))
+                    .run_streaming("sfc.exe", &["/scannow"], log_tx, SERVICING_TIMEOUT)
                     .await?;
                 if out.success {
                     Ok("SFC /scannow completed successfully. System files repaired.".to_string())

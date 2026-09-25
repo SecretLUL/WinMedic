@@ -16,7 +16,17 @@ use crate::config::AppConfig;
 use crate::engine::issue::{Issue, Severity};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc::Sender;
+
+/// How long a repair through Windows' servicing tools — DISM and SFC — may
+/// run.
+///
+/// DISM /RestoreHealth downloads the files it replaces from Windows Update
+/// and went past ten minutes on the development machine, which is where the
+/// old limit stopped it. The user can cancel at any time, so this only has to
+/// catch a tool that never comes back.
+pub const SERVICING_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 /// The subset of [`AppConfig`] that diagnostic modules need at scan/fix time.
 ///
