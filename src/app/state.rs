@@ -8,6 +8,7 @@ use crate::engine::issue::{Issue, Severity};
 use crate::engine::reporter::DiagnosticReporter;
 use crate::engine::runner::{DiagnosticEngine, RepairEvent, ScanEvent};
 use crate::modules::ModuleStatus;
+use crate::modules::windows_updates::REBOOT_PENDING;
 use crate::safety::audit::{AuditEntry, AuditLogger};
 use crate::safety::reg_backup::{BackupRecord, RegBackupManager};
 use crate::utils::admin::is_admin;
@@ -156,6 +157,12 @@ pub struct App {
     /// Simulate repairs instead of executing them.
     pub dry_run: bool,
     pub current_fix_title: String,
+    /// When the running step of the repair run began: the restore point,
+    /// then each repair. DISM runs for many minutes with nothing else to show,
+    /// so how long it has been at it is what tells working from hung.
+    pub repair_step_since: Option<Instant>,
+    /// How far the running step's tool says it got, when it says.
+    pub repair_step_percent: Option<f32>,
     pub fixed_count: usize,
     pub failed_count: usize,
     pub total_to_fix: usize,
@@ -240,12 +247,7 @@ impl App {
             let current_boot = sysinfo::System::boot_time();
             let rebooted = saved.boot_time_secs.is_some_and(|b| current_boot > b);
             if rebooted {
-                for issue in &mut saved.issues {
-                    if issue.is_reboot_pending {
-                        issue.is_reboot_pending = false;
-                        issue.is_fixed = true;
-                    }
-                }
+                settle_after_restart(&mut saved.issues);
             }
             let health = DiagnosticEngine::calculate_health_score(&saved.issues);
             let open_count = saved.issues.iter().filter(|i| !i.is_fixed).count();
@@ -300,6 +302,8 @@ impl App {
             is_fixing: false,
             dry_run: false,
             current_fix_title: String::new(),
+            repair_step_since: None,
+            repair_step_percent: None,
             fixed_count: 0,
             failed_count: 0,
             total_to_fix: 0,
@@ -417,6 +421,12 @@ impl App {
         self.issues.iter().any(|i| i.is_reboot_pending)
     }
 
+    /// Whether Windows waits for a restart: a repair needs one, or the scan
+    /// found restart work Windows queued itself.
+    pub fn restart_pending(&self) -> bool {
+        self.issues.iter().any(waits_for_restart)
+    }
+
     /// Open the restart confirmation dialog if there are issues pending a reboot.
     pub fn show_reboot_notice(&mut self) {
         if self.pending_confirm.is_some() || self.is_fixing || self.is_scanning {
@@ -425,7 +435,7 @@ impl App {
         let reboot_issues: Vec<String> = self
             .issues
             .iter()
-            .filter(|i| i.is_reboot_pending)
+            .filter(|i| waits_for_restart(i))
             .map(|i| i.title.clone())
             .collect();
         if !reboot_issues.is_empty() {
@@ -484,6 +494,29 @@ impl App {
             Some(start) => Some(start.elapsed()),
             None => self.scan_duration,
         }
+    }
+
+    /// How long the running repair step has been at it.
+    pub fn repair_step_elapsed(&self) -> Option<Duration> {
+        self.repair_step_since
+            .filter(|_| self.is_fixing)
+            .map(|since| since.elapsed())
+    }
+
+    /// About how long the running repair step still needs: the time it took
+    /// to get as far as its tool says, stretched to the rest of the way.
+    /// `None` while the tool has said nothing, or too little to go on.
+    pub fn repair_step_remaining(&self) -> Option<Duration> {
+        time_left(self.repair_step_elapsed()?, self.repair_step_percent?)
+    }
+
+    /// How much of the repair run is done, counting the part of the running
+    /// step its tool reports. The bar moves while DISM works instead of
+    /// standing still for ten minutes.
+    pub fn repair_fraction(&self) -> f32 {
+        let done = (self.fixed_count + self.failed_count) as f32;
+        let step = self.repair_step_percent.unwrap_or(0.0) / 100.0;
+        ((done + step) / self.total_to_fix.max(1) as f32).clamp(0.0, 1.0)
     }
 
     /// True while a scan or a repair run is in flight.
@@ -632,11 +665,101 @@ impl App {
     }
 }
 
+/// What is left of a step that got to `percent` in `elapsed`, if it keeps its
+/// pace. Below one percent there is no pace to speak of, and more than two
+/// hours is past the point where WinMedic stops the tool anyway.
+fn time_left(elapsed: Duration, percent: f32) -> Option<Duration> {
+    if percent >= 100.0 {
+        return Some(Duration::ZERO);
+    }
+    if percent < 1.0 {
+        return None;
+    }
+    let percent = f64::from(percent);
+    let left = elapsed.as_secs_f64() * (100.0 - percent) / percent;
+    (left <= 2.0 * 60.0 * 60.0).then(|| Duration::from_secs_f64(left.round()))
+}
+
+/// Whether `issue` is settled by restarting Windows: a repair that needs the
+/// restart to finish, or Windows' own queued restart work. A restart settles
+/// both; if Windows queued more, the next scan finds it again.
+fn waits_for_restart(issue: &Issue) -> bool {
+    issue.is_reboot_pending || (issue.id == REBOOT_PENDING && !issue.is_fixed)
+}
+
+/// Windows has restarted since the saved scan: what waited for it is done.
+fn settle_after_restart(issues: &mut [Issue]) {
+    for issue in issues.iter_mut().filter(|i| waits_for_restart(i)) {
+        issue.is_reboot_pending = false;
+        issue.is_fixed = true;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::MAX_LOG_LINES;
     use crate::engine::issue::RiskScore;
+
+    fn finding(id: &str) -> Issue {
+        Issue::new(
+            id,
+            "windows_updates",
+            id,
+            "Windows Update & Services",
+            Severity::Info,
+            RiskScore::Low,
+            "",
+            "",
+            "",
+            vec![],
+        )
+    }
+
+    /// A repair waiting for the restart and the restart Windows queued itself
+    /// both keep the restart pending; nothing else does.
+    #[test]
+    fn a_restart_is_pending_for_repairs_and_for_windows() {
+        let mut app = App::new();
+        app.issues = vec![finding("dns")];
+        assert!(!app.restart_pending());
+
+        app.issues.push(finding(REBOOT_PENDING));
+        assert!(app.restart_pending(), "Windows' own restart work");
+
+        app.issues = vec![finding("chkdsk")];
+        app.issues[0].is_reboot_pending = true;
+        assert!(app.restart_pending(), "a repair waiting for it");
+    }
+
+    /// A restart settles what waited for it, and nothing else.
+    #[test]
+    fn a_restart_settles_what_waited_for_it() {
+        let mut issues = vec![finding("chkdsk"), finding(REBOOT_PENDING), finding("dns")];
+        issues[0].is_reboot_pending = true;
+
+        settle_after_restart(&mut issues);
+
+        assert!(issues[0].is_fixed && !issues[0].is_reboot_pending);
+        assert!(issues[1].is_fixed);
+        assert!(!issues[2].is_fixed, "a finding a restart does not touch");
+        assert!(!issues.iter().any(waits_for_restart));
+    }
+
+    #[test]
+    fn the_time_left_follows_the_pace_so_far() {
+        let minutes = |m: u64| Duration::from_secs(m * 60);
+        assert_eq!(time_left(minutes(3), 30.0), Some(minutes(7)));
+        assert_eq!(time_left(minutes(4), 80.0), Some(minutes(1)));
+        assert_eq!(time_left(minutes(9), 100.0), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn too_little_progress_gives_no_estimate() {
+        let minutes = |m: u64| Duration::from_secs(m * 60);
+        assert_eq!(time_left(minutes(2), 0.5), None);
+        assert_eq!(time_left(minutes(30), 10.0), None, "4h30m is no estimate");
+    }
 
     #[test]
     fn test_app_export_report() {

@@ -1,5 +1,7 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
-use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
+use crate::modules::{
+    DiagnosticModule, FixProgress, ModuleProgress, SERVICING_TIMEOUT, console_lines,
+};
 use crate::utils::cmd::{CmdOutput, CommandRunner, SystemCommandRunner};
 use crate::utils::service::{self, SERVICE_DISABLED};
 use std::path::{Path, PathBuf};
@@ -513,27 +515,7 @@ impl DiagnosticModule for SystemIntegrityModule {
         issue_id: &str,
         progress_tx: Option<Sender<FixProgress>>,
     ) -> Result<String, String> {
-        let log_tx = if let Some(ref tx) = progress_tx {
-            let (str_tx, mut str_rx) = tokio::sync::mpsc::channel::<String>(100);
-            let tx_clone = tx.clone();
-            let issue_id_clone = issue_id.to_string();
-            tokio::spawn(async move {
-                while let Some(line) = str_rx.recv().await {
-                    let _ = tx_clone
-                        .send(FixProgress {
-                            issue_id: issue_id_clone.clone(),
-                            step_description: "Repair in progress...".to_string(),
-                            is_success: true,
-                            error: None,
-                            console_line: Some(line),
-                        })
-                        .await;
-                }
-            });
-            Some(str_tx)
-        } else {
-            None
-        };
+        let log_tx = console_lines(issue_id, progress_tx.as_ref());
 
         match issue_id {
             "sys_dism_corrupt" => {
@@ -543,7 +525,7 @@ impl DiagnosticModule for SystemIntegrityModule {
                         "dism.exe",
                         DISM_RESTORE_HEALTH_ARGS,
                         log_tx,
-                        Duration::from_secs(600),
+                        SERVICING_TIMEOUT,
                     )
                     .await?;
                 if out.success {
@@ -625,7 +607,7 @@ impl DiagnosticModule for SystemIntegrityModule {
             "sys_sfc_corrupt" => {
                 let out = self
                     .runner
-                    .run_streaming("sfc.exe", &["/scannow"], log_tx, Duration::from_secs(600))
+                    .run_streaming("sfc.exe", &["/scannow"], log_tx, SERVICING_TIMEOUT)
                     .await?;
                 if out.success {
                     Ok("SFC /scannow completed successfully. System files repaired.".to_string())
@@ -655,6 +637,19 @@ mod tests {
     const HEALTHY: &str = "No component store corruption detected.";
     const REPAIRABLE: &str = "The component store is repairable.";
     const NOT_REPAIRABLE: &str = "The component store cannot be repaired.";
+
+    /// A real, elevated DISM run, progress bar and all, says the same
+    /// sentence the resources above do.
+    #[test]
+    fn the_verdict_of_a_captured_dism_run_is_read() {
+        let captured = decode_output(include_bytes!(
+            "../../tests/fixtures/console/dism_scanhealth_progress.bin"
+        ));
+        assert_eq!(
+            ComponentStoreHealth::from_dism(&CmdOutput::ok(captured)),
+            ComponentStoreHealth::Repairable
+        );
+    }
 
     /// A module that reads no CBS.log, so the machine running the tests does
     /// not decide what they see.

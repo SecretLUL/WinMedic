@@ -16,7 +16,17 @@ use crate::config::AppConfig;
 use crate::engine::issue::{Issue, Severity};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc::Sender;
+
+/// How long a repair through Windows' servicing tools — DISM and SFC — may
+/// run.
+///
+/// DISM /RestoreHealth downloads the files it replaces from Windows Update
+/// and went past ten minutes on the development machine, which is where the
+/// old limit stopped it. The user can cancel at any time, so this only has to
+/// catch a tool that never comes back.
+pub const SERVICING_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 /// The subset of [`AppConfig`] that diagnostic modules need at scan/fix time.
 ///
@@ -98,6 +108,31 @@ pub struct FixProgress {
     pub is_success: bool,
     pub error: Option<String>,
     pub console_line: Option<String>,
+}
+
+/// A channel for a repair command's output that hands every line on to the
+/// repair's progress channel, which puts it in the repair log.
+pub fn console_lines(
+    issue_id: &str,
+    progress_tx: Option<&Sender<FixProgress>>,
+) -> Option<Sender<String>> {
+    let progress_tx = progress_tx?.clone();
+    let issue_id = issue_id.to_string();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(100);
+    tokio::spawn(async move {
+        while let Some(line) = rx.recv().await {
+            let _ = progress_tx
+                .send(FixProgress {
+                    issue_id: issue_id.clone(),
+                    step_description: "Repair in progress...".to_string(),
+                    is_success: true,
+                    error: None,
+                    console_line: Some(line),
+                })
+                .await;
+        }
+    });
+    Some(tx)
 }
 
 #[async_trait::async_trait]

@@ -46,6 +46,14 @@ Captured on Windows 11 Pro 10.0.26200, German display language, OEM code page
 | `reg_query_memory_management.bin` | `reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management"` | CP850 | Captured 2026-09-25. `PagingFiles` is `?:\pagefile.sys` while `Win32_ComputerSystem` reports `AutomaticManagedPagefile` True: "Automatically manage paging file size for all drives". The tests replace it with an empty list. A `REG_MULTI_SZ` with several entries prints them joined by a literal `\0` (seen on `ServiceGroupOrder\List`). |
 | `reg_query_missing_key_de.bin` | `reg query` of a key that does not exist (stderr, exit 1) | CP850 | The only translated part of `reg`'s output. |
 
+Captured elevated on 2026-09-25, read-only commands, with the time each piece
+of the pipe arrived:
+
+| File | Command | Encoding | Notes |
+| --- | --- | --- | --- |
+| `dism_scanhealth_progress.bin` | `dism /English /Online /Cleanup-Image /ScanHealth` | ASCII | Every step of the bar is a line of its own, `\r[====  4.9%  ] \r\n`, written the moment it changes: 64-byte pieces over 65 seconds, 4.9% to 100.0%. Ends with "The component store is repairable." |
+| `sfc_verifyonly_progress_de.bin` | `sfc /verifyonly` | UTF-16LE | The bar is one line redrawn after `\r`, `Überprüfung 26 % abgeschlossen.`, ended only at 100 %. SFC writes into a pipe in 4 KB blocks, which arrived after 16, 31, 49 and 57 seconds and reach 26, 55, 83 and 100 %; the first one stops mid-word. Exit code 0 although it reports integrity violations. |
+
 ## Files — `files/`
 
 | File | Content |
@@ -53,10 +61,10 @@ Captured on Windows 11 Pro 10.0.26200, German display language, OEM code page
 | `reagent_enabled.xml` | `C:\Windows\System32\Recovery\ReAgent.xml` of the capture machine, unchanged: the recovery environment's configuration, readable without elevation, with `InstallState state="1"` (enabled). |
 | `hosts_blocking_update.bin` | The hosts file of the capture machine, byte for byte (UTF-8 with BOM, CRLF), its LAN address replaced with `192.168.1.10`. Next to telemetry blocks it blocks `fe3.delivery.mp.microsoft.com` — Windows Update's and the Store's metadata endpoint — and `ocsp.digicert.com`, which is what the hosts check exists to find. |
 
-The English DISM verdicts used in `src/modules/system_integrity.rs` are not a
-capture — reading them needs elevation — but they are DISM's own strings, taken
-from `C:\Windows\System32\Dism\en-US\CbsProvider.dll.mui`; the German fallbacks
-come from the `de-DE` copy of the same file.
+The English DISM verdicts used in `src/modules/system_integrity.rs` are DISM's
+own strings, taken from `C:\Windows\System32\Dism\en-US\CbsProvider.dll.mui`;
+the German fallbacks come from the `de-DE` copy of the same file. "The
+component store is repairable." is also in `dism_scanhealth_progress.bin`.
 
 ## Event log — `events/`
 

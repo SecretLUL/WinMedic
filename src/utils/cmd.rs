@@ -498,25 +498,30 @@ pub async fn run_cmd_streaming(
         stderr_lines
     });
 
-    let wait_result = timeout(timeout_duration, child.wait()).await;
-
-    let (stdout_out, stderr_out) = tokio::join!(stdout_handle, stderr_handle);
-    let stdout_combined = stdout_out.unwrap_or_default().join("\n");
-    let stderr_combined = stderr_out.unwrap_or_default().join("\n");
-
-    match wait_result {
-        Ok(Ok(status)) => Ok(CmdOutput {
-            success: status.success(),
-            exit_code: status.code(),
-            stdout: stdout_combined,
-            stderr: stderr_combined,
-        }),
-        Ok(Err(e)) => Err(format!("Command error: {}", e)),
+    // The readers end when the pipes close, which is when the process has
+    // ended. Waiting for them before killing a process that ran out of time
+    // waited for it to finish after all: a DISM run past its limit went on to
+    // the end and was then reported as timed out, whatever it had achieved.
+    // They are dropped rather than awaited, in case something the process
+    // started still holds its pipes.
+    let status = match timeout(timeout_duration, child.wait()).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(e)) => return Err(format!("Command error: {}", e)),
         Err(_) => {
             let _ = child.kill().await;
-            Err(timed_out(program, timeout_duration))
+            stdout_handle.abort();
+            stderr_handle.abort();
+            return Err(timed_out(program, timeout_duration));
         }
-    }
+    };
+
+    let (stdout_out, stderr_out) = tokio::join!(stdout_handle, stderr_handle);
+    Ok(CmdOutput {
+        success: status.success(),
+        exit_code: status.code(),
+        stdout: stdout_out.unwrap_or_default().join("\n"),
+        stderr: stderr_out.unwrap_or_default().join("\n"),
+    })
 }
 
 /// Read `pipe` to the end, decoding it line by line, and hand each line to the
@@ -525,6 +530,9 @@ pub async fn run_cmd_streaming(
 /// Reads raw bytes rather than `lines()`: that reader stops at the first line
 /// that is not UTF-8, and German DISM or SFC output has one within the first
 /// few lines — everything after it, the verdict included, was lost.
+///
+/// A progress bar the tool is still redrawing goes to the channel as well,
+/// each time it changes; only finished lines become the command's output.
 async fn forward_lines(
     mut pipe: impl tokio::io::AsyncRead + Unpin,
     tx: Option<Sender<String>>,
@@ -533,6 +541,7 @@ async fn forward_lines(
 ) {
     let mut decoder = LineDecoder::new();
     let mut buf = [0u8; 4096];
+    let mut sent_progress = None;
     loop {
         let read = match pipe.read(&mut buf).await {
             Ok(0) | Err(_) => break,
@@ -543,6 +552,14 @@ async fn forward_lines(
                 let _ = tx.send(format!("{prefix}{line}")).await;
             }
             lines.push(line);
+            sent_progress = None;
+        }
+        let progress = decoder.progress();
+        if progress.is_some() && progress != sent_progress {
+            if let (Some(tx), Some(text)) = (&tx, &progress) {
+                let _ = tx.send(format!("{prefix}{text}")).await;
+            }
+            sent_progress = progress;
         }
     }
     if let Some(line) = decoder.finish() {
@@ -689,6 +706,48 @@ mod tests {
         ) -> Result<CmdOutput, String> {
             self.run(program, args, timeout).await
         }
+    }
+
+    /// SFC's progress reaches the log while its one progress line is still
+    /// being written, and only the finished line becomes its output.
+    #[tokio::test]
+    async fn sfc_progress_is_forwarded_before_its_line_ends() {
+        let captured: &[u8] =
+            include_bytes!("../../tests/fixtures/console/sfc_verifyonly_progress_de.bin");
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(256);
+        let mut lines = Vec::new();
+        forward_lines(captured, Some(tx), "", &mut lines).await;
+
+        let mut forwarded = Vec::new();
+        while let Ok(line) = rx.try_recv() {
+            forwarded.push(line);
+        }
+        let done = forwarded
+            .iter()
+            .position(|l| l == "Überprüfung 100 % abgeschlossen.")
+            .expect("the finished line is forwarded");
+        assert!(done >= 3, "progress before the end: {forwarded:?}");
+        assert_eq!(lines.iter().filter(|l| l.contains('%')).count(), 1);
+    }
+
+    /// ping writes a line a second for half a minute, so its pipe stays open
+    /// long past the limit. Loopback only, no window.
+    #[tokio::test]
+    async fn a_streamed_command_is_stopped_when_its_time_is_up() {
+        let started = std::time::Instant::now();
+        let result = run_cmd_streaming(
+            "ping.exe",
+            &["-n", "30", "127.0.0.1"],
+            None,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert!(result.is_err_and(|err| is_timeout(&err)));
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "returned after {:?}",
+            started.elapsed()
+        );
     }
 
     const QUERY_TIMEOUT: Duration = Duration::from_secs(20);

@@ -14,6 +14,7 @@ use crate::engine::issue::Severity;
 use crate::gui::theme;
 use crate::modules::ModuleStatus;
 use eframe::egui::{self, RichText};
+use std::time::Duration;
 
 /// Wide enough for the forecast's longest line, narrow enough to read at a
 /// glance on a wide window.
@@ -114,12 +115,70 @@ fn repairing(ui: &mut egui::Ui, app: &mut App) {
     );
     ui.add_space(10.0);
     let done = app.fixed_count + app.failed_count;
-    progress(ui, done as f32 / app.total_to_fix.max(1) as f32);
+    progress(ui, app.repair_fraction());
     note(ui, format!("{done} of {} done", app.total_to_fix));
     ui.add_space(16.0);
     if ui.button("Cancel").on_hover_text("Esc").clicked() {
         app.cancel_current_operation();
     }
+    // Below the button, so it does not move away from the pointer when this
+    // appears.
+    if let Some(elapsed) = app.repair_step_elapsed().filter(|e| *e >= PATIENCE) {
+        ui.add_space(16.0);
+        patience(ui, app, elapsed);
+    }
+}
+
+/// How long one repair runs before the page says that this is normal. DISM
+/// takes ten minutes and more, with a bar that hardly moves.
+const PATIENCE: Duration = Duration::from_secs(2 * 60);
+
+/// Nothing is wrong, and about how long it still takes.
+fn patience(ui: &mut egui::Ui, app: &App, elapsed: Duration) {
+    let when = match app.repair_step_remaining() {
+        Some(left) if left < Duration::from_secs(60) => {
+            "Less than a minute left for this step.".to_string()
+        }
+        Some(left) => match (left.as_secs_f64() / 60.0).round() as usize {
+            1 => "About a minute left for this step.".to_string(),
+            minutes => format!("About {minutes} minutes left for this step."),
+        },
+        // The tool reports no progress, so there is nothing to go on.
+        None => format!(
+            "Running for {}.",
+            plural(elapsed.as_secs() as usize / 60, "minute")
+        ),
+    };
+    egui::Frame::NONE
+        .fill(ui.visuals().faint_bg_color)
+        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+        .corner_radius(6)
+        .inner_margin(12)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_top(|ui| {
+                theme::severity_mark(ui, Severity::Info, 18.0);
+                ui.vertical(|ui| {
+                    line(
+                        ui,
+                        "Don't worry, everything is fine. WinMedic needs some time to heal.",
+                    );
+                    note(ui, when);
+                });
+            });
+        });
+}
+
+/// Whether the page is the restart prompt itself: after a scan or a repair,
+/// with a restart all that is left. The restart banner stays away then, or
+/// the window would ask twice.
+pub(crate) fn asks_for_restart(app: &App) -> bool {
+    !app.config.advanced_mode
+        && !app.is_scanning
+        && !app.is_fixing
+        && has_scanned(app)
+        && app.has_pending_reboot()
+        && app.issues.iter().all(|i| i.is_fixed || i.is_reboot_pending)
 }
 
 /// After a scan or a repair: how the PC is doing, and the next step.
@@ -133,9 +192,8 @@ fn result(ui: &mut egui::Ui, app: &mut App) {
         .collect();
     let problems = open.len();
     let to_repair = selected_for_repair(app);
-    let restarts = app.issues.iter().filter(|i| i.is_reboot_pending).count();
 
-    if problems == 0 && restarts > 0 {
+    if asks_for_restart(app) {
         headline(ui, "Almost done", Some(palette.amber));
         ui.add_space(4.0);
         line(ui, "Restart Windows to finish the repair.");

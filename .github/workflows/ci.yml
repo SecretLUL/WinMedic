@@ -7,7 +7,11 @@ on:
   # branch, so restricting it to main means pull requests into any other branch
   # (long-lived feature branches, release branches) merge without ever being
   # linted, tested or built.
+  #
+  # `unlabeled` too: taking `documentation` off a pull request has to run what
+  # the label skipped. Adding a label changes nothing here; labels.yml checks it.
   pull_request:
+    types: [opened, synchronize, reopened, unlabeled]
 
 # Force-pushing to a branch under review should not leave the superseded run
 # burning a Windows runner to completion.
@@ -27,6 +31,11 @@ permissions:
   contents: read
 
 jobs:
+  # A pull request labelled `documentation` builds and tests nothing: the jobs
+  # below are skipped, and a skipped job satisfies a required check, the way
+  # the release build's push-only condition always has. labels.yml fails that
+  # label on a pull request that changes anything but documentation.
+  #
   # rustfmt, clippy and the test suite share one runner. They do not share a
   # compile — clippy caches under its own driver — but they do share the
   # checkout, the toolchain install and the cache round trip, which is the
@@ -35,6 +44,7 @@ jobs:
   test:
     name: Lints & Test Suite
     runs-on: windows-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'documentation') }}
     steps:
       - uses: actions/checkout@v7
 
@@ -76,6 +86,7 @@ jobs:
   smoke:
     name: Smoke-test a real scan
     runs-on: windows-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'documentation') }}
     steps:
       - uses: actions/checkout@v7
 
@@ -109,6 +120,7 @@ jobs:
   msrv:
     name: Minimum Supported Rust Version
     runs-on: windows-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'documentation') }}
     steps:
       - uses: actions/checkout@v7
 
@@ -149,6 +161,7 @@ jobs:
   audit:
     name: Dependency Audit
     runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'documentation') }}
     steps:
       - uses: actions/checkout@v7
 

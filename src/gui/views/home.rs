@@ -111,12 +111,18 @@ fn header(ui: &mut egui::Ui, app: &mut App) {
         let done = app.fixed_count + app.failed_count;
         progress(
             ui,
-            done as f32 / app.total_to_fix.max(1) as f32,
+            app.repair_fraction(),
             (app.failed_count > 0).then_some(palette.amber),
         );
         let mut line = format!("{done} of {} done", app.total_to_fix);
         if !app.current_fix_title.is_empty() {
             line.push_str(&format!(" · now: {}", app.current_fix_title));
+        }
+        if let Some(percent) = app.repair_step_percent {
+            line.push_str(&format!(" · {percent:.0}%"));
+        }
+        if let Some(elapsed) = app.repair_step_elapsed() {
+            line.push_str(&format!(" · running for {}", format_duration(elapsed)));
         }
         ui.add(egui::Label::new(line).truncate());
         ui.add_space(4.0);
@@ -274,14 +280,6 @@ fn notices(ui: &mut egui::Ui, app: &mut App) {
         });
     }
 
-    let restarts = app.issues.iter().filter(|i| i.is_reboot_pending).count();
-    if restarts > 0 {
-        ui.colored_label(
-            palette.amber,
-            format!("Restart Windows to finish {}.", plural(restarts, "repair")),
-        );
-    }
-
     if !app.is_scanning {
         for (_, name, _, status) in &app.module_statuses {
             if let ModuleStatus::Failed(reason) = status {
@@ -388,7 +386,7 @@ fn checks(ui: &mut egui::Ui, app: &mut App) {
         });
 }
 
-pub(super) fn plural(count: usize, noun: &str) -> String {
+pub(crate) fn plural(count: usize, noun: &str) -> String {
     if count == 1 {
         format!("1 {noun}")
     } else {

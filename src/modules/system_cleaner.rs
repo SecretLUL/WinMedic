@@ -1,5 +1,7 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
-use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
+use crate::modules::{
+    DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress, SERVICING_TIMEOUT, console_lines,
+};
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
 use crate::utils::debug_log::DebugTrace;
 use crate::utils::fs_stats::dir_stats_recursive;
@@ -1326,19 +1328,21 @@ impl DiagnosticModule for SystemCleanerModule {
         issue_id: &str,
         progress_tx: Option<Sender<FixProgress>>,
     ) -> Result<String, String> {
-        let dbg = DebugTrace::fix(issue_id, progress_tx, self.config.verbose_logging);
+        let dbg = DebugTrace::fix(issue_id, progress_tx.clone(), self.config.verbose_logging);
 
         match issue_id {
             "sys_clean_winsxs" => {
                 dbg.section("WinSxS component store cleanup").await;
                 dbg.hint("DISM refuses to touch the component store without Administrator rights")
                     .await;
+                // Streamed for its progress bar: the cleanup takes minutes.
                 let out = dbg
-                    .run(
+                    .run_streaming(
                         &self.runner,
                         "dism.exe",
                         DISM_CLEANUP_ARGS,
-                        Duration::from_secs(300),
+                        console_lines(issue_id, progress_tx.as_ref()),
+                        SERVICING_TIMEOUT,
                     )
                     .await?;
                 if out.success {
@@ -2069,6 +2073,31 @@ The operation completed successfully.";
             "the result must not read as a clean store: {}",
             message
         );
+    }
+
+    /// The cleanup runs for minutes; its progress bar goes to the repair log.
+    #[tokio::test]
+    async fn the_cleanup_shows_its_progress() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "StartComponentCleanup",
+            CmdOutput::ok("[==========================100.0%==========================]\r\nThe operation completed successfully."),
+        );
+        mock.add_response(
+            "AnalyzeComponentStore",
+            CmdOutput::ok("Number of Reclaimable Packages : 0\n"),
+        );
+
+        let td = TestDir::new("winsxs_progress");
+        let module = sandboxed(&td, Arc::new(mock));
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<FixProgress>(16);
+        module.fix("sys_clean_winsxs", Some(tx)).await.unwrap();
+
+        let mut lines = Vec::new();
+        while let Some(progress) = rx.recv().await {
+            lines.extend(progress.console_line);
+        }
+        assert!(lines.iter().any(|l| l.contains("100.0%")), "{lines:?}");
     }
 
     #[tokio::test]
