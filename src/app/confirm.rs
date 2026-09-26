@@ -51,6 +51,11 @@ pub struct SystemActions {
     /// [`App::enable_real_system_actions`] exists instead of a plain
     /// assignment.
     pub restore_point: RestorePointService,
+    /// Import a registry backup (`reg import`), from a blocking thread.
+    pub restore_registry: fn(&str) -> Result<String, String>,
+    /// Where the window's "Export report" writes. The inert one is the temp
+    /// folder, so a test that exports leaves the real reports folder alone.
+    pub reports_dir: fn() -> std::path::PathBuf,
     /// Reboot the machine to finalize repairs that require a system restart.
     pub restart_system: fn() -> Result<(), String>,
     /// Whether the latest scan may be written back to `%APPDATA%`.
@@ -71,6 +76,17 @@ pub struct SystemActions {
     pub sync_autostart: fn(bool) -> Result<(), String>,
     /// Repair the task and the Run entry for the settings that are on.
     pub reconcile_background: fn(&AppConfig, &std::path::Path) -> Result<(), String>,
+}
+
+fn real_restore_registry(file_path: &str) -> Result<String, String> {
+    tokio::runtime::Handle::current().block_on(RegBackupManager::new().restore_key(file_path))
+}
+
+fn real_reports_dir() -> std::path::PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("WinMedic")
+        .join("reports")
 }
 
 fn real_restart_system() -> Result<(), String> {
@@ -97,6 +113,8 @@ impl SystemActions {
             self_update: SelfUpdateService::real(),
             start_installed_update: self_update::start_installed,
             restore_point: RestorePointService::real(),
+            restore_registry: real_restore_registry,
+            reports_dir: real_reports_dir,
             restart_system: real_restart_system,
             persist_scan_state: true,
             persist_config: true,
@@ -114,6 +132,8 @@ impl SystemActions {
             self_update: SelfUpdateService::inert(),
             start_installed_update: |_| Ok(()),
             restore_point: RestorePointService::inert(),
+            restore_registry: |_| Ok("Nothing was imported.".to_string()),
+            reports_dir: std::env::temp_dir,
             restart_system: || Ok(()),
             persist_scan_state: false,
             persist_config: false,
@@ -495,9 +515,9 @@ impl App {
                 self.status_message = Some(format!("Restoring '{}'...", description));
 
                 let tx = self.bg_tx.clone();
-                let mgr = RegBackupManager::new();
-                tokio::spawn(async move {
-                    let (success, message) = match mgr.restore_key(&file_path).await {
+                let restore = self.system_actions.restore_registry;
+                tokio::task::spawn_blocking(move || {
+                    let (success, message) = match restore(&file_path) {
                         Ok(msg) => (true, msg),
                         Err(err) => (false, format!("Rollback failed: {}", err)),
                     };
@@ -570,6 +590,11 @@ mod tests {
         assert!(
             (actions.relaunch_elevated)().is_ok(),
             "App::new installed the real UAC relaunch"
+        );
+        assert_eq!(
+            (actions.restore_registry)("definitely not a backup").as_deref(),
+            Ok("Nothing was imported."),
+            "App::new installed the real reg import"
         );
         // The real one fails to start a file that does not exist.
         assert!(

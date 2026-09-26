@@ -1027,14 +1027,14 @@ fn test_tier1_f12_system_cleaner_metadata() {
 }
 
 #[test]
-fn test_tier1_f12_diagnostic_engine_contains_all_eleven_modules() {
+fn test_tier1_f12_diagnostic_engine_contains_all_fourteen_modules() {
     let config = AppConfig::default();
     let engine = DiagnosticEngine::new(&config);
     assert_eq!(engine.modules().len(), 14);
 }
 
 #[tokio::test]
-async fn test_tier1_f12_app_initializes_with_eleven_module_statuses() {
+async fn test_tier1_f12_app_initializes_with_fourteen_module_statuses() {
     let app = App::new();
     assert_eq!(app.module_statuses.len(), 14);
     assert!(

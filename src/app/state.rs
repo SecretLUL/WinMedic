@@ -3,7 +3,7 @@
 //! modules listed in [`crate::app`].
 
 use super::{BackgroundEvent, ScanState, TAB_COUNT, TAB_HOME, TAB_SETTINGS, push_bounded_log};
-use crate::config::AppConfig;
+use crate::config::{AppConfig, ConfigStatus};
 use crate::engine::issue::{Issue, Severity};
 use crate::engine::reporter::DiagnosticReporter;
 use crate::engine::runner::{DiagnosticEngine, RepairEvent, ScanEvent};
@@ -222,9 +222,30 @@ impl Default for App {
 }
 
 impl App {
+    /// An app that reads nothing from `%APPDATA%`: the default settings, no
+    /// saved scan, no registry backups listed. What every test builds; the
+    /// window builds [`Self::from_disk`].
+    ///
+    /// It used to read the developer's own config.json, move it aside if it
+    /// did not parse, and load their last scan into every test.
     pub fn new() -> Self {
-        let admin_flag = is_admin();
+        Self::build(AppConfig::default(), ConfigStatus::Missing, None, false)
+    }
+
+    /// The app the window runs: the user's settings, their last scan and
+    /// their registry backups.
+    pub fn from_disk() -> Self {
         let (config, config_status) = AppConfig::load_reporting();
+        Self::build(config, config_status, ScanState::load(), true)
+    }
+
+    fn build(
+        config: AppConfig,
+        config_status: ConfigStatus,
+        saved: Option<ScanState>,
+        list_backups: bool,
+    ) -> Self {
+        let admin_flag = is_admin();
         let system_actions = SystemActions::default();
         let audit_logger = AuditLogger::inert();
         let engine = Arc::new(
@@ -234,7 +255,11 @@ impl App {
         );
         let reg_backup_mgr = RegBackupManager::new();
         let audit_entries = audit_logger.get_history();
-        let backup_records = reg_backup_mgr.list_backups();
+        let backup_records = if list_backups {
+            reg_backup_mgr.list_backups()
+        } else {
+            Vec::new()
+        };
         let (bg_tx, bg_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let (module_progress_list, default_module_statuses) = Self::module_lists(&engine);
@@ -245,7 +270,7 @@ impl App {
             saved_duration,
             saved_timestamp,
             init_msg,
-        ) = if let Some(mut saved) = ScanState::load() {
+        ) = if let Some(mut saved) = saved {
             let rebooted = super::scan_state::restarted_since(
                 &saved,
                 super::scan_state::current_boot_id(),
@@ -601,8 +626,7 @@ impl App {
 
     /// Export the current scan/repair report as an HTML file in the reports directory.
     pub fn export_report(&mut self) -> Result<std::path::PathBuf, String> {
-        let base = dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-        let report_dir = base.join("WinMedic").join("reports");
+        let report_dir = (self.system_actions.reports_dir)();
         let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
         let filename = format!("winmedic_report_{}.html", timestamp);
         let path = report_dir.join(filename);
@@ -790,12 +814,14 @@ mod tests {
         assert_eq!(time_left(minutes(30), 10.0), None, "4h30m is no estimate");
     }
 
+    /// Into the temp folder: the real reports folder is the front end's.
     #[test]
     fn test_app_export_report() {
         let mut app = App::new();
         let res = app.export_report();
         assert!(res.is_ok());
         let path = res.unwrap();
+        assert!(path.starts_with(std::env::temp_dir()), "{}", path.display());
         assert!(path.exists());
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("WinMedic Diagnostic Report"));

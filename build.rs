@@ -3,7 +3,7 @@ fn main() {
     println!("cargo:rerun-if-changed=assets/icon.ico");
     println!("cargo:rerun-if-changed=build.rs");
 
-    let mut res = winres::WindowsResource::new();
+    let mut res = winresource::WindowsResource::new();
     res.set_icon("assets/icon.ico");
     res.set("ProductName", "WinMedic");
     res.set(
