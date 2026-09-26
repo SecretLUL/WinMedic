@@ -36,6 +36,20 @@ with its `.sha256`, pushes the version bump to `main`, and calls `winget.yml`.
 - A hand-pushed `v*` tag still releases, and fails if the tagged tree states a
   different version.
 
+## VirusTotal
+
+After publishing, `release.yml` uploads the binary to VirusTotal and goes red
+when an engine flags it; the job summary lists which. A new, unsigned `.exe` is
+what machine-learning scanners flag: Microsoft reported v0.6.0 as
+`Trojan:Win32/Sabsik.EN.A!ml`. Report every false positive to its vendor,
+Microsoft at <https://www.microsoft.com/en-us/wdsi/filesubmission> (*Software
+developer*, *Incorrectly detected as malware/malicious*), the others through
+[VirusTotal's list](https://docs.virustotal.com/docs/false-positive-contacts).
+
+It needs the repository secret `VIRUSTOTAL_API_KEY`, the API key of a free
+VirusTotal account (profile menu → *API key*). Without it the job says so and
+skips the scan. `./scripts/virustotal-scan.ps1 <file>` scans by hand.
+
 ## WinGet
 
 `winget.yml` runs [komac](https://github.com/russellbanks/Komac), a pinned
