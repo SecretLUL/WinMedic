@@ -109,6 +109,25 @@ foreach ($volume in Get-Volume) {{
     )
 }
 
+/// Prints `ATTACHED  <iso>` for each of `isos` that is mounted already, so
+/// the ones a search mounts can be told apart even when it never reports.
+pub fn attached_script(isos: &[PathBuf]) -> String {
+    let isos: Vec<String> = isos.iter().map(|p| p.display().to_string()).collect();
+    format!(
+        "foreach ($iso in {}) {{ if ((Get-DiskImage -ImagePath $iso -ErrorAction SilentlyContinue).Attached) {{ \"ATTACHED`t$iso\" }} }}",
+        ps_list(&isos)
+    )
+}
+
+/// The ISOs [`attached_script`] found mounted.
+pub fn attached(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .filter_map(|line| line.trim_end().strip_prefix("ATTACHED\t"))
+        .map(str::to_string)
+        .collect()
+}
+
 /// Unmounts the ISOs [`find_script`] mounted.
 pub fn dismount_script(isos: &[String]) -> String {
     format!(
