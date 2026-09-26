@@ -24,6 +24,32 @@ pub fn parse_start_type(sc_qc_output: &str) -> Option<u32> {
     })
 }
 
+/// `STATE` numbers `sc query` prints, the same in every language.
+pub const SERVICE_STOPPED: u32 = 1;
+pub const SERVICE_START_PENDING: u32 = 2;
+pub const SERVICE_RUNNING: u32 = 4;
+
+/// The `STATE` number in `sc query` output.
+pub fn parse_state(sc_query_output: &str) -> Option<u32> {
+    sc_query_output.lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        if key.trim() != "STATE" {
+            return None;
+        }
+        value.split_whitespace().next()?.parse().ok()
+    })
+}
+
+/// Whether the service runs, is stopped, ..., or `None` when `sc query` did
+/// not say. `net start` and `net stop` report in the display language, and
+/// `net stop` of a service that is not running fails with exit code 2.
+pub async fn state(runner: &dyn CommandRunner, service: &str) -> Result<Option<u32>, String> {
+    let out = runner
+        .run("sc.exe", &["query", service], Duration::from_secs(8))
+        .await?;
+    Ok(parse_state(&out.stdout))
+}
+
 /// The service's start type, or `None` when `sc qc` did not report one (no
 /// such service, access denied).
 pub async fn start_type(runner: &dyn CommandRunner, service: &str) -> Result<Option<u32>, String> {
@@ -53,6 +79,22 @@ pub(crate) mod test_support {
         ))
         .replace("AppVClient", service)
         .replace("4   DISABLED", &format!("{start_type}   {name}"))
+    }
+
+    /// What `sc query <service>` prints for a service in this state: the
+    /// captured output of a stopped service, renamed and with its state
+    /// swapped.
+    pub fn sc_query_output(service: &str, state: u32) -> String {
+        let name = match state {
+            1 => "STOPPED",
+            2 => "START_PENDING",
+            _ => "RUNNING",
+        };
+        decode_output(include_bytes!(
+            "../../tests/fixtures/console/sc_query_disabled_service.bin"
+        ))
+        .replace("AppVClient", service)
+        .replace("1  STOPPED", &format!("{state}  {name}"))
     }
 }
 
@@ -85,6 +127,15 @@ mod tests {
         assert!(text.contains("STOPPED"));
         assert!(!text.to_lowercase().contains("disabled"));
         assert_eq!(parse_start_type(&text), None);
+    }
+
+    #[test]
+    fn reads_the_state_from_sc_query() {
+        assert_eq!(
+            parse_state(&decode_output(QUERY_OF_DISABLED)),
+            Some(SERVICE_STOPPED)
+        );
+        assert_eq!(parse_state(&decode_output(QC_DEMAND)), None);
     }
 
     #[test]

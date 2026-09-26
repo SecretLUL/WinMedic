@@ -396,25 +396,15 @@ impl ScheduledTasksModule {
     /// [`ps_single_quoted`] — a task can be named by anyone who can create one,
     /// and this command frequently runs elevated.
     ///
-    /// If standard `Disable-ScheduledTask` fails with permission denied (common on
-    /// protected Windows tasks such as `UpdateOrchestrator\USO_UxBroker`), it takes
-    /// ownership of the task file in System32\Tasks and grants Administrators permissions
-    /// before retrying.
+    /// A task Windows protects (`UpdateOrchestrator\USO_UxBroker`, say)
+    /// refuses with "access denied", and that is where it stops. Taking over
+    /// its file in `System32\Tasks` with `takeown` and `icacls`, as this used
+    /// to, changed the owner of a system file for good, without a word and
+    /// without a way back.
     async fn disable_task(&self, task: &TaskRef) -> Result<String, String> {
         let script = format!(
             concat!(
-                "try {{ ",
-                "Disable-ScheduledTask -TaskPath {0} -TaskName {1} -ErrorAction Stop | Out-Null ",
-                "}} catch {{ ",
-                "$taskPath = {0}; $taskName = {1}; ",
-                "$cleanRel = ($taskPath.Trim('\\') + '\\' + $taskName).Trim('\\'); ",
-                "$taskFile = Join-Path $env:SystemRoot \"System32\\Tasks\\$cleanRel\"; ",
-                "if (Test-Path $taskFile) {{ ",
-                "takeown.exe /f $taskFile /a | Out-Null; ",
-                "icacls.exe $taskFile /grant \"*S-1-5-32-544:F\" | Out-Null; ",
-                "Disable-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop | Out-Null ",
-                "}} else {{ throw $_ }} ",
-                "}} ",
+                "Disable-ScheduledTask -TaskPath {0} -TaskName {1} -ErrorAction Stop | Out-Null; ",
                 // Read the state back from the service rather than trusting the
                 // cmdlet's exit code. Runs only when the disable did not throw.
                 "$state = (Get-ScheduledTask -TaskPath {0} -TaskName {1} -ErrorAction SilentlyContinue).State; ",
@@ -450,7 +440,7 @@ impl ScheduledTasksModule {
         let detail = out.stderr.trim();
         let detail = if detail.is_empty() { NO_DETAIL } else { detail };
         Err(format!(
-            "Could not disable '{}{}': {}",
+            "Could not disable '{}{}': {}. Windows protects some of its own tasks; those are best left alone.",
             task.path, task.name, detail
         ))
     }
@@ -1102,5 +1092,25 @@ mod tests {
             .expect("the fix must issue the disable command");
         assert!(disable.contains(r"-TaskPath '\Vendor\'"));
         assert!(disable.contains("-TaskName 'Orphaned Task'"));
+    }
+
+    /// A protected task stays protected: no `takeown`, no `icacls`.
+    #[tokio::test]
+    async fn a_refused_disable_takes_nothing_over() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "Disable-ScheduledTask",
+            CmdOutput::with_output(1, "", "Zugriff verweigert"),
+        );
+        let module = ScheduledTasksModule::with_runner(Arc::new(mock.clone()));
+        let task = TaskRef {
+            path: r"\Microsoft\Windows\UpdateOrchestrator\".to_string(),
+            name: "USO_UxBroker".to_string(),
+        };
+        let err = module.disable_task(&task).await.unwrap_err();
+        assert!(err.contains("Zugriff verweigert"), "{err}");
+        let script = mock.executed().remove(0);
+        assert!(!script.contains("takeown") && !script.contains("icacls"));
+        assert_eq!(crate::utils::cmd::powershell_parse_errors(&script).await, 0);
     }
 }
