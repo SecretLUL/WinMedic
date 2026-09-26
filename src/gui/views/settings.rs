@@ -97,7 +97,11 @@ fn safety(ui: &mut egui::Ui, app: &mut App) {
             ui.add_space(14.0);
 
             theme::section(ui, "Log folder");
-            ui.label(RichText::new(app.audit_logger.log_dir().to_string_lossy()).monospace());
+            let folder = app
+                .audit_logger
+                .log_dir()
+                .map_or_else(|| "Not recorded".into(), |dir| dir.to_string_lossy());
+            ui.label(RichText::new(folder).monospace());
             ui.label(theme::muted(
                 "Every scan, repair, simulation and rollback is recorded here.",
             ));

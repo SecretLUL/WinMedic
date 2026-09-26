@@ -211,6 +211,9 @@ impl<'a> RepairTrace<'a> {
 
 pub struct DiagnosticEngine {
     modules: Vec<Arc<dyn DiagnosticModule>>,
+    /// Where scans and repairs are recorded. Inert on every constructor for
+    /// the same reason as `restore_point`; the entry points opt in through
+    /// [`DiagnosticEngine::with_audit_log`].
     audit_logger: AuditLogger,
     pub verbose_logging: bool,
     /// Where the pre-repair restore point comes from.
@@ -226,7 +229,7 @@ impl DiagnosticEngine {
     pub fn new(config: &AppConfig) -> Self {
         Self {
             modules: get_all_modules(&ModuleConfig::from(config)),
-            audit_logger: AuditLogger::new(),
+            audit_logger: AuditLogger::inert(),
             verbose_logging: config.verbose_logging,
             restore_point: RestorePointService::inert(),
         }
@@ -235,7 +238,7 @@ impl DiagnosticEngine {
     pub fn with_runner(config: &AppConfig, runner: Arc<dyn CommandRunner>) -> Self {
         Self {
             modules: get_all_modules_with_runner(&ModuleConfig::from(config), runner),
-            audit_logger: AuditLogger::new(),
+            audit_logger: AuditLogger::inert(),
             verbose_logging: config.verbose_logging,
             restore_point: RestorePointService::inert(),
         }
@@ -257,6 +260,20 @@ impl DiagnosticEngine {
         self.restore_point.is_live()
     }
 
+    /// Choose where scans and repairs are recorded.
+    ///
+    /// Only the entry points that work on a real machine pass
+    /// [`AuditLogger::real`] here, the same two as for restore points.
+    pub fn with_audit_log(mut self, logger: AuditLogger) -> Self {
+        self.audit_logger = logger;
+        self
+    }
+
+    /// Whether scans and repairs on this engine are recorded anywhere.
+    pub fn records_audit_log(&self) -> bool {
+        self.audit_logger.is_live()
+    }
+
     /// Build an engine over an explicit module list.
     ///
     /// Lets a caller substitute modules that are pointed somewhere other than
@@ -265,7 +282,7 @@ impl DiagnosticEngine {
     pub fn with_modules(modules: Vec<Arc<dyn DiagnosticModule>>) -> Self {
         Self {
             modules,
-            audit_logger: AuditLogger::new(),
+            audit_logger: AuditLogger::inert(),
             verbose_logging: false,
             restore_point: RestorePointService::inert(),
         }
@@ -970,6 +987,48 @@ mod tests {
         }
         assert!(saw_dry_run_start);
         assert!(!saw_vss, "a simulation must not create a restore point");
+    }
+
+    /// Every constructor records nothing, so a test that runs a scan or a
+    /// repair leaves the developer's own audit log alone.
+    #[test]
+    fn a_default_engine_records_nothing() {
+        let mock = Arc::new(crate::utils::cmd::MockCommandRunner::new());
+
+        assert!(!DiagnosticEngine::new(&AppConfig::default()).records_audit_log());
+        assert!(!DiagnosticEngine::with_runner(&AppConfig::default(), mock).records_audit_log());
+        assert!(!DiagnosticEngine::with_modules(Vec::new()).records_audit_log());
+    }
+
+    /// The logger an entry point hands the engine is the one a run writes to.
+    #[tokio::test]
+    async fn a_run_is_recorded_in_the_log_it_was_given() {
+        let dir =
+            std::env::temp_dir().join(format!("winmedic_engine_audit_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let logger = AuditLogger::with_dir_and_size(dir.clone(), 5 * 1024 * 1024);
+        let engine = DiagnosticEngine::with_modules(Vec::new()).with_audit_log(logger.clone());
+        let (tx, _rx) = channel::<RepairEvent>(100);
+
+        let options = RepairOptions {
+            create_vss: false,
+            dry_run: true,
+            verbose_logging: false,
+        };
+        engine
+            .run_repairs(&mut sample_issues(), options, tx, CancellationToken::new())
+            .await;
+
+        let history = logger.get_history();
+        assert!(
+            history
+                .iter()
+                .any(|e| e.action_type == "DRYRUN" && e.title == "Repair simulation"),
+            "{:?}",
+            history
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

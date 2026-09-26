@@ -254,9 +254,14 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     // The other half of the seam described in `run_gui`: a run started from the
     // command line protects the machine the same way the window does, and this
     // is the only other place that says so. Scan and repairs share the one
-    // engine, so the restore point covers both.
-    let engine =
-        Arc::new(DiagnosticEngine::new(&config).with_restore_points(RestorePointService::real()));
+    // engine, so the restore point covers both and both are recorded in the
+    // real audit log.
+    let audit_logger = safety::audit::AuditLogger::real();
+    let engine = Arc::new(
+        DiagnosticEngine::new(&config)
+            .with_restore_points(RestorePointService::real())
+            .with_audit_log(audit_logger.clone()),
+    );
     let (tx, mut rx) = channel::<ScanEvent>(100);
 
     if !quiet {
@@ -320,7 +325,6 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
 
     let mut issues = engine_handle.await?;
 
-    let audit_logger = safety::audit::AuditLogger::new();
     let health_score = DiagnosticEngine::calculate_health_score(&issues);
 
     if args.helper && scan_cancelled {
