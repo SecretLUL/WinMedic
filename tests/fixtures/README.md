@@ -57,6 +57,7 @@ Captured on 2026-09-26 on the same machine, read-only commands:
 | `powercfg_query_aspm_de.bin` | `powercfg /query SCHEME_CURRENT SUB_PCIEXPRESS ASPM` | CP850 | Labels translated; the two `0x` numbers at the end are the current index on mains (1) and on battery (2). The tests set both to 0. |
 | `powercfg_setacvalueindex_missing_setting_de.bin` | `powercfg /setacvalueindex SCHEME_CURRENT SUB_PCIEXPRESS 0` (stderr) | CP850 | Exit 1, "Ungültige Parameter": the command the ASPM repair used to run, without the setting, and still counted as a success. |
 | `reg_query_internet_settings.bin` | `reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings"` | CP850 | `ProxyEnable` 0 and no `ProxyServer`. The tests with a proxy switch it on and add the server. |
+| `reg_query_run_hklm.bin` | `reg query HKLM\Software\Microsoft\Windows\CurrentVersion\Run` | CP850 | Three autostart entries, one `REG_EXPAND_SZ` with `%windir%`, one name with a space. The tests add a value whose program is gone. |
 
 Captured elevated on 2026-09-25, read-only commands, with the time each piece
 of the pipe arrived:

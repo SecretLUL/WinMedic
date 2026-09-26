@@ -1,0 +1,6 @@
+
+HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Run
+    SecurityHealth    REG_EXPAND_SZ    %windir%\system32\SecurityHealthSystray.exe
+    C20A    REG_SZ    C:\WINDOWS\twain_64\Brimc20a\Common\TwDsUiLaunch.exe
+    Riot Vanguard    REG_SZ    "C:\Program Files\Riot Vanguard\vgtray.exe"
+
