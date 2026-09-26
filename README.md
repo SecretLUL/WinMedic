@@ -16,6 +16,8 @@ It is a single program. Nothing to install, nothing else to download. It only
 looks until you click **Repair**, and it creates a restore point first, so you
 can go back.
 
+![WinMedic after a scan: 13 problems found, what Repair does, and the Repair button](assets/screenshot.png)
+
 ## Download
 
 WinMedic runs on 64-bit Windows 10 and 11.
@@ -77,6 +79,20 @@ Exactly what each check looks at and runs is in
   never picked for you. You decide on those in Advanced mode.
 - WinMedic is open source. Its checks are tested against output captured from
   real Windows installations, and every change runs a real scan in CI.
+
+## Privacy
+
+WinMedic collects no data and has no telemetry. It goes online only for this:
+
+- **Updates:** it asks GitHub whether there is a newer version and downloads
+  it when you click *Update now*. You can turn the check off under
+  **Settings**. GitHub's
+  [privacy statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement)
+  applies to both.
+- **Scan:** it tests your internet connection by looking up `dns.google` and
+  `www.microsoft.com`, and compares your clock with `time.windows.com`.
+- **Repair:** DISM takes intact system files from Windows Update, and the
+  clock is set from `time.windows.com`.
 
 ## For IT admins
 
