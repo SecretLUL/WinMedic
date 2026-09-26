@@ -19,40 +19,66 @@ pub struct AuditEntry {
     pub details: String,
 }
 
+/// Where the record of every scan, repair, simulation and rollback goes.
+///
+/// [`Default`] is the inert logger, like the other seams in
+/// [`crate::app::SystemActions`]: `cargo test` builds dozens of engines and
+/// apps, and every scan and repair they run used to land in the developer's
+/// own `%APPDATA%\WinMedic\logs\audit.log`. Only the entry points that work
+/// on the real machine pass [`AuditLogger::real`].
+///
+/// Building a logger touches no file. The folder is created by the first
+/// entry, so a logger that is built and never written to leaves nothing
+/// behind.
+#[derive(Debug, Clone)]
 pub struct AuditLogger {
-    log_dir: PathBuf,
+    /// `None` for the inert logger, which records nothing and has no history.
+    log_dir: Option<PathBuf>,
     max_file_size: u64,
 }
 
 impl Default for AuditLogger {
     fn default() -> Self {
-        Self::new()
+        Self::inert()
     }
 }
 
 impl AuditLogger {
-    pub fn new() -> Self {
-        Self::with_dir_and_size(
-            dirs::data_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("WinMedic")
-                .join("logs"),
-            MAX_LOG_FILE_BYTES,
-        )
+    /// The log in `%APPDATA%\WinMedic\logs`.
+    pub fn real() -> Self {
+        Self::with_dir_and_size(Self::real_dir(), MAX_LOG_FILE_BYTES)
+    }
+
+    /// Records nothing and has no history. The default.
+    pub fn inert() -> Self {
+        Self {
+            log_dir: None,
+            max_file_size: MAX_LOG_FILE_BYTES,
+        }
     }
 
     pub fn with_dir_and_size(log_dir: PathBuf, max_file_size: u64) -> Self {
-        let _ = std::fs::create_dir_all(&log_dir);
-        let logger = Self {
-            log_dir,
+        Self {
+            log_dir: Some(log_dir),
             max_file_size,
-        };
-        logger.migrate_legacy_json_if_needed();
-        logger
+        }
     }
 
-    pub fn log_dir(&self) -> &Path {
-        &self.log_dir
+    fn real_dir() -> PathBuf {
+        dirs::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("WinMedic")
+            .join("logs")
+    }
+
+    /// Whether entries are written anywhere at all.
+    pub fn is_live(&self) -> bool {
+        self.log_dir.is_some()
+    }
+
+    /// The folder the log is written to; `None` for the inert logger.
+    pub fn log_dir(&self) -> Option<&Path> {
+        self.log_dir.as_deref()
     }
 
     /// Rotate files if the base file exceeds `max_file_size`.
@@ -61,30 +87,28 @@ impl AuditLogger {
     /// history.3.jsonl -> history.4.jsonl
     /// ...
     /// history.jsonl -> history.1.jsonl
-    fn rotate_if_needed(&self, filename: &str, ext: &str) {
-        let base_path = self.log_dir.join(format!("{}.{}", filename, ext));
+    fn rotate_if_needed(&self, dir: &Path, filename: &str, ext: &str) {
+        let base_path = dir.join(format!("{}.{}", filename, ext));
         if let Ok(metadata) = std::fs::metadata(&base_path)
             && metadata.len() >= self.max_file_size
         {
             // Delete the oldest rotated file if it exceeds the max backup count
-            let oldest = self
-                .log_dir
-                .join(format!("{}.{}.{}", filename, MAX_ROTATED_FILES, ext));
+            let oldest = dir.join(format!("{}.{}.{}", filename, MAX_ROTATED_FILES, ext));
             if oldest.exists() {
                 let _ = std::fs::remove_file(oldest);
             }
 
             // Shift existing rotated files downwards
             for i in (1..MAX_ROTATED_FILES).rev() {
-                let src = self.log_dir.join(format!("{}.{}.{}", filename, i, ext));
-                let dst = self.log_dir.join(format!("{}.{}.{}", filename, i + 1, ext));
+                let src = dir.join(format!("{}.{}.{}", filename, i, ext));
+                let dst = dir.join(format!("{}.{}.{}", filename, i + 1, ext));
                 if src.exists() {
                     let _ = std::fs::rename(src, dst);
                 }
             }
 
             // Rename current active log file to .1
-            let first_backup = self.log_dir.join(format!("{}.1.{}", filename, ext));
+            let first_backup = dir.join(format!("{}.1.{}", filename, ext));
             let _ = std::fs::rename(&base_path, first_backup);
         }
     }
@@ -98,6 +122,12 @@ impl AuditLogger {
         status: &str,
         details: &str,
     ) {
+        let Some(dir) = self.log_dir.as_deref() else {
+            return;
+        };
+        let _ = std::fs::create_dir_all(dir);
+        Self::migrate_legacy_json_if_needed(dir);
+
         let entry = AuditEntry {
             timestamp: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             action_type: action_type.to_string(),
@@ -108,8 +138,8 @@ impl AuditLogger {
         };
 
         // 1. Text log (audit.log)
-        self.rotate_if_needed("audit", "log");
-        let log_file = self.log_dir.join("audit.log");
+        self.rotate_if_needed(dir, "audit", "log");
+        let log_file = dir.join("audit.log");
         let line = format!(
             "[{}] [{}] [{}] {} -> {} | {}\n",
             entry.timestamp,
@@ -125,8 +155,8 @@ impl AuditLogger {
         }
 
         // 2. Append-only JSONL log (history.jsonl)
-        self.rotate_if_needed("history", "jsonl");
-        let history_file = self.log_dir.join("history.jsonl");
+        self.rotate_if_needed(dir, "history", "jsonl");
+        let history_file = dir.join("history.jsonl");
         if let Ok(json_line) = serde_json::to_string(&entry)
             && let Ok(mut f) = OpenOptions::new()
                 .create(true)
@@ -140,7 +170,11 @@ impl AuditLogger {
     /// Read history from JSONL log files in chronological order.
     pub fn get_history(&self) -> Vec<AuditEntry> {
         let mut entries = Vec::new();
-        let history_file = self.log_dir.join("history.jsonl");
+        let Some(dir) = self.log_dir.as_deref() else {
+            return entries;
+        };
+        Self::migrate_legacy_json_if_needed(dir);
+        let history_file = dir.join("history.jsonl");
 
         if let Ok(file) = File::open(&history_file) {
             let reader = BufReader::new(file);
@@ -158,9 +192,9 @@ impl AuditLogger {
     }
 
     /// Migrate legacy history.json to history.jsonl if present.
-    fn migrate_legacy_json_if_needed(&self) {
-        let legacy_file = self.log_dir.join("history.json");
-        let jsonl_file = self.log_dir.join("history.jsonl");
+    fn migrate_legacy_json_if_needed(dir: &Path) {
+        let legacy_file = dir.join("history.json");
+        let jsonl_file = dir.join("history.jsonl");
 
         if legacy_file.exists() && !jsonl_file.exists() {
             if let Ok(content) = std::fs::read_to_string(&legacy_file)
@@ -181,8 +215,10 @@ impl AuditLogger {
     }
 
     pub fn get_raw_log(&self) -> String {
-        let log_file = self.log_dir.join("audit.log");
-        std::fs::read_to_string(log_file).unwrap_or_default()
+        self.log_dir
+            .as_deref()
+            .and_then(|dir| std::fs::read_to_string(dir.join("audit.log")).ok())
+            .unwrap_or_default()
     }
 }
 
@@ -191,9 +227,60 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_audit_logger_creation() {
-        let logger = AuditLogger::new();
-        assert!(logger.log_dir().exists());
+    fn the_default_logger_records_nothing() {
+        let logger = AuditLogger::default();
+        logger.log("FIX", "storage", "Temp Cleanup", "SUCCESS", "Freed 500MB");
+
+        assert!(!logger.is_live());
+        assert!(logger.log_dir().is_none());
+        assert!(logger.get_history().is_empty());
+        assert!(logger.get_raw_log().is_empty());
+    }
+
+    /// Built, not written to: nothing on disk changes. The folder appears
+    /// with the first entry.
+    #[test]
+    fn building_a_logger_touches_no_file() {
+        let temp_dir = std::env::temp_dir().join("winmedic_audit_test_lazy_dir");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        let logger = AuditLogger::with_dir_and_size(temp_dir.clone(), MAX_LOG_FILE_BYTES);
+        assert!(!temp_dir.exists());
+
+        logger.log("SCAN", "network", "Network", "SUCCESS", "");
+        assert!(temp_dir.join("audit.log").exists());
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn the_real_log_lives_in_appdata() {
+        // Built, not written to: building touches no file.
+        let logger = AuditLogger::real();
+
+        assert!(logger.is_live());
+        assert!(
+            logger
+                .log_dir()
+                .unwrap()
+                .ends_with(Path::new("WinMedic").join("logs"))
+        );
+    }
+
+    /// No test may write the developer's own audit log. Every scan and
+    /// repair a test ran used to end up in `%APPDATA%\WinMedic\logs`, among
+    /// the entries of the real runs the log exists for.
+    #[test]
+    fn no_test_in_the_tree_writes_the_real_audit_log() {
+        let offenders =
+            crate::utils::test_guard::integration_test_lines_mentioning("AuditLogger::real(");
+
+        assert!(
+            offenders.is_empty(),
+            "these tests would write the audit log of the machine running the suite; \
+             use AuditLogger::with_dir_and_size with a temp directory instead: {:?}",
+            offenders
+        );
     }
 
     #[test]
@@ -269,12 +356,12 @@ mod tests {
         }];
         std::fs::write(&legacy_file, serde_json::to_string(&sample).unwrap()).unwrap();
 
-        // Logger should migrate on init
+        // Logger should migrate on the first read
         let logger = AuditLogger::with_dir_and_size(temp_dir.clone(), MAX_LOG_FILE_BYTES);
+        let history = logger.get_history();
         assert!(!legacy_file.exists());
         assert!(temp_dir.join("history.jsonl").exists());
 
-        let history = logger.get_history();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].module_id, "legacy_module");
 

@@ -602,6 +602,8 @@ mod tests {
         assert!(app.system_actions.self_update.is_live());
         assert!(app.system_actions.persist_scan_state);
         assert!(app.system_actions.persist_config);
+        assert!(app.audit_logger.is_live());
+        assert!(app.engine.records_audit_log());
     }
 
     /// The engine an [`App`] hands a repair run must inherit that inertness —
@@ -610,6 +612,17 @@ mod tests {
     #[test]
     fn a_default_app_repairs_without_creating_restore_points() {
         assert!(!App::new().engine.creates_real_restore_points());
+    }
+
+    /// Neither the app nor its engine records anything by default: the scans,
+    /// repairs and rollbacks of `cargo test` used to end up in the
+    /// developer's own `%APPDATA%\WinMedic\logs\audit.log`.
+    #[test]
+    fn a_default_app_writes_no_audit_log() {
+        let app = App::new();
+
+        assert!(!app.audit_logger.is_live());
+        assert!(!app.engine.records_audit_log());
     }
 
     /// Confirming the update dialog reports success without anything opening.

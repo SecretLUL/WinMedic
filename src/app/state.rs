@@ -226,10 +226,12 @@ impl App {
         let admin_flag = is_admin();
         let (config, config_status) = AppConfig::load_reporting();
         let system_actions = SystemActions::default();
+        let audit_logger = AuditLogger::inert();
         let engine = Arc::new(
-            DiagnosticEngine::new(&config).with_restore_points(system_actions.restore_point),
+            DiagnosticEngine::new(&config)
+                .with_restore_points(system_actions.restore_point)
+                .with_audit_log(audit_logger.clone()),
         );
-        let audit_logger = AuditLogger::new();
         let reg_backup_mgr = RegBackupManager::new();
         let audit_entries = audit_logger.get_history();
         let backup_records = reg_backup_mgr.list_backups();
@@ -352,24 +354,28 @@ impl App {
     /// Hand this app the real machine.
     ///
     /// [`App::new`] builds an app that cannot touch it: confirming a dialog
-    /// opens no browser and raises no UAC prompt, and a repair run asks Windows
-    /// for no restore point. That default is what keeps `cargo test` — which
-    /// builds dozens of `App`s — off the developer's own desktop. The desktop
-    /// front end is the one caller that wants the real thing, so it is the one
-    /// caller that opts in.
+    /// opens no browser and raises no UAC prompt, a repair run asks Windows
+    /// for no restore point, and nothing is written to the audit log. That
+    /// default is what keeps `cargo test` — which builds dozens of `App`s —
+    /// off the developer's own desktop. The desktop front end is the one
+    /// caller that wants the real thing, so it is the one caller that opts in.
     ///
     /// The engine is rebuilt because it reads
-    /// [`SystemActions::restore_point`] at construction time.
+    /// [`SystemActions::restore_point`] and the audit log at construction
+    /// time.
     pub fn enable_real_system_actions(&mut self) {
         self.system_actions = SystemActions::real();
+        self.audit_logger = AuditLogger::real();
         self.rebuild_engine();
     }
 
-    /// Rebuild the engine from the current config and system actions.
+    /// Rebuild the engine from the current config, system actions and audit
+    /// log.
     pub(super) fn rebuild_engine(&mut self) {
         self.engine = Arc::new(
             DiagnosticEngine::new(&self.config)
-                .with_restore_points(self.system_actions.restore_point),
+                .with_restore_points(self.system_actions.restore_point)
+                .with_audit_log(self.audit_logger.clone()),
         );
     }
 
