@@ -583,6 +583,22 @@ impl App {
         push_bounded_log(&mut self.repair_console_lines, line);
     }
 
+    /// When the scan on screen started, in the audit log's format: its end
+    /// minus its duration.
+    fn scan_started(&self) -> Option<String> {
+        let ended = chrono::NaiveDateTime::parse_from_str(
+            self.last_scan_timestamp.as_deref()?,
+            "%Y-%m-%d %H:%M:%S",
+        )
+        .ok()?;
+        let took = chrono::TimeDelta::from_std(self.scan_duration.unwrap_or_default()).ok()?;
+        Some(
+            (ended - took - chrono::TimeDelta::seconds(1))
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string(),
+        )
+    }
+
     /// Export the current scan/repair report as an HTML file in the reports directory.
     pub fn export_report(&mut self) -> Result<std::path::PathBuf, String> {
         let base = dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
@@ -593,8 +609,12 @@ impl App {
 
         let health = DiagnosticEngine::calculate_health_score(&self.issues);
         self.audit_entries = self.audit_logger.get_history();
+        let entries = match self.scan_started() {
+            Some(since) => DiagnosticReporter::audit_since(&self.audit_entries, &since),
+            None => Vec::new(),
+        };
 
-        DiagnosticReporter::save_report(&path, &self.issues, health, &self.audit_entries)
+        DiagnosticReporter::save_report(&path, &self.issues, health, &entries)
             .map(|_| path)
             .map_err(|e| format!("Export failed: {}", e))
     }
