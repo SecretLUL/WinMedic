@@ -273,6 +273,9 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     // engine, so the restore point covers both and both are recorded in the
     // real audit log.
     let audit_logger = safety::audit::AuditLogger::real();
+    // A report covers what this run did, not the whole audit history.
+    let run_started = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let this_run = || DiagnosticReporter::audit_since(&audit_logger.get_history(), &run_started);
     let engine = Arc::new(
         DiagnosticEngine::new(&config)
             .with_restore_points(RestorePointService::real())
@@ -416,7 +419,7 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     } else if !defer_json && !args.helper {
         println!(
             "{}",
-            DiagnosticReporter::to_json(&issues, health_score, &audit_logger.get_history())
+            DiagnosticReporter::to_json(&issues, health_score, &this_run())
         );
     }
 
@@ -520,14 +523,14 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
             DiagnosticReporter::to_json(
                 &issues,
                 DiagnosticEngine::calculate_health_score(&issues),
-                &audit_logger.get_history()
+                &this_run()
             )
         );
     }
 
     if let Some(ref out_path) = args.output {
         let health = DiagnosticEngine::calculate_health_score(&issues);
-        let audit_entries = audit_logger.get_history();
+        let audit_entries = this_run();
         match DiagnosticReporter::save_report(out_path, &issues, health, &audit_entries) {
             Ok(()) => {
                 if !quiet {

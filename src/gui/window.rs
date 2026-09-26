@@ -4,17 +4,37 @@
 //! — the size every view, Settings included, is drawn and tested at — and
 //! cannot be resized or maximized. Advanced mode hands the window back, at the
 //! size or maximized state it had before Easy mode locked it.
+//!
+//! A screen too small for that size (1920 x 1080 at 175 % leaves about
+//! 1097 x 617 points) gets a maximized window that can be resized in either
+//! mode: locked at 960 x 640, its bottom was off the screen, Repair button
+//! and all.
 
 use eframe::egui::{self, ViewportCommand};
 
 /// The smallest window every view fits in.
 pub const MIN_SIZE: egui::Vec2 = egui::vec2(960.0, 640.0);
 
+/// Room the title bar and the taskbar take from the screen, in points.
+const SCREEN_CHROME: egui::Vec2 = egui::vec2(16.0, 90.0);
+
 /// Where the window was, so that leaving Easy mode can put it back.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Geometry {
     pub size: egui::Vec2,
     pub maximized: bool,
+    /// The screen the window is on, in points, once the platform has said.
+    pub monitor: Option<egui::Vec2>,
+}
+
+impl Geometry {
+    /// Whether [`MIN_SIZE`] fits on the screen. An unknown screen is taken
+    /// to fit, as before; the window is set up again once it is known.
+    fn min_size_fits(&self) -> bool {
+        self.monitor.is_none_or(|screen| {
+            screen.x >= MIN_SIZE.x + SCREEN_CHROME.x && screen.y >= MIN_SIZE.y + SCREEN_CHROME.y
+        })
+    }
 }
 
 impl Geometry {
@@ -25,6 +45,7 @@ impl Geometry {
             viewport.inner_rect.map(|rect| Self {
                 size: rect.size(),
                 maximized: viewport.maximized.unwrap_or(false),
+                monitor: viewport.monitor_size,
             })
         })
     }
@@ -33,7 +54,8 @@ impl Geometry {
 /// Which mode the window was last set up for.
 #[derive(Debug, Default)]
 pub struct WindowLock {
-    applied: Option<bool>,
+    /// The mode, and whether [`MIN_SIZE`] fitted on the screen, last set up.
+    applied: Option<(bool, bool)>,
     before_lock: Option<Geometry>,
 }
 
@@ -42,12 +64,33 @@ impl WindowLock {
     /// already does, which is every frame but the first and the ones right
     /// after a switch.
     pub fn commands(&mut self, advanced: bool, current: Option<Geometry>) -> Vec<ViewportCommand> {
-        if self.applied == Some(advanced) {
+        let fits = current.is_none_or(|c| c.min_size_fits());
+        if self.applied == Some((advanced, fits)) {
             return Vec::new();
         }
-        self.applied = Some(advanced);
+        let was_advanced = self.applied.map(|(mode, _)| mode);
+        self.applied = Some((advanced, fits));
+
+        if !fits {
+            let screen = current.and_then(|c| c.monitor).unwrap_or(MIN_SIZE);
+            let smallest = (screen - SCREEN_CHROME).min(MIN_SIZE);
+            return vec![
+                ViewportCommand::MinInnerSize(smallest),
+                ViewportCommand::Resizable(true),
+                ViewportCommand::EnableButtons {
+                    close: true,
+                    minimized: true,
+                    maximize: true,
+                },
+                ViewportCommand::Maximized(true),
+            ];
+        }
 
         if advanced {
+            if was_advanced == Some(true) {
+                // Only the screen changed, to one MIN_SIZE fits on.
+                return vec![ViewportCommand::MinInnerSize(MIN_SIZE)];
+            }
             let mut commands = vec![
                 ViewportCommand::Resizable(true),
                 ViewportCommand::EnableButtons {
@@ -64,8 +107,11 @@ impl WindowLock {
             }
             commands
         } else {
-            self.before_lock = current;
+            if was_advanced != Some(false) {
+                self.before_lock = current;
+            }
             vec![
+                ViewportCommand::MinInnerSize(MIN_SIZE),
                 // First, or un-maximizing afterwards would restore the old size.
                 ViewportCommand::Maximized(false),
                 ViewportCommand::Resizable(false),
@@ -88,7 +134,47 @@ mod tests {
         Some(Geometry {
             size: egui::vec2(width, height),
             maximized: false,
+            monitor: Some(egui::vec2(1920.0, 1080.0)),
         })
+    }
+
+    /// 1920 x 1080 at 175 %.
+    fn on_small_screen() -> Option<Geometry> {
+        Some(Geometry {
+            size: MIN_SIZE,
+            maximized: false,
+            monitor: Some(egui::vec2(1097.0, 617.0)),
+        })
+    }
+
+    #[test]
+    fn a_screen_too_small_for_the_lock_gets_a_maximized_window() {
+        let mut lock = WindowLock::default();
+        let commands = lock.commands(false, on_small_screen());
+        assert_eq!(resizable(&commands), Some(true));
+        assert!(commands.contains(&ViewportCommand::Maximized(true)));
+        assert!(!commands.contains(&ViewportCommand::InnerSize(MIN_SIZE)));
+        assert!(commands.contains(&ViewportCommand::MinInnerSize(egui::vec2(960.0, 527.0))));
+    }
+
+    /// The first frames may not know the screen yet; once it is known and
+    /// too small, the window is set up again.
+    #[test]
+    fn a_screen_learned_late_still_counts() {
+        let mut lock = WindowLock::default();
+        let unknown = Some(Geometry {
+            monitor: None,
+            ..on_small_screen().unwrap()
+        });
+        assert!(
+            lock.commands(false, unknown)
+                .contains(&ViewportCommand::InnerSize(MIN_SIZE))
+        );
+        assert!(
+            lock.commands(false, on_small_screen())
+                .contains(&ViewportCommand::Maximized(true))
+        );
+        assert!(lock.commands(false, on_small_screen()).is_empty());
     }
 
     fn resizable(commands: &[ViewportCommand]) -> Option<bool> {
@@ -136,6 +222,7 @@ mod tests {
             Some(Geometry {
                 size: egui::vec2(2560.0, 1400.0),
                 maximized: true,
+                monitor: Some(egui::vec2(2560.0, 1440.0)),
             }),
         );
         let commands = lock.commands(true, at(MIN_SIZE.x, MIN_SIZE.y));

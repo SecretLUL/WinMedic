@@ -50,6 +50,8 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # To read whether CI passed on the commit being released.
+      actions: read
     # Read by the `winget` job below, which needs to know both which version
     # shipped and whether it actually reached the releases page.
     outputs:
@@ -61,6 +63,24 @@ jobs:
           # The bump commit has to sit on top of real history, and a shallow
           # clone cannot push a branch update.
           fetch-depth: 0
+
+      # Nothing else stops a release from a commit whose CI failed or never
+      # finished: branch protection guards merges, not this workflow. Checked
+      # first, before ten minutes of LTO build. A rehearsal skips it, so the
+      # workflow itself can be tried on any commit.
+      - name: Require a green CI run on this commit
+        if: github.event_name != 'workflow_dispatch' || !inputs.dry_run
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $conclusions = @(gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$env:SHA&event=push&per_page=20" --jq '.workflow_runs[].conclusion')
+          if ($conclusions -notcontains 'success') {
+            throw "CI has not passed on $env:SHA (runs: $(if ($conclusions) { $conclusions -join ', ' } else { 'none' })). Wait for it to finish, or fix main first."
+          }
+          Write-Host "CI passed on $env:SHA."
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable

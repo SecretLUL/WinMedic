@@ -102,8 +102,8 @@ impl WinMedicApp {
     pub fn with_autostart(cc: &eframe::CreationContext<'_>, autostart: bool) -> Self {
         theme::apply(&cc.egui_ctx);
 
-        let mut app = App::new();
-        // `App::new` builds an app that cannot touch the desktop. This is the
+        let mut app = App::from_disk();
+        // `App` builds an app that cannot touch the desktop. This is the
         // one place that wants it to: accepting the update dialog should really
         // open a browser, accepting the elevation dialog should really raise
         // UAC, and a repair run should really leave a restore point behind.
@@ -509,7 +509,8 @@ mod tests {
         let smallest = (window::MIN_SIZE.x, window::MIN_SIZE.y);
         for tab in 0..TAB_COUNT {
             for fixture in FIXTURES {
-                for size in [smallest, (1400.0, 900.0), (1920.0, 1200.0)] {
+                // 960 x 527: what is left of 1920 x 1080 at 175 %.
+                for size in [smallest, (960.0, 527.0), (1400.0, 900.0), (1920.0, 1200.0)] {
                     let mut app = fixture();
                     app.active_tab = tab;
                     let harness = sized_window(app, size);

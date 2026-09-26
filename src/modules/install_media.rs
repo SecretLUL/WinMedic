@@ -136,6 +136,11 @@ pub fn dismount_script(isos: &[String]) -> String {
     )
 }
 
+/// Windows 11 starts at build 22000; the builds below are Windows 10.
+fn is_windows_11(build: u32) -> bool {
+    build >= 22000
+}
+
 /// The Windows this PC runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThisWindows {
@@ -257,14 +262,23 @@ impl Media {
         media
     }
 
-    /// The image to repair from: one of this PC's edition, from the same
-    /// build if there is one, the newest otherwise. DISM decides whether its
-    /// files fit.
+    /// The image to repair from: one of this PC's edition and Windows
+    /// version, from the same build if there is one, the newest otherwise.
+    /// DISM decides whether its files fit.
+    ///
+    /// A Windows 10 image was picked for a Windows 11 PC when nothing better
+    /// was there, and the repair install then offered from it would have
+    /// been a downgrade.
     pub fn best(&self) -> Option<&MediaImage> {
         let windows = self.windows.as_ref()?;
         self.images
             .iter()
             .filter(|image| image.edition.eq_ignore_ascii_case(&windows.edition))
+            .filter(|image| {
+                image
+                    .build()
+                    .is_some_and(|build| is_windows_11(build) == is_windows_11(windows.build))
+            })
             .max_by_key(|image| (image.build() == Some(windows.build), image.version_key()))
     }
 
@@ -404,6 +418,20 @@ mod tests {
         let best = media.best().unwrap();
         assert_eq!(best.dism_source(), r"/Source:esd:F:\sources\install.esd:4");
         assert_eq!(media.origin(best), "drive F:");
+    }
+
+    #[test]
+    fn a_windows_10_image_is_no_source_for_windows_11() {
+        let media = Media::parse(&format!(
+            "{THIS_PC}{}",
+            image_line(
+                6,
+                "Professional",
+                "10.0.19041.5129",
+                r"E:\sources\install.wim"
+            )
+        ));
+        assert_eq!(media.best(), None);
     }
 
     #[test]

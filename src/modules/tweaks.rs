@@ -947,12 +947,29 @@ mod tests {
     /// The hosts file of a real Windows 11 (its LAN address replaced).
     const HOSTS: &[u8] = include_bytes!("../../tests/fixtures/files/hosts_blocking_update.bin");
 
-    fn sandbox(name: &str) -> PathBuf {
+    /// A folder under the temp directory, removed when the test ends. Seven
+    /// of them were left behind by every run.
+    struct Sandbox(PathBuf);
+
+    impl std::ops::Deref for Sandbox {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Sandbox {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn sandbox(name: &str) -> Sandbox {
         let dir =
             std::env::temp_dir().join(format!("winmedic_tweaks_{}_{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        Sandbox(dir)
     }
 
     fn module(mock: MockCommandRunner, dir: &Path, hosts: &[u8]) -> TweaksModule {
@@ -1217,6 +1234,5 @@ mod tests {
         );
         let backups: Vec<_> = std::fs::read_dir(dir.join("backups")).unwrap().collect();
         assert_eq!(backups.len(), 1);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
