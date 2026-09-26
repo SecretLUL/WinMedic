@@ -17,8 +17,11 @@ refuses a binary that does not report the tagged version, publishes the release
 with its `.sha256`, pushes the version bump to `main`, and calls `winget.yml`.
 `dry_run` rehearses all of it without tagging or publishing.
 
-- Release notes go in `docs/release-notes/v0.5.3.md`, merged before the run.
-  Without it the notes are generated from the commit list.
+- Release notes go in `docs/release-notes/<tag>.md` (`v0.6.0.md` for 0.6.0),
+  merged before the run. Without it the notes are generated from the commit
+  list.
+- The run stops unless CI passed on the commit it releases; wait for CI on
+  `main` to finish first. A `dry_run` skips that check.
 - The bump reaches `main` through the repository secret `RELEASE_TOKEN`: a
   fine-grained personal access token for this repository only, with
   **Contents: Read and write**. `main` takes changes only through pull requests
