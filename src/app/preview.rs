@@ -231,7 +231,7 @@ mod tests {
     #[test]
     fn only_repairs_that_change_something_promise_something() {
         let app = app_with(vec![
-            issue("evt_whea_hardware_error", Severity::Critical),
+            issue("whea_storage_platform_error", Severity::Critical),
             issue("wu_reboot_pending", Severity::Info),
             issue("crash_bugcheck_history", Severity::Warning),
             issue("sched_failing_foo", Severity::Info),

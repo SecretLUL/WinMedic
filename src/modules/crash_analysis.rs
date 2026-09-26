@@ -1,7 +1,8 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::crash_timeline::{self, Change};
+use crate::modules::event_log::{memory_test_finding, schedule_memory_test};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
-use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
+use crate::utils::cmd::{CommandRunner, SystemCommandRunner, ps_single_quoted};
 use crate::utils::debug_log::DebugTrace;
 use crate::utils::event_xml::{
     EventRecord, event_query, parse_events, read_events, system_log_query,
@@ -19,8 +20,12 @@ const DEFAULT_DUMP_DIR: &str = r"C:\Windows\Minidump";
 /// the header is parsed for them because scanning megabytes of raw memory for
 /// driver names would dominate the scan time.
 const DRIVER_SCAN_MAX_BYTES: usize = 16 * 1024 * 1024;
-/// Above this many accumulated dump files the triage suggests cleaning up.
+/// Above this many old dump files the triage suggests cleaning up.
 const STALE_DUMP_THRESHOLD: usize = 5;
+/// Dumps younger than this are the crash analysis' evidence and are kept;
+/// older ones only take up space. Deleting the evidence made the crash
+/// findings disappear, and the blue screens looked repaired.
+const DUMP_EVIDENCE_DAYS: u64 = crash_timeline::SERIES_DAYS as u64;
 
 /// Parsed kernel minidump header information.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -95,6 +100,33 @@ pub struct CrashAnalysisModule {
     config: ModuleConfig,
     runner: Arc<dyn CommandRunner>,
     dump_dir: PathBuf,
+    /// `%LOCALAPPDATA%CrashDumps`, where programs' crash dumps go; `None`
+    /// in tests.
+    user_dump_dir: Option<PathBuf>,
+}
+
+/// Dump files older than [`DUMP_EVIDENCE_DAYS`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct StaleDumps {
+    count: usize,
+    bytes: u64,
+}
+
+impl StaleDumps {
+    fn add(self, other: StaleDumps) -> StaleDumps {
+        StaleDumps {
+            count: self.count + other.count,
+            bytes: self.bytes + other.bytes,
+        }
+    }
+}
+
+/// Whether a file last written at `modified` is older than the evidence
+/// window.
+fn is_stale(modified: std::time::SystemTime) -> bool {
+    modified
+        .elapsed()
+        .is_ok_and(|age| age > Duration::from_secs(DUMP_EVIDENCE_DAYS * 86_400))
 }
 
 impl CrashAnalysisModule {
@@ -107,6 +139,8 @@ impl CrashAnalysisModule {
             config,
             runner,
             dump_dir: PathBuf::from(DEFAULT_DUMP_DIR),
+            user_dump_dir: std::env::var_os("LOCALAPPDATA")
+                .map(|local| Path::new(&local).join("CrashDumps")),
         }
     }
 
@@ -121,6 +155,7 @@ impl CrashAnalysisModule {
             config,
             runner,
             dump_dir: dump_dir.into(),
+            user_dump_dir: None,
         }
     }
 
@@ -146,42 +181,29 @@ impl CrashAnalysisModule {
         }
     }
 
-    /// Reads every `*.dmp` in `dump_dir`, parses headers and returns crash
-    /// instances plus the total file count (for the stale-dump heuristic).
-    fn collect_dump_crashes(&self) -> (Vec<CrashInstance>, usize) {
+    /// Reads the `*.dmp` files in `dump_dir` younger than
+    /// [`DUMP_EVIDENCE_DAYS`] as crash instances, and counts the older ones.
+    ///
+    /// No admin rights or no crashes at all is not an error: the event-log
+    /// correlation still works.
+    fn collect_dump_crashes(&self) -> (Vec<CrashInstance>, StaleDumps) {
         let mut crashes = Vec::new();
-        let mut total_files = 0usize;
+        let mut stale = StaleDumps::default();
 
-        let entries = match std::fs::read_dir(&self.dump_dir) {
-            Ok(entries) => entries,
-            Err(_) => {
-                // No admin rights or no crashes at all - not an error, the
-                // event-log correlation still works.
-                return (crashes, total_files);
+        for path in dump_dir_dmp_files(&self.dump_dir) {
+            let Ok(meta) = std::fs::metadata(&path) else {
+                continue;
+            };
+            if meta.modified().is_ok_and(is_stale) {
+                stale.count += 1;
+                stale.bytes += meta.len();
+                continue;
             }
-        };
-
-        let mut files: Vec<PathBuf> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| {
-                p.extension()
-                    .and_then(|e| e.to_str())
-                    .is_some_and(|e| e.eq_ignore_ascii_case("dmp"))
-            })
-            .collect();
-        files.sort();
-
-        for path in files {
-            total_files += 1;
-            let modified = std::fs::metadata(&path)
-                .and_then(|m| m.modified())
-                .ok()
-                .map(|t| {
-                    DateTime::<Local>::from(t)
-                        .format("%Y-%m-%d %H:%M")
-                        .to_string()
-                });
+            let modified = meta.modified().ok().map(|t| {
+                DateTime::<Local>::from(t)
+                    .format("%Y-%m-%d %H:%M")
+                    .to_string()
+            });
             let file_name = path
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -203,7 +225,7 @@ impl CrashAnalysisModule {
             });
         }
 
-        (crashes, total_files)
+        (crashes, stale)
     }
 
     /// The events a `wevtutil` query returns, or `None` when it failed.
@@ -230,12 +252,13 @@ impl CrashAnalysisModule {
     /// what changed in the week before it; `None` when the logs show nothing.
     async fn what_changed(&self, dbg: &DebugTrace) -> Option<(DateTime<Utc>, Vec<Change>)> {
         let series_ms = crash_timeline::SERIES_DAYS as u64 * 86_400_000;
-        let first = self
-            .events(dbg, system_log_query(&crash_filter(), series_ms, 500))
-            .await?
-            .iter()
-            .filter_map(crash_timeline::logged_at)
-            .min()?;
+        let first = crash_timeline::first_of_series(
+            self.events(dbg, system_log_query(&crash_filter(), series_ms, 500))
+                .await?
+                .iter()
+                .filter_map(crash_timeline::logged_at)
+                .collect(),
+        )?;
         let from = crash_timeline::week_before(first);
         let to = crash_timeline::xpath_time(first);
         let week = format!(
@@ -284,24 +307,32 @@ impl CrashAnalysisModule {
         (!changes.is_empty()).then_some((first, changes))
     }
 
-    fn count_user_mode_dumps(&self) -> usize {
-        let Some(local) = std::env::var_os("LOCALAPPDATA") else {
-            return 0;
+    /// Programs' crash dumps older than [`DUMP_EVIDENCE_DAYS`].
+    fn stale_user_mode_dumps(&self) -> StaleDumps {
+        let Some(dir) = &self.user_dump_dir else {
+            return StaleDumps::default();
         };
-        let dir = Path::new(&local).join("CrashDumps");
-        std::fs::read_dir(&dir)
-            .map(|entries| {
-                entries
-                    .flatten()
-                    .filter(|e| {
-                        e.path()
-                            .extension()
-                            .and_then(|x| x.to_str())
-                            .is_some_and(|x| x.eq_ignore_ascii_case("dmp"))
-                    })
-                    .count()
+        dump_dir_dmp_files(dir)
+            .iter()
+            .filter_map(|path| std::fs::metadata(path).ok())
+            .filter(|meta| meta.modified().is_ok_and(is_stale))
+            .fold(StaleDumps::default(), |stale, meta| StaleDumps {
+                count: stale.count + 1,
+                bytes: stale.bytes + meta.len(),
             })
-            .unwrap_or(0)
+    }
+
+    /// Deletes the dumps older than [`DUMP_EVIDENCE_DAYS`] and prints
+    /// `deleted|left`.
+    fn delete_stale_dumps_script(&self) -> String {
+        let dirs: Vec<String> = std::iter::once(&self.dump_dir)
+            .chain(self.user_dump_dir.as_ref())
+            .map(|dir| ps_single_quoted(&dir.to_string_lossy()))
+            .collect();
+        format!(
+            "$cut = (Get-Date).AddDays(-{DUMP_EVIDENCE_DAYS}); $deleted = 0; $left = 0; foreach ($d in @({})) {{ Get-ChildItem -LiteralPath $d -Filter *.dmp -File -ErrorAction SilentlyContinue | Where-Object {{ $_.LastWriteTime -lt $cut }} | ForEach-Object {{ try {{ Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop; $deleted++ }} catch {{ $left++ }} }} }}; '{{0}}|{{1}}' -f $deleted, $left",
+            dirs.join(", ")
+        )
     }
 }
 
@@ -345,10 +376,44 @@ impl DiagnosticModule for CrashAnalysisModule {
         dbg.kv("dump_dir", DEFAULT_DUMP_DIR).await;
         dbg.kv("lookback_hours", window_hours.to_string()).await;
 
-        let (dump_crashes, total_dump_files) = self.collect_dump_crashes();
-        let user_dump_count = self.count_user_mode_dumps();
-        dbg.kv("kernel_dumps", total_dump_files.to_string()).await;
-        dbg.kv("user_mode_dumps", user_dump_count.to_string()).await;
+        let (dump_crashes, stale_kernel) = self.collect_dump_crashes();
+        let stale_user = self.stale_user_mode_dumps();
+        dbg.kv("recent_kernel_dumps", dump_crashes.len().to_string())
+            .await;
+        dbg.kv("old_kernel_dumps", stale_kernel.count.to_string())
+            .await;
+        dbg.kv("old_user_mode_dumps", stale_user.count.to_string())
+            .await;
+
+        // Dumps nobody needs any more, whether or not anything crashed lately.
+        let stale = stale_kernel.add(stale_user);
+        if stale.count > STALE_DUMP_THRESHOLD {
+            issues.push(
+                Issue::new(
+                    "crash_stale_dumps",
+                    self.id(),
+                    format!(
+                        "{} crash dump(s) older than {DUMP_EVIDENCE_DAYS} days",
+                        stale.count
+                    ),
+                    "System Cleanup",
+                    Severity::Info,
+                    RiskScore::Low,
+                    format!("These crash dumps are older than {DUMP_EVIDENCE_DAYS} days and only take up space. Newer ones are kept: they are what the crash analysis reads."),
+                    format!(
+                        "Older than {DUMP_EVIDENCE_DAYS} days in {}: {}\nOlder than {DUMP_EVIDENCE_DAYS} days in %LOCALAPPDATA%\\CrashDumps: {}",
+                        self.dump_dir.display(),
+                        stale_kernel.count,
+                        stale_user.count
+                    ),
+                    format!("Delete crash dumps older than {DUMP_EVIDENCE_DAYS} days"),
+                    vec![format!(
+                        "Delete the .dmp files older than {DUMP_EVIDENCE_DAYS} days in both folders"
+                    )],
+                )
+                .with_reclaimable_bytes(stale.bytes),
+            );
+        }
 
         // Step 2: correlate System event log (BugCheck 1001, Kernel-Power 41)
         Self::send_progress(
@@ -441,6 +506,12 @@ impl DiagnosticModule for CrashAnalysisModule {
         // referenced by each instance.
         let mut driver_by_source: BTreeMap<String, String> = BTreeMap::new();
         for path in dump_dir_dmp_files(&self.dump_dir) {
+            if std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .is_ok_and(is_stale)
+            {
+                continue;
+            }
             let file_name = path
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -486,7 +557,7 @@ impl DiagnosticModule for CrashAnalysisModule {
             let component = describe_driver_component(driver);
 
             issues.push(Issue::new(
-                "crash_driver_fault",
+                driver_fault_id(driver),
                 self.id(),
                 format!("BSOD caused by driver {} ({} crash(es))", driver, count),
                 "Hardware & Stability",
@@ -513,7 +584,7 @@ impl DiagnosticModule for CrashAnalysisModule {
                     ),
                     "Verify the crash frequency drops in the days after the swap".to_string(),
                 ],
-            ));
+            ).with_advice_only());
         }
 
         // 2. GPU / TDR crashes
@@ -544,13 +615,13 @@ impl DiagnosticModule for CrashAnalysisModule {
                     "Check GPU temperatures under load and improve case airflow if needed".to_string(),
                     "If crashes persist, test with a known-stable driver branch or reduce core clock offsets".to_string(),
                 ],
-            ));
+            ).with_advice_only());
         }
 
         // 3. Memory-class stop codes without a clear driver
         if !memory_crashes.is_empty() {
             let count = memory_crashes.len();
-            issues.push(Issue::new(
+            issues.push(memory_test_finding(Issue::new(
                 "crash_memory_bugcheck",
                 self.id(),
                 format!("Memory-related BSOD stop code(s) ({} crashes)", count),
@@ -569,7 +640,7 @@ impl DiagnosticModule for CrashAnalysisModule {
                     "Lower XMP/EXPO memory frequency or increase DRAM voltage in BIOS".to_string(),
                     "If errors persist, test DIMMs individually to isolate the failing module".to_string(),
                 ],
-            ));
+            )));
         }
 
         // 4. Remaining crashes without driver attribution
@@ -658,28 +729,6 @@ impl DiagnosticModule for CrashAnalysisModule {
             issues.push(crash_timeline::finding(self.id(), first, &changes));
         }
 
-        // 7. Dump accumulation
-        if total_dump_files > STALE_DUMP_THRESHOLD || user_dump_count > 10 {
-            issues.push(Issue::new(
-                "crash_stale_dumps",
-                self.id(),
-                format!(
-                    "{} crash dump(s) accumulated on disk",
-                    total_dump_files + user_dump_count
-                ),
-                "System Cleanup",
-                Severity::Info,
-                RiskScore::Low,
-                "A large number of crash dumps has accumulated. Each kernel minidump is up to a few megabytes; once analysed they can be safely deleted to reclaim disk space.",
-                format!(
-                    "Kernel minidumps in {}: {}\nUser-mode dumps in %LOCALAPPDATA%\\CrashDumps: {}",
-                    DEFAULT_DUMP_DIR, total_dump_files, user_dump_count
-                ),
-                "Delete analysed crash dump files",
-                vec!["Remove outdated minidump and user-mode crash dump files".to_string()],
-            ));
-        }
-
         Self::send_progress(&progress_tx, 100, "Crash analysis complete", None).await;
 
         Ok(issues)
@@ -690,124 +739,71 @@ impl DiagnosticModule for CrashAnalysisModule {
         issue_id: &str,
         progress_tx: Option<Sender<FixProgress>>,
     ) -> Result<String, String> {
-        let dbg = DebugTrace::fix(self.id(), progress_tx.clone(), self.config.verbose_logging);
         match issue_id {
-            "crash_driver_fault" | "crash_video_tdr" => {
-                if let Some(ref tx) = progress_tx {
-                    let _ = tx
-                        .send(FixProgress {
-                            issue_id: issue_id.to_string(),
-                            step_description: "Opening Device Manager for driver rollback..."
-                                .to_string(),
-                            is_success: true,
-                            error: None,
-                            console_line: Some("cmd.exe /c start devmgmt.msc".to_string()),
-                        })
-                        .await;
-                }
-
-                let open_res = dbg
-                    .run(
-                        &self.runner,
-                        "cmd.exe",
-                        &["/c", "start", "", "devmgmt.msc"],
-                        Duration::from_secs(10),
-                    )
-                    .await;
-
-                match open_res {
-                    Ok(out) if out.success => Ok(
-                        "Device Manager opened. Roll back or clean-reinstall the implicated driver as outlined in the fix steps."
-                            .to_string(),
-                    ),
-                    _ => Err(
-                        "Device Manager could not be opened. Open it yourself (devmgmt.msc), roll back the implicated display/driver, then clean-reinstall the latest vendor package (DDU recommended)."
-                            .to_string(),
-                    ),
-                }
-            }
-            "crash_memory_bugcheck" => {
-                if let Some(ref tx) = progress_tx {
-                    let _ = tx
-                        .send(FixProgress {
-                            issue_id: issue_id.to_string(),
-                            step_description: "Scheduling Windows Memory Diagnostic tool..."
-                                .to_string(),
-                            is_success: true,
-                            error: None,
-                            console_line: Some("mdsched.exe".to_string()),
-                        })
-                        .await;
-                }
-
-                let sched_res = self
-                    .runner
-                    .run("mdsched.exe", &[], Duration::from_secs(5))
-                    .await;
-
-                match sched_res {
-                    Ok(out) if out.success => Ok(
-                        "Windows Memory Diagnostic (mdsched.exe) launched. The memory test runs during the next reboot; also check XMP/EXPO settings in BIOS."
-                            .to_string(),
-                    ),
-                    _ => Err(
-                        "Windows Memory Diagnostic (mdsched.exe) could not be started. Start it from the Start menu, and check XMP/EXPO settings in BIOS."
-                            .to_string(),
-                    ),
-                }
-            }
+            "crash_memory_bugcheck" => schedule_memory_test(&*self.runner).await,
             "crash_stale_dumps" => {
                 if let Some(ref tx) = progress_tx {
                     let _ = tx
                         .send(FixProgress {
                             issue_id: issue_id.to_string(),
-                            step_description: "Deleting analysed crash dump files...".to_string(),
+                            step_description: format!(
+                                "Deleting crash dumps older than {DUMP_EVIDENCE_DAYS} days..."
+                            ),
                             is_success: true,
                             error: None,
-                            console_line: Some(format!(
-                                "powershell.exe Remove-Item '{}\\*.dmp'",
-                                DEFAULT_DUMP_DIR
-                            )),
+                            console_line: None,
                         })
                         .await;
                 }
-
-                let remove_cmd = format!(
-                    "Remove-Item -Path '{}\\*.dmp' -Force -ErrorAction SilentlyContinue",
-                    DEFAULT_DUMP_DIR
-                );
-                let res = dbg
-                    .run(
-                        &self.runner,
-                        "powershell.exe",
-                        &["-NoProfile", "-Command", &remove_cmd],
-                        Duration::from_secs(30),
-                    )
-                    .await;
-
-                let user_dir_cmd = "Remove-Item -Path (Join-Path $env:LOCALAPPDATA 'CrashDumps\\*.dmp') -Force -ErrorAction SilentlyContinue";
-                let _ = dbg
-                    .run(
-                        &self.runner,
-                        "powershell.exe",
-                        &["-NoProfile", "-Command", user_dir_cmd],
-                        Duration::from_secs(30),
-                    )
-                    .await;
-
-                match res {
-                    Ok(out) if out.success => Ok("Analysed crash dump files deleted.".to_string()),
-                    _ => Ok(
-                        "Crash dump cleanup ran; individual unreadable files may remain."
-                            .to_string(),
-                    ),
+                let out = self
+                    .runner
+                    .run_powershell(&self.delete_stale_dumps_script(), Duration::from_secs(60))
+                    .await?;
+                match deleted_and_left(&out.stdout) {
+                    Some((deleted, 0)) if out.success => Ok(format!(
+                        "{deleted} crash dump(s) older than {DUMP_EVIDENCE_DAYS} days deleted. Newer ones are kept."
+                    )),
+                    Some((deleted, left)) => Err(format!(
+                        "{deleted} old crash dump(s) deleted, {left} could not be deleted."
+                    )),
+                    None => Err(format!(
+                        "The crash dumps could not be deleted (exit code {:?}): {}",
+                        out.exit_code,
+                        out.stderr.trim()
+                    )),
                 }
             }
-            // The unexpected-shutdown and bugcheck-history findings are
-            // advice: a repair run never asks.
+            // The driver, video, unexpected-shutdown and bugcheck-history
+            // findings are advice: a repair run never asks. Opening Device
+            // Manager and calling that a repair counted them as fixed.
             _ => Err(format!("Unknown crash analysis issue id: {}", issue_id)),
         }
     }
+}
+
+/// `crash_driver_fault_nvlddmkm_sys`: one finding per driver, each with its
+/// own id. With one id for all of them, a repair run marked only the first.
+fn driver_fault_id(driver: &str) -> String {
+    let slug: String = driver
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("crash_driver_fault_{slug}")
+}
+
+/// The `deleted|left` line the stale-dump cleanup prints.
+fn deleted_and_left(stdout: &str) -> Option<(usize, usize)> {
+    let (deleted, left) = stdout
+        .lines()
+        .rev()
+        .find_map(|line| line.trim().split_once('|'))?;
+    Some((deleted.parse().ok()?, left.parse().ok()?))
 }
 
 fn dump_dir_dmp_files(dir: &Path) -> Vec<PathBuf> {
@@ -1369,6 +1365,18 @@ mod tests {
         std::fs::write(dir.join(name), bytes).expect("failed to write dump");
     }
 
+    /// A dump last written `days` ago.
+    fn write_old_dump(dir: &Path, name: &str, bytes: &[u8], days: u64) {
+        write_dump(dir, name, bytes);
+        std::fs::File::options()
+            .write(true)
+            .open(dir.join(name))
+            .and_then(|f| {
+                f.set_modified(std::time::SystemTime::now() - Duration::from_secs(days * 86_400))
+            })
+            .expect("failed to age dump");
+    }
+
     #[test]
     fn test_parse_header_pagedu64() {
         let bytes = synth_dump64(0x116, b"");
@@ -1531,8 +1539,12 @@ mod tests {
 
         let driver_issue = issues
             .iter()
-            .find(|i| i.id == "crash_driver_fault")
+            .find(|i| i.id == "crash_driver_fault_nvlddmkm_sys")
             .expect("driver issue");
+        assert!(
+            driver_issue.advice_only,
+            "opening Device Manager repairs nothing"
+        );
         assert_eq!(driver_issue.severity, Severity::Critical); // 2 crashes escalate
         assert!(driver_issue.title.contains("nvlddmkm.sys"));
         assert!(driver_issue.technical_details.contains("0x000000D1"));
@@ -1565,6 +1577,7 @@ mod tests {
             .find(|i| i.id == "crash_memory_bugcheck")
             .expect("memory issue");
         assert_eq!(mem.severity, Severity::Critical);
+        assert!(mem.requires_reboot && !mem.is_selected);
         assert!(mem.technical_details.contains("Event 1001"));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1628,6 +1641,10 @@ mod tests {
             kp.advice_only,
             "a lost power supply is not repaired in software"
         );
+        assert!(
+            !issues.iter().any(|i| i.id == "crash_what_changed"),
+            "one unexpected shutdown is no series of crashes"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1681,11 +1698,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn every_driver_gets_a_finding_of_its_own() {
+        let dir = temp_dump_dir("two_drivers");
+        write_dump(&dir, "a.dmp", &synth_dump64(0xD1, b"\x00nvlddmkm.sys\x00"));
+        write_dump(&dir, "b.dmp", &synth_dump64(0xD1, b"\x00rt640x64.sys\x00"));
+        let mock = MockCommandRunner::new();
+        empty_event_response(&mock);
+        let issues = CrashAnalysisModule::with_runner_and_dump_dir(
+            ModuleConfig::default(),
+            Arc::new(mock),
+            &dir,
+        )
+        .scan(None)
+        .await
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut ids: Vec<&str> = issues
+            .iter()
+            .map(|i| i.id.as_str())
+            .filter(|id| id.starts_with("crash_driver_fault"))
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(
+            ids,
+            [
+                "crash_driver_fault_nvlddmkm_sys",
+                "crash_driver_fault_rt640x64_sys"
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn test_scan_flags_stale_dump_accumulation() {
         let dir = temp_dump_dir("stale");
         for i in 0..6 {
-            write_dump(&dir, &format!("dump{i}.dmp"), &synth_dump64(0xD1, b""));
+            write_old_dump(
+                &dir,
+                &format!("dump{i}.dmp"),
+                &synth_dump64(0xD1, b"\x00nvlddmkm.sys\x00"),
+                40,
+            );
         }
+        write_dump(&dir, "fresh.dmp", &synth_dump64(0xD1, b""));
 
         let mock = MockCommandRunner::new();
         empty_event_response(&mock);
@@ -1702,56 +1757,79 @@ mod tests {
             .find(|i| i.id == "crash_stale_dumps")
             .expect("stale issue");
         assert_eq!(stale.severity, Severity::Info);
+        assert!(
+            stale.title.starts_with("6 crash dump(s)"),
+            "{}",
+            stale.title
+        );
+        assert!(stale.reclaimable_bytes.is_some_and(|b| b > 0));
+        assert!(
+            !issues
+                .iter()
+                .any(|i| i.id.starts_with("crash_driver_fault")),
+            "an old dump is no evidence of a crash now"
+        );
+        assert!(
+            issues.iter().any(|i| i.id == "crash_bugcheck_history"),
+            "the fresh one is"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
-    async fn test_fix_driver_fault_opens_device_manager() {
+    async fn test_fix_memory_bugcheck_schedules_the_memory_test() {
         let mock = MockCommandRunner::new();
-        mock.add_response("cmd.exe", CmdOutput::ok(""));
-
-        let module =
-            CrashAnalysisModule::with_runner(ModuleConfig::default(), Arc::new(mock.clone()));
-        let res = module.fix("crash_driver_fault", None).await;
-
-        assert!(res.is_ok());
-        let exec = mock.executed();
-        assert!(
-            exec.iter()
-                .any(|c| c.contains("cmd.exe") && c.contains("devmgmt.msc"))
-        );
-    }
-
-    #[tokio::test]
-    async fn test_fix_memory_bugcheck_runs_mdsched() {
-        let mock = MockCommandRunner::new();
-        mock.add_response("mdsched.exe", CmdOutput::ok(""));
+        mock.add_response("bcdedit.exe", CmdOutput::ok(""));
 
         let module =
             CrashAnalysisModule::with_runner(ModuleConfig::default(), Arc::new(mock.clone()));
         let res = module.fix("crash_memory_bugcheck", None).await;
 
         assert!(res.is_ok());
-        let exec = mock.executed();
-        assert!(exec.iter().any(|c| c.contains("mdsched.exe")));
+        assert_eq!(mock.executed(), ["bcdedit.exe /bootsequence {memdiag}"]);
     }
 
     #[tokio::test]
-    async fn test_fix_stale_dumps_runs_powershell_remove() {
+    async fn only_old_dumps_are_deleted_and_the_result_is_read() {
+        let dir = temp_dump_dir("stale_fix");
         let mock = MockCommandRunner::new();
-        mock.add_response("powershell.exe", CmdOutput::ok(""));
-
-        let module =
-            CrashAnalysisModule::with_runner(ModuleConfig::default(), Arc::new(mock.clone()));
-        let res = module.fix("crash_stale_dumps", None).await;
-
-        assert!(res.is_ok());
-        let exec = mock.executed();
-        assert!(
-            exec.iter()
-                .any(|c| c.contains("Remove-Item") && c.contains("Minidump"))
+        mock.add_response("Remove-Item", CmdOutput::ok("7|0\r\n"));
+        let module = CrashAnalysisModule::with_runner_and_dump_dir(
+            ModuleConfig::default(),
+            Arc::new(mock.clone()),
+            &dir,
         );
+        let msg = module.fix("crash_stale_dumps", None).await.unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            msg.starts_with("7 crash dump(s) older than 30 days"),
+            "{msg}"
+        );
+
+        let script = mock.executed().remove(0);
+        assert!(script.contains("AddDays(-30)"), "{script}");
+        assert!(
+            script.contains(&ps_single_quoted(&dir.to_string_lossy())),
+            "{script}"
+        );
+        assert!(
+            !script.contains("LOCALAPPDATA"),
+            "tests never reach the real folder"
+        );
+    }
+
+    #[tokio::test]
+    async fn dumps_that_stay_are_a_failure() {
+        let mock = MockCommandRunner::new();
+        mock.add_response("Remove-Item", CmdOutput::ok("5|2\r\n"));
+        let module = CrashAnalysisModule::with_runner_and_dump_dir(
+            ModuleConfig::default(),
+            Arc::new(mock),
+            std::env::temp_dir().join("winmedic-no-such-dump-dir"),
+        );
+        let err = module.fix("crash_stale_dumps", None).await.unwrap_err();
+        assert!(err.contains("2 could not be deleted"), "{err}");
     }
 
     #[tokio::test]
@@ -1759,7 +1837,12 @@ mod tests {
         let mock = MockCommandRunner::new();
         let module = CrashAnalysisModule::with_runner(ModuleConfig::default(), Arc::new(mock));
 
-        for id in ["crash_unexpected_shutdown", "crash_bugcheck_history"] {
+        for id in [
+            "crash_unexpected_shutdown",
+            "crash_bugcheck_history",
+            "crash_driver_fault_nvlddmkm_sys",
+            "crash_video_tdr",
+        ] {
             assert!(module.fix(id, None).await.is_err(), "{id}");
         }
     }
@@ -1772,5 +1855,33 @@ mod tests {
 
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("Unknown crash analysis issue id"));
+    }
+
+    /// Run for real, inside a temp folder only: the old dump goes, the fresh
+    /// one stays.
+    #[tokio::test]
+    async fn the_stale_dump_script_deletes_only_old_dumps() {
+        let dir = temp_dump_dir("stale_script");
+        write_old_dump(&dir, "old.dmp", &synth_dump64(0xD1, b""), 40);
+        write_dump(&dir, "fresh.dmp", &synth_dump64(0xD1, b""));
+        let module = CrashAnalysisModule::with_runner_and_dump_dir(
+            ModuleConfig::default(),
+            Arc::new(MockCommandRunner::new()),
+            &dir,
+        );
+        let out = crate::utils::cmd::run_powershell(
+            &module.delete_stale_dumps_script(),
+            Duration::from_secs(60),
+        )
+        .await
+        .unwrap();
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(deleted_and_left(&out.stdout), Some((1, 0)), "{out:?}");
+        assert_eq!(left, ["fresh.dmp"]);
     }
 }

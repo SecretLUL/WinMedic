@@ -1,0 +1,15 @@
+GUID des Energieschemas: 381b4222-f694-41f0-9685-ff5bb260df2e  (Ausbalanciert)
+  GUID-Alias: SCHEME_BALANCED
+  GUID der Untergruppe: 501a4d13-42af-4429-9fd1-a8218c268e20  (PCI Express)
+    GUID-Alias: SUB_PCIEXPRESS
+    GUID der Energieeinstellung: ee12f906-d277-404b-b6da-e5fa1a576df5  (Verbindungszustand-Energieverwaltung)
+      GUID-Alias: ASPM
+      Index der m”glichen Einstellung: 000
+      Anzeigename der m”glichen Einstellung: Aus
+      Index der m”glichen Einstellung: 001
+      Anzeigename der m”glichen Einstellung: Mittlere Energieeinsparungen
+      Index der m”glichen Einstellung: 002
+      Anzeigename der m”glichen Einstellung: Maximale Energieeinsparungen
+    Index der aktuellen Wechselstromeinstellung: 0x00000001
+    Index der aktuellen Gleichstromeinstellung: 0x00000002
+
