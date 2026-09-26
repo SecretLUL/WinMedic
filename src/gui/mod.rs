@@ -102,8 +102,8 @@ impl WinMedicApp {
     pub fn with_autostart(cc: &eframe::CreationContext<'_>, autostart: bool) -> Self {
         theme::apply(&cc.egui_ctx);
 
-        let mut app = App::new();
-        // `App::new` builds an app that cannot touch the desktop. This is the
+        let mut app = App::from_disk();
+        // `App` builds an app that cannot touch the desktop. This is the
         // one place that wants it to: accepting the update dialog should really
         // open a browser, accepting the elevation dialog should really raise
         // UAC, and a repair run should really leave a restore point behind.

@@ -53,6 +53,9 @@ pub struct SystemActions {
     pub restore_point: RestorePointService,
     /// Import a registry backup (`reg import`), from a blocking thread.
     pub restore_registry: fn(&str) -> Result<String, String>,
+    /// Where the window's "Export report" writes. The inert one is the temp
+    /// folder, so a test that exports leaves the real reports folder alone.
+    pub reports_dir: fn() -> std::path::PathBuf,
     /// Reboot the machine to finalize repairs that require a system restart.
     pub restart_system: fn() -> Result<(), String>,
     /// Whether the latest scan may be written back to `%APPDATA%`.
@@ -77,6 +80,13 @@ pub struct SystemActions {
 
 fn real_restore_registry(file_path: &str) -> Result<String, String> {
     tokio::runtime::Handle::current().block_on(RegBackupManager::new().restore_key(file_path))
+}
+
+fn real_reports_dir() -> std::path::PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("WinMedic")
+        .join("reports")
 }
 
 fn real_restart_system() -> Result<(), String> {
@@ -104,6 +114,7 @@ impl SystemActions {
             start_installed_update: self_update::start_installed,
             restore_point: RestorePointService::real(),
             restore_registry: real_restore_registry,
+            reports_dir: real_reports_dir,
             restart_system: real_restart_system,
             persist_scan_state: true,
             persist_config: true,
@@ -122,6 +133,7 @@ impl SystemActions {
             start_installed_update: |_| Ok(()),
             restore_point: RestorePointService::inert(),
             restore_registry: |_| Ok("Nothing was imported.".to_string()),
+            reports_dir: std::env::temp_dir,
             restart_system: || Ok(()),
             persist_scan_state: false,
             persist_config: false,
