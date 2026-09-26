@@ -97,9 +97,43 @@ impl RegBackupManager {
         Ok(record)
     }
 
-    /// Import / restore a .reg file
+    /// `file_path` if it is a `.reg` file directly in the backup folder.
+    ///
+    /// The path comes from `index.json`, a file anyone who can write to
+    /// `%APPDATA%` can edit, and `reg import` of whatever it names runs with
+    /// WinMedic's rights.
+    pub fn backup_file(&self, file_path: &str) -> Result<PathBuf, String> {
+        let file = Path::new(file_path);
+        let is_reg = file
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("reg"));
+        let inside = match (
+            file.parent().map(std::fs::canonicalize),
+            std::fs::canonicalize(&self.backup_dir),
+        ) {
+            (Some(Ok(parent)), Ok(dir)) => parent == dir,
+            _ => false,
+        };
+        if is_reg && inside && file.is_file() {
+            Ok(file.to_path_buf())
+        } else {
+            Err(format!(
+                "{} is not a registry backup in {}; nothing was imported.",
+                file.display(),
+                self.backup_dir.display()
+            ))
+        }
+    }
+
+    /// Import / restore a .reg file from the backup folder.
     pub async fn restore_key(&self, file_path: &str) -> Result<String, String> {
-        let output = run_cmd("reg", &["import", file_path], Duration::from_secs(15)).await?;
+        let file = self.backup_file(file_path)?;
+        let output = run_cmd(
+            "reg",
+            &["import", &file.to_string_lossy()],
+            Duration::from_secs(15),
+        )
+        .await?;
 
         if output.success {
             Ok(format!("Successfully restored registry from {}", file_path))
@@ -255,6 +289,30 @@ mod tests {
             key_path: r"HKCU\Software\Test".to_string(),
             file_path: format!(r"C:\backups\reg_{}.reg", id),
         }
+    }
+
+    #[test]
+    fn only_a_reg_file_in_the_backup_folder_is_restored() {
+        let dir = TempDir::new("restorable");
+        let mgr = RegBackupManager::with_dir(dir.path.clone());
+        let backup = dir.path.join("reg_20260926_x.reg");
+        std::fs::write(&backup, "Windows Registry Editor Version 5.00").unwrap();
+        assert!(mgr.backup_file(&backup.to_string_lossy()).is_ok());
+
+        let outside =
+            std::env::temp_dir().join(format!("winmedic_outside_{}.reg", std::process::id()));
+        std::fs::write(&outside, "x").unwrap();
+        let not_reg = dir.path.join("payload.cmd");
+        std::fs::write(&not_reg, "x").unwrap();
+        let sneaky = dir.path.join("..").join(outside.file_name().unwrap());
+        for path in [&outside, &not_reg, &sneaky, &dir.path.join("missing.reg")] {
+            assert!(
+                mgr.backup_file(&path.to_string_lossy()).is_err(),
+                "{}",
+                path.display()
+            );
+        }
+        let _ = std::fs::remove_file(&outside);
     }
 
     #[test]
