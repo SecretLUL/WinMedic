@@ -465,3 +465,35 @@ jobs:
     # otherwise; it treats the secret as optional and explains itself when it is
     # missing rather than failing obscurely.
     secrets: inherit
+
+  # Microsoft flagged v0.6.0 as a trojan, a machine-learning false positive that
+  # nobody noticed until the file was uploaded by hand. This uploads every
+  # published binary and turns red when any engine flags it, which is what
+  # sends the notification. It holds nothing up: the release is out and WinGet
+  # does not wait for it.
+  virustotal:
+    name: Scan on VirusTotal
+    needs: release
+    if: ${{ always() && needs.release.outputs.published == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Upload the published binary and wait for the verdict
+        shell: pwsh
+        env:
+          VIRUSTOTAL_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          if (-not $env:VIRUSTOTAL_API_KEY) {
+            Write-Host "::notice::No VIRUSTOTAL_API_KEY secret, so this release was not scanned. .github/RELEASING.md says how to add one."
+            exit 0
+          }
+          $name = "winmedic-$env:TAG.exe"
+          gh release download $env:TAG --repo $env:GITHUB_REPOSITORY --pattern $name
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ./scripts/virustotal-scan.ps1 $name
