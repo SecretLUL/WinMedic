@@ -13,8 +13,8 @@
 WinMedic finds out why and repairs it, so you do not have to reinstall Windows.
 
 It is a single program. Nothing to install, nothing else to download. It only
-looks until you click **Repair**, and it creates a restore point first, so every
-change can be undone.
+looks until you click **Repair**, and it creates a restore point first, so you
+can go back.
 
 ## Download
 
@@ -69,9 +69,10 @@ Exactly what each check looks at and runs is in
 ## Is it safe?
 
 - Scanning only reads. Nothing changes until you click **Repair**.
-- Before a repair, WinMedic creates a Windows restore point and backs up every
-  registry key it changes. Registry changes can be rolled back under
-  **Settings**.
+- Before a repair, WinMedic creates a Windows restore point and backs up the
+  registry keys it deletes from or rewrites; those can be rolled back under
+  **Settings**. Emptying the Recycle Bin or a cache cannot be undone, which is
+  why WinMedic asks you first.
 - Repairs that delete something you may want to keep, or need a restart, are
   never picked for you. You decide on those in Advanced mode.
 - WinMedic is open source. Its checks are tested against output captured from
