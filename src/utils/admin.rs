@@ -55,6 +55,46 @@ pub fn is_admin() -> bool {
     false
 }
 
+/// The SID of the account this process runs as, e.g. `S-1-5-21-...-1001`:
+/// the name of its folder in every `$Recycle.Bin`.
+pub fn current_user_sid() -> Option<String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FALSE, HANDLE, LocalFree};
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    unsafe {
+        let mut token: HANDLE = core::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == FALSE {
+            return None;
+        }
+        let mut needed = 0u32;
+        GetTokenInformation(token, TokenUser, core::ptr::null_mut(), 0, &mut needed);
+        // u64 keeps the buffer aligned for the pointer TOKEN_USER starts with.
+        let mut buffer = vec![0u64; (needed as usize).div_ceil(8)];
+        let ok = GetTokenInformation(
+            token,
+            TokenUser,
+            buffer.as_mut_ptr().cast(),
+            needed,
+            &mut needed,
+        );
+        CloseHandle(token);
+        if ok == FALSE {
+            return None;
+        }
+        let user = &*(buffer.as_ptr() as *const TOKEN_USER);
+        let mut text: *mut u16 = core::ptr::null_mut();
+        if ConvertSidToStringSidW(user.User.Sid, &mut text) == FALSE {
+            return None;
+        }
+        let len = (0..).take_while(|&i| *text.add(i) != 0).count();
+        let sid = String::from_utf16_lossy(core::slice::from_raw_parts(text, len));
+        LocalFree(text.cast());
+        Some(sid)
+    }
+}
+
 /// Build the `Start-Process` script that relaunches `exe` elevated with `args`.
 ///
 /// `-ArgumentList` is omitted entirely when there are no arguments: the
@@ -162,5 +202,11 @@ mod tests {
         let script = build_relaunch_script(r"C:\Tools\winmedic.exe", &args);
 
         assert!(script.contains(r"'--output','C:\O''Brien\out.html'"));
+    }
+
+    #[test]
+    fn the_current_account_has_a_sid() {
+        let sid = current_user_sid().expect("the process token names its user");
+        assert!(sid.starts_with("S-1-5-"), "{sid}");
     }
 }
