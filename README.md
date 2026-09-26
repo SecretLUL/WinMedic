@@ -16,7 +16,7 @@ It is a single program. Nothing to install, nothing else to download. It only
 looks until you click **Repair**, and it creates a restore point first, so you
 can go back.
 
-![WinMedic after a scan: 13 problems found, what Repair does, and the Repair button](assets/screenshot.png)
+![WinMedic after a scan: the problems it found, what Repair does, and the Repair button](assets/screenshot.png)
 
 ## Download
 
@@ -36,8 +36,8 @@ time: click *More info*, then *Run anyway*.
 
 ## How to use it
 
-1. **Start WinMedic.** Repairs need administrator rights; WinMedic offers to
-   restart itself with them.
+1. **Start WinMedic** and confirm the Windows prompt. WinMedic needs
+   administrator rights to check and repair Windows.
 2. **Click Scan now.** It takes a minute or two and changes nothing.
 3. **Click Repair.** WinMedic fixes what it can and tells you if Windows needs
    a restart.
@@ -96,7 +96,8 @@ WinMedic collects no data and has no telemetry. It goes online only for this:
 
 ## For IT admins
 
-WinMedic also runs without its window, for scripts and remote support:
+WinMedic also runs without its window, for scripts and remote support, from a
+console started as Administrator:
 
 ```powershell
 winmedic --scan                        # check and print the findings
@@ -112,9 +113,9 @@ problems, `3` a repair failed. Every flag and code is listed in
 ## Uninstall
 
 First click *Settings → Remove WinMedic from Windows*, or run
-`winmedic --uninstall`. That removes the background scan and the *Start with
-Windows* entry, if you turned them on. Then delete `winmedic.exe`, or run
-`winget uninstall SecretLUL.WinMedic` if you installed it with WinGet.
+`winmedic --uninstall`. That removes the background scan, if you turned it on.
+Then delete `winmedic.exe`, or run `winget uninstall SecretLUL.WinMedic` if you
+installed it with WinGet.
 
 Your settings, logs and backups stay in `%APPDATA%\WinMedic`;
 `winmedic --uninstall --purge` deletes them too.

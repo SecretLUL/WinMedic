@@ -11,7 +11,6 @@ use crate::modules::ModuleStatus;
 use crate::modules::windows_updates::REBOOT_PENDING;
 use crate::safety::audit::{AuditEntry, AuditLogger};
 use crate::safety::reg_backup::{BackupRecord, RegBackupManager};
-use crate::utils::admin::is_admin;
 use crate::utils::cmd::SystemCommandRunner;
 use crate::utils::updater::{self, UpdateInfo};
 use std::collections::VecDeque;
@@ -115,7 +114,6 @@ pub struct SettingInput {
 
 pub struct App {
     pub active_tab: usize,
-    pub is_admin: bool,
     pub config: AppConfig,
 
     // Diagnostic & Engine
@@ -245,7 +243,6 @@ impl App {
         saved: Option<ScanState>,
         list_backups: bool,
     ) -> Self {
-        let admin_flag = is_admin();
         let system_actions = SystemActions::default();
         let audit_logger = AuditLogger::inert();
         let engine = Arc::new(
@@ -310,7 +307,6 @@ impl App {
 
         Self {
             active_tab: TAB_HOME,
-            is_admin: admin_flag,
             config,
             engine,
             issues: saved_issues,
@@ -361,11 +357,7 @@ impl App {
                     .unwrap_or_else(|| "Ready".to_string()),
             ),
             show_help: false,
-            pending_confirm: if !admin_flag {
-                Some(ConfirmRequest::Elevate)
-            } else {
-                None
-            },
+            pending_confirm: None,
             available_update: None,
             is_updating: false,
             restart_into: None,
@@ -442,7 +434,7 @@ impl App {
             return;
         };
         if let Err(e) = (self.system_actions.reconcile_background)(&self.config, &exe) {
-            let problem = format!("Background scan / autostart could not be repaired: {e}");
+            let problem = format!("The background scan could not be repaired: {e}");
             self.status_message = Some(match self.status_message.take() {
                 Some(existing) if existing != "Ready" => format!("{existing} {problem}"),
                 _ => problem,

@@ -315,7 +315,7 @@ fn test_launch_browser_valid_urls() {
 fn test_app_config_defaults_and_setting_count() {
     let cfg = AppConfig::default();
     assert!(cfg.check_for_updates);
-    assert_eq!(AppConfig::SETTING_COUNT, 10);
+    assert_eq!(AppConfig::SETTING_COUNT, 9);
 }
 
 #[test]
@@ -380,8 +380,6 @@ fn test_app_config_setting_row_and_toggle() {
 #[tokio::test]
 async fn test_app_event_channel_update_checked_when_no_modal_active() {
     let mut app = App::new();
-    // Simulate no elevate modal active
-    app.pending_confirm = None;
     app.available_update = None;
 
     let update_info = UpdateInfo {
@@ -439,10 +437,10 @@ async fn test_app_event_channel_update_checked_when_no_modal_active() {
 }
 
 #[tokio::test]
-async fn test_app_event_channel_update_buffering_when_elevate_modal_active() {
+async fn test_app_event_channel_update_buffering_when_another_modal_is_active() {
     let mut app = App::new();
-    // In unprivileged mode, Elevate modal is active initially
-    app.pending_confirm = Some(ConfirmRequest::Elevate);
+    // Another dialog is already open
+    app.pending_confirm = Some(ConfirmRequest::Unregister);
     app.available_update = None;
 
     let update_info = UpdateInfo {
@@ -454,22 +452,22 @@ async fn test_app_event_channel_update_buffering_when_elevate_modal_active() {
         download: None,
     };
 
-    // UpdateChecked arrives while the Elevate modal is open. It is always
+    // UpdateChecked arrives while that dialog is open. It is always
     // buffered, never raised on its own.
     app.available_update = Some(update_info.clone());
 
-    // Confirm Elevate modal is NOT overwritten
+    // The open dialog is NOT overwritten
     match &app.pending_confirm {
-        Some(ConfirmRequest::Elevate) => {}
+        Some(ConfirmRequest::Unregister) => {}
         other => panic!(
-            "Expected ConfirmRequest::Elevate to remain active, got {:?}",
+            "Expected ConfirmRequest::Unregister to remain active, got {:?}",
             other
         ),
     }
     // Update is buffered
     assert!(app.available_update.is_some());
 
-    // User dismisses Elevate modal — no second modal is pushed at them.
+    // User dismisses that dialog — no second modal is pushed at them.
     app.dismiss_confirm();
     assert!(app.pending_confirm.is_none());
     assert!(app.available_update.is_some());

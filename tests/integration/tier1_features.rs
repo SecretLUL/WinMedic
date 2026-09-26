@@ -1319,7 +1319,6 @@ async fn test_tier1_f15_modal_confirm_request_update_available_fields() {
 async fn test_tier1_f15_app_update_checked_event_sets_pending_confirm() {
     let mut app = App::new();
     app.config.check_for_updates = true;
-    app.pending_confirm = None;
 
     let update = UpdateInfo {
         current_version: "0.1.0".to_string(),
@@ -1382,7 +1381,6 @@ async fn test_tier1_f15_app_confirm_pending_clears_and_executes() {
 #[tokio::test]
 async fn test_tier1_f15_modal_skipped_when_check_for_updates_disabled() {
     let mut app = App::new();
-    app.pending_confirm = None;
     app.config.check_for_updates = false;
 
     let update = UpdateInfo {
@@ -1470,8 +1468,8 @@ fn test_tier1_f17_default_config_check_for_updates_is_true() {
 }
 
 #[test]
-fn test_tier1_f17_setting_count_equals_ten() {
-    assert_eq!(AppConfig::SETTING_COUNT, 10);
+fn test_tier1_f17_setting_count_equals_nine() {
+    assert_eq!(AppConfig::SETTING_COUNT, 9);
 }
 
 #[test]

@@ -9,7 +9,7 @@
 //! ticked there, which out of the box is what the checks recommend.
 
 use super::home::{format_duration, has_scanned, plural, repair_label, selected_for_repair};
-use crate::app::{App, ConfirmRequest};
+use crate::app::App;
 use crate::engine::issue::Severity;
 use crate::gui::theme;
 use crate::modules::ModuleStatus;
@@ -350,25 +350,9 @@ fn scan_again(ui: &mut egui::Ui, app: &mut App, primary: bool) {
     }
 }
 
-/// The two things that can stand in the way, one line each.
+/// Modules that could not be checked, in one line.
 fn notices(ui: &mut egui::Ui, app: &mut App) {
     let palette = theme::palette(ui);
-
-    if !app.is_admin {
-        ui.add_space(14.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.colored_label(palette.amber, "Repairs need administrator rights.");
-            if ui
-                .add_enabled(
-                    !app.is_busy(),
-                    egui::Button::new("Restart as administrator"),
-                )
-                .clicked()
-            {
-                app.pending_confirm = Some(ConfirmRequest::Elevate);
-            }
-        });
-    }
 
     if !app.is_scanning {
         // A command's error text says nothing to someone who has never opened

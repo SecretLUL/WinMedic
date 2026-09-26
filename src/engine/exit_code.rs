@@ -14,7 +14,7 @@ pub const WARNINGS: u8 = 1;
 pub const CRITICAL: u8 = 2;
 /// At least one repair was attempted and failed.
 pub const FIX_FAILED: u8 = 3;
-/// Repairs were requested without Administrator privileges.
+/// WinMedic was started without Administrator privileges.
 pub const NEEDS_ADMIN: u8 = 4;
 /// WinMedic itself failed (terminal, I/O, task join, ...).
 pub const INTERNAL_ERROR: u8 = 5;
@@ -49,7 +49,7 @@ pub fn describe(code: u8) -> &'static str {
         WARNINGS => "Open warnings present.",
         CRITICAL => "Open critical issues present.",
         FIX_FAILED => "At least one repair failed.",
-        NEEDS_ADMIN => "Administrator privileges required.",
+        NEEDS_ADMIN => "WinMedic needs Administrator privileges.",
         INTERNAL_ERROR => "Internal WinMedic error.",
         CANCELLED => "Run aborted - results are incomplete.",
         _ => "Unknown status.",

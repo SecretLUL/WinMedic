@@ -32,7 +32,6 @@ nothing but a request for a private contact channel — no details.
 ## What to include
 
 - WinMedic version (`winmedic.exe --version`) and Windows build number
-- Whether WinMedic was running elevated
 - Reproduction steps, ideally the smallest sequence that triggers it
 - What an attacker gains — privilege escalation, arbitrary code execution as
   Administrator, destruction of data, or something else

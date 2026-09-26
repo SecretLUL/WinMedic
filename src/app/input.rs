@@ -306,16 +306,10 @@ mod tests {
         }
     }
 
-    /// An `App` with no modal in the way, in Advanced mode.
-    ///
-    /// `App::new` raises the elevation prompt when WinMedic is not running as
-    /// Administrator, and that modal swallows every key — so a dispatch test
-    /// that skipped this would be testing the modal, not the binding. The mode
-    /// is set rather than read from the developer's own config, because Easy
-    /// mode leaves most of the bindings below inert.
+    /// An `App` in Advanced mode, set rather than read from the developer's
+    /// own config, because Easy mode leaves most of the bindings below inert.
     fn app() -> App {
         let mut app = App::new();
-        app.pending_confirm = None;
         app.issues.clear();
         app.config.advanced_mode = true;
         app
@@ -355,7 +349,7 @@ mod tests {
     #[test]
     fn a_pending_confirmation_swallows_every_other_key() {
         let mut app = app();
-        app.pending_confirm = Some(ConfirmRequest::Elevate);
+        app.pending_confirm = Some(ConfirmRequest::Unregister);
 
         // 'q' or other arbitrary keys would normally trigger actions, but must be swallowed without dismissing.
         handle_key(&mut app, Key::Char('q'));
@@ -375,14 +369,14 @@ mod tests {
         let mut app = app();
 
         // Dismiss via 'n'
-        app.pending_confirm = Some(ConfirmRequest::Elevate);
+        app.pending_confirm = Some(ConfirmRequest::Unregister);
         handle_key(&mut app, Key::Char(' '));
         assert!(app.pending_confirm.is_some(), "Space ignored");
         handle_key(&mut app, Key::Char('n'));
         assert!(app.pending_confirm.is_none(), "'n' dismisses");
 
         // Dismiss via 'N'
-        app.pending_confirm = Some(ConfirmRequest::Elevate);
+        app.pending_confirm = Some(ConfirmRequest::Unregister);
         handle_key(&mut app, Key::Char('N'));
         assert!(app.pending_confirm.is_none(), "'N' dismisses");
 
@@ -677,7 +671,7 @@ mod tests {
     #[test]
     fn f7_waits_while_a_dialog_is_open() {
         let mut app = app();
-        app.pending_confirm = Some(ConfirmRequest::Elevate);
+        app.pending_confirm = Some(ConfirmRequest::Unregister);
         handle_key(&mut app, Key::F7);
         assert!(app.config.advanced_mode);
 

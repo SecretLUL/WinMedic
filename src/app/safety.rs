@@ -167,7 +167,6 @@ mod tests {
     fn rollback_without_any_backup_explains_itself_instead_of_confirming() {
         let mut app = App::new();
         app.backup_records.clear();
-        app.pending_confirm = None;
 
         app.request_rollback();
 
@@ -182,7 +181,6 @@ mod tests {
     fn rollback_targets_the_record_the_list_is_showing() {
         let mut app = App::new();
         app.backup_records = vec![record("a"), record("b"), record("c")];
-        app.pending_confirm = None;
         // Index 0 of the rendered list is the *newest* record.
         app.selected_backup_index = 0;
 
@@ -218,7 +216,6 @@ mod tests {
     fn rollback_is_refused_while_another_operation_runs() {
         let mut app = App::new();
         app.backup_records = vec![record("a")];
-        app.pending_confirm = None;
         app.is_scanning = true;
 
         app.request_rollback();

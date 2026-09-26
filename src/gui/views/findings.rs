@@ -365,7 +365,6 @@ mod tests {
 
     fn triage_app() -> App {
         let mut app = App::new();
-        app.pending_confirm = None;
         app.issues = ["CBS log corrupt", "Temp bloat files", "DNS cache full"]
             .iter()
             .enumerate()

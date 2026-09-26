@@ -111,8 +111,6 @@ pub struct AppConfig {
     pub helper_enabled: bool,
     /// How often WinMedicHelper scans in the background (hours).
     pub helper_frequency_hours: u32,
-    /// Automatically launch WinMedic on Windows startup.
-    pub autostart: bool,
     /// Show the whole Scan & Repair page — ticks, filters, the detail pane,
     /// the logs, simulation — instead of Easy mode's short list. Switched with
     /// F7 or the button next to "Export report", not from the settings list.
@@ -131,7 +129,6 @@ impl Default for AppConfig {
             verbose_logging: false,
             helper_enabled: false,
             helper_frequency_hours: 24,
-            autostart: false,
             advanced_mode: false,
         }
     }
@@ -221,7 +218,7 @@ impl AppConfig {
     }
 
     /// Number of editable settings exposed in the settings tab.
-    pub const SETTING_COUNT: usize = 10;
+    pub const SETTING_COUNT: usize = 9;
 
     /// Human readable label, current value and explanation for setting `index`.
     pub fn setting_row(&self, index: usize) -> Option<(&'static str, String, &'static str)> {
@@ -278,11 +275,6 @@ impl AppConfig {
                 format!("{} h", self.helper_frequency_hours),
                 "How often the WinMedicHelper background task scans the system: every 1-23 hours or every whole number of days. [Enter] Custom value, [+/-] ±6 h / ±1 day.",
             )),
-            9 => Some((
-                "Start WinMedic with Windows",
-                on_off(self.autostart),
-                "Automatically starts WinMedic when logging into Windows. [Space/Enter] Toggle.",
-            )),
             _ => None,
         }
     }
@@ -296,7 +288,6 @@ impl AppConfig {
             3 => self.check_for_updates = !self.check_for_updates,
             6 => self.verbose_logging = !self.verbose_logging,
             7 => self.helper_enabled = !self.helper_enabled,
-            9 => self.autostart = !self.autostart,
             _ => return false,
         }
         true
@@ -653,19 +644,14 @@ mod tests {
     }
 
     #[test]
-    fn test_helper_and_autostart_settings() {
+    fn test_helper_settings() {
         let mut cfg = AppConfig::default();
         assert!(!cfg.helper_enabled);
         assert_eq!(cfg.helper_frequency_hours, 24);
-        assert!(!cfg.autostart);
 
         assert!(cfg.toggle_setting(7));
         assert!(cfg.helper_enabled);
         assert_eq!(cfg.setting_row(7).unwrap().1, "ON");
-
-        assert!(cfg.toggle_setting(9));
-        assert!(cfg.autostart);
-        assert_eq!(cfg.setting_row(9).unwrap().1, "ON");
 
         assert!(cfg.adjust_setting(8, true));
         assert_eq!(

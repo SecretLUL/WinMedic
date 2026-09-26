@@ -183,7 +183,6 @@ impl App {
             8 if self.config.helper_enabled => {
                 (self.system_actions.sync_helper_task)(true, self.config.helper_frequency_hours)
             }
-            9 => (self.system_actions.sync_autostart)(self.config.autostart),
             _ => Ok(()),
         };
         if let Err(e) = synced {

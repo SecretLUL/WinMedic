@@ -16,7 +16,7 @@ use engine::exit_code;
 use engine::reporter::DiagnosticReporter;
 use engine::runner::{DiagnosticEngine, RepairOptions, ScanEvent};
 use safety::restore_point::RestorePointService;
-use utils::admin::{is_admin, relaunch_as_admin, relaunch_as_admin_and_wait};
+use utils::admin::is_admin;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -32,7 +32,7 @@ Exit codes (headless mode):
   1  open warnings
   2  open critical issues
   3  at least one repair failed
-  4  Administrator privileges required
+  4  started without Administrator privileges
   5  internal error
   6  aborted with Ctrl+C"
 )]
@@ -61,19 +61,11 @@ struct CliArgs {
     #[arg(long)]
     no_vss: bool,
 
-    /// Request Windows Administrator elevation
-    #[arg(short, long)]
-    elevate: bool,
-
     /// Run as background diagnostic helper (WinMedicHelper): scan silently, save the results for the window and exit 0. Does nothing while the setting is off.
     #[arg(long)]
     helper: bool,
 
-    /// Started by the "Start with Windows" entry: open minimized, or not at all while the setting is off
-    #[arg(long)]
-    autostart: bool,
-
-    /// Remove what WinMedic registered with Windows (the background scan task and the "Start with Windows" entry) and turn both settings off. Run this before deleting winmedic.exe. Settings, logs and registry backups stay unless --purge is given.
+    /// Remove what WinMedic registered with Windows (the background scan task) and turn its setting off. Run this before deleting winmedic.exe. Settings, logs and registry backups stay unless --purge is given.
     #[arg(long)]
     uninstall: bool,
 
@@ -119,37 +111,26 @@ fn main() -> ExitCode {
 /// life of the window — building a runtime from inside another one panics.
 /// Each branch therefore owns its own.
 fn run(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
+    // The manifest has Windows ask for Administrator rights before WinMedic
+    // starts (build.rs). Only a start that bypasses it, such as the
+    // RunAsInvoker compatibility layer, gets here without them, and every
+    // check and repair would then fail on "access denied".
+    if !is_admin() {
+        const WHY: &str = "WinMedic needs Administrator rights. Start it as Administrator.";
+        if args.is_headless() || args.uninstall {
+            eprintln!("WinMedic: {WHY}");
+        } else {
+            utils::console::show_error_dialog("WinMedic", WHY);
+        }
+        return Ok(exit_code::NEEDS_ADMIN);
+    }
+
     // A binary replaced by an in-place update is still mapped by the process
     // that replaced it, so it cannot delete itself; the new version, started by
     // that process as it closes, is the first that can. Best-effort and silent:
     // leftover junk beside the executable is untidy, never a reason to refuse
     // to run.
     utils::self_update::sweep_leftovers_beside_current_exe();
-
-    if args.elevate {
-        if !is_admin() {
-            println!("Requesting Administrator privileges...");
-            if args.is_headless() {
-                // The caller waits for this process's exit code, so this one
-                // waits for the elevated run and hands its code on.
-                println!("The elevated run prints in a window of its own.");
-                return Ok(match relaunch_as_admin_and_wait() {
-                    Ok(code) => u8::try_from(code).unwrap_or(exit_code::INTERNAL_ERROR),
-                    Err(e) => {
-                        eprintln!("WinMedic: {e}.");
-                        exit_code::NEEDS_ADMIN
-                    }
-                });
-            }
-            match relaunch_as_admin() {
-                Ok(()) => return Ok(exit_code::OK),
-                // Declined: this window opens without Administrator rights.
-                Err(e) => eprintln!("WinMedic: {e}; continuing without Administrator rights."),
-            }
-        } else {
-            println!("Already running with Administrator privileges.");
-        }
-    }
 
     if args.uninstall {
         return Ok(run_uninstall(args.purge));
@@ -162,7 +143,7 @@ fn run(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         let runtime = tokio::runtime::Runtime::new()?;
         runtime.block_on(run_headless(args))
     } else {
-        run_gui(args.autostart)
+        run_gui()
     }
 }
 
@@ -189,10 +170,11 @@ fn run_uninstall(purge: bool) -> u8 {
         "Removed the background scan task",
         utils::background_task::sync_helper_task(false, 0),
     );
-    report(
-        "Removed the \"Start with Windows\" entry",
-        utils::background_task::sync_autostart(false),
-    );
+    match utils::background_task::remove_legacy_autostart() {
+        Ok(true) => println!("[OK]   Removed the old \"Start with Windows\" entry"),
+        Ok(false) => {}
+        Err(e) => report("Removed the old \"Start with Windows\" entry", Err(e)),
+    }
 
     match data_dir {
         Some(dir) if purge => {
@@ -207,12 +189,11 @@ fn run_uninstall(purge: bool) -> u8 {
         }
         dir => {
             // Leave the settings saying what is now true; otherwise the next
-            // start of the window registers both again.
+            // start of the window registers the task again.
             let (mut config, _) = AppConfig::load_reporting();
             config.helper_enabled = false;
-            config.autostart = false;
             report(
-                "Turned both settings off",
+                "Turned the background scan off",
                 config.save().map_err(|e| e.to_string()),
             );
             if let Some(dir) = dir {
@@ -235,15 +216,6 @@ fn run_uninstall(purge: bool) -> u8 {
 // ---------------------------------------------------------------- headless
 
 async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
-    // Real repairs without elevation just produce a wall of access-denied
-    // errors, so refuse up front with a code a script can branch on.
-    if args.auto_fix && !args.dry_run && !is_admin() {
-        eprintln!(
-            "Administrator privileges required: '--auto-fix' can only repair system files, services and the registry as Administrator.\nStart WinMedic from an elevated console, or use '--elevate'."
-        );
-        return Ok(exit_code::NEEDS_ADMIN);
-    }
-
     let (config, config_status) = AppConfig::load_reporting();
     // Goes to stderr so it cannot corrupt `--json` output being piped into
     // something. A run using default settings the user did not choose is worth
@@ -378,21 +350,13 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
             module_statuses,
             Some(scan_started.elapsed().as_secs()),
         );
-        // Without elevation the checks that need it pass silently, so such
-        // a scan must not replace one made with Administrator rights.
-        let replaces_elevated =
-            !is_admin() && app::ScanState::load().is_some_and(|saved| saved.elevated == Some(true));
-        let (status, details) = match (replaces_elevated, state.save_unless(replaces_elevated)) {
-            (true, _) => (
-                "SKIPPED",
-                "Ran without Administrator rights, so the last scan made with them was kept. Switch the background scan off and on in WinMedic started as Administrator to let it run elevated.".to_string(),
-            ),
-            (false, Err(e)) => ("FAILED", format!("The results could not be saved: {e}")),
-            (false, Ok(())) if failed_modules.is_empty() => (
+        let (status, details) = match state.save() {
+            Err(e) => ("FAILED", format!("The results could not be saved: {e}")),
+            Ok(()) if failed_modules.is_empty() => (
                 "SUCCESS",
                 format!("Health: {}/100, Issues: {}", health_score, issues.len()),
             ),
-            (false, Ok(())) => (
+            Ok(()) => (
                 "PARTIAL",
                 format!(
                     "Health: {}/100, Issues: {}, failed modules: {}",
@@ -567,19 +531,7 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
 
 // --------------------------------------------------------------------- GUI
 
-fn run_gui(autostart: bool) -> Result<u8, Box<dyn std::error::Error>> {
-    // A Run entry that outlived its setting opens nothing. Parsed directly
-    // rather than through `AppConfig::load`, which would quarantine a corrupt
-    // file before the window got the chance to report it.
-    if autostart
-        && std::fs::read_to_string(AppConfig::config_path())
-            .ok()
-            .and_then(|data| serde_json::from_str::<AppConfig>(&data).ok())
-            .is_some_and(|config| !config.autostart)
-    {
-        return Ok(exit_code::OK);
-    }
-
+fn run_gui() -> Result<u8, Box<dyn std::error::Error>> {
     // WinMedic links into the console subsystem so that its headless mode keeps
     // its exit codes and its pipes; see `utils::console` for the whole argument.
     // The window has no use for the console that came with it.
@@ -594,10 +546,6 @@ fn run_gui(autostart: bool) -> Result<u8, Box<dyn std::error::Error>> {
         .with_title("WinMedic")
         .with_inner_size([1280.0, 820.0])
         .with_min_inner_size(gui::window::MIN_SIZE);
-
-    if autostart {
-        viewport = viewport.with_active(false);
-    }
 
     // The same mark the executable carries in its PE resources, so the title
     // bar and the taskbar agree with Explorer. A window with no icon still
@@ -616,7 +564,7 @@ fn run_gui(autostart: bool) -> Result<u8, Box<dyn std::error::Error>> {
         eframe::run_native(
             "WinMedic",
             options,
-            Box::new(move |cc| Ok(Box::new(gui::WinMedicApp::with_autostart(cc, autostart)))),
+            Box::new(move |cc| Ok(Box::new(gui::WinMedicApp::new(cc)))),
         )
     };
 

@@ -777,7 +777,7 @@ async fn test_github_api_large_payload_stress() {
 fn test_appconfig_default_and_setting_count() {
     let cfg = AppConfig::default();
     assert!(cfg.check_for_updates);
-    assert_eq!(AppConfig::SETTING_COUNT, 10);
+    assert_eq!(AppConfig::SETTING_COUNT, 9);
 }
 
 #[test]
@@ -904,10 +904,10 @@ fn test_confirm_request_update_available_dialog_contract() {
 }
 
 #[tokio::test]
-async fn test_app_update_buffering_when_elevate_dialog_is_active() {
+async fn test_app_update_buffering_when_another_dialog_is_active() {
     let mut app = App::new();
-    // Simulate non-admin initial state where Elevate confirm is active
-    app.pending_confirm = Some(ConfirmRequest::Elevate);
+    // Another dialog is already open
+    app.pending_confirm = Some(ConfirmRequest::Unregister);
     app.available_update = None;
 
     let update_info = UpdateInfo {
@@ -919,15 +919,18 @@ async fn test_app_update_buffering_when_elevate_dialog_is_active() {
         download: None,
     };
 
-    // The update check lands while the Elevate dialog is up.
+    // The update check lands while that dialog is up.
     app.available_update = Some(update_info.clone());
 
     // A background update never raises its own modal: a confirmation dialog
     // swallows every key and maps `j`/Enter (this app's list-navigation keys)
     // onto "open a browser", so it must not appear unasked-for.
-    assert!(matches!(app.pending_confirm, Some(ConfirmRequest::Elevate)));
+    assert!(matches!(
+        app.pending_confirm,
+        Some(ConfirmRequest::Unregister)
+    ));
 
-    // Dismissing Elevate does not hand the user a second dialog either.
+    // Dismissing it does not hand the user a second dialog either.
     app.dismiss_confirm();
     assert!(app.pending_confirm.is_none());
     assert!(
@@ -958,7 +961,7 @@ async fn test_app_update_buffering_when_elevate_dialog_is_active() {
 #[tokio::test]
 async fn test_app_update_survives_accepting_another_dialog() {
     let mut app = App::new();
-    app.pending_confirm = Some(ConfirmRequest::Elevate);
+    app.pending_confirm = Some(ConfirmRequest::Unregister);
     app.available_update = Some(UpdateInfo {
         current_version: "0.1.0".to_string(),
         latest_version: "v0.2.0".to_string(),
@@ -968,8 +971,8 @@ async fn test_app_update_survives_accepting_another_dialog() {
         download: None,
     });
 
-    // Confirming Elevate when UAC is declined leaves the app running; the
-    // buffered notice has to still be there afterwards.
+    // Accepting the removal leaves the app running; the buffered notice
+    // has to still be there afterwards.
     app.confirm_pending_action();
     assert!(
         app.available_update.is_some(),

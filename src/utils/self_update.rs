@@ -753,9 +753,8 @@ fn delete_retired(exe: &Path, attempts: u32, interval: Duration) -> bool {
 /// Start the binary an update installed, as the desktop window.
 ///
 /// No arguments: the user asked for the update from the window, so the window
-/// is what comes back, even when this process was started minimized by
-/// `--autostart`. It inherits this process's token, so an elevated WinMedic
-/// comes back elevated without a second UAC prompt.
+/// is what comes back. It inherits this process's Administrator token, so the
+/// new version starts without a second UAC prompt.
 ///
 /// `CREATE_NO_WINDOW` because this process has already given its console back
 /// (see [`crate::utils::console`]): a plain spawn would open a console window

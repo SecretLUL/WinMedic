@@ -109,8 +109,8 @@ fn safety(ui: &mut egui::Ui, app: &mut App) {
 
             theme::section(ui, "Remove from this PC");
             ui.label(theme::muted(
-                "Before deleting winmedic.exe: removes the background scan task and the \
-                 Start with Windows entry, and turns both settings off.",
+                "Before deleting winmedic.exe: removes the background scan task and turns \
+                 its setting off.",
             ));
             ui.add_space(4.0);
             if ui

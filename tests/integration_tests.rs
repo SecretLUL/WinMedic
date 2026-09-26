@@ -20,3 +20,6 @@ mod updater_hostile_inputs;
 
 #[path = "integration/updater_and_settings_edge_cases.rs"]
 mod updater_and_settings_edge_cases;
+
+#[path = "integration/manifest.rs"]
+mod manifest;

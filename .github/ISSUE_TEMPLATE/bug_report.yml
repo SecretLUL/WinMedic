@@ -54,18 +54,6 @@ body:
       required: true
 
   - type: dropdown
-    id: elevated
-    attributes:
-      label: Was WinMedic running as Administrator?
-      description: "Shown in the header bar as `[ADMIN: YES]` or `[ADMIN: NO]`"
-      options:
-        - "Yes"
-        - "No"
-        - "Not sure"
-    validations:
-      required: true
-
-  - type: dropdown
     id: mode
     attributes:
       label: How was it running?

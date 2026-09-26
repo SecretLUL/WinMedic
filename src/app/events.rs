@@ -375,12 +375,6 @@ impl App {
                     );
                     self.audit_entries = self.audit_logger.get_history();
                 }
-                BackgroundEvent::ElevationAnswered(Ok(())) => self.should_quit = true,
-                BackgroundEvent::ElevationAnswered(Err(why)) => {
-                    self.status_message = Some(format!(
-                        "Still running without Administrator rights: {why}."
-                    ));
-                }
                 BackgroundEvent::UpdateChecked(Some(info)) => {
                     // The check lands at an arbitrary point in the session, so it
                     // never raises the modal by itself. A confirmation dialog
@@ -450,7 +444,7 @@ impl App {
                                     &installed.installed,
                                 ) {
                                     message.push_str(&format!(
-                                        " Background scan / autostart still point at the old file: {e}"
+                                        " The background scan still points at the old file: {e}"
                                     ));
                                 }
                             }

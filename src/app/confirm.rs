@@ -7,7 +7,6 @@ use super::state::App;
 use crate::config::AppConfig;
 use crate::safety::reg_backup::RegBackupManager;
 use crate::safety::restore_point::RestorePointService;
-use crate::utils::admin::relaunch_as_admin;
 use crate::utils::self_update::{self, InstallPlan, SelfUpdateService};
 use crate::utils::updater::{self, UpdateDownload};
 
@@ -25,8 +24,7 @@ const UPDATE_TRANSFER_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 /// This is the app's OS seam, in the spirit of the `CommandRunner` and
 /// `CleanerPaths` seams the modules already use: it exists so that accepting a
 /// dialog or starting a repair run can be exercised without the machine running
-/// the code opening a browser window, raising a UAC prompt or collecting
-/// restore points.
+/// the code opening a browser window or collecting restore points.
 ///
 /// [`Default`] is deliberately the *inert* set, so an [`App`] built anywhere —
 /// a test, a future tool, a benchmark — cannot reach the desktop by accident.
@@ -36,8 +34,6 @@ const UPDATE_TRANSFER_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 pub struct SystemActions {
     /// Hand a release URL to the OS so it opens in the default browser.
     pub open_release_page: fn(&str) -> Result<(), String>,
-    /// Relaunch WinMedic through UAC, asking for Administrator rights.
-    pub relaunch_elevated: fn() -> std::io::Result<()>,
     /// Download a release, verify it and replace this executable with it.
     /// Inert by default, for the same reason as the rest of this struct: a
     /// test that accepts the update dialog must not start downloading
@@ -68,13 +64,12 @@ pub struct SystemActions {
     ///
     /// Off by default for the same reason: a test that changes a setting must
     /// not rewrite the developer's own configuration — least of all the helper
-    /// and autostart switches the real app acts on.
+    /// switch the real app acts on.
     pub persist_config: bool,
     /// Synchronize the WinMedicHelper scheduled background task.
     pub sync_helper_task: fn(bool, u32) -> Result<(), String>,
-    /// Synchronize the "Start with Windows" autostart registry entry.
-    pub sync_autostart: fn(bool) -> Result<(), String>,
-    /// Repair the task and the Run entry for the settings that are on.
+    /// Repair the task when its setting is on, and remove the Run entry of
+    /// the "Start with Windows" setting older versions had.
     pub reconcile_background: fn(&AppConfig, &std::path::Path) -> Result<(), String>,
 }
 
@@ -104,12 +99,11 @@ fn real_restart_system() -> Result<(), String> {
 }
 
 impl SystemActions {
-    /// The real thing: opens a browser window, raises a UAC prompt, runs
-    /// `Checkpoint-Computer`, reboots the system.
+    /// The real thing: opens a browser window, runs `Checkpoint-Computer`,
+    /// reboots the system.
     pub fn real() -> Self {
         Self {
             open_release_page: updater::launch_browser,
-            relaunch_elevated: relaunch_as_admin,
             self_update: SelfUpdateService::real(),
             start_installed_update: self_update::start_installed,
             restore_point: RestorePointService::real(),
@@ -119,7 +113,6 @@ impl SystemActions {
             persist_scan_state: true,
             persist_config: true,
             sync_helper_task: crate::utils::background_task::sync_helper_task,
-            sync_autostart: crate::utils::background_task::sync_autostart,
             reconcile_background: crate::utils::background_task::reconcile,
         }
     }
@@ -128,7 +121,6 @@ impl SystemActions {
     pub fn inert() -> Self {
         Self {
             open_release_page: |_| Ok(()),
-            relaunch_elevated: || Ok(()),
             self_update: SelfUpdateService::inert(),
             start_installed_update: |_| Ok(()),
             restore_point: RestorePointService::inert(),
@@ -138,7 +130,6 @@ impl SystemActions {
             persist_scan_state: false,
             persist_config: false,
             sync_helper_task: |_, _| Ok(()),
-            sync_autostart: |_| Ok(()),
             reconcile_background: |_, _| Ok(()),
         }
     }
@@ -158,7 +149,6 @@ pub enum ConfirmRequest {
         key_path: String,
         file_path: String,
     },
-    Elevate,
     UpdateAvailable {
         current_version: String,
         latest_version: String,
@@ -183,7 +173,6 @@ impl ConfirmRequest {
     pub fn title(&self) -> &'static str {
         match self {
             ConfirmRequest::Rollback { .. } => "RESTORE REGISTRY BACKUP?",
-            ConfirmRequest::Elevate => "ADMINISTRATOR PRIVILEGES REQUIRED",
             ConfirmRequest::UpdateAvailable { .. } => "NEW WINMEDIC UPDATE AVAILABLE",
             ConfirmRequest::RestartRequired { .. } => "SYSTEM RESTART REQUIRED",
             ConfirmRequest::Unregister => "REMOVE WINMEDIC FROM WINDOWS?",
@@ -193,7 +182,6 @@ impl ConfirmRequest {
     pub fn confirm_label(&self) -> &'static str {
         match self {
             ConfirmRequest::Rollback { .. } => "Restore",
-            ConfirmRequest::Elevate => "Restart as Administrator now",
             ConfirmRequest::UpdateAvailable {
                 download: Some(_), ..
             } => "Download and restart",
@@ -208,7 +196,6 @@ impl ConfirmRequest {
     pub fn dismiss_label(&self) -> &'static str {
         match self {
             ConfirmRequest::Rollback { .. } => "Cancel",
-            ConfirmRequest::Elevate => "Continue without Administrator",
             ConfirmRequest::UpdateAvailable { .. } => "Remind me later",
             ConfirmRequest::RestartRequired { .. } => "Later",
             ConfirmRequest::Unregister => "Cancel",
@@ -228,13 +215,6 @@ impl ConfirmRequest {
                 format!("Backup: {}", description),
                 format!("Key:    {}", key_path),
                 format!("File:   {}", file_path),
-            ],
-            ConfirmRequest::Elevate => vec![
-                "WinMedic is running without Administrator privileges.".to_string(),
-                "Full diagnostics and repairs (system files via SFC/DISM, services and".to_string(),
-                "the registry) need elevated privileges.".to_string(),
-                String::new(),
-                "Restart WinMedic as Administrator (UAC) now?".to_string(),
             ],
             ConfirmRequest::UpdateAvailable {
                 current_version,
@@ -297,13 +277,9 @@ impl ConfirmRequest {
                 body
             }
             ConfirmRequest::Unregister => vec![
-                "WinMedic will remove what it registered with Windows:".to_string(),
-                String::new(),
-                "  • the background scan task (WinMedicHelper)".to_string(),
-                "  • the \"Start with Windows\" entry".to_string(),
-                String::new(),
-                "and turn both settings off. Do this before deleting winmedic.exe,".to_string(),
-                "or both keep pointing at a file that is gone.".to_string(),
+                "WinMedic will remove the background scan task (WinMedicHelper)".to_string(),
+                "and turn its setting off. Do this before deleting winmedic.exe,".to_string(),
+                "or the task keeps pointing at a file that is gone.".to_string(),
                 String::new(),
                 "Settings, logs and registry backups stay where they are; the".to_string(),
                 "command line 'winmedic --uninstall --purge' deletes them too.".to_string(),
@@ -318,12 +294,6 @@ impl App {
             match request {
                 ConfirmRequest::Rollback { .. } => {
                     self.status_message = Some("Cancelled - nothing was changed.".to_string());
-                }
-                ConfirmRequest::Elevate => {
-                    self.status_message = Some(
-                        "Limited mode: repairs without Administrator privileges may fail."
-                            .to_string(),
-                    );
                 }
                 ConfirmRequest::UpdateAvailable { .. } => {
                     // "Remind me later" - the notice stays parked in
@@ -349,17 +319,15 @@ impl App {
         self.pending_confirm = Some(ConfirmRequest::Unregister);
     }
 
-    /// Remove the helper task and the Run entry, and turn off the settings
-    /// that would register them again the next time the window opens.
+    /// Remove the helper task, and turn off the setting that would register
+    /// it again the next time the window opens.
     fn unregister_from_windows(&mut self) {
         self.config.helper_enabled = false;
-        self.config.autostart = false;
 
         let mut problems: Vec<String> = Vec::new();
         problems.extend(
             (self.system_actions.sync_helper_task)(false, self.config.helper_frequency_hours).err(),
         );
-        problems.extend((self.system_actions.sync_autostart)(false).err());
         if self.system_actions.persist_config
             && let Err(e) = self.config.save()
         {
@@ -524,19 +492,6 @@ impl App {
                     let _ = tx.send(BackgroundEvent::RollbackFinished { success, message });
                 });
             }
-            // The window stays until UAC was answered: declined, it goes on
-            // without Administrator rights instead of closing. The answer is
-            // awaited off the UI thread, which would not repaint meanwhile.
-            ConfirmRequest::Elevate => {
-                let relaunch = self.system_actions.relaunch_elevated;
-                let tx = self.bg_tx.clone();
-                self.status_message = Some("Waiting for the Administrator prompt...".to_string());
-                std::thread::spawn(move || {
-                    let _ = tx.send(BackgroundEvent::ElevationAnswered(
-                        relaunch().map_err(|e| e.to_string()),
-                    ));
-                });
-            }
             ConfirmRequest::UpdateAvailable {
                 latest_version,
                 release_url,
@@ -586,10 +541,6 @@ mod tests {
         assert!(
             (actions.open_release_page)("definitely not a release url").is_ok(),
             "App::new installed the real browser launcher"
-        );
-        assert!(
-            (actions.relaunch_elevated)().is_ok(),
-            "App::new installed the real UAC relaunch"
         );
         assert_eq!(
             (actions.restore_registry)("definitely not a backup").as_deref(),
@@ -728,8 +679,6 @@ mod tests {
     #[test]
     fn the_parked_notice_keeps_the_download_it_was_offered_with() {
         let mut app = App::new();
-        // A non-elevated run parks the Elevate dialog at construction.
-        app.pending_confirm = None;
         app.available_update = Some(crate::utils::updater::UpdateInfo {
             current_version: "0.1.0".to_string(),
             latest_version: "v0.2.0".to_string(),
@@ -755,7 +704,6 @@ mod tests {
     #[test]
     fn the_notice_does_not_reopen_while_an_install_is_running() {
         let mut app = App::new();
-        app.pending_confirm = None;
         app.available_update = Some(crate::utils::updater::UpdateInfo {
             current_version: "0.1.0".to_string(),
             latest_version: "v0.2.0".to_string(),
@@ -819,15 +767,6 @@ mod tests {
     }
 
     #[test]
-    fn test_confirm_request_elevate() {
-        let req = ConfirmRequest::Elevate;
-        assert_eq!(req.title(), "ADMINISTRATOR PRIVILEGES REQUIRED");
-        assert_eq!(req.confirm_label(), "Restart as Administrator now");
-        assert_eq!(req.dismiss_label(), "Continue without Administrator");
-        assert!(!req.body().is_empty());
-    }
-
-    #[test]
     fn test_confirm_request_rollback() {
         let req = ConfirmRequest::Rollback {
             description: "Test Backup".to_string(),
@@ -888,10 +827,9 @@ mod tests {
     }
 
     #[test]
-    fn unregistering_turns_both_settings_off() {
+    fn unregistering_turns_the_background_scan_off() {
         let mut app = App::new();
         app.config.helper_enabled = true;
-        app.config.autostart = true;
         app.request_unregister();
         assert_eq!(
             app.pending_confirm.as_ref().map(ConfirmRequest::title),
@@ -901,7 +839,6 @@ mod tests {
         app.confirm_pending_action();
 
         assert!(!app.config.helper_enabled);
-        assert!(!app.config.autostart);
         assert!(
             app.status_message
                 .as_deref()
@@ -954,52 +891,6 @@ mod tests {
             app.status_message
                 .as_deref()
                 .is_some_and(|m| m.contains("Restart postponed"))
-        );
-    }
-
-    /// Waits until the background thread has answered, up to five seconds.
-    fn answered(app: &mut App) {
-        for _ in 0..500 {
-            app.process_background_events();
-            if app.should_quit
-                || app
-                    .status_message
-                    .as_deref()
-                    .is_some_and(|m| m.starts_with("Still"))
-            {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-    }
-
-    #[test]
-    fn the_window_closes_only_once_the_elevated_one_started() {
-        let mut app = App::new();
-        app.pending_confirm = Some(ConfirmRequest::Elevate);
-        app.confirm_pending_action();
-        answered(&mut app);
-        assert!(app.should_quit);
-    }
-
-    /// UAC declined: the window stays, without Administrator rights.
-    #[test]
-    fn a_declined_prompt_keeps_the_window() {
-        let mut app = App::new();
-        app.system_actions.relaunch_elevated = || {
-            Err(std::io::Error::other(
-                "the Administrator prompt (UAC) was declined",
-            ))
-        };
-        app.pending_confirm = Some(ConfirmRequest::Elevate);
-        app.confirm_pending_action();
-        answered(&mut app);
-        assert!(!app.should_quit);
-        assert_eq!(
-            app.status_message.as_deref(),
-            Some(
-                "Still running without Administrator rights: the Administrator prompt (UAC) was declined."
-            )
         );
     }
 }

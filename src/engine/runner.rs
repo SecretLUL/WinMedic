@@ -6,7 +6,6 @@ use crate::modules::{
 };
 use crate::safety::audit::AuditLogger;
 use crate::safety::restore_point::RestorePointService;
-use crate::utils::admin::is_admin;
 use crate::utils::cmd::{CommandRunner, describe_os_error};
 use crate::utils::debug_log::{
     DebugTag, extract_os_error_code, render_debug_kv, render_debug_line,
@@ -339,11 +338,7 @@ impl DiagnosticEngine {
                     current_step: "Verbose diagnostic mode enabled".to_string(),
                     log_message: Some(render_debug_line(
                         DebugTag::Step,
-                        &format!(
-                            "--- scan run: {} modules in parallel, elevated: {} ---",
-                            total_modules,
-                            if is_admin() { "yes" } else { "no" }
-                        ),
+                        &format!("--- scan run: {} modules in parallel ---", total_modules),
                     )),
                 }))
                 .await;
@@ -565,16 +560,6 @@ impl DiagnosticEngine {
         let run_trace = RepairTrace::new(&event_tx, "engine", options.verbose_logging);
         run_trace.section("repair run environment").await;
         run_trace.kv("winmedic", env!("CARGO_PKG_VERSION")).await;
-        run_trace
-            .kv(
-                "elevated",
-                if is_admin() {
-                    "yes (Administrator)"
-                } else {
-                    "NO - system-level repairs will be refused by Windows"
-                },
-            )
-            .await;
         run_trace.kv("architecture", std::env::consts::ARCH).await;
         run_trace
             .kv(
@@ -600,11 +585,6 @@ impl DiagnosticEngine {
             )
             .await;
         run_trace.kv("selected repairs", pending.to_string()).await;
-        if !is_admin() && !options.dry_run {
-            run_trace
-                .hint("without elevation expect os error 5 / 740 from chkdsk, DISM, SFC and every service or registry fix")
-                .await;
-        }
 
         if options.dry_run {
             let _ = event_tx
