@@ -434,7 +434,7 @@ impl App {
             return;
         };
         if let Err(e) = (self.system_actions.reconcile_background)(&self.config, &exe) {
-            let problem = format!("Background scan / autostart could not be repaired: {e}");
+            let problem = format!("The background scan could not be repaired: {e}");
             self.status_message = Some(match self.status_message.take() {
                 Some(existing) if existing != "Ready" => format!("{existing} {problem}"),
                 _ => problem,

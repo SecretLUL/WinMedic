@@ -113,9 +113,9 @@ problems, `3` a repair failed. Every flag and code is listed in
 ## Uninstall
 
 First click *Settings → Remove WinMedic from Windows*, or run
-`winmedic --uninstall`. That removes the background scan and the *Start with
-Windows* entry, if you turned them on. Then delete `winmedic.exe`, or run
-`winget uninstall SecretLUL.WinMedic` if you installed it with WinGet.
+`winmedic --uninstall`. That removes the background scan, if you turned it on.
+Then delete `winmedic.exe`, or run `winget uninstall SecretLUL.WinMedic` if you
+installed it with WinGet.
 
 Your settings, logs and backups stay in `%APPDATA%\WinMedic`;
 `winmedic --uninstall --purge` deletes them too.

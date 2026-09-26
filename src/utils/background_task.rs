@@ -1,11 +1,12 @@
-//! Registering WinMedic with Windows: the WinMedicHelper scheduled task and the
-//! "Start with Windows" Run entry.
+//! Registering WinMedic with Windows: the WinMedicHelper scheduled task, and
+//! removing the "Start with Windows" Run entry older versions wrote.
 
 use crate::config::AppConfig;
 use std::path::Path;
 
 pub const HELPER_TASK_NAME: &str = "WinMedicHelper";
-pub const AUTOSTART_KEY_NAME: &str = "WinMedic";
+/// The Run value older versions wrote for "Start with Windows".
+pub const LEGACY_AUTOSTART_NAME: &str = "WinMedic";
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -15,8 +16,8 @@ const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
 /// The helper task's name for the signed-in account.
 ///
-/// Tasks in the root folder are machine-wide while the Run entry is per user,
-/// so one shared name let two accounts overwrite and delete each other's task.
+/// Tasks in the root folder are machine-wide while settings are per user, so
+/// one shared name let two accounts overwrite and delete each other's task.
 pub fn helper_task_name() -> String {
     let account = format!(
         "{}-{}",
@@ -60,11 +61,6 @@ fn helper_command(exe: &Path) -> String {
         r#"%SystemRoot%\System32\conhost.exe --headless "{}" --helper"#,
         exe.display()
     )
-}
-
-#[cfg(windows)]
-fn autostart_command(exe: &Path) -> String {
-    format!("\"{}\" --autostart", exe.display())
 }
 
 #[cfg(windows)]
@@ -174,71 +170,55 @@ fn helper_task_is_current(exe: &Path) -> bool {
     !exe.is_ascii() || xml.contains(&exe.to_lowercase())
 }
 
-/// Write the Run entry so that it starts `exe`.
-#[cfg(windows)]
-fn register_autostart(exe: &Path) -> Result<(), String> {
-    use winreg::RegKey;
-    use winreg::enums::HKEY_CURRENT_USER;
-
-    let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
-        .create_subkey(RUN_KEY)
-        .map_err(|e| format!("Failed to open Run registry key: {e}"))?;
-    key.set_value(AUTOSTART_KEY_NAME, &autostart_command(exe))
-        .map_err(|e| format!("Failed to write autostart registry entry: {e}"))
+/// Whether a Run value is the "Start with Windows" entry an older WinMedic
+/// wrote: `"<path to winmedic>" --autostart`.
+fn is_legacy_autostart(command: &str) -> bool {
+    command.trim_end().ends_with("--autostart")
 }
 
-pub fn sync_autostart(enabled: bool) -> Result<(), String> {
+/// Delete the Run entry older versions wrote for "Start with Windows", and
+/// say whether there was one.
+///
+/// Windows does not start a program that demands Administrator rights from a
+/// Run entry, so the entry could only fail at every sign-in. A value of the
+/// same name that does not start WinMedic is somebody else's and stays.
+pub fn remove_legacy_autostart() -> Result<bool, String> {
     #[cfg(windows)]
     {
         use winreg::RegKey;
-        use winreg::enums::{HKEY_CURRENT_USER, KEY_WRITE};
+        use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
 
-        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-
-        if enabled {
-            register_autostart(&current_exe()?)?;
-        } else if let Ok(key) = hkcu.open_subkey_with_flags(RUN_KEY, KEY_WRITE) {
-            match key.delete_value(AUTOSTART_KEY_NAME) {
-                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-                    return Err(format!(
-                        "Failed to remove the autostart registry entry: {e}"
-                    ));
-                }
-                _ => {}
-            }
+        let Ok(key) =
+            RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(RUN_KEY, KEY_READ | KEY_WRITE)
+        else {
+            return Ok(false);
+        };
+        let ours = key
+            .get_value::<String, _>(LEGACY_AUTOSTART_NAME)
+            .is_ok_and(|command| is_legacy_autostart(&command));
+        if !ours {
+            return Ok(false);
         }
-        Ok(())
+        key.delete_value(LEGACY_AUTOSTART_NAME)
+            .map(|()| true)
+            .map_err(|e| format!("Failed to remove the old \"Start with Windows\" entry: {e}"))
     }
 
     #[cfg(not(windows))]
-    {
-        let _ = enabled;
-        Ok(())
-    }
+    Ok(false)
 }
 
-/// Whether the Run entry exists and starts `exe`.
-#[cfg(windows)]
-fn autostart_is_current(exe: &Path) -> bool {
-    use winreg::RegKey;
-    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
-
-    RegKey::predef(HKEY_CURRENT_USER)
-        .open_subkey_with_flags(RUN_KEY, KEY_READ)
-        .and_then(|key| key.get_value::<String, _>(AUTOSTART_KEY_NAME))
-        .is_ok_and(|value| value.eq_ignore_ascii_case(&autostart_command(exe)))
-}
-
-/// Point the task and the Run entry at `exe`, for the settings that are on.
+/// Point the task at `exe` when its setting is on, and remove the Run entry
+/// older versions wrote for "Start with Windows".
 ///
 /// Run when the window opens, for the running executable, and right after an
-/// update that renamed the file, for the new one. Both remember the executable
-/// that was running when the setting last changed, and a hand-downloaded
-/// release carries the version in its file name.
+/// update that renamed the file, for the new one. The task remembers the
+/// executable that was running when the setting last changed, and a
+/// hand-downloaded release carries the version in its file name.
 ///
-/// It only repairs, never removes: with a corrupt config every setting reads as
-/// off, and that must not delete what the user set up. An entry left behind is
-/// inert anyway, because `--helper` and `--autostart` both check the setting.
+/// The task is only repaired, never removed: with a corrupt config every
+/// setting reads as off, and that must not delete what the user set up. A task
+/// left behind is inert anyway, because `--helper` checks the setting.
 pub fn reconcile(config: &AppConfig, exe: &Path) -> Result<(), String> {
     #[cfg(windows)]
     {
@@ -246,9 +226,7 @@ pub fn reconcile(config: &AppConfig, exe: &Path) -> Result<(), String> {
         if config.helper_enabled && !helper_task_is_current(exe) {
             problems.extend(register_helper_task(exe, config.helper_frequency_hours).err());
         }
-        if config.autostart && !autostart_is_current(exe) {
-            problems.extend(register_autostart(exe).err());
-        }
+        problems.extend(remove_legacy_autostart().err());
         if problems.is_empty() {
             Ok(())
         } else {
@@ -283,5 +261,21 @@ mod tests {
         let name = helper_task_name();
         assert!(name.starts_with(HELPER_TASK_NAME));
         assert!(!name.contains(['\\', '/', ':', '*', '?', '"', '<', '>', '|']));
+    }
+
+    /// What 0.5.0 to 0.6.0 wrote is removed; another program's value under
+    /// the same name is not.
+    #[test]
+    fn only_the_entry_winmedic_wrote_is_removed() {
+        assert!(is_legacy_autostart(
+            r#""C:\Tools\winmedic.exe" --autostart"#
+        ));
+        assert!(is_legacy_autostart(
+            r#""C:\Users\Some User\AppData\Local\Microsoft\WinGet\Links\winmedic.exe" --autostart"#
+        ));
+        assert!(!is_legacy_autostart(r#""C:\Tools\winmedic.exe""#));
+        assert!(!is_legacy_autostart(
+            r#""C:\Program Files\Other\app.exe" /min"#
+        ));
     }
 }

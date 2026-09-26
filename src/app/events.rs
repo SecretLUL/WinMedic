@@ -444,7 +444,7 @@ impl App {
                                     &installed.installed,
                                 ) {
                                     message.push_str(&format!(
-                                        " Background scan / autostart still point at the old file: {e}"
+                                        " The background scan still points at the old file: {e}"
                                     ));
                                 }
                             }

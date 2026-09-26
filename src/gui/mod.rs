@@ -49,7 +49,6 @@ const IDLE_REPAINT: Duration = Duration::from_secs(1);
 pub struct WinMedicApp {
     app: App,
     last_poll: Instant,
-    initial_minimize: bool,
     window: window::WindowLock,
 }
 
@@ -96,10 +95,6 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
 
 impl WinMedicApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        Self::with_autostart(cc, false)
-    }
-
-    pub fn with_autostart(cc: &eframe::CreationContext<'_>, autostart: bool) -> Self {
         theme::apply(&cc.egui_ctx);
 
         let mut app = App::from_disk();
@@ -114,7 +109,6 @@ impl WinMedicApp {
         Self {
             app,
             last_poll: Instant::now(),
-            initial_minimize: autostart,
             window: window::WindowLock::default(),
         }
     }
@@ -314,12 +308,6 @@ impl eframe::App for WinMedicApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        if self.initial_minimize {
-            self.initial_minimize = false;
-            ui.ctx()
-                .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-        }
-
         for key in keys::shortcuts(ui.ctx()) {
             handle_key(&mut self.app, key);
         }

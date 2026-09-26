@@ -64,13 +64,12 @@ pub struct SystemActions {
     ///
     /// Off by default for the same reason: a test that changes a setting must
     /// not rewrite the developer's own configuration — least of all the helper
-    /// and autostart switches the real app acts on.
+    /// switch the real app acts on.
     pub persist_config: bool,
     /// Synchronize the WinMedicHelper scheduled background task.
     pub sync_helper_task: fn(bool, u32) -> Result<(), String>,
-    /// Synchronize the "Start with Windows" autostart registry entry.
-    pub sync_autostart: fn(bool) -> Result<(), String>,
-    /// Repair the task and the Run entry for the settings that are on.
+    /// Repair the task when its setting is on, and remove the Run entry of
+    /// the "Start with Windows" setting older versions had.
     pub reconcile_background: fn(&AppConfig, &std::path::Path) -> Result<(), String>,
 }
 
@@ -114,7 +113,6 @@ impl SystemActions {
             persist_scan_state: true,
             persist_config: true,
             sync_helper_task: crate::utils::background_task::sync_helper_task,
-            sync_autostart: crate::utils::background_task::sync_autostart,
             reconcile_background: crate::utils::background_task::reconcile,
         }
     }
@@ -132,7 +130,6 @@ impl SystemActions {
             persist_scan_state: false,
             persist_config: false,
             sync_helper_task: |_, _| Ok(()),
-            sync_autostart: |_| Ok(()),
             reconcile_background: |_, _| Ok(()),
         }
     }
@@ -280,13 +277,9 @@ impl ConfirmRequest {
                 body
             }
             ConfirmRequest::Unregister => vec![
-                "WinMedic will remove what it registered with Windows:".to_string(),
-                String::new(),
-                "  • the background scan task (WinMedicHelper)".to_string(),
-                "  • the \"Start with Windows\" entry".to_string(),
-                String::new(),
-                "and turn both settings off. Do this before deleting winmedic.exe,".to_string(),
-                "or both keep pointing at a file that is gone.".to_string(),
+                "WinMedic will remove the background scan task (WinMedicHelper)".to_string(),
+                "and turn its setting off. Do this before deleting winmedic.exe,".to_string(),
+                "or the task keeps pointing at a file that is gone.".to_string(),
                 String::new(),
                 "Settings, logs and registry backups stay where they are; the".to_string(),
                 "command line 'winmedic --uninstall --purge' deletes them too.".to_string(),
@@ -326,17 +319,15 @@ impl App {
         self.pending_confirm = Some(ConfirmRequest::Unregister);
     }
 
-    /// Remove the helper task and the Run entry, and turn off the settings
-    /// that would register them again the next time the window opens.
+    /// Remove the helper task, and turn off the setting that would register
+    /// it again the next time the window opens.
     fn unregister_from_windows(&mut self) {
         self.config.helper_enabled = false;
-        self.config.autostart = false;
 
         let mut problems: Vec<String> = Vec::new();
         problems.extend(
             (self.system_actions.sync_helper_task)(false, self.config.helper_frequency_hours).err(),
         );
-        problems.extend((self.system_actions.sync_autostart)(false).err());
         if self.system_actions.persist_config
             && let Err(e) = self.config.save()
         {
@@ -836,10 +827,9 @@ mod tests {
     }
 
     #[test]
-    fn unregistering_turns_both_settings_off() {
+    fn unregistering_turns_the_background_scan_off() {
         let mut app = App::new();
         app.config.helper_enabled = true;
-        app.config.autostart = true;
         app.request_unregister();
         assert_eq!(
             app.pending_confirm.as_ref().map(ConfirmRequest::title),
@@ -849,7 +839,6 @@ mod tests {
         app.confirm_pending_action();
 
         assert!(!app.config.helper_enabled);
-        assert!(!app.config.autostart);
         assert!(
             app.status_message
                 .as_deref()

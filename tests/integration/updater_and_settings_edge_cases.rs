@@ -315,7 +315,7 @@ fn test_launch_browser_valid_urls() {
 fn test_app_config_defaults_and_setting_count() {
     let cfg = AppConfig::default();
     assert!(cfg.check_for_updates);
-    assert_eq!(AppConfig::SETTING_COUNT, 10);
+    assert_eq!(AppConfig::SETTING_COUNT, 9);
 }
 
 #[test]

@@ -65,11 +65,7 @@ struct CliArgs {
     #[arg(long)]
     helper: bool,
 
-    /// Started by the "Start with Windows" entry: open minimized, or not at all while the setting is off
-    #[arg(long)]
-    autostart: bool,
-
-    /// Remove what WinMedic registered with Windows (the background scan task and the "Start with Windows" entry) and turn both settings off. Run this before deleting winmedic.exe. Settings, logs and registry backups stay unless --purge is given.
+    /// Remove what WinMedic registered with Windows (the background scan task) and turn its setting off. Run this before deleting winmedic.exe. Settings, logs and registry backups stay unless --purge is given.
     #[arg(long)]
     uninstall: bool,
 
@@ -147,7 +143,7 @@ fn run(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         let runtime = tokio::runtime::Runtime::new()?;
         runtime.block_on(run_headless(args))
     } else {
-        run_gui(args.autostart)
+        run_gui()
     }
 }
 
@@ -174,10 +170,11 @@ fn run_uninstall(purge: bool) -> u8 {
         "Removed the background scan task",
         utils::background_task::sync_helper_task(false, 0),
     );
-    report(
-        "Removed the \"Start with Windows\" entry",
-        utils::background_task::sync_autostart(false),
-    );
+    match utils::background_task::remove_legacy_autostart() {
+        Ok(true) => println!("[OK]   Removed the old \"Start with Windows\" entry"),
+        Ok(false) => {}
+        Err(e) => report("Removed the old \"Start with Windows\" entry", Err(e)),
+    }
 
     match data_dir {
         Some(dir) if purge => {
@@ -192,12 +189,11 @@ fn run_uninstall(purge: bool) -> u8 {
         }
         dir => {
             // Leave the settings saying what is now true; otherwise the next
-            // start of the window registers both again.
+            // start of the window registers the task again.
             let (mut config, _) = AppConfig::load_reporting();
             config.helper_enabled = false;
-            config.autostart = false;
             report(
-                "Turned both settings off",
+                "Turned the background scan off",
                 config.save().map_err(|e| e.to_string()),
             );
             if let Some(dir) = dir {
@@ -535,19 +531,7 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
 
 // --------------------------------------------------------------------- GUI
 
-fn run_gui(autostart: bool) -> Result<u8, Box<dyn std::error::Error>> {
-    // A Run entry that outlived its setting opens nothing. Parsed directly
-    // rather than through `AppConfig::load`, which would quarantine a corrupt
-    // file before the window got the chance to report it.
-    if autostart
-        && std::fs::read_to_string(AppConfig::config_path())
-            .ok()
-            .and_then(|data| serde_json::from_str::<AppConfig>(&data).ok())
-            .is_some_and(|config| !config.autostart)
-    {
-        return Ok(exit_code::OK);
-    }
-
+fn run_gui() -> Result<u8, Box<dyn std::error::Error>> {
     // WinMedic links into the console subsystem so that its headless mode keeps
     // its exit codes and its pipes; see `utils::console` for the whole argument.
     // The window has no use for the console that came with it.
@@ -562,10 +546,6 @@ fn run_gui(autostart: bool) -> Result<u8, Box<dyn std::error::Error>> {
         .with_title("WinMedic")
         .with_inner_size([1280.0, 820.0])
         .with_min_inner_size(gui::window::MIN_SIZE);
-
-    if autostart {
-        viewport = viewport.with_active(false);
-    }
 
     // The same mark the executable carries in its PE resources, so the title
     // bar and the taskbar agree with Explorer. A window with no icon still
@@ -584,7 +564,7 @@ fn run_gui(autostart: bool) -> Result<u8, Box<dyn std::error::Error>> {
         eframe::run_native(
             "WinMedic",
             options,
-            Box::new(move |cc| Ok(Box::new(gui::WinMedicApp::with_autostart(cc, autostart)))),
+            Box::new(move |cc| Ok(Box::new(gui::WinMedicApp::new(cc)))),
         )
     };
 

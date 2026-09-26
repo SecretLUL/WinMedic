@@ -777,7 +777,7 @@ async fn test_github_api_large_payload_stress() {
 fn test_appconfig_default_and_setting_count() {
     let cfg = AppConfig::default();
     assert!(cfg.check_for_updates);
-    assert_eq!(AppConfig::SETTING_COUNT, 10);
+    assert_eq!(AppConfig::SETTING_COUNT, 9);
 }
 
 #[test]
