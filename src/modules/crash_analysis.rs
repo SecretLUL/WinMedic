@@ -1,9 +1,12 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
+use crate::modules::crash_timeline::{self, Change};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
 use crate::utils::debug_log::DebugTrace;
-use crate::utils::event_xml::{EventRecord, parse_events, read_events, system_log_query};
-use chrono::{DateTime, Local};
+use crate::utils::event_xml::{
+    EventRecord, event_query, parse_events, read_events, system_log_query,
+};
+use chrono::{DateTime, Local, Utc};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -60,6 +63,17 @@ const KERNEL_POWER_PROVIDER: &str = "Microsoft-Windows-Kernel-Power";
 /// alone returns nothing on Windows 10/11, so the event half of the crash
 /// correlation never saw a single bugcheck there.
 const BUGCHECK_PROVIDERS: [&str; 2] = ["Microsoft-Windows-WER-SystemErrorReporting", "BugCheck"];
+
+/// Bugchecks (1001) and unexpected shutdowns (Kernel-Power 41).
+fn crash_filter() -> String {
+    format!(
+        "(Provider[@Name='{}' or @Name='{}' or @Name='{}']) and (EventID=1001 or EventID=41)",
+        BUGCHECK_PROVIDERS[0], BUGCHECK_PROVIDERS[1], KERNEL_POWER_PROVIDER,
+    )
+}
+
+/// The oldest event in the System log: how far back it reaches.
+const OLDEST_SYSTEM_EVENT: [&str; 5] = ["qe", "System", "/c:1", "/rd:false", "/f:xml"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BugcheckCategory {
@@ -192,6 +206,84 @@ impl CrashAnalysisModule {
         (crashes, total_files)
     }
 
+    /// The events a `wevtutil` query returns, or `None` when it failed.
+    async fn events(&self, dbg: &DebugTrace, query: Vec<String>) -> Option<Vec<EventRecord>> {
+        let query: Vec<&str> = query.iter().map(String::as_str).collect();
+        let out = dbg
+            .run(
+                &self.runner,
+                "wevtutil.exe",
+                &query,
+                Duration::from_secs(20),
+            )
+            .await;
+        match read_events(out) {
+            Ok(events) => Some(events),
+            Err(err) => {
+                dbg.warn(format!("What-changed query failed: {err}")).await;
+                None
+            }
+        }
+    }
+
+    /// The first crash of the last [`crash_timeline::SERIES_DAYS`] days and
+    /// what changed in the week before it; `None` when the logs show nothing.
+    async fn what_changed(&self, dbg: &DebugTrace) -> Option<(DateTime<Utc>, Vec<Change>)> {
+        let series_ms = crash_timeline::SERIES_DAYS as u64 * 86_400_000;
+        let first = self
+            .events(dbg, system_log_query(&crash_filter(), series_ms, 500))
+            .await?
+            .iter()
+            .filter_map(crash_timeline::logged_at)
+            .min()?;
+        let from = crash_timeline::week_before(first);
+        let to = crash_timeline::xpath_time(first);
+        let week = format!(
+            "TimeCreated[@SystemTime>='{}' and @SystemTime<='{to}']",
+            crash_timeline::xpath_time(from)
+        );
+        let until = format!("TimeCreated[@SystemTime<='{to}']");
+
+        let mut changes = Vec::new();
+        let updates = format!(
+            "Provider[@Name='{}'] and EventID=19 and {week}",
+            crash_timeline::WU_PROVIDER
+        );
+        if let Some(events) = self.events(dbg, event_query("System", &updates, 500)).await {
+            changes.extend(crash_timeline::updates(&events));
+        }
+        // A driver is new at its first install, which only a log that began
+        // before the week can tell.
+        let log_start = self
+            .events(dbg, OLDEST_SYSTEM_EVENT.map(str::to_string).to_vec())
+            .await
+            .and_then(|events| events.first().and_then(crash_timeline::logged_at));
+        let services = format!(
+            "Provider[@Name='{}'] and EventID=7045 and {until}",
+            crash_timeline::SCM_PROVIDER
+        );
+        if log_start.is_some_and(|start| start < from)
+            && let Some(events) = self
+                .events(dbg, event_query("System", &services, 5000))
+                .await
+        {
+            changes.extend(crash_timeline::new_drivers(&events));
+        }
+        let programs = format!(
+            "Provider[@Name='{}'] and EventID=1033 and {until}",
+            crash_timeline::MSI_PROVIDER
+        );
+        if let Some(events) = self
+            .events(dbg, event_query("Application", &programs, 5000))
+            .await
+        {
+            changes.extend(crash_timeline::new_programs(&events));
+        }
+
+        let changes = crash_timeline::before(first, changes);
+        (!changes.is_empty()).then_some((first, changes))
+    }
+
     fn count_user_mode_dumps(&self) -> usize {
         let Some(local) = std::env::var_os("LOCALAPPDATA") else {
             return 0;
@@ -268,11 +360,7 @@ impl DiagnosticModule for CrashAnalysisModule {
         .await;
         sleep(Duration::from_millis(150)).await;
 
-        let filter = format!(
-            "(Provider[@Name='{}' or @Name='{}' or @Name='{}']) and (EventID=1001 or EventID=41)",
-            BUGCHECK_PROVIDERS[0], BUGCHECK_PROVIDERS[1], KERNEL_POWER_PROVIDER,
-        );
-        let query = system_log_query(&filter, self.lookback_ms(), 200);
+        let query = system_log_query(&crash_filter(), self.lookback_ms(), 200);
         let query: Vec<&str> = query.iter().map(String::as_str).collect();
 
         let evt_out = dbg
@@ -558,7 +646,19 @@ impl DiagnosticModule for CrashAnalysisModule {
             ).with_advice_only());
         }
 
-        // 6. Dump accumulation
+        // 6. What changed before the crashes began
+        Self::send_progress(
+            &progress_tx,
+            90,
+            "Looking at what changed before the first crash...",
+            None,
+        )
+        .await;
+        if let Some((first, changes)) = self.what_changed(&dbg).await {
+            issues.push(crash_timeline::finding(self.id(), first, &changes));
+        }
+
+        // 7. Dump accumulation
         if total_dump_files > STALE_DUMP_THRESHOLD || user_dump_count > 10 {
             issues.push(Issue::new(
                 "crash_stale_dumps",
@@ -1154,9 +1254,92 @@ fn extract_hex_code(line: &str) -> Option<u32> {
 mod tests {
     use super::*;
     use crate::utils::cmd::{CmdOutput, MockCommandRunner};
+    use crate::utils::decode::{CodePage, decode_output_in};
 
     fn empty_event_response(mock: &MockCommandRunner) {
         mock.add_response("wevtutil.exe", CmdOutput::ok(""));
+    }
+
+    // Captured on a German Windows 11 whose crashes began on 26 July; see
+    // tests/fixtures/README.md.
+    const JULY_CRASHES: &[u8] =
+        include_bytes!("../../tests/fixtures/events/wevtutil_crashes_july.bin");
+    const JULY_UPDATES: &[u8] =
+        include_bytes!("../../tests/fixtures/events/wevtutil_wu_installed_19_de.bin");
+    const JULY_SERVICES: &[u8] =
+        include_bytes!("../../tests/fixtures/events/wevtutil_service_installed_7045.bin");
+    const JULY_PROGRAMS: &[u8] =
+        include_bytes!("../../tests/fixtures/events/wevtutil_msi_installed_1033.bin");
+    const OLDEST_EVENT: &[u8] =
+        include_bytes!("../../tests/fixtures/events/wevtutil_system_oldest_event.bin");
+
+    /// The capture machine's logs, its System log beginning at `log_start`.
+    fn july(log_start: &[u8]) -> MockCommandRunner {
+        let ansi = |bytes| CmdOutput::ok(decode_output_in(bytes, CodePage::Ansi));
+        let mock = MockCommandRunner::new();
+        mock.add_response("EventID=19 and", ansi(JULY_UPDATES));
+        mock.add_response("EventID=7045", ansi(JULY_SERVICES));
+        mock.add_response("EventID=1033", ansi(JULY_PROGRAMS));
+        mock.add_response("/rd:false", ansi(log_start));
+        mock.add_response("EventID=41", ansi(JULY_CRASHES));
+        mock
+    }
+
+    async fn what_changed(tag: &str, mock: MockCommandRunner) -> Option<Issue> {
+        let dir = temp_dump_dir(tag);
+        let module = CrashAnalysisModule::with_runner_and_dump_dir(
+            ModuleConfig::default(),
+            Arc::new(mock),
+            &dir,
+        );
+        let issues = module.scan(None).await.expect("scan failed");
+        let _ = std::fs::remove_dir_all(&dir);
+        issues.into_iter().find(|i| i.id == "crash_what_changed")
+    }
+
+    #[tokio::test]
+    async fn the_week_before_the_first_crash_is_laid_out() {
+        let issue = what_changed("timeline_week", july(OLDEST_EVENT))
+            .await
+            .expect("changes before 26 July");
+        assert!(issue.advice_only && !issue.is_selected);
+        let details = &issue.technical_details;
+        assert!(details.contains("New driver: BEDaisy ("), "{details}");
+        assert!(
+            details.contains("Windows update: Sicherheitsupdate für Microsoft Visual C++ 2010"),
+            "{details}"
+        );
+        assert!(!details.contains("KB2267602"), "{details}");
+        assert!(!details.contains("MagicianSataModeReader"), "{details}");
+        assert!(
+            issue
+                .fix_steps
+                .iter()
+                .any(|step| step.starts_with("Uninstall an update")),
+            "{:?}",
+            issue.fix_steps
+        );
+    }
+
+    /// A System log that begins inside the week cannot tell a new driver
+    /// from one registered again, so it names none.
+    #[tokio::test]
+    async fn a_short_log_names_no_driver_new() {
+        let issue = what_changed("timeline_short_log", july(JULY_CRASHES))
+            .await
+            .expect("updates and programs are still changes");
+        assert!(
+            !issue.technical_details.contains("New driver"),
+            "{}",
+            issue.technical_details
+        );
+    }
+
+    #[tokio::test]
+    async fn no_crash_no_timeline() {
+        let mock = MockCommandRunner::new();
+        empty_event_response(&mock);
+        assert_eq!(what_changed("timeline_no_crash", mock).await, None);
     }
 
     /// Builds a synthetic 64-bit kernel dump with the given bugcheck code and

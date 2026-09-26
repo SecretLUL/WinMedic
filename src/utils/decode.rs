@@ -6,6 +6,9 @@
 //! - `dism.exe`, `chkdsk.exe`, `fsutil.exe` and most of the classic tools write
 //!   in the OEM code page — 850 on a German system, 437 on an English one — so
 //!   "Ausführen" arrives as `Ausf\x81hren`;
+//! - `wevtutil.exe` and `pnputil.exe` write in the ANSI code page — 1252 on
+//!   both — so "für" arrives as `f\xFCr`, which the OEM code page reads as
+//!   "f³r";
 //! - `sfc.exe` writes UTF-16LE;
 //! - `netsh.exe`, and PowerShell once [`crate::utils::cmd::run_powershell`] has
 //!   told it to, write UTF-8.
@@ -15,21 +18,48 @@
 //! reader gave up at the first such line and dropped the rest of the output.
 //!
 //! The rule here: UTF-16LE when the bytes look like it, otherwise each line as
-//! UTF-8 when it is valid UTF-8 and in the OEM code page when it is not. OEM
-//! text with a byte above 0x7F is almost never valid UTF-8, so the two cannot
-//! be mistaken for each other in practice.
+//! UTF-8 when it is valid UTF-8 and in the tool's [`CodePage`] when it is not.
+//! Text in either code page with a byte above 0x7F is almost never valid
+//! UTF-8, so the two cannot be mistaken for each other in practice.
 
 use super::progress::percent;
 
-/// Decode a complete output buffer, line endings included.
+/// The code page a tool writes into a pipe when its text is neither UTF-8
+/// nor UTF-16.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodePage {
+    Oem,
+    Ansi,
+}
+
+impl CodePage {
+    /// The one `program` writes in, by its file name.
+    pub fn of(program: &str) -> Self {
+        let name = program.rsplit(['\\', '/']).next().unwrap_or(program);
+        let stem = name.split('.').next().unwrap_or(name);
+        if stem.eq_ignore_ascii_case("wevtutil") || stem.eq_ignore_ascii_case("pnputil") {
+            CodePage::Ansi
+        } else {
+            CodePage::Oem
+        }
+    }
+}
+
+/// Decode a complete output buffer, line endings included, from a tool that
+/// writes in the OEM code page.
 pub fn decode_output(bytes: &[u8]) -> String {
+    decode_output_in(bytes, CodePage::Oem)
+}
+
+/// Decode a complete output buffer, line endings included.
+pub fn decode_output_in(bytes: &[u8], page: CodePage) -> String {
     if looks_like_utf16le(bytes) {
         return decode_utf16le(bytes);
     }
     let bytes = bytes.strip_prefix(UTF8_BOM).unwrap_or(bytes);
     bytes
         .split_inclusive(|&b| b == b'\n')
-        .map(decode_byte_line)
+        .map(|line| decode_byte_line(line, page))
         .collect()
 }
 
@@ -115,7 +145,7 @@ impl LineDecoder {
         let text = if utf16 {
             decode_utf16le(tail)
         } else {
-            decode_byte_line(tail)
+            decode_byte_line(tail, CodePage::Oem)
         };
         text.rsplit('\r')
             .skip(1)
@@ -128,7 +158,7 @@ impl LineDecoder {
         let text = if self.utf16 == Some(true) {
             decode_utf16le(line)
         } else {
-            decode_byte_line(line.strip_prefix(UTF8_BOM).unwrap_or(line))
+            decode_byte_line(line.strip_prefix(UTF8_BOM).unwrap_or(line), CodePage::Oem)
         };
         shown(&text).to_string()
     }
@@ -171,17 +201,22 @@ fn decode_utf16le(bytes: &[u8]) -> String {
     String::from_utf16_lossy(&units)
 }
 
-fn decode_byte_line(line: &[u8]) -> String {
+fn decode_byte_line(line: &[u8], page: CodePage) -> String {
     match std::str::from_utf8(line) {
         Ok(text) => text.to_string(),
-        Err(_) => oem_to_string(line),
+        Err(_) => code_page_to_string(line, page),
     }
 }
 
-/// Decode bytes in the system's OEM code page.
+/// Decode bytes in the system's OEM or ANSI code page.
 #[cfg(windows)]
-fn oem_to_string(bytes: &[u8]) -> String {
-    use windows_sys::Win32::Globalization::{CP_OEMCP, MultiByteToWideChar};
+fn code_page_to_string(bytes: &[u8], page: CodePage) -> String {
+    use windows_sys::Win32::Globalization::{CP_ACP, CP_OEMCP, MultiByteToWideChar};
+
+    let code_page = match page {
+        CodePage::Oem => CP_OEMCP,
+        CodePage::Ansi => CP_ACP,
+    };
 
     let Ok(len) = i32::try_from(bytes.len()) else {
         return String::from_utf8_lossy(bytes).into_owned();
@@ -193,13 +228,14 @@ fn oem_to_string(bytes: &[u8]) -> String {
     // writes nothing and returns the number of UTF-16 units needed, the second
     // writes at most that many into a buffer of exactly that size.
     unsafe {
-        let needed = MultiByteToWideChar(CP_OEMCP, 0, bytes.as_ptr(), len, std::ptr::null_mut(), 0);
+        let needed =
+            MultiByteToWideChar(code_page, 0, bytes.as_ptr(), len, std::ptr::null_mut(), 0);
         if needed <= 0 {
             return String::from_utf8_lossy(bytes).into_owned();
         }
         let mut wide = vec![0u16; needed as usize];
         let written =
-            MultiByteToWideChar(CP_OEMCP, 0, bytes.as_ptr(), len, wide.as_mut_ptr(), needed);
+            MultiByteToWideChar(code_page, 0, bytes.as_ptr(), len, wide.as_mut_ptr(), needed);
         if written <= 0 {
             return String::from_utf8_lossy(bytes).into_owned();
         }
@@ -208,7 +244,7 @@ fn oem_to_string(bytes: &[u8]) -> String {
 }
 
 #[cfg(not(windows))]
-fn oem_to_string(bytes: &[u8]) -> String {
+fn code_page_to_string(bytes: &[u8], _page: CodePage) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
@@ -230,6 +266,39 @@ mod tests {
         include_bytes!("../../tests/fixtures/console/dism_scanhealth_progress.bin");
     const SFC_PROGRESS: &[u8] =
         include_bytes!("../../tests/fixtures/console/sfc_verifyonly_progress_de.bin");
+    const PNPUTIL_DE: &[u8] =
+        include_bytes!("../../tests/fixtures/console/pnputil_restart_device_denied_de.bin");
+    const WEVTUTIL_DE: &[u8] =
+        include_bytes!("../../tests/fixtures/events/wevtutil_wu_installed_19_de.bin");
+
+    #[test]
+    fn wevtutil_and_pnputil_write_in_the_ansi_code_page() {
+        assert_eq!(CodePage::of("pnputil.exe"), CodePage::Ansi);
+        assert_eq!(
+            CodePage::of(r"C:\Windows\System32\wevtutil.exe"),
+            CodePage::Ansi
+        );
+        assert_eq!(CodePage::of("WEVTUTIL"), CodePage::Ansi);
+        assert_eq!(CodePage::of("dism.exe"), CodePage::Oem);
+
+        // The ANSI code page decides these, so they only hold where it has
+        // the German letters and the en dash in it (1252 does).
+        let pnputil = decode_output_in(PNPUTIL_DE, CodePage::Ansi);
+        assert!(
+            pnputil.contains("Gerät konnte nicht neu gestartet werden"),
+            "{pnputil}"
+        );
+        let wevtutil = decode_output_in(WEVTUTIL_DE, CodePage::Ansi);
+        assert!(
+            wevtutil.contains(
+                "Security Intelligence-Update für Microsoft Defender Antivirus – KB2267602"
+            ),
+            "{wevtutil}"
+        );
+        // Read in the OEM code page, as all output was before, the ü is lost
+        // ("f³r" in 850, "fⁿr" in 437).
+        assert!(!decode_output(WEVTUTIL_DE).contains("für"));
+    }
 
     #[test]
     fn dism_output_in_the_oem_code_page_keeps_its_umlauts() {

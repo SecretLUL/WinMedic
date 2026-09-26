@@ -1,4 +1,4 @@
-use crate::utils::decode::{LineDecoder, decode_output};
+use crate::utils::decode::{CodePage, LineDecoder, decode_output_in};
 use crate::utils::pnp::PnpDevice;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -516,8 +516,8 @@ pub async fn run_cmd(
             Ok(CmdOutput {
                 success: status.success(),
                 exit_code: status.code(),
-                stdout: decode_output(&stdout_bytes),
-                stderr: decode_output(&stderr_bytes),
+                stdout: decode_output_in(&stdout_bytes, CodePage::of(program)),
+                stderr: decode_output_in(&stderr_bytes, CodePage::of(program)),
             })
         }
         Ok(Err(e)) => Err(format!("Command execution error: {}", e)),
