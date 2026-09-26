@@ -101,12 +101,29 @@ jobs:
       - name: Build
         run: cargo build --locked
 
+      # Verbose logging stamps when each module starts and finishes. The
+      # runner's settings are thrown away with it.
+      - name: Turn on verbose logging
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:APPDATA 'WinMedic'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Set-Content -Path (Join-Path $dir 'config.json') -Value '{ "verbose_logging": true }'
+
+      # Each line is printed as it comes, so the log's timestamps say when:
+      # collected and printed at the end, every line had the same one, and a
+      # module that timed out could not be told from one that started late.
       - name: Scan
         shell: pwsh
         run: |
-          $out = cargo run --locked --quiet -- --scan 2>&1 | Out-String
+          $lines = [System.Collections.Generic.List[string]]::new()
+          cargo run --locked --quiet -- --scan 2>&1 | ForEach-Object {
+            $line = "$_"
+            Write-Host $line
+            $lines.Add($line)
+          }
           $code = $LASTEXITCODE
-          Write-Host $out
+          $out = $lines -join "`n"
           if ($code -gt 2) { throw "winmedic --scan exited with $code" }
           $failed = [regex]::Matches($out, '(?m)^\[X\] Module .*$')
           if ($failed.Count -gt 0) {

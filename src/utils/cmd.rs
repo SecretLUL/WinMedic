@@ -89,6 +89,16 @@ pub trait CommandRunner: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Waits until the PowerShell calls asked for so far have finished, for a
+    /// command that keeps the disk busy for minutes.
+    ///
+    /// Started next to them, `DISM /AnalyzeComponentStore` made other
+    /// modules' PowerShell calls time out twice over on CI runners: it reads
+    /// the component store in small pieces, and the disk's latency went from
+    /// 3 ms to 52 ms on average while CPU stayed at a few percent. Only the
+    /// real runner waits.
+    async fn after_pending_powershell(&self) {}
+
     /// [`Self::run_powershell`] for a script that only reads: a timeout is
     /// retried once.
     ///
@@ -134,6 +144,13 @@ const POWERSHELL_SLOTS: usize = 4;
 fn powershell_slots() -> &'static tokio::sync::Semaphore {
     static SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
     SLOTS.get_or_init(|| tokio::sync::Semaphore::new(POWERSHELL_SLOTS))
+}
+
+/// Waits until all `count` slots are free at once. The semaphore is fair: this
+/// queues behind the calls that asked before it, and the ones that ask later
+/// wait only for the moment it holds every slot.
+async fn after_every_slot(slots: &tokio::sync::Semaphore, count: usize) {
+    let _ = slots.acquire_many(count as u32).await;
 }
 
 /// Prefix a script with the switch that makes PowerShell write UTF-8.
@@ -198,6 +215,10 @@ impl CommandRunner for SystemCommandRunner {
         .await
     }
 
+    async fn after_pending_powershell(&self) {
+        after_every_slot(powershell_slots(), POWERSHELL_SLOTS).await;
+    }
+
     async fn connected_devices(&self) -> Result<Vec<PnpDevice>, String> {
         tokio::task::spawn_blocking(crate::utils::pnp::connected_devices)
             .await
@@ -253,6 +274,10 @@ impl MockCommandRunner {
             .unwrap()
             .push((trigger.into(), match_substring.into(), output));
     }
+
+    /// What [`Self::executed`] lists where a module waited in
+    /// [`CommandRunner::after_pending_powershell`].
+    pub const WAITED_FOR_POWERSHELL: &'static str = "(waited for the pending PowerShell calls)";
 
     /// Retrieve all executed command strings.
     pub fn executed(&self) -> Vec<String> {
@@ -336,6 +361,13 @@ impl CommandRunner for MockCommandRunner {
             }
         }
         Ok(res)
+    }
+
+    async fn after_pending_powershell(&self) {
+        self.executed_commands
+            .lock()
+            .unwrap()
+            .push(Self::WAITED_FOR_POWERSHELL.to_string());
     }
 
     async fn connected_devices(&self) -> Result<Vec<PnpDevice>, String> {
@@ -832,6 +864,29 @@ mod tests {
         assert_eq!(runner.calls(), 1);
         assert!(!is_timeout("Command execution error: denied"));
         assert!(is_timeout(&timed_out("wevtutil.exe", QUERY_TIMEOUT)));
+    }
+
+    #[tokio::test]
+    async fn a_heavy_command_waits_for_the_powershell_calls_before_it() {
+        let slots = tokio::sync::Semaphore::new(4);
+        let running = slots.acquire().await.unwrap();
+        let heavy = after_every_slot(&slots, 4);
+        tokio::pin!(heavy);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut heavy)
+                .await
+                .is_err(),
+            "it waits while a call runs"
+        );
+        assert!(
+            slots.try_acquire().is_err(),
+            "a call asked for after it waits behind it"
+        );
+        drop(running);
+        tokio::time::timeout(Duration::from_secs(5), heavy)
+            .await
+            .expect("it goes once the call has ended");
+        assert_eq!(slots.available_permits(), 4, "and keeps no slot");
     }
 
     /// The whole point of the table is that a failed repair explains itself, so
