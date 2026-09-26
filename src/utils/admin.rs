@@ -55,6 +55,46 @@ pub fn is_admin() -> bool {
     false
 }
 
+/// The SID of the account this process runs as, e.g. `S-1-5-21-...-1001`:
+/// the name of its folder in every `$Recycle.Bin`.
+pub fn current_user_sid() -> Option<String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FALSE, HANDLE, LocalFree};
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    unsafe {
+        let mut token: HANDLE = core::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == FALSE {
+            return None;
+        }
+        let mut needed = 0u32;
+        GetTokenInformation(token, TokenUser, core::ptr::null_mut(), 0, &mut needed);
+        // u64 keeps the buffer aligned for the pointer TOKEN_USER starts with.
+        let mut buffer = vec![0u64; (needed as usize).div_ceil(8)];
+        let ok = GetTokenInformation(
+            token,
+            TokenUser,
+            buffer.as_mut_ptr().cast(),
+            needed,
+            &mut needed,
+        );
+        CloseHandle(token);
+        if ok == FALSE {
+            return None;
+        }
+        let user = &*(buffer.as_ptr() as *const TOKEN_USER);
+        let mut text: *mut u16 = core::ptr::null_mut();
+        if ConvertSidToStringSidW(user.User.Sid, &mut text) == FALSE {
+            return None;
+        }
+        let len = (0..).take_while(|&i| *text.add(i) != 0).count();
+        let sid = String::from_utf16_lossy(core::slice::from_raw_parts(text, len));
+        LocalFree(text.cast());
+        Some(sid)
+    }
+}
+
 /// Build the `Start-Process` script that relaunches `exe` elevated with `args`.
 ///
 /// `-ArgumentList` is omitted entirely when there are no arguments: the
@@ -82,17 +122,77 @@ fn build_relaunch_script(exe: &str, args: &[String]) -> String {
     }
 }
 
-/// Request UAC elevation by relaunching the current executable with 'runas'
+/// What the relaunch scripts print when UAC was declined.
+const UAC_DECLINED: &str = "WINMEDIC_UAC_DECLINED";
+
+/// The arguments this process was started with, for its elevated twin.
+/// `--autostart` is left out: it opens the window minimized, and whoever
+/// asked for elevation is looking at it.
+fn relaunch_args() -> Vec<String> {
+    without_autostart(std::env::args().skip(1))
+}
+
+fn without_autostart(args: impl Iterator<Item = String>) -> Vec<String> {
+    args.filter(|arg| arg != "--autostart").collect()
+}
+
+fn elevate_script(exe: &str, args: &[String]) -> String {
+    format!(
+        "try {{ {} -ErrorAction Stop }} catch {{ '{UAC_DECLINED}'; exit 1 }}",
+        build_relaunch_script(exe, args)
+    )
+}
+
+fn elevate_and_wait_script(exe: &str, args: &[String]) -> String {
+    format!(
+        "try {{ $p = {} -Wait -PassThru -ErrorAction Stop; exit $p.ExitCode }} catch {{ '{UAC_DECLINED}'; exit 1 }}",
+        build_relaunch_script(exe, args)
+    )
+}
+
+/// Run a relaunch script and return its exit code, or an error when UAC was
+/// declined.
+fn run_relaunch(script: &str) -> std::io::Result<i32> {
+    let mut command = Command::new("powershell");
+    command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = command.output()?;
+    if String::from_utf8_lossy(&output.stdout).contains(UAC_DECLINED) {
+        return Err(std::io::Error::other(
+            "the Administrator prompt (UAC) was declined",
+        ));
+    }
+    Ok(output.status.code().unwrap_or(1))
+}
+
+/// Request UAC elevation by relaunching the current executable with 'runas'.
+///
+/// Returns once UAC was answered: `Ok` when the elevated WinMedic started,
+/// an error when the prompt was declined. Reporting success as soon as
+/// PowerShell had started closed the window whatever the answer was.
 pub fn relaunch_as_admin() -> std::io::Result<()> {
-    let current_exe = std::env::current_exe()?;
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let script = build_relaunch_script(&current_exe.display().to_string(), &args);
+    let exe = std::env::current_exe()?.display().to_string();
+    let script = elevate_script(&exe, &relaunch_args());
+    match run_relaunch(&script)? {
+        0 => Ok(()),
+        code => Err(std::io::Error::other(format!(
+            "the elevated WinMedic could not be started (exit code {code})"
+        ))),
+    }
+}
 
-    Command::new("powershell")
-        .args(["-NoProfile", "-Command", &script])
-        .spawn()?;
-
-    Ok(())
+/// Relaunch elevated and wait until that run ends, for a command line whose
+/// caller waits for an exit code. Its output appears in a window of its own:
+/// an elevated process cannot write into this console.
+pub fn relaunch_as_admin_and_wait() -> std::io::Result<i32> {
+    let exe = std::env::current_exe()?.display().to_string();
+    let script = elevate_and_wait_script(&exe, &relaunch_args());
+    run_relaunch(&script)
 }
 
 #[cfg(test)]
@@ -162,5 +262,38 @@ mod tests {
         let script = build_relaunch_script(r"C:\Tools\winmedic.exe", &args);
 
         assert!(script.contains(r"'--output','C:\O''Brien\out.html'"));
+    }
+
+    #[test]
+    fn the_current_account_has_a_sid() {
+        let sid = current_user_sid().expect("the process token names its user");
+        assert!(sid.starts_with("S-1-5-"), "{sid}");
+    }
+
+    /// Asked for from a window the autostart opened minimized, the elevated
+    /// one must not open minimized too.
+    #[test]
+    fn the_elevated_twin_opens_where_it_can_be_seen() {
+        let args = ["--autostart", "--no-vss"].map(String::from).into_iter();
+        assert_eq!(without_autostart(args), ["--no-vss"]);
+    }
+
+    #[tokio::test]
+    async fn the_relaunch_scripts_parse() {
+        let args = [
+            "--scan".to_string(),
+            "--output".to_string(),
+            r"C:\a b.txt".to_string(),
+        ];
+        for script in [
+            elevate_script(r"C:\Tools\winmedic.exe", &args),
+            elevate_and_wait_script(r"C:\Tools\winmedic.exe", &args),
+        ] {
+            assert_eq!(
+                crate::utils::cmd::powershell_parse_errors(&script).await,
+                0,
+                "{script}"
+            );
+        }
     }
 }

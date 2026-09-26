@@ -72,7 +72,14 @@ pub struct StoreReport {
     pub missing_backups: u32,
     /// Everything else it listed as damaged and left unrepaired.
     pub other_unrepaired: u32,
+    /// Servicing marked the store corrupt after the report, when an update
+    /// failed on a damaged component: damage the report does not know.
+    pub marked_corrupt_since: bool,
 }
+
+/// What CBS logs when servicing finds a damaged component outside a DISM
+/// scan: "Mark store corruption flag because of package: ...".
+const MARKED_CORRUPT: &str = "Mark store corruption flag";
 
 impl StoreReport {
     /// Whether all DISM left unrepaired are backup copies.
@@ -86,6 +93,7 @@ impl StoreReport {
     /// this is no damage to repair.
     pub fn only_backups_left(&self) -> bool {
         self.detected > self.repaired
+            && !self.marked_corrupt_since
             && self.other_unrepaired == 0
             && self.missing_backups == self.detected - self.repaired
     }
@@ -100,11 +108,14 @@ pub fn last_store_report(log: &str) -> Option<StoreReport> {
         |line: &str, label: &str| -> Option<u32> { line.split_once(label)?.1.trim().parse().ok() };
     let (mut detected, mut repaired) = (None, None);
     let (mut missing_backups, mut other_unrepaired) = (0, 0);
+    let mut after_summary = "";
     for line in report.lines() {
         if let Some(count) = counted(line, "Total Detected Corruption:") {
             detected = Some(count);
         } else if let Some(count) = counted(line, "Total Repaired Corruption:") {
             repaired = Some(count);
+            let summary_at = line.as_ptr() as usize - report.as_ptr() as usize;
+            after_summary = &report[summary_at + line.len()..];
             break;
         } else if let Some((_, item)) = line.split_once("(p)\t") {
             // `CSI Payload Corrupt\t(n)\t\t\t<component>\r\<file>`, or with
@@ -130,6 +141,7 @@ pub fn last_store_report(log: &str) -> Option<StoreReport> {
         repaired: repaired?,
         missing_backups,
         other_unrepaired,
+        marked_corrupt_since: after_summary.contains(MARKED_CORRUPT),
     })
 }
 
@@ -405,6 +417,49 @@ pub fn wmi_failures(output: &str) -> Option<Vec<String>> {
     )
 }
 
+/// Unmounts the ISOs a repair mounted. Dropped before [`Self::now`] ran, when
+/// the repair is cancelled, it unmounts them on the runtime, because a
+/// destructor cannot wait.
+struct Dismount {
+    runner: Arc<dyn CommandRunner>,
+    isos: Vec<String>,
+}
+
+impl Dismount {
+    async fn now(mut self) {
+        let isos = std::mem::take(&mut self.isos);
+        if !isos.is_empty() {
+            let _ = self
+                .runner
+                .run_powershell(
+                    &install_media::dismount_script(&isos),
+                    Duration::from_secs(60),
+                )
+                .await;
+        }
+    }
+}
+
+impl Drop for Dismount {
+    fn drop(&mut self) {
+        let isos = std::mem::take(&mut self.isos);
+        if isos.is_empty() {
+            return;
+        }
+        let runner = self.runner.clone();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _ = runner
+                    .run_powershell(
+                        &install_media::dismount_script(&isos),
+                        Duration::from_secs(60),
+                    )
+                    .await;
+            });
+        }
+    }
+}
+
 pub struct SystemIntegrityModule {
     runner: Arc<dyn CommandRunner>,
     cbs_log: PathBuf,
@@ -482,11 +537,42 @@ impl SystemIntegrityModule {
             .as_deref()
             .map(install_media::isos_in)
             .unwrap_or_default();
-        let found = self
+        // Which ISOs are mounted already: when the search runs out of time
+        // it never says which ones it mounted, and those stayed mounted.
+        let attached_before = if isos.is_empty() {
+            Vec::new()
+        } else {
+            match self
+                .runner
+                .run_powershell(&install_media::attached_script(&isos), MEDIA_TIMEOUT)
+                .await
+            {
+                Ok(out) => install_media::attached(&out.stdout),
+                // Unknown: unmount nothing the search does not name.
+                Err(_) => isos.iter().map(|p| p.display().to_string()).collect(),
+            }
+        };
+        let mut mounted = Dismount {
+            runner: self.runner.clone(),
+            isos: isos
+                .iter()
+                .map(|p| p.display().to_string())
+                .filter(|iso| !attached_before.contains(iso))
+                .collect(),
+        };
+        let found = match self
             .runner
             .run_powershell(&install_media::find_script(&isos), MEDIA_TIMEOUT)
-            .await?;
+            .await
+        {
+            Ok(found) => found,
+            Err(err) => {
+                mounted.now().await;
+                return Err(err);
+            }
+        };
         let media = Media::parse(&found.stdout);
+        mounted.isos = media.mounted.clone();
         if let Some(tx) = &log_tx {
             for failure in &media.failed {
                 let _ = tx.send(format!("Not usable: {failure}")).await;
@@ -494,15 +580,7 @@ impl SystemIntegrityModule {
         }
 
         let result = self.repair_from(&media, first_run, log_tx).await;
-        if !media.mounted.is_empty() {
-            let _ = self
-                .runner
-                .run_powershell(
-                    &install_media::dismount_script(&media.mounted),
-                    Duration::from_secs(60),
-                )
-                .await;
-        }
+        mounted.now().await;
         result
     }
 
@@ -1255,6 +1333,7 @@ mod tests {
                     repaired: 0,
                     missing_backups: 328,
                     other_unrepaired: 0,
+                    marked_corrupt_since: false,
                 }
             );
             assert!(report.only_backups_left());
@@ -1276,6 +1355,19 @@ mod tests {
                 .unwrap()
                 .only_backups_left()
         );
+    }
+
+    /// An update that failed on a damaged component after the report: the
+    /// old report can no longer vouch for the store.
+    #[test]
+    fn damage_servicing_found_after_the_report_counts() {
+        let later = format!(
+            "{}2026-09-27 09:12:40, Info                  CBS    {MARKED_CORRUPT} because of package: Package_for_RollupFix~31bf3856ad364e35~amd64~~26100.9999.1.3\r\n",
+            text(CBS_SCAN_BACKUPS_MISSING)
+        );
+        let report = last_store_report(&later).unwrap();
+        assert!(report.marked_corrupt_since);
+        assert!(!report.only_backups_left());
     }
 
     #[test]
@@ -1962,5 +2054,77 @@ mod tests {
             err.contains("Sie müssen als Administrator angemeldet sein"),
             "{err}"
         );
+    }
+
+    /// A Downloads folder with one (empty) ISO in it, removed when dropped.
+    struct Downloads(PathBuf);
+
+    impl Downloads {
+        fn with_iso(tag: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("winmedic_iso_{tag}_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("Win11.iso"), b"").unwrap();
+            Self(dir)
+        }
+
+        fn iso(&self) -> String {
+            self.0.join("Win11.iso").display().to_string()
+        }
+    }
+
+    impl Drop for Downloads {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Windows Update cannot deliver, the ISO is mounted already or not
+    /// (`attached`), and the media search never answers: no response is set
+    /// for it, which the mock reports as an error, like a timeout.
+    async fn search_fails(downloads: &Downloads, attached: &str) -> Vec<String> {
+        let mock = MockCommandRunner::new();
+        mock.add_response("Dismount-DiskImage", CmdOutput::ok(""));
+        mock.add_response("\"ATTACHED`t", CmdOutput::ok(attached));
+        mock.add_response("dism.exe", repair_content_missing());
+        let result = module_with(mock.clone())
+            .with_downloads(Some(downloads.0.clone()))
+            .fix("sys_dism_corrupt", None)
+            .await;
+        assert!(result.is_err());
+        mock.executed()
+    }
+
+    #[tokio::test]
+    async fn an_iso_mounted_by_a_search_that_timed_out_is_unmounted() {
+        let downloads = Downloads::with_iso("timeout");
+        let ran = search_fails(&downloads, "").await;
+        let dismount = ran.last().unwrap();
+        assert!(
+            dismount.contains("Dismount-DiskImage") && dismount.contains(&downloads.iso()),
+            "{ran:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_iso_mounted_before_stays_mounted_when_the_search_fails() {
+        let downloads = Downloads::with_iso("user_mounted");
+        let ran = search_fails(&downloads, &format!("ATTACHED\t{}\r\n", downloads.iso())).await;
+        assert!(!ran.iter().any(|c| c.contains("Dismount")), "{ran:?}");
+    }
+
+    #[test]
+    fn the_mounted_isos_are_read() {
+        assert_eq!(
+            install_media::attached("ATTACHED\tC:\\a.iso\r\nnoise\r\n"),
+            [r"C:\a.iso"]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_attached_script_parses() {
+        let script = install_media::attached_script(&[PathBuf::from(r"C:\a b.iso")]);
+        assert_eq!(crate::utils::cmd::powershell_parse_errors(&script).await, 0);
     }
 }

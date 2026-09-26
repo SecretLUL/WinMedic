@@ -1884,4 +1884,14 @@ mod tests {
         assert_eq!(deleted_and_left(&out.stdout), Some((1, 0)), "{out:?}");
         assert_eq!(left, ["fresh.dmp"]);
     }
+
+    #[tokio::test]
+    async fn the_stale_dump_script_parses() {
+        let module = CrashAnalysisModule::with_runner(
+            ModuleConfig::default(),
+            Arc::new(MockCommandRunner::new()),
+        );
+        let script = module.delete_stale_dumps_script();
+        assert_eq!(crate::utils::cmd::powershell_parse_errors(&script).await, 0);
+    }
 }

@@ -623,16 +623,40 @@ pub fn discover_system_temp_dirs(sys_root: &Path) -> Vec<PathBuf> {
     ]
 }
 
+/// This account's folder in the `$Recycle.Bin` of every local fixed drive.
+///
+/// `Clear-RecycleBin` empties the bin of the account that runs it, and the
+/// sweep after it has to stay inside the same folders. It walked every
+/// account's folder on every drive letter, so it emptied the other accounts'
+/// bins as well. Nothing here touches a drive: the list is built from the
+/// drive types when the module is built, on the UI thread, where probing a
+/// disconnected network drive could hang the window.
 pub fn discover_recycle_bin_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    for drive in b'C'..=b'Z' {
-        let drive_str = format!("{}:\\$Recycle.Bin", drive as char);
-        let path = PathBuf::from(drive_str);
-        if path.exists() {
-            dirs.push(path);
-        }
-    }
-    dirs
+    let Some(sid) = crate::utils::admin::current_user_sid() else {
+        return Vec::new();
+    };
+    fixed_drives()
+        .into_iter()
+        .map(|letter| PathBuf::from(format!("{letter}:\\$Recycle.Bin")).join(&sid))
+        .collect()
+}
+
+/// The letters of the local fixed drives, as the drive table knows them.
+fn fixed_drives() -> Vec<char> {
+    use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
+    const DRIVE_FIXED: u32 = 3;
+    let mask = unsafe { GetLogicalDrives() };
+    (0..26u8)
+        .filter(|i| mask & (1 << i) != 0)
+        .map(|i| (b'A' + i) as char)
+        .filter(|letter| {
+            let root: Vec<u16> = format!("{letter}:\\")
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+            unsafe { GetDriveTypeW(root.as_ptr()) == DRIVE_FIXED }
+        })
+        .collect()
 }
 
 /// The filesystem roots this module measures and deletes under.
@@ -1175,13 +1199,13 @@ impl DiagnosticModule for SystemCleanerModule {
                 // checkpoint taken before a repair run does not restore user
                 // files, so there is no way back from this one.
                 RiskScore::High,
-                "The Windows Recycle Bin holds deleted files from every local partition. WARNING: emptying it is permanent — not even the system restore point brings these files back.",
+                "Your Recycle Bin holds deleted files on the local drives. Other accounts' Recycle Bins are left alone. WARNING: emptying it is permanent — not even the system restore point brings these files back.",
                 format!(
-                    "Recycle Bin contents: {} across {} files on the detected drives",
+                    "Recycle Bin contents: {} across {} files on the local drives",
                     format_bytes(recycle_stats.bytes),
                     recycle_stats.files
                 ),
-                "Permanently empty the Recycle Bin on every drive (irreversible)",
+                "Permanently empty your Recycle Bin on the local drives (irreversible)",
                 vec!["Run PowerShell Clear-RecycleBin -Force".to_string()],
             );
             // Never runs unattended under `--auto-fix` / [A] auto-fix all: the
@@ -1483,7 +1507,7 @@ impl DiagnosticModule for SystemCleanerModule {
                 dbg.section("leftover entries on disk").await;
                 dbg.kv(
                     "scope",
-                    "every profile directory under the discovered $Recycle.Bin roots",
+                    "this account's folder in $Recycle.Bin on each fixed drive",
                 )
                 .await;
                 let leftovers = Self::clean_dirs_reporting(

@@ -19,6 +19,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 
+const CURRENT_VERSION_KEY: &str = r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion";
+/// The build that brought `pnputil /restart-device` and `/scan-devices`.
+const PNPUTIL_REPAIR_BUILD: u32 = 19041;
+/// What to do where pnputil cannot.
+const OLD_PNPUTIL: &str = "This Windows cannot restart devices from the command line (that needs Windows 10 2004 or later). In Device Manager, right-click the device and choose Disable device, then Enable device, or Scan for hardware changes.";
+
 /// `CM_PROB_FAILED_INSTALL`: Windows found the device but has no driver for it.
 const NO_DRIVER: u32 = 28;
 
@@ -206,6 +212,27 @@ impl DevicesModule {
             .find(|d| d.instance_id.eq_ignore_ascii_case(&device.instance_id)))
     }
 
+    /// Whether this Windows' pnputil has `/restart-device` and
+    /// `/scan-devices`: Windows 10 2004 (build 19041) and later. Unknown
+    /// counts as yes, as it did before.
+    async fn pnputil_can_repair(&self) -> bool {
+        let Ok(out) = self
+            .runner
+            .run(
+                "reg.exe",
+                &["query", CURRENT_VERSION_KEY, "/v", "CurrentBuild"],
+                Duration::from_secs(10),
+            )
+            .await
+        else {
+            return true;
+        };
+        let keys = registry::parse_reg_query(&out.stdout);
+        registry::find(&keys, CURRENT_VERSION_KEY, "CurrentBuild")
+            .and_then(|value| value.data.trim().parse::<u32>().ok())
+            .is_none_or(|build| build >= PNPUTIL_REPAIR_BUILD)
+    }
+
     /// `pnputil /restart-device`, then the problem code again.
     ///
     /// pnputil says nothing: refused with "access denied" it still exits 0,
@@ -218,6 +245,9 @@ impl DevicesModule {
                     .to_string(),
             );
         };
+        if !self.pnputil_can_repair().await {
+            return Err(OLD_PNPUTIL.to_string());
+        }
         let _ = self
             .runner
             .run(
@@ -247,6 +277,9 @@ impl DevicesModule {
         let Some(device) = self.device_for(issue_id).await? else {
             return Ok("The device has a driver by now or is no longer connected.".to_string());
         };
+        if !self.pnputil_can_repair().await {
+            return Err(OLD_PNPUTIL.to_string());
+        }
         let _ = self
             .runner
             .run("pnputil.exe", &["/scan-devices"], Duration::from_secs(180))
@@ -433,6 +466,18 @@ impl DiagnosticModule for DevicesModule {
         .await;
         let devices = self.problem_devices().await?;
         let mut issues: Vec<Issue> = devices.iter().filter_map(|d| self.finding(d)).collect();
+        // Older pnputil does not know the switches: its "repair" failed and
+        // the message blamed the device.
+        if !issues.is_empty() && !self.pnputil_can_repair().await {
+            issues = issues
+                .into_iter()
+                .map(|issue| {
+                    let mut issue = issue.with_advice_only();
+                    issue.fix_steps = vec![OLD_PNPUTIL.to_string()];
+                    issue
+                })
+                .collect();
+        }
 
         let summary = format!(
             "{} device(s) with a problem code, {} of them worth a finding",
@@ -548,6 +593,14 @@ mod tests {
     /// The id of the finding about the Brio while it reports `code`.
     fn brio_id(code: u32) -> String {
         brio(code).finding_id().unwrap()
+    }
+
+    /// What was asked of pnputil, without the build lookup before it.
+    fn pnputil_calls(mock: &MockCommandRunner) -> Vec<String> {
+        mock.executed()
+            .into_iter()
+            .filter(|c| c.starts_with("pnputil"))
+            .collect()
     }
 
     fn module(mock: &MockCommandRunner) -> DevicesModule {
@@ -746,7 +799,7 @@ mod tests {
         let msg = module(&mock).fix(&brio_id(43), None).await.unwrap();
         assert_eq!(msg, "'Brio 500' was restarted and works again.");
         assert_eq!(
-            mock.executed(),
+            pnputil_calls(&mock),
             vec![format!("pnputil.exe /restart-device {BRIO}")]
         );
     }
@@ -819,7 +872,7 @@ mod tests {
             msg,
             "Windows found a driver for 'Brio 500' and installed it."
         );
-        assert_eq!(mock.executed(), vec!["pnputil.exe /scan-devices"]);
+        assert_eq!(pnputil_calls(&mock), vec!["pnputil.exe /scan-devices"]);
     }
 
     /// What happened on the development PC: the scan finished at once with
@@ -846,5 +899,40 @@ mod tests {
         let refused = CmdOutput::with_output(5, decode_output(SCAN_DENIED), "");
         let mock = scan_devices_mock(refused, dev_pc());
         assert!(module(&mock).fix(&brio_id(28), None).await.is_err());
+    }
+
+    /// `reg query ... /v CurrentBuild` as captured (26200), or with `build`.
+    fn current_build(build: &str) -> CmdOutput {
+        CmdOutput::ok(
+            decode_output(include_bytes!(
+                "../../tests/fixtures/console/reg_query_current_build.bin"
+            ))
+            .replace("26200", build),
+        )
+    }
+
+    #[tokio::test]
+    async fn before_windows_10_2004_devices_are_advice() {
+        let mock = MockCommandRunner::new();
+        mock.set_devices(brio_reporting(28));
+        mock.add_response("CurrentBuild", current_build("18363"));
+        let issues = module(&mock).scan(None).await.unwrap();
+        let issue = issues.iter().find(|i| i.id == brio_id(28)).unwrap();
+        assert!(issue.advice_only, "pnputil there has no /scan-devices");
+        assert!(issue.fix_steps[0].contains("Device Manager"));
+
+        let err = module(&mock).fix(&brio_id(28), None).await.unwrap_err();
+        assert!(err.contains("Windows 10 2004"), "{err}");
+        assert!(!mock.executed().iter().any(|c| c.contains("pnputil")));
+    }
+
+    #[tokio::test]
+    async fn this_windows_repairs_devices_with_pnputil() {
+        let mock = MockCommandRunner::new();
+        mock.set_devices(brio_reporting(28));
+        mock.add_response("CurrentBuild", current_build("26200"));
+        let issues = module(&mock).scan(None).await.unwrap();
+        let issue = issues.iter().find(|i| i.id == brio_id(28)).unwrap();
+        assert!(!issue.advice_only);
     }
 }

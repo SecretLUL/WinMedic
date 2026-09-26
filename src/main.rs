@@ -16,7 +16,7 @@ use engine::exit_code;
 use engine::reporter::DiagnosticReporter;
 use engine::runner::{DiagnosticEngine, RepairOptions, ScanEvent};
 use safety::restore_point::RestorePointService;
-use utils::admin::{is_admin, relaunch_as_admin};
+use utils::admin::{is_admin, relaunch_as_admin, relaunch_as_admin_and_wait};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -129,10 +129,26 @@ fn run(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     if args.elevate {
         if !is_admin() {
             println!("Requesting Administrator privileges...");
-            let _ = relaunch_as_admin();
-            return Ok(exit_code::OK);
+            if args.is_headless() {
+                // The caller waits for this process's exit code, so this one
+                // waits for the elevated run and hands its code on.
+                println!("The elevated run prints in a window of its own.");
+                return Ok(match relaunch_as_admin_and_wait() {
+                    Ok(code) => u8::try_from(code).unwrap_or(exit_code::INTERNAL_ERROR),
+                    Err(e) => {
+                        eprintln!("WinMedic: {e}.");
+                        exit_code::NEEDS_ADMIN
+                    }
+                });
+            }
+            match relaunch_as_admin() {
+                Ok(()) => return Ok(exit_code::OK),
+                // Declined: this window opens without Administrator rights.
+                Err(e) => eprintln!("WinMedic: {e}; continuing without Administrator rights."),
+            }
+        } else {
+            println!("Already running with Administrator privileges.");
         }
-        println!("Already running with Administrator privileges.");
     }
 
     if args.uninstall {
@@ -257,6 +273,9 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     // engine, so the restore point covers both and both are recorded in the
     // real audit log.
     let audit_logger = safety::audit::AuditLogger::real();
+    // A report covers what this run did, not the whole audit history.
+    let run_started = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let this_run = || DiagnosticReporter::audit_since(&audit_logger.get_history(), &run_started);
     let engine = Arc::new(
         DiagnosticEngine::new(&config)
             .with_restore_points(RestorePointService::real())
@@ -359,13 +378,21 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
             module_statuses,
             Some(scan_started.elapsed().as_secs()),
         );
-        let (status, details) = match state.save() {
-            Err(e) => ("FAILED", format!("The results could not be saved: {e}")),
-            Ok(()) if failed_modules.is_empty() => (
+        // Without elevation the checks that need it pass silently, so such
+        // a scan must not replace one made with Administrator rights.
+        let replaces_elevated =
+            !is_admin() && app::ScanState::load().is_some_and(|saved| saved.elevated == Some(true));
+        let (status, details) = match (replaces_elevated, state.save_unless(replaces_elevated)) {
+            (true, _) => (
+                "SKIPPED",
+                "Ran without Administrator rights, so the last scan made with them was kept. Switch the background scan off and on in WinMedic started as Administrator to let it run elevated.".to_string(),
+            ),
+            (false, Err(e)) => ("FAILED", format!("The results could not be saved: {e}")),
+            (false, Ok(())) if failed_modules.is_empty() => (
                 "SUCCESS",
                 format!("Health: {}/100, Issues: {}", health_score, issues.len()),
             ),
-            Ok(()) => (
+            (false, Ok(())) => (
                 "PARTIAL",
                 format!(
                     "Health: {}/100, Issues: {}, failed modules: {}",
@@ -392,7 +419,7 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     } else if !defer_json && !args.helper {
         println!(
             "{}",
-            DiagnosticReporter::to_json(&issues, health_score, &audit_logger.get_history())
+            DiagnosticReporter::to_json(&issues, health_score, &this_run())
         );
     }
 
@@ -496,14 +523,14 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
             DiagnosticReporter::to_json(
                 &issues,
                 DiagnosticEngine::calculate_health_score(&issues),
-                &audit_logger.get_history()
+                &this_run()
             )
         );
     }
 
     if let Some(ref out_path) = args.output {
         let health = DiagnosticEngine::calculate_health_score(&issues);
-        let audit_entries = audit_logger.get_history();
+        let audit_entries = this_run();
         match DiagnosticReporter::save_report(out_path, &issues, health, &audit_entries) {
             Ok(()) => {
                 if !quiet {
