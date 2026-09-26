@@ -87,12 +87,6 @@ jobs:
     name: Smoke-test a real scan
     runs-on: windows-latest
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'documentation') }}
-    # TEMPORARY: four scans on four fresh runners at once, to see whether the
-    # stall is gone without re-running the job four times.
-    strategy:
-      fail-fast: false
-      matrix:
-        run: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v7
 
@@ -103,73 +97,6 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      # TEMPORARY, to find out why PowerShell calls in the scan sometimes time
-      # out: every 2 s the CPU load, the disk's throughput, latency and queue,
-      # the processes with the most CPU and I/O, and how many powershell.exe
-      # are running, from before the build to the end. It
-      # starts no PowerShell 5.1, WMI or Task Scheduler call itself, so it does
-      # not warm up what it is watching.
-      - name: Sample the runner (temporary)
-        shell: pwsh
-        run: |
-          "uptime $([math]::Round([Environment]::TickCount64 / 1000)) s, $([Environment]::ProcessorCount) cores"
-          $cache = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\PowerShell\ModuleAnalysisCache'
-          if (Test-Path $cache) {
-            $item = Get-Item $cache
-            "PowerShell 5.1 module analysis cache: $($item.Length) bytes, written $($item.LastWriteTime.ToString('s'))"
-          } else { 'PowerShell 5.1 module analysis cache: none' }
-          foreach ($dir in "$env:ProgramFiles\WindowsPowerShell\Modules", "$env:SystemRoot\System32\WindowsPowerShell\v1.0\Modules") {
-            "$dir : $(@(Get-ChildItem $dir -Directory -ErrorAction SilentlyContinue).Count) modules"
-          }
-          $sampler = Join-Path $env:RUNNER_TEMP 'sampler.ps1'
-          Set-Content -Path $sampler -Value @'
-          $log = Join-Path $env:RUNNER_TEMP 'runner-samples.txt'
-          Add-Type -Namespace Sampler -Name Io -MemberDefinition '[StructLayout(LayoutKind.Sequential)] public struct Counters { public ulong ReadOps, WriteOps, OtherOps, ReadBytes, WriteBytes, OtherBytes; } [DllImport("kernel32.dll")] public static extern bool GetProcessIoCounters(IntPtr process, out Counters counters);'
-          $disk = '\PhysicalDisk(_Total)\Disk Bytes/sec', '\PhysicalDisk(_Total)\Avg. Disk sec/Transfer', '\PhysicalDisk(_Total)\Current Disk Queue Length'
-          $cores = [Environment]::ProcessorCount
-          $seenCpu = @{}
-          $seenIo = @{}
-          $last = [DateTime]::UtcNow
-          while ($true) {
-              # Get-Counter takes its one-second sample, then a second more.
-              $values = (Get-Counter -Counter $disk -SampleInterval 1 -MaxSamples 1 -ErrorAction SilentlyContinue).CounterSamples.CookedValue
-              Start-Sleep -Seconds 1
-              $now = [DateTime]::UtcNow
-              $span = ($now - $last).TotalSeconds
-              $last = $now
-              $cpuByName = @{}
-              $ioByName = @{}
-              $processes = Get-Process
-              foreach ($p in $processes) {
-                  $cpu = $p.TotalProcessorTime.TotalSeconds
-                  if ($null -ne $cpu) {
-                      $before = $seenCpu[$p.Id]
-                      $seenCpu[$p.Id] = $cpu
-                      if ($null -ne $before) { $cpuByName[$p.ProcessName] = ($cpuByName[$p.ProcessName] ?? 0) + ($cpu - $before) }
-                  }
-                  $counters = [Sampler.Io+Counters]::new()
-                  try { $ok = [Sampler.Io]::GetProcessIoCounters($p.Handle, [ref]$counters) } catch { $ok = $false }
-                  if ($ok) {
-                      $bytes = $counters.ReadBytes + $counters.WriteBytes
-                      $before = $seenIo[$p.Id]
-                      $seenIo[$p.Id] = $bytes
-                      if ($null -ne $before) { $ioByName[$p.ProcessName] = ($ioByName[$p.ProcessName] ?? 0) + ($bytes - $before) }
-                  }
-              }
-              $busy = [math]::Round(100 * (($cpuByName.Values | Measure-Object -Sum).Sum) / ($span * $cores))
-              $topCpu = ($cpuByName.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 3 |
-                  ForEach-Object { '{0} {1:N1}s' -f $_.Key, $_.Value }) -join ', '
-              $topIo = ($ioByName.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 3 |
-                  ForEach-Object { '{0} {1:N1}MB' -f $_.Key, ($_.Value / 1MB) }) -join ', '
-              $shells = @($processes | Where-Object ProcessName -eq 'powershell').Count
-              $diskText = if ($values.Count -eq 3) {
-                  '{0,5:N1} MB/s {1,5:N0} ms queue {2,2:N0}' -f ($values[0] / 1MB), ($values[1] * 1000), $values[2]
-              } else { 'no disk counters' }
-              '{0:HH:mm:ss.fff} cpu {1,3}% | disk {2} | powershell.exe {3} | cpu: {4} | io: {5}' -f $now, $busy, $diskText, $shells, $topCpu, $topIo | Add-Content $log
-          }
-          '@
-          Start-Process pwsh -ArgumentList '-NoProfile', '-File', $sampler -WindowStyle Hidden
 
       - name: Build
         run: cargo build --locked
@@ -206,11 +133,6 @@ jobs:
           # Exit codes 1 and 2 are findings on the runner, not failures, but
           # Actions ends a pwsh step with the last native exit code.
           exit 0
-
-      - name: Runner samples (temporary)
-        if: always()
-        shell: pwsh
-        run: Get-Content (Join-Path $env:RUNNER_TEMP 'runner-samples.txt') -ErrorAction SilentlyContinue
 
   msrv:
     name: Minimum Supported Rust Version
