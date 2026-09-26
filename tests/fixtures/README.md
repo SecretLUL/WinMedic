@@ -48,6 +48,14 @@ Captured on Windows 11 Pro 10.0.26200, German display language, OEM code page
 | `pnputil_restart_device_denied_de.bin` | `pnputil /restart-device` of the Brio's interface, unelevated | Windows-1252 | Captured 2026-09-25. "Zugriff verweigert", yet **exit 0**: only the device's state afterwards tells whether a restart worked. pnputil writes in the ANSI code page (`ä` is `0xE4`), not the OEM one. |
 | `pnputil_scan_devices_denied_de.bin` | `pnputil /scan-devices`, unelevated | Windows-1252 | Captured 2026-09-25. Exit 5 (access denied). |
 
+Captured on 2026-09-26 on the same machine, read-only commands:
+
+| File | Command | Encoding | Notes |
+| --- | --- | --- | --- |
+| `powershell_resolve_dns_google.bin` | The network module's resolver probe (`Resolve-DnsName -Type A_AAAA -DnsOnly`) for `dns.google` | UTF-8 | Four addresses, one per line, exit 0. Nothing translated. |
+| `powershell_resolve_dns_nxdomain_de.bin` | The same probe for `winmedic-does-not-exist.invalid` | UTF-8 | Exit 1 and `FAILED\|DNS_ERROR_RCODE_NAME_ERROR,...\|<message>`: the error id is the same in every language, the message is German. |
+| `reg_query_internet_settings.bin` | `reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings"` | CP850 | `ProxyEnable` 0 and no `ProxyServer`. The tests with a proxy switch it on and add the server. |
+
 Captured elevated on 2026-09-25, read-only commands, with the time each piece
 of the pipe arrived:
 

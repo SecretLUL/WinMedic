@@ -1,0 +1,1 @@
+FAILED|DNS_ERROR_RCODE_NAME_ERROR,Microsoft.DnsClient.Commands.ResolveDnsName|winmedic-does-not-exist.invalid : Der DNS-Name ist nicht vorhanden

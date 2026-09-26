@@ -1139,7 +1139,7 @@ mod tests {
         mock.add_response("qc cryptsvc", CmdOutput::ok(sc_qc_output("cryptsvc", 2)));
         mock.add_response("dirty query C:", CmdOutput::ok("Volume - C: is clean"));
         mock.add_response("Get-PhysicalDisk", CmdOutput::ok("SSD | Health: Healthy"));
-        mock.add_response("nslookup.exe", CmdOutput::ok("Address: 8.8.8.8"));
+        mock.add_response("Resolve-DnsName", CmdOutput::ok("8.8.8.8"));
         mock.add_response("show catalog", CmdOutput::ok("Winsock Provider"));
         mock.add_response("Level=1", CmdOutput::ok(""));
         mock.add_response("WHEA-Logger", CmdOutput::ok(""));

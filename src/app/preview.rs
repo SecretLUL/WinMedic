@@ -63,10 +63,7 @@ impl Benefit {
                 Benefit::Internet
             }
             _ if service.is_some() => Benefit::WindowsParts,
-            "net_dns_failure"
-            | "net_winsock_corrupt"
-            | "net_proxy_active"
-            | "net_offline_warning" => Benefit::Internet,
+            "net_dns_failure" | "net_winsock_corrupt" | "net_proxy_active" => Benefit::Internet,
             _ if id.starts_with("net_no_dhcp_") => Benefit::Internet,
             // A missing driver is only looked for again, which promises nothing.
             _ if id.starts_with("dev_failed_") => Benefit::Devices,
