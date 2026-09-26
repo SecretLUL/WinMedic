@@ -1,21 +1,17 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
-use crate::utils::event_xml::{EventRecord, read_events, system_log_query};
-use std::path::Path;
+use crate::utils::event_xml::{read_events, system_log_query};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
-use tokio::time::sleep;
 
 // There is no check for "errors in the System log" as such: every Windows logs
 // some, a fresh CI runner included, so it fired on every PC and told nobody
 // what to do. Crashes, WHEA faults, disks, services and updates have checks of
-// their own that name the cause.
-
-/// WHEA faults are rare enough that a week is the window, whatever the event
-/// log setting says.
-const WHEA_LOOKBACK_MS: u64 = 7 * 24 * 3_600_000;
+// their own that name the cause. Minidumps are the crash analysis' evidence,
+// and WHEA faults the WHEA logger's: counted here as well, each weighed twice
+// on the health score.
 
 const MEMORY_DIAGNOSTICS_PROVIDER: &str = "Microsoft-Windows-MemoryDiagnostics-Results";
 
@@ -32,6 +28,46 @@ const MEMORY_TEST_LOOKBACK_MS: u64 = 90 * 24 * 3_600_000;
 /// about the RAM and is not queried.
 pub fn memory_test_found_errors(event_id: u32) -> bool {
     matches!(event_id, 1102 | 1202)
+}
+
+/// What scheduling the memory test runs.
+pub const SCHEDULE_MEMORY_TEST: [&str; 2] = ["/bootsequence", "{memdiag}"];
+
+/// Schedule the Windows Memory Diagnostic for the next start, the way its
+/// "Check for problems the next time I start my computer" does: a one-time
+/// boot entry for the memory tester.
+///
+/// `mdsched.exe` itself is only that dialog. Started with a five-second limit,
+/// it was killed before anyone could click and the repair failed; clicking
+/// "Restart now" in time restarted the PC in the middle of the repair run.
+/// The test's verdict comes back as [`memory_test_found_errors`].
+/// A finding whose repair is [`schedule_memory_test`]: it takes effect at
+/// the next start, which the test then holds up for half an hour, so it
+/// waits to be ticked.
+pub fn memory_test_finding(issue: Issue) -> Issue {
+    let mut issue = issue.with_requires_reboot(true);
+    issue.risk_score = RiskScore::High;
+    issue.is_selected = false;
+    issue
+}
+
+pub async fn schedule_memory_test(runner: &dyn CommandRunner) -> Result<String, String> {
+    let out = runner
+        .run(
+            "bcdedit.exe",
+            &SCHEDULE_MEMORY_TEST,
+            Duration::from_secs(15),
+        )
+        .await?;
+    if out.success {
+        Ok("The Windows Memory Diagnostic runs at the next restart and takes 15 to 30 minutes. The next scan shows its result.".to_string())
+    } else {
+        Err(format!(
+            "The memory test could not be scheduled (bcdedit exit code {:?}): {}. Start 'Windows Memory Diagnostic' from the Start menu instead.",
+            out.exit_code,
+            [out.stdout.trim(), out.stderr.trim()].join(" ").trim()
+        ))
+    }
 }
 
 pub struct EventLogModule {
@@ -79,11 +115,11 @@ impl DiagnosticModule for EventLogModule {
     }
 
     fn name(&self) -> &'static str {
-        "Event-Log & Crash-Dump Analyse"
+        "Memory Test Results"
     }
 
     fn description(&self) -> &'static str {
-        "Analyses the Windows event logs (System/Application), BSOD minidumps and WHEA hardware faults"
+        "Reads the verdict of the last Windows Memory Diagnostic"
     }
 
     fn icon(&self) -> &'static str {
@@ -96,131 +132,7 @@ impl DiagnosticModule for EventLogModule {
     ) -> Result<Vec<Issue>, String> {
         let mut issues = Vec::new();
 
-        // 1. Minidumps
-        Self::send_progress(
-            &progress_tx,
-            15,
-            "Checking for BSOD minidumps (%SystemRoot%\\Minidump)...",
-            Some("Scanning the minidump directory..."),
-        )
-        .await;
-        sleep(Duration::from_millis(150)).await;
-
-        let minidump_dir = Path::new(r"C:\Windows\Minidump");
-        if minidump_dir.exists() {
-            let mut dmp_files = Vec::new();
-            if let Ok(entries) = std::fs::read_dir(minidump_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().map(|e| e.to_string_lossy().to_lowercase())
-                        == Some("dmp".to_string())
-                        && let Ok(meta) = entry.metadata()
-                    {
-                        let size_kb = meta.len() / 1024;
-                        dmp_files.push(format!(
-                            "{} ({} KB)",
-                            path.file_name().unwrap_or_default().to_string_lossy(),
-                            size_kb
-                        ));
-                    }
-                }
-            }
-
-            if !dmp_files.is_empty() {
-                let count = dmp_files.len();
-                let sample_list = dmp_files
-                    .iter()
-                    .take(5)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                issues.push(Issue::new(
-                    "evt_bsod_dumps_found",
-                    self.id(),
-                    format!("{} blue screen (BSOD) minidump crash reports found", count),
-                    "Event-Log & Crashes",
-                    Severity::Critical,
-                    RiskScore::Low,
-                    format!("{} minidump files were found under C:\\Windows\\Minidump. These point to previous kernel crashes or driver faults.", count),
-                    format!("Dumps found:\n{}", sample_list),
-                    "Check drivers for updates and clean up old minidumps once analysed",
-                    vec![
-                        "Archive or clean up old minidump files".to_string(),
-                        "Bring drivers and Windows updates up to date".to_string(),
-                    ],
-                ));
-            } else {
-                Self::send_progress(
-                    &progress_tx,
-                    35,
-                    "No BSOD crash dumps",
-                    Some("No blue screen minidumps found in %WINDIR%\\Minidump."),
-                )
-                .await;
-            }
-        } else {
-            Self::send_progress(
-                &progress_tx,
-                35,
-                "Minidump directory empty",
-                Some("The minidump directory is clean."),
-            )
-            .await;
-        }
-
-        // 2. WHEA Hardware Logger
-        Self::send_progress(
-            &progress_tx,
-            85,
-            "Checking for WHEA hardware faults...",
-            Some("Filtering for WHEA-Logger..."),
-        )
-        .await;
-        sleep(Duration::from_millis(150)).await;
-
-        let whea_query = system_log_query(
-            "Provider[@Name='Microsoft-Windows-WHEA-Logger']",
-            WHEA_LOOKBACK_MS,
-            3,
-        );
-        let whea_query: Vec<&str> = whea_query.iter().map(String::as_str).collect();
-        let whea_events: Vec<EventRecord> = read_events(
-            self.runner
-                .run("wevtutil.exe", &whea_query, Duration::from_secs(10))
-                .await,
-        )?
-        .into_iter()
-        .filter(|e| e.provider == "Microsoft-Windows-WHEA-Logger")
-        .collect();
-
-        if !whea_events.is_empty() {
-            issues.push(Issue::new(
-                "evt_whea_hardware_error",
-                self.id(),
-                "WHEA hardware faults found in the system log",
-                "Event-Log & Crashes",
-                Severity::Critical,
-                RiskScore::High,
-                "Windows Hardware Error Architecture (WHEA) is reporting hardware warnings (for example CPU voltage drops, PCIe bus errors or unstable RAM).",
-                whea_events
-                    .iter()
-                    .map(EventRecord::details)
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                "Apply a BIOS/UEFI update, reset any overclock and run a RAM diagnostic",
-                vec!["Schedule the Windows memory diagnostic (mdsched.exe)".to_string()],
-            ).with_advice_only());
-        } else {
-            Self::send_progress(
-                &progress_tx,
-                95,
-                "WHEA hardware intact",
-                Some("No WHEA hardware faults or PCIe/CPU issues logged."),
-            )
-            .await;
-        }
-
-        // 3. The last Windows Memory Diagnostic result. WinMedic schedules the
+        // The last Windows Memory Diagnostic result. WinMedic schedules the
         // test when a crash or a WHEA record points at RAM; this is where its
         // verdict comes back.
         let memtest_query = system_log_query(
@@ -282,32 +194,9 @@ impl DiagnosticModule for EventLogModule {
         issue_id: &str,
         _progress_tx: Option<Sender<FixProgress>>,
     ) -> Result<String, String> {
-        match issue_id {
-            "evt_bsod_dumps_found" => {
-                let minidump_dir = Path::new(r"C:\Windows\Minidump");
-                let mut removed = 0;
-                if minidump_dir.exists()
-                    && let Ok(entries) = std::fs::read_dir(minidump_dir)
-                {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.extension().map(|e| e.to_string_lossy().to_lowercase())
-                            == Some("dmp".to_string())
-                            && std::fs::remove_file(path).is_ok()
-                        {
-                            removed += 1;
-                        }
-                    }
-                }
-                Ok(format!(
-                    "Safely cleaned up {} stale minidump files.",
-                    removed
-                ))
-            }
-            // The critical-event, WHEA and memory-test findings are advice:
-            // nothing here can repair them, so a repair run never asks.
-            _ => Err(format!("Unknown issue id: {}", issue_id)),
-        }
+        // The memory-test finding is advice: nothing here can repair RAM, so a
+        // repair run never asks.
+        Err(format!("Unknown issue id: {}", issue_id))
     }
 }
 
@@ -316,29 +205,7 @@ mod tests {
     use super::*;
     use crate::utils::cmd::{CmdOutput, MockCommandRunner};
 
-    const WHEA_EVENTS: &str = include_str!("../../tests/fixtures/events/whea_constructed.xml");
     const SYSTEM_ERRORS: &str = include_str!("../../tests/fixtures/events/system_errors.xml");
-
-    #[tokio::test]
-    async fn test_event_log_detects_whea_error() {
-        let mock = MockCommandRunner::new();
-        mock.add_response("WHEA-Logger", CmdOutput::ok(WHEA_EVENTS));
-        mock.add_response("MemoryDiagnostics", CmdOutput::ok(""));
-
-        let module = EventLogModule::with_runner(Arc::new(mock));
-        let issues = module.scan(None).await.unwrap();
-
-        let whea_issue = issues.iter().find(|i| i.id == "evt_whea_hardware_error");
-        assert!(whea_issue.is_some());
-        let whea_issue = whea_issue.unwrap();
-        assert_eq!(whea_issue.severity, Severity::Critical);
-        assert!(whea_issue.technical_details.contains("ApicId: 4"));
-        assert!(!whea_issue.technical_details.contains("RawData"));
-        assert!(
-            whea_issue.advice_only,
-            "a hardware fault is not repaired in software"
-        );
-    }
 
     /// Every Windows logs errors; the five real ones in the fixture are what a
     /// healthy PC has. Asked for them or not, they are not a finding.
@@ -350,16 +217,17 @@ mod tests {
         let module = EventLogModule::with_runner(Arc::new(mock.clone()));
         let issues = module.scan(None).await.unwrap();
 
-        assert!(
-            issues.iter().all(|i| i.id == "evt_bsod_dumps_found"),
-            "{issues:?}"
-        );
+        assert!(issues.is_empty(), "{issues:?}");
         assert!(
             !mock
                 .executed()
                 .iter()
                 .any(|c| c.contains("Level=1 or Level=2")),
             "the System log is not searched for errors as such"
+        );
+        assert!(
+            !mock.executed().iter().any(|c| c.contains("WHEA-Logger")),
+            "WHEA faults are the WHEA logger's; counted here too, they weighed twice"
         );
     }
 
@@ -368,7 +236,7 @@ mod tests {
         let mock = MockCommandRunner::new();
         // What wevtutil answered to every query WinMedic used to send.
         mock.add_response(
-            "WHEA-Logger",
+            "MemoryDiagnostics",
             CmdOutput::with_output(87, "Es wurden zu viele Argumente angegeben.", ""),
         );
 
@@ -427,5 +295,26 @@ mod tests {
                 "{id}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn the_memory_test_is_scheduled_for_the_next_start() {
+        let mock = MockCommandRunner::new();
+        mock.add_response("bcdedit.exe", CmdOutput::ok(""));
+        let msg = schedule_memory_test(&mock).await.unwrap();
+        assert!(msg.contains("next restart"), "{msg}");
+        assert_eq!(mock.executed(), ["bcdedit.exe /bootsequence {memdiag}"]);
+    }
+
+    #[tokio::test]
+    async fn a_memory_test_that_could_not_be_scheduled_is_a_failure() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "bcdedit.exe",
+            CmdOutput::with_output(1, "", "Zugriff verweigert"),
+        );
+        let err = schedule_memory_test(&mock).await.unwrap_err();
+        assert!(err.contains("Zugriff verweigert"), "{err}");
+        assert!(err.contains("Start menu"), "{err}");
     }
 }

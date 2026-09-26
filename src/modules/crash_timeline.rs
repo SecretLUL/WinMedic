@@ -90,6 +90,25 @@ pub fn xpath_time(t: DateTime<Utc>) -> String {
     t.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
 }
 
+/// Crash events closer together than this are one crash: a bugcheck logs its
+/// event 1001 and a Kernel-Power 41 at the same start.
+const SAME_CRASH_MINUTES: i64 = 15;
+/// A series takes at least this many crashes. One unexpected shutdown, a
+/// power cut say, starts none.
+pub const MIN_SERIES: usize = 2;
+
+/// The first crash of a series among the times crash events were logged, or
+/// `None` when they make fewer than [`MIN_SERIES`] crashes.
+pub fn first_of_series(mut logged: Vec<DateTime<Utc>>) -> Option<DateTime<Utc>> {
+    logged.sort_unstable();
+    let crashes = logged
+        .windows(2)
+        .filter(|pair| pair[1] - pair[0] > TimeDelta::minutes(SAME_CRASH_MINUTES))
+        .count()
+        + usize::from(!logged.is_empty());
+    (crashes >= MIN_SERIES).then(|| logged[0])
+}
+
 /// Where the week before `first_crash` starts.
 pub fn week_before(first_crash: DateTime<Utc>) -> DateTime<Utc> {
     first_crash - TimeDelta::days(WEEK_DAYS)
@@ -275,6 +294,20 @@ mod tests {
     #[test]
     fn the_first_crash_is_the_earliest_event() {
         assert_eq!(first_crash(), at("2026-07-26T20:02:01.0258131Z"));
+        let logged = events(CRASHES).iter().filter_map(logged_at).collect();
+        assert_eq!(first_of_series(logged), Some(first_crash()));
+    }
+
+    #[test]
+    fn one_crash_is_no_series() {
+        assert_eq!(first_of_series(Vec::new()), None);
+        let crash = at("2026-09-26T00:43:10Z");
+        assert_eq!(first_of_series(vec![crash]), None);
+        // Event 1001 and Kernel-Power 41 of the same start.
+        let same = crash + TimeDelta::seconds(40);
+        assert_eq!(first_of_series(vec![same, crash]), None);
+        let next_day = crash + TimeDelta::days(1);
+        assert_eq!(first_of_series(vec![next_day, same, crash]), Some(crash));
     }
 
     #[test]

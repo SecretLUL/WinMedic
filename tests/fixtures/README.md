@@ -54,6 +54,8 @@ Captured on 2026-09-26 on the same machine, read-only commands:
 | --- | --- | --- | --- |
 | `powershell_resolve_dns_google.bin` | The network module's resolver probe (`Resolve-DnsName -Type A_AAAA -DnsOnly`) for `dns.google` | UTF-8 | Four addresses, one per line, exit 0. Nothing translated. |
 | `powershell_resolve_dns_nxdomain_de.bin` | The same probe for `winmedic-does-not-exist.invalid` | UTF-8 | Exit 1 and `FAILED\|DNS_ERROR_RCODE_NAME_ERROR,...\|<message>`: the error id is the same in every language, the message is German. |
+| `powercfg_query_aspm_de.bin` | `powercfg /query SCHEME_CURRENT SUB_PCIEXPRESS ASPM` | CP850 | Labels translated; the two `0x` numbers at the end are the current index on mains (1) and on battery (2). The tests set both to 0. |
+| `powercfg_setacvalueindex_missing_setting_de.bin` | `powercfg /setacvalueindex SCHEME_CURRENT SUB_PCIEXPRESS 0` (stderr) | CP850 | Exit 1, "Ungültige Parameter": the command the ASPM repair used to run, without the setting, and still counted as a success. |
 | `reg_query_internet_settings.bin` | `reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings"` | CP850 | `ProxyEnable` 0 and no `ProxyServer`. The tests with a proxy switch it on and add the server. |
 
 Captured elevated on 2026-09-25, read-only commands, with the time each piece
