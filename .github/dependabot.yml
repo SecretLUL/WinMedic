@@ -24,9 +24,10 @@ updates:
           - "minor"
           - "patch"
 
-  # The workflows pin actions/checkout@v4, Swatinem/rust-cache@v2,
-  # dtolnay/rust-toolchain, rustsec/audit-check@v2 and
-  # softprops/action-gh-release@v2 with nothing else watching them. komac,
+  # The workflows pin actions/checkout, Swatinem/rust-cache,
+  # dtolnay/rust-toolchain, taiki-e/install-action and
+  # softprops/action-gh-release with nothing else watching them (no versions
+  # here: they went stale in this comment while Dependabot raised them). komac,
   # which winget.yml downloads itself, is outside its view: that pin is raised
   # by hand, see the comment there.
   - package-ecosystem: "github-actions"
