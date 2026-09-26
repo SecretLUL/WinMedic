@@ -76,9 +76,13 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $conclusions = @(gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$env:SHA&event=push&per_page=20" --jq '.workflow_runs[].conclusion')
-          if ($conclusions -notcontains 'success') {
-            throw "CI has not passed on $env:SHA (runs: $(if ($conclusions) { $conclusions -join ', ' } else { 'none' })). Wait for it to finish, or fix main first."
+          # A run that has not finished has no conclusion yet, only a status.
+          $runs = @(gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$env:SHA&event=push&per_page=20" --jq '.workflow_runs[] | if .status == "completed" then .conclusion else "running" end')
+          if ($runs -notcontains 'success') {
+            if ($runs -contains 'running') {
+              throw "CI is still running on $env:SHA. Start the release again once it is green."
+            }
+            throw "CI has not passed on $env:SHA (runs: $(if ($runs) { $runs -join ', ' } else { 'none' })). Fix main first."
           }
           Write-Host "CI passed on $env:SHA."
 
