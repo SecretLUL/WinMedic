@@ -80,6 +80,20 @@ Exactly what each check looks at and runs is in
 - WinMedic is open source. Its checks are tested against output captured from
   real Windows installations, and every change runs a real scan in CI.
 
+## Privacy
+
+WinMedic collects no data and has no telemetry. It goes online only for this:
+
+- **Updates:** it asks GitHub whether there is a newer version and downloads
+  it when you click *Update now*. You can turn the check off under
+  **Settings**. GitHub's
+  [privacy statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement)
+  applies to both.
+- **Scan:** it tests your internet connection by looking up `dns.google` and
+  `www.microsoft.com`, and compares your clock with `time.windows.com`.
+- **Repair:** DISM takes intact system files from Windows Update, and the
+  clock is set from `time.windows.com`.
+
 ## For IT admins
 
 WinMedic also runs without its window, for scripts and remote support:
