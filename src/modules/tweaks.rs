@@ -263,7 +263,7 @@ fn service_issue_id(name: &str) -> String {
     format!("tweak_svc_{}", name.to_ascii_lowercase())
 }
 
-const WU_POLICY_KEY: &str = r"HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate";
+pub const WU_POLICY_KEY: &str = r"HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate";
 const WU_AU_POLICY_KEY: &str = r"HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU";
 const STORE_POLICY_KEY: &str = r"HKLM\SOFTWARE\Policies\Microsoft\WindowsStore";
 
@@ -285,6 +285,16 @@ fn is_on(keys: &[RegKeyValues], key: &str, name: &str) -> bool {
 
 fn has_text(keys: &[RegKeyValues], key: &str, name: &str) -> bool {
     registry::find(keys, key, name).is_some_and(|v| !v.data.trim().is_empty())
+}
+
+/// Whether the policy "Do not include drivers with Windows Updates" is on,
+/// among `wu` (the WindowsUpdate key).
+///
+/// Not a finding here: a company may keep drivers out of Windows Update on
+/// purpose, and nothing is missing while every device has one. The devices
+/// module names it when a device has no driver.
+pub fn drivers_excluded_from_updates(wu: &[RegKeyValues]) -> bool {
+    is_on(wu, WU_POLICY_KEY, "ExcludeWUDriversInQualityUpdate")
 }
 
 /// The harmful policies among `wu` (the WindowsUpdate key, read with `/s`)
@@ -1098,6 +1108,19 @@ mod tests {
             "../../tests/fixtures/console/reg_query_wu_policy.bin"
         )));
         assert!(policy_hits(&wu, &[]).is_empty());
+        assert!(drivers_excluded_from_updates(&wu));
+    }
+
+    #[test]
+    fn drivers_are_excluded_only_while_the_policy_is_on() {
+        let key = |data: &str| {
+            registry::parse_reg_query(&format!(
+                "HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\r\n    ExcludeWUDriversInQualityUpdate    REG_DWORD    {data}\r\n"
+            ))
+        };
+        assert!(drivers_excluded_from_updates(&key("0x1")));
+        assert!(!drivers_excluded_from_updates(&key("0x0")));
+        assert!(!drivers_excluded_from_updates(&[]));
     }
 
     /// A PC pointed at a WSUS server, with every service healthy and no
