@@ -16,6 +16,8 @@ It is a single program. Nothing to install, nothing else to download. It only
 looks until you click **Repair**, and it creates a restore point first, so you
 can go back.
 
+![WinMedic after a scan: 13 problems found, what Repair does, and the Repair button](assets/screenshot.png)
+
 ## Download
 
 WinMedic runs on 64-bit Windows 10 and 11.
