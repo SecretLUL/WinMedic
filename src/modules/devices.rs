@@ -10,9 +10,11 @@
 //! from the device manager itself, see [`crate::utils::pnp`].
 
 use crate::engine::issue::{Issue, RiskScore, Severity};
+use crate::modules::tweaks::{WU_POLICY_KEY, drivers_excluded_from_updates};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
 use crate::utils::pnp::PnpDevice;
+use crate::utils::registry;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
@@ -85,6 +87,11 @@ impl Device {
 const NO_DRIVER_ID: &str = "dev_no_driver_";
 const FAILED_ID: &str = "dev_failed_";
 const CANNOT_START_ID: &str = "dev_cannot_start_";
+const DRIVERS_EXCLUDED_ID: &str = "dev_wu_drivers_excluded";
+
+/// Where the policy is switched off, after the ADMX and ADML in
+/// `C:\Windows\PolicyDefinitions`.
+const POLICY_OFF: &str = "If nobody set it on purpose: gpedit.msc -> Computer Configuration -> Administrative Templates -> Windows Components -> Windows Update -> Manage updates offered from Windows Update -> Do not include drivers with Windows Updates -> Not configured. Then look under Settings -> Windows Update -> Advanced options -> Optional updates.";
 
 /// What WinMedic can do about a problem code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -327,6 +334,47 @@ impl DevicesModule {
         Some(issue)
     }
 
+    /// Whether a policy keeps drivers out of Windows Update. A key that
+    /// cannot be read counts as no policy: the findings about the devices
+    /// stand without the hint.
+    async fn drivers_excluded(&self) -> bool {
+        match registry::query(&*self.runner, WU_POLICY_KEY, true).await {
+            Ok(Some(keys)) => drivers_excluded_from_updates(&keys),
+            _ => false,
+        }
+    }
+
+    /// Advice for devices without a driver while a policy keeps drivers out
+    /// of Windows Update, which is where Windows would get one.
+    fn drivers_excluded_finding(&self, without_driver: &[&Device]) -> Issue {
+        let devices = match without_driver.len() {
+            1 => "the device that has none".to_string(),
+            n => format!("the {n} devices that have none"),
+        };
+        let labels: Vec<String> = without_driver.iter().map(|d| d.label()).collect();
+        Issue::new(
+            DRIVERS_EXCLUDED_ID,
+            self.id(),
+            "Windows Update is not allowed to deliver drivers",
+            "Devices & Drivers",
+            Severity::Info,
+            RiskScore::Low,
+            format!(
+                "A policy keeps drivers out of Windows Update, so it cannot bring a driver for {devices} either."
+            ),
+            format!(
+                "Policy: Do not include drivers with Windows Updates\nValue: {WU_POLICY_KEY}\\ExcludeWUDriversInQualityUpdate = 1\nWithout a driver: {}",
+                labels.join(", ")
+            ),
+            "Get the driver from the device's manufacturer, or switch the policy off",
+            vec![
+                "Get the driver from the manufacturer's website".to_string(),
+                POLICY_OFF.to_string(),
+            ],
+        )
+        .with_advice_only()
+    }
+
     async fn send_progress(
         progress_tx: &Option<Sender<ModuleProgress>>,
         percent: u8,
@@ -384,13 +432,23 @@ impl DiagnosticModule for DevicesModule {
         )
         .await;
         let devices = self.problem_devices().await?;
-        let issues: Vec<Issue> = devices.iter().filter_map(|d| self.finding(d)).collect();
+        let mut issues: Vec<Issue> = devices.iter().filter_map(|d| self.finding(d)).collect();
 
         let summary = format!(
             "{} device(s) with a problem code, {} of them worth a finding",
             devices.len(),
             issues.len()
         );
+
+        // Only asked when it can matter: while every device has a driver, a
+        // policy that keeps drivers out of Windows Update costs nothing.
+        let without_driver: Vec<&Device> = devices
+            .iter()
+            .filter(|d| remedy(d.problem) == Remedy::FindDriver)
+            .collect();
+        if !without_driver.is_empty() && self.drivers_excluded().await {
+            issues.push(self.drivers_excluded_finding(&without_driver));
+        }
         Self::send_progress(&progress_tx, 100, "Device check complete", Some(&summary)).await;
         Ok(issues)
     }
@@ -553,6 +611,84 @@ mod tests {
             issues[1].title,
             r"An unknown device (ACPI\AMDI0204) has no driver"
         );
+    }
+
+    /// The development PC's WindowsUpdate policy key, captured with
+    /// `reg query ... /s`: drivers are kept out of Windows Update.
+    const WU_POLICY: &[u8] = include_bytes!("../../tests/fixtures/console/reg_query_wu_policy.bin");
+
+    async fn scan_with_policy(
+        devices: Vec<Device>,
+        policy: CmdOutput,
+    ) -> (Vec<Issue>, Vec<String>) {
+        let mock = MockCommandRunner::new();
+        mock.set_devices(devices);
+        mock.add_response(
+            r"reg.exe query HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate",
+            policy,
+        );
+        let issues = module(&mock).scan(None).await.unwrap();
+        (issues, mock.executed())
+    }
+
+    /// The development PC: two devices without a driver, and a policy that
+    /// keeps Windows Update from bringing one.
+    #[tokio::test]
+    async fn a_policy_that_keeps_drivers_out_of_windows_update_is_named() {
+        let (issues, _) = scan_with_policy(dev_pc(), CmdOutput::ok(decode_output(WU_POLICY))).await;
+
+        assert_eq!(issues.len(), 3, "{issues:?}");
+        let hint = issues
+            .iter()
+            .find(|i| i.id == DRIVERS_EXCLUDED_ID)
+            .expect("no hint about the policy");
+        assert!(hint.advice_only && !hint.is_selected);
+        assert_eq!(hint.severity, Severity::Info);
+        assert!(
+            hint.description.contains("the 2 devices that have none"),
+            "{}",
+            hint.description
+        );
+        assert!(
+            hint.technical_details.contains("'Brio 500'"),
+            "{}",
+            hint.technical_details
+        );
+        assert!(
+            hint.technical_details.contains(r"ACPI\AMDI0204"),
+            "{}",
+            hint.technical_details
+        );
+    }
+
+    #[tokio::test]
+    async fn without_the_policy_there_is_no_hint() {
+        let off = "\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\r\n    ExcludeWUDriversInQualityUpdate    REG_DWORD    0x0\r\n\r\n";
+        for policy in [
+            CmdOutput::ok(off),
+            // No WindowsUpdate policy key at all.
+            CmdOutput::failed(1, ""),
+        ] {
+            let (issues, _) = scan_with_policy(dev_pc(), policy).await;
+            assert_eq!(issues.len(), 2, "{issues:?}");
+            assert!(issues.iter().all(|i| i.id.starts_with(NO_DRIVER_ID)));
+        }
+    }
+
+    /// Every device has a driver: the policy costs nothing and is not asked.
+    #[tokio::test]
+    async fn the_policy_is_only_read_when_a_device_has_no_driver() {
+        let (issues, executed) =
+            scan_with_policy(brio_reporting(43), CmdOutput::ok(decode_output(WU_POLICY))).await;
+        let with_driver: Vec<Device> = dev_pc().into_iter().filter(|d| d.problem != 28).collect();
+        let (none, executed_none) =
+            scan_with_policy(with_driver, CmdOutput::ok(decode_output(WU_POLICY))).await;
+
+        // The AMD device still has no driver while the Brio reports 43.
+        assert!(issues.iter().any(|i| i.id == DRIVERS_EXCLUDED_ID));
+        assert!(executed.iter().any(|c| c.starts_with("reg.exe")));
+        assert!(none.is_empty(), "{none:?}");
+        assert!(executed_none.is_empty(), "{executed_none:?}");
     }
 
     #[tokio::test]
