@@ -1027,14 +1027,14 @@ fn test_tier1_f12_system_cleaner_metadata() {
 }
 
 #[test]
-fn test_tier1_f12_diagnostic_engine_contains_all_eleven_modules() {
+fn test_tier1_f12_diagnostic_engine_contains_all_fourteen_modules() {
     let config = AppConfig::default();
     let engine = DiagnosticEngine::new(&config);
     assert_eq!(engine.modules().len(), 14);
 }
 
 #[tokio::test]
-async fn test_tier1_f12_app_initializes_with_eleven_module_statuses() {
+async fn test_tier1_f12_app_initializes_with_fourteen_module_statuses() {
     let app = App::new();
     assert_eq!(app.module_statuses.len(), 14);
     assert!(
@@ -1071,7 +1071,16 @@ async fn test_tier1_f12_whea_logger_scan_and_repair_integration() {
             r#"<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-WHEA-Logger' Guid='{c26c4f3c-3f66-4e99-8f8a-39405cfed220}'/><EventID>17</EventID><Level>3</Level><TimeCreated SystemTime='2026-08-21T08:00:00.0000000Z'/></System><EventData><Data Name='ErrorSource'>4</Data><Data Name='Bus'>0x0</Data><Data Name='Device'>0x1</Data><Data Name='Function'>0x1</Data><Data Name='PrimaryDeviceName'>PCI\VEN_1022&amp;DEV_1453</Data></EventData></Event>"#,
         ),
     );
-    runner.set_response("powercfg.exe", CmdOutput::ok(""));
+    // What powercfg prints for ASPM, already off on mains and on battery.
+    let aspm = String::from_utf8_lossy(include_bytes!(
+        "../fixtures/console/powercfg_query_aspm_de.bin"
+    ))
+    .replace("0x00000001", "0x00000000")
+    .replace("0x00000002", "0x00000000");
+    runner.set_response_for_cmd_and_args(
+        "powercfg.exe /query SCHEME_CURRENT SUB_PCIEXPRESS ASPM",
+        CmdOutput::ok(aspm),
+    );
 
     let cfg = ModuleConfig::default();
     let module = winmedic::modules::whea_logger::WheaLoggerModule::with_runner(cfg, runner.clone());
@@ -1118,8 +1127,6 @@ async fn test_tier1_f12_crash_analysis_scan_and_repair_integration() {
             r#"<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-WER-SystemErrorReporting' Guid='{abce23e7-de45-4366-8631-84fa6c525952}'/><EventID>1001</EventID><Level>2</Level><TimeCreated SystemTime='2026-08-20T10:15:30.0000000Z'/></System><EventData><Data Name='param1'>0x00000116 (0xffffc8073e4a3010, 0xfffff8024a123456)</Data><Data Name='param2'>C:\WINDOWS\Minidump\082026-1111-01.dmp</Data><Data Name='param3'>00000000-0000-0000-0000-000000000000</Data></EventData></Event>"#,
         ),
     );
-    runner.set_response("cmd.exe", CmdOutput::ok(""));
-
     let dump_dir = std::env::temp_dir().join(format!("winmedic_dmp_it_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dump_dir);
     std::fs::create_dir_all(&dump_dir).expect("temp dump dir");
@@ -1137,12 +1144,11 @@ async fn test_tier1_f12_crash_analysis_scan_and_repair_integration() {
         .find(|i| i.id == "crash_video_tdr")
         .expect("video TDR issue from Event 1001");
     assert_eq!(tdr.category, "Hardware & Stability");
-
-    let fix_res = module.fix("crash_video_tdr", None).await;
-    assert!(fix_res.is_ok());
-    assert!(fix_res.unwrap().contains("Device Manager"));
-
-    assert!(!runner.calls_for("cmd.exe").is_empty());
+    // Reinstalling a GPU driver is the user's to do; opening Device Manager
+    // and calling that a repair counted it as fixed.
+    assert!(tdr.advice_only);
+    assert!(module.fix("crash_video_tdr", None).await.is_err());
+    assert!(runner.calls_for("cmd.exe").is_empty());
 
     let _ = std::fs::remove_dir_all(&dump_dir);
 }

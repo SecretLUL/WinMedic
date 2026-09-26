@@ -5,7 +5,6 @@
 //! stall when it is minimised. Everything here is non-blocking: `try_recv`
 //! until empty, never awaiting, so a slow producer cannot stall rendering.
 
-use super::ConfirmRequest;
 use super::state::{App, ModuleScanProgress};
 use super::{BackgroundEvent, push_bounded_log};
 use crate::engine::runner::{DiagnosticEngine, RepairEvent, ScanEvent};
@@ -330,19 +329,11 @@ impl App {
                             )
                         });
 
-                        if !self.dry_run {
-                            let reboot_issues: Vec<String> = self
-                                .issues
-                                .iter()
-                                .filter(|i| i.is_reboot_pending)
-                                .map(|i| i.title.clone())
-                                .collect();
-                            if !reboot_issues.is_empty() {
-                                self.pending_confirm = Some(ConfirmRequest::RestartRequired {
-                                    issues: reboot_issues,
-                                });
-                            }
-                        }
+                        // A restart that is due is offered by the banner and,
+                        // in Easy mode, by the page; it never opens a dialog
+                        // by itself. A key pressed just as the run ended
+                        // would have answered it and restarted the PC at
+                        // once, like the update notice below.
                     }
                 }
             }
@@ -383,6 +374,12 @@ impl App {
                         &message,
                     );
                     self.audit_entries = self.audit_logger.get_history();
+                }
+                BackgroundEvent::ElevationAnswered(Ok(())) => self.should_quit = true,
+                BackgroundEvent::ElevationAnswered(Err(why)) => {
+                    self.status_message = Some(format!(
+                        "Still running without Administrator rights: {why}."
+                    ));
                 }
                 BackgroundEvent::UpdateChecked(Some(info)) => {
                     // The check lands at an arbitrary point in the session, so it
@@ -481,6 +478,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::ConfirmRequest;
     use crate::modules::ModuleProgress;
     use crate::safety::audit::AuditLogger;
     use crate::utils::self_update::{InstalledUpdate, SignatureStatus, UpdateFailure};
@@ -1017,7 +1015,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn repairs_requiring_reboot_trigger_restart_confirmation() {
+    async fn repairs_requiring_reboot_leave_the_restart_to_the_user() {
         let mut app = App::new();
         app.issues.clear();
         let issue = crate::engine::issue::Issue::new(
@@ -1060,12 +1058,13 @@ mod tests {
         assert!(app.issues[0].is_reboot_pending);
         assert!(!app.issues[0].is_fixed);
         assert!(app.has_pending_reboot());
-        match app.pending_confirm {
-            Some(ConfirmRequest::RestartRequired { ref issues }) => {
-                assert_eq!(issues.len(), 1);
-                assert_eq!(issues[0], "System reboot pending after updates");
-            }
-            other => panic!("expected RestartRequired confirm request, got {:?}", other),
-        }
+        assert!(
+            !matches!(
+                app.pending_confirm,
+                Some(ConfirmRequest::RestartRequired { .. })
+            ),
+            "the banner offers the restart; a dialog would take the next key as a yes: {:?}",
+            app.pending_confirm
+        );
     }
 }

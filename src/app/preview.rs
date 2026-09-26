@@ -63,10 +63,7 @@ impl Benefit {
                 Benefit::Internet
             }
             _ if service.is_some() => Benefit::WindowsParts,
-            "net_dns_failure"
-            | "net_winsock_corrupt"
-            | "net_proxy_active"
-            | "net_offline_warning" => Benefit::Internet,
+            "net_dns_failure" | "net_winsock_corrupt" | "net_proxy_active" => Benefit::Internet,
             _ if id.starts_with("net_no_dhcp_") => Benefit::Internet,
             // A missing driver is only looked for again, which promises nothing.
             _ if id.starts_with("dev_failed_") => Benefit::Devices,
@@ -234,7 +231,7 @@ mod tests {
     #[test]
     fn only_repairs_that_change_something_promise_something() {
         let app = app_with(vec![
-            issue("evt_whea_hardware_error", Severity::Critical),
+            issue("whea_storage_platform_error", Severity::Critical),
             issue("wu_reboot_pending", Severity::Info),
             issue("crash_bugcheck_history", Severity::Warning),
             issue("sched_failing_foo", Severity::Info),

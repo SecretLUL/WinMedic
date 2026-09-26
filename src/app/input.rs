@@ -87,12 +87,12 @@ fn needs_advanced_mode(app: &App, code: Key) -> bool {
 }
 
 pub fn handle_key(app: &mut App, code: Key) {
-    // A pending confirmation swallows every other key.
+    // A pending confirmation swallows every other key. Only `y` answers yes:
+    // Enter and `j` also move through the list, and the restart dialog runs
+    // `shutdown /r /t 0` the moment it is confirmed.
     if app.pending_confirm.is_some() {
         match code {
-            Key::Char('y') | Key::Char('Y') | Key::Char('j') | Key::Char('J') | Key::Enter => {
-                app.confirm_pending_action()
-            }
+            Key::Char('y') | Key::Char('Y') => app.confirm_pending_action(),
             Key::Char('n') | Key::Char('N') | Key::Esc => app.dismiss_confirm(),
             _ => {}
         }
@@ -404,7 +404,11 @@ mod tests {
             download: None,
         });
         handle_key(&mut app, Key::Enter);
-        assert!(app.pending_confirm.is_none(), "'Enter' confirms");
+        handle_key(&mut app, Key::Char('j'));
+        assert!(
+            app.pending_confirm.is_some(),
+            "Enter and 'j' move through lists; they answer no dialog"
+        );
     }
 
     #[test]

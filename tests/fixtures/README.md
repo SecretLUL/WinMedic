@@ -48,6 +48,18 @@ Captured on Windows 11 Pro 10.0.26200, German display language, OEM code page
 | `pnputil_restart_device_denied_de.bin` | `pnputil /restart-device` of the Brio's interface, unelevated | Windows-1252 | Captured 2026-09-25. "Zugriff verweigert", yet **exit 0**: only the device's state afterwards tells whether a restart worked. pnputil writes in the ANSI code page (`ä` is `0xE4`), not the OEM one. |
 | `pnputil_scan_devices_denied_de.bin` | `pnputil /scan-devices`, unelevated | Windows-1252 | Captured 2026-09-25. Exit 5 (access denied). |
 
+Captured on 2026-09-26 on the same machine, read-only commands:
+
+| File | Command | Encoding | Notes |
+| --- | --- | --- | --- |
+| `powershell_resolve_dns_google.bin` | The network module's resolver probe (`Resolve-DnsName -Type A_AAAA -DnsOnly`) for `dns.google` | UTF-8 | Four addresses, one per line, exit 0. Nothing translated. |
+| `powershell_resolve_dns_nxdomain_de.bin` | The same probe for `winmedic-does-not-exist.invalid` | UTF-8 | Exit 1 and `FAILED\|DNS_ERROR_RCODE_NAME_ERROR,...\|<message>`: the error id is the same in every language, the message is German. |
+| `powercfg_query_aspm_de.bin` | `powercfg /query SCHEME_CURRENT SUB_PCIEXPRESS ASPM` | CP850 | Labels translated; the two `0x` numbers at the end are the current index on mains (1) and on battery (2). The tests set both to 0. |
+| `powercfg_setacvalueindex_missing_setting_de.bin` | `powercfg /setacvalueindex SCHEME_CURRENT SUB_PCIEXPRESS 0` (stderr) | CP850 | Exit 1, "Ungültige Parameter": the command the ASPM repair used to run, without the setting, and still counted as a success. |
+| `reg_query_internet_settings.bin` | `reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings"` | CP850 | `ProxyEnable` 0 and no `ProxyServer`. The tests with a proxy switch it on and add the server. |
+| `reg_query_run_hklm.bin` | `reg query HKLM\Software\Microsoft\Windows\CurrentVersion\Run` | CP850 | Three autostart entries, one `REG_EXPAND_SZ` with `%windir%`, one name with a space. The tests add a value whose program is gone. |
+| `reg_query_current_build.bin` | `reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion" /v CurrentBuild` | CP850 | `26200`. The tests replace it with a build from before Windows 10 2004. |
+
 Captured elevated on 2026-09-25, read-only commands, with the time each piece
 of the pipe arrived:
 

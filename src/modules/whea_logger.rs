@@ -1,4 +1,5 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
+use crate::modules::event_log::{memory_test_finding, schedule_memory_test};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
 use crate::utils::debug_log::DebugTrace;
@@ -40,9 +41,15 @@ impl WheaLoggerModule {
         Self { config, runner }
     }
 
-    /// Lookback window in milliseconds for the `wevtutil` query.
+    /// How many hours back the `wevtutil` query looks: the event log
+    /// setting, but at least a week. WHEA faults are rare, and this is the
+    /// only check that reads them.
+    fn window_hours(&self) -> u32 {
+        self.config.max_event_log_hours.max(MIN_WINDOW_HOURS)
+    }
+
     fn lookback_ms(&self) -> u64 {
-        u64::from(self.config.max_event_log_hours.max(1)) * 3_600_000
+        u64::from(self.window_hours()) * 3_600_000
     }
 
     async fn send_progress(
@@ -90,7 +97,7 @@ impl DiagnosticModule for WheaLoggerModule {
         let dbg = DebugTrace::scan(self.id(), progress_tx.clone(), self.config.verbose_logging);
 
         // Step 1: Initialise WHEA Query
-        let window_hours = self.config.max_event_log_hours.max(1);
+        let window_hours = self.window_hours();
         Self::send_progress(
             &progress_tx,
             15,
@@ -269,7 +276,7 @@ impl DiagnosticModule for WheaLoggerModule {
                 .collect::<Vec<_>>()
                 .join("\n---\n");
 
-            issues.push(Issue::new(
+            issues.push(memory_test_finding(Issue::new(
                 "whea_cpu_cache_error",
                 self.id(),
                 format!("WHEA CPU & Cache Hierarchy error(s) on {}", apic_summary),
@@ -287,7 +294,7 @@ impl DiagnosticModule for WheaLoggerModule {
                     "Update motherboard BIOS/UEFI to latest AGESA/Microcode firmware".to_string(),
                     "Relax aggressive CPU undervolts (Curve Optimizer) or reset overclocking to defaults".to_string(),
                 ],
-            ));
+            )));
         }
 
         // 2. PCIe Root Port / Bus Errors (Event 17)
@@ -380,7 +387,7 @@ impl DiagnosticModule for WheaLoggerModule {
                 .collect::<Vec<_>>()
                 .join("\n---\n");
 
-            issues.push(Issue::new(
+            issues.push(memory_test_finding(Issue::new(
                 "whea_memory_error",
                 self.id(),
                 format!("WHEA Memory parity & controller error(s) ({} events)", count),
@@ -394,7 +401,7 @@ impl DiagnosticModule for WheaLoggerModule {
                     "Schedule Windows Memory Diagnostic (mdsched.exe) for the next reboot".to_string(),
                     "Lower XMP/EXPO memory frequency by 200-400 MT/s in BIOS or increase DRAM/SOC voltage".to_string(),
                 ],
-            ));
+            )));
         }
 
         // 4. Storage & Platform Subsystem Faults (Event 1)
@@ -445,82 +452,19 @@ impl DiagnosticModule for WheaLoggerModule {
                     let _ = tx
                         .send(FixProgress {
                             issue_id: issue_id.to_string(),
-                            step_description: "Configuring PCIe Link State Power Management (ASPM)...".to_string(),
+                            step_description:
+                                "Switching PCIe Link State Power Management (ASPM) off..."
+                                    .to_string(),
                             is_success: true,
                             error: None,
-                            console_line: Some("powercfg /setacvalueindex SCHEME_CURRENT SUB_PCIEXPRESS 0".to_string()),
+                            console_line: Some(format!("powercfg {}", ASPM_OFF_AC.join(" "))),
                         })
                         .await;
                 }
-
-                // Set PCIe Link State Power Management to 'Off' (0) for AC power
-                let set_ac = self
-                    .runner
-                    .run(
-                        "powercfg.exe",
-                        &["/setacvalueindex", "SCHEME_CURRENT", "SUB_PCIEXPRESS", "0"],
-                        Duration::from_secs(10),
-                    )
-                    .await;
-
-                // Set PCIe Link State Power Management to 'Off' (0) for DC power
-                let _ = self
-                    .runner
-                    .run(
-                        "powercfg.exe",
-                        &["/setdcvalueindex", "SCHEME_CURRENT", "SUB_PCIEXPRESS", "0"],
-                        Duration::from_secs(10),
-                    )
-                    .await;
-
-                // Apply active power scheme
-                let _ = self
-                    .runner
-                    .run(
-                        "powercfg.exe",
-                        &["/setactive", "SCHEME_CURRENT"],
-                        Duration::from_secs(10),
-                    )
-                    .await;
-
-                if let Ok(res) = set_ac
-                    && res.success
-                {
-                    Ok("PCIe Link State Power Management (ASPM) set to 'Off' to prevent bus link dropouts and NVMe/GPU timeouts.".to_string())
-                } else {
-                    Ok("PCIe Power Management configuration applied. Recommendation: verify GPU and NVMe PCIe slot seating.".to_string())
-                }
+                self.switch_aspm_off().await
             }
             "whea_cpu_cache_error" | "whea_memory_error" => {
-                if let Some(ref tx) = progress_tx {
-                    let _ = tx
-                        .send(FixProgress {
-                            issue_id: issue_id.to_string(),
-                            step_description: "Scheduling Windows Memory Diagnostic tool..."
-                                .to_string(),
-                            is_success: true,
-                            error: None,
-                            console_line: Some("mdsched.exe /? / schedule".to_string()),
-                        })
-                        .await;
-                }
-
-                // Note: Launching or scheduling mdsched.exe or documenting memory test
-                let sched_res = self
-                    .runner
-                    .run("mdsched.exe", &[], Duration::from_secs(5))
-                    .await;
-
-                match sched_res {
-                    Ok(out) if out.success => Ok(
-                        "Windows Memory Diagnostic (mdsched.exe) launched. Also check BIOS/UEFI for RAM clock speeds (XMP/EXPO) and CPU voltage (Curve Optimizer)."
-                            .to_string(),
-                    ),
-                    _ => Err(
-                        "Windows Memory Diagnostic (mdsched.exe) could not be started. Start it from the Start menu, and check BIOS/UEFI for RAM clock speeds (XMP/EXPO) and CPU voltage."
-                            .to_string(),
-                    ),
-                }
+                schedule_memory_test(&*self.runner).await
             }
             // The storage/platform finding is advice: a repair run never asks.
             _ => Err(format!("Unknown WHEA issue id: {}", issue_id)),
@@ -528,7 +472,100 @@ impl DiagnosticModule for WheaLoggerModule {
     }
 }
 
+/// `powercfg` arguments that switch PCIe ASPM off on mains and on battery.
+/// `ASPM` is the setting's alias; without it powercfg has three arguments
+/// instead of four and exits with "Invalid parameters".
+const ASPM_OFF_AC: [&str; 5] = [
+    "/setacvalueindex",
+    "SCHEME_CURRENT",
+    "SUB_PCIEXPRESS",
+    "ASPM",
+    "0",
+];
+const ASPM_OFF_DC: [&str; 5] = [
+    "/setdcvalueindex",
+    "SCHEME_CURRENT",
+    "SUB_PCIEXPRESS",
+    "ASPM",
+    "0",
+];
+const ASPM_QUERY: [&str; 4] = ["/query", "SCHEME_CURRENT", "SUB_PCIEXPRESS", "ASPM"];
+
+/// The AC and DC index `powercfg /query` prints for one setting.
+///
+/// The labels are translated ("Index der aktuellen Wechselstromeinstellung");
+/// the two indices are the only `0x` numbers of an option setting, AC first.
+pub fn powercfg_indices(output: &str) -> Option<(u32, u32)> {
+    let values: Vec<u32> = output
+        .lines()
+        .filter_map(|line| {
+            let hex = line.trim().rsplit(' ').next()?.strip_prefix("0x")?;
+            u32::from_str_radix(hex, 16).ok()
+        })
+        .collect();
+    match values[..] {
+        [.., ac, dc] => Some((ac, dc)),
+        _ => None,
+    }
+}
+
+impl WheaLoggerModule {
+    async fn aspm_indices(&self) -> Result<(u32, u32), String> {
+        let out = self
+            .runner
+            .run("powercfg.exe", &ASPM_QUERY, Duration::from_secs(10))
+            .await?;
+        if !out.success {
+            return Err(format!(
+                "powercfg /query failed (exit code {:?}): {}",
+                out.exit_code,
+                out.stderr.trim()
+            ));
+        }
+        powercfg_indices(&out.stdout)
+            .ok_or_else(|| "powercfg /query printed no ASPM setting".to_string())
+    }
+
+    /// Switch ASPM off, then read the setting back. The message names the
+    /// values it had, so they can be set again.
+    async fn switch_aspm_off(&self) -> Result<String, String> {
+        let (ac, dc) = self.aspm_indices().await?;
+        if (ac, dc) == (0, 0) {
+            return Ok("PCIe Link State Power Management is already off.".to_string());
+        }
+        for args in [
+            &ASPM_OFF_AC[..],
+            &ASPM_OFF_DC[..],
+            &["/setactive", "SCHEME_CURRENT"],
+        ] {
+            let out = self
+                .runner
+                .run("powercfg.exe", args, Duration::from_secs(10))
+                .await?;
+            if !out.success {
+                return Err(format!(
+                    "powercfg {} failed (exit code {:?}): {}",
+                    args.join(" "),
+                    out.exit_code,
+                    [out.stdout.trim(), out.stderr.trim()].join(" ").trim()
+                ));
+            }
+        }
+        match self.aspm_indices().await? {
+            (0, 0) => Ok(format!(
+                "PCIe Link State Power Management is off; on battery that costs a little runtime. It was {ac} on mains and {dc} on battery: `powercfg /setacvalueindex SCHEME_CURRENT SUB_PCIEXPRESS ASPM {ac}` and `/setdcvalueindex ... {dc}` put it back."
+            )),
+            (ac_now, dc_now) => Err(format!(
+                "powercfg ran, but ASPM still reads {ac_now} on mains and {dc_now} on battery."
+            )),
+        }
+    }
+}
+
 const WHEA_PROVIDER: &str = "Microsoft-Windows-WHEA-Logger";
+
+/// A week, see [`WheaLoggerModule::window_hours`].
+const MIN_WINDOW_HOURS: u32 = 7 * 24;
 
 /// Parses `wevtutil /f:xml` output into `WheaEventRecord`s.
 ///
@@ -783,21 +820,73 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_fix_pcie_bus_error_runs_powercfg() {
+    /// `powercfg /query SCHEME_CURRENT SUB_PCIEXPRESS ASPM` on a German
+    /// Windows 11: 1 on mains, 2 on battery.
+    fn real_aspm_query() -> String {
+        crate::utils::decode::decode_output(include_bytes!(
+            "../../tests/fixtures/console/powercfg_query_aspm_de.bin"
+        ))
+    }
+
+    /// The same after both were set to 0.
+    fn aspm_off_query() -> String {
+        real_aspm_query()
+            .replace("0x00000001", "0x00000000")
+            .replace("0x00000002", "0x00000000")
+    }
+
+    #[test]
+    fn the_aspm_indices_are_read_whatever_the_labels_say() {
+        assert_eq!(powercfg_indices(&real_aspm_query()), Some((1, 2)));
+        assert_eq!(powercfg_indices(&aspm_off_query()), Some((0, 0)));
+        assert_eq!(powercfg_indices(""), None);
+    }
+
+    fn aspm_mock(set: CmdOutput, after: String) -> MockCommandRunner {
         let mock = MockCommandRunner::new();
-        mock.add_response("powercfg.exe", CmdOutput::ok(""));
+        mock.add_response("/query", CmdOutput::ok(real_aspm_query()));
+        mock.add_response("powercfg.exe /set", set);
+        mock.add_response_after("/setactive", "/query", CmdOutput::ok(after));
+        mock
+    }
 
+    #[tokio::test]
+    async fn aspm_is_switched_off_and_read_back() {
+        let mock = aspm_mock(CmdOutput::ok(""), aspm_off_query());
         let module = WheaLoggerModule::with_runner(ModuleConfig::default(), Arc::new(mock.clone()));
-        let res = module.fix("whea_pcie_bus_error", None).await;
-
-        assert!(res.is_ok());
-        assert!(res.unwrap().contains("PCIe Link State Power Management"));
+        let msg = module.fix("whea_pcie_bus_error", None).await.unwrap();
+        assert!(msg.contains("It was 1 on mains and 2 on battery"), "{msg}");
 
         let exec = mock.executed();
+        assert!(exec.contains(
+            &"powercfg.exe /setacvalueindex SCHEME_CURRENT SUB_PCIEXPRESS ASPM 0".to_string()
+        ));
+        assert!(exec.contains(
+            &"powercfg.exe /setdcvalueindex SCHEME_CURRENT SUB_PCIEXPRESS ASPM 0".to_string()
+        ));
+    }
+
+    /// What powercfg answered to the command without `ASPM` that used to
+    /// count as a repair.
+    #[tokio::test]
+    async fn a_refused_powercfg_is_a_failure() {
+        let refused = crate::utils::decode::decode_output(include_bytes!(
+            "../../tests/fixtures/console/powercfg_setacvalueindex_missing_setting_de.bin"
+        ));
+        let mock = aspm_mock(CmdOutput::with_output(1, "", refused), aspm_off_query());
+        let module = WheaLoggerModule::with_runner(ModuleConfig::default(), Arc::new(mock));
+        let err = module.fix("whea_pcie_bus_error", None).await.unwrap_err();
+        assert!(err.contains("exit code Some(1)"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn aspm_that_stays_on_is_a_failure() {
+        let mock = aspm_mock(CmdOutput::ok(""), real_aspm_query());
+        let module = WheaLoggerModule::with_runner(ModuleConfig::default(), Arc::new(mock));
+        let err = module.fix("whea_pcie_bus_error", None).await.unwrap_err();
         assert!(
-            exec.iter()
-                .any(|cmd| cmd.contains("powercfg.exe") && cmd.contains("SUB_PCIEXPRESS"))
+            err.contains("still reads 1 on mains and 2 on battery"),
+            "{err}"
         );
     }
 
@@ -820,7 +909,8 @@ mod tests {
         let issue = &issues[0];
         assert_eq!(issue.id, "whea_cpu_cache_error");
         assert_eq!(issue.severity, Severity::Critical);
-        assert_eq!(issue.risk_score, RiskScore::Medium);
+        assert_eq!(issue.risk_score, RiskScore::High);
+        assert!(issue.requires_reboot && !issue.is_selected);
         assert!(issue.title.contains("APIC ID 0"));
         assert!(issue.technical_details.contains("MCABank 22"));
     }
@@ -853,11 +943,11 @@ mod tests {
     #[tokio::test]
     async fn a_memory_test_that_did_not_start_is_not_a_repair() {
         let mock = MockCommandRunner::new();
-        mock.add_response("mdsched.exe", CmdOutput::failed(1, ""));
+        mock.add_response("bcdedit.exe", CmdOutput::failed(1, ""));
         let module = WheaLoggerModule::with_runner(ModuleConfig::default(), Arc::new(mock));
 
         let res = module.fix("whea_memory_error", None).await;
-        assert!(res.unwrap_err().contains("could not be started"));
+        assert!(res.unwrap_err().contains("could not be scheduled"));
     }
 
     #[tokio::test]

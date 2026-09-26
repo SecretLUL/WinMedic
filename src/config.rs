@@ -180,7 +180,10 @@ impl AppConfig {
             }
         };
 
-        match serde_json::from_str(&data) {
+        // PowerShell 5.1's `Set-Content -Encoding UTF8` and Notepad's "UTF-8 with
+        // BOM" start the file with a byte order mark, which serde_json rejects:
+        // such a file was moved aside as corrupt.
+        match serde_json::from_str(data.strip_prefix('\u{feff}').unwrap_or(&data)) {
             Ok(cfg) => (cfg, ConfigStatus::Loaded),
             Err(e) => {
                 let error = format!("{} is malformed: {}", CONFIG_FILE_NAME, e);
@@ -454,6 +457,21 @@ mod tests {
         // And the unusable file is gone from the live path, so the next save
         // writes a clean config rather than appending to wreckage.
         assert!(!dir.config().exists());
+    }
+
+    /// What PowerShell 5.1 writes with `Set-Content -Encoding UTF8`.
+    #[test]
+    fn a_byte_order_mark_is_not_corruption() {
+        let dir = TempDir::new("bom");
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend(br#"{"create_vss_before_repair": false}"#);
+        std::fs::write(dir.config(), bytes).unwrap();
+
+        let (cfg, status) = AppConfig::load_from(&dir.config());
+
+        assert_eq!(status, ConfigStatus::Loaded);
+        assert!(!cfg.create_vss_before_repair);
+        assert!(dir.corrupt_copies().is_empty());
     }
 
     #[test]
