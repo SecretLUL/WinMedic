@@ -1,7 +1,10 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
+use crate::modules::system_cleaner::{
+    CleanStats, clean_path_contents, cleanup_result, format_bytes,
+};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
 use crate::utils::admin::is_admin;
-use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
+use crate::utils::cmd::{CommandRunner, SystemCommandRunner, ps_single_quoted};
 use crate::utils::debug_log::DebugTrace;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,6 +15,21 @@ use tokio::time::sleep;
 pub struct StorageModule {
     config: ModuleConfig,
     runner: Arc<dyn CommandRunner>,
+    /// `%TEMP%` and `%SystemRoot%\Temp`.
+    temp_dirs: Vec<PathBuf>,
+    /// `%LOCALAPPDATA%\Microsoft\Windows\Explorer`, where the icon cache is.
+    explorer_dir: Option<PathBuf>,
+}
+
+/// The icon cache files Explorer keeps: `iconcache_16.db`,
+/// `iconcache_256.db`, ... A few dozen MB is normal.
+const ICON_CACHE_PATTERN: &str = "iconcache_*.db";
+/// Above this the icon cache is not just large but broken.
+const ICON_CACHE_LIMIT_BYTES: u64 = 256 * 1024 * 1024;
+
+fn is_icon_cache_file(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.starts_with("iconcache_") && name.ends_with(".db")
 }
 
 impl StorageModule {
@@ -20,7 +38,60 @@ impl StorageModule {
     }
 
     pub fn with_runner(config: ModuleConfig, runner: Arc<dyn CommandRunner>) -> Self {
-        Self { config, runner }
+        let temp_dirs = [
+            std::env::var_os("TEMP").map(PathBuf::from),
+            std::env::var_os("SystemRoot").map(|root| PathBuf::from(root).join("Temp")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let explorer_dir = std::env::var_os("LOCALAPPDATA")
+            .map(|local| PathBuf::from(local).join(r"Microsoft\Windows\Explorer"));
+        Self::with_paths(config, runner, temp_dirs, explorer_dir)
+    }
+
+    /// Build a module that measures and deletes under explicit folders: a
+    /// test that cleans `%TEMP%` would empty the temp folder of whoever runs
+    /// it.
+    pub fn with_paths(
+        config: ModuleConfig,
+        runner: Arc<dyn CommandRunner>,
+        temp_dirs: Vec<PathBuf>,
+        explorer_dir: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            config,
+            runner,
+            temp_dirs,
+            explorer_dir,
+        }
+    }
+
+    /// The icon cache files and their size together.
+    fn icon_cache(&self) -> (usize, u64) {
+        let Some(dir) = &self.explorer_dir else {
+            return (0, 0);
+        };
+        std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|e| is_icon_cache_file(&e.file_name().to_string_lossy()))
+                    .filter_map(|e| e.metadata().ok())
+                    .filter(|m| m.is_file())
+                    .fold((0, 0), |(count, bytes), m| (count + 1, bytes + m.len()))
+            })
+            .unwrap_or((0, 0))
+    }
+
+    /// Stops Explorer, deletes the icon cache while nothing holds it (Windows
+    /// starts Explorer again by itself within seconds, so it tries for a
+    /// while), starts Explorer if it is not back, and prints `freed|left`.
+    fn icon_cache_script(dir: &Path) -> String {
+        format!(
+            "$dir = {}; $freed = 0; Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue; for ($i = 0; $i -lt 20; $i++) {{ $files = @(Get-ChildItem -LiteralPath $dir -Filter '{ICON_CACHE_PATTERN}' -File -ErrorAction SilentlyContinue); if ($files.Count -eq 0) {{ break }}; foreach ($f in $files) {{ $len = $f.Length; try {{ Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop; $freed += $len }} catch {{ }} }}; Start-Sleep -Milliseconds 250 }}; $left = @(Get-ChildItem -LiteralPath $dir -Filter '{ICON_CACHE_PATTERN}' -File -ErrorAction SilentlyContinue).Count; if (-not (Get-Process -Name explorer -ErrorAction SilentlyContinue)) {{ Start-Process explorer }}; '{{0}}|{{1}}' -f $freed, $left",
+            ps_single_quoted(&dir.to_string_lossy())
+        )
     }
 
     async fn send_progress(
@@ -39,11 +110,6 @@ impl StorageModule {
                 })
                 .await;
         }
-    }
-
-    fn calculate_dir_size_mb(path: &Path) -> (u64, usize) {
-        let stats = crate::utils::fs_stats::dir_stats_recursive(path);
-        (stats.bytes / (1024 * 1024), stats.files)
     }
 }
 
@@ -83,53 +149,31 @@ impl DiagnosticModule for StorageModule {
 
         let dbg = DebugTrace::scan(self.id(), progress_tx.clone(), self.config.verbose_logging);
 
-        // WMI first: `DirtyBitSet` is a boolean, the same on every Windows.
-        // fsutil answers in a sentence in the display language, which only the
-        // English and German wordings below can read; it stays as the fallback
-        // for a machine whose WMI does not answer.
-        let wmi_verdict = dbg
-            .run_powershell(&self.runner, DIRTY_BIT_SCRIPT, Duration::from_secs(10))
-            .await
-            .ok()
-            .filter(|out| out.success)
-            .and_then(|out| parse_dirty_bit_set(&out.stdout));
-        let dirty_check: Option<(bool, String)> = match wmi_verdict {
-            Some(dirty) => Some((
-                dirty,
-                format!(
-                    "Win32_Volume C: DirtyBitSet = {}",
-                    if dirty { "True" } else { "False" }
-                ),
-            )),
-            None => match dbg
-                .run(
-                    &self.runner,
-                    "fsutil.exe",
-                    &["dirty", "query", "C:"],
-                    Duration::from_secs(6),
-                )
-                .await
-            {
-                Ok(out) if out.success => Some((volume_is_dirty(&out.stdout), out.stdout)),
-                _ => None,
-            },
-        };
-        if let Some((verdict, evidence)) = dirty_check {
+        if let Some((verdict, evidence)) = self.dirty_bit(&dbg).await {
             dbg.kv("dirty bit", if verdict { "set" } else { "clear" })
                 .await;
             if verdict {
-                issues.push(Issue::new(
-                    "storage_dirty_bit",
-                    self.id(),
-                    "File system inconsistency on system drive C: (dirty bit set)",
-                    "Storage & File System",
-                    Severity::Critical,
-                    RiskScore::Medium,
-                    "Drive C: has the file system integrity flag ('dirty bit') set. That points to incompletely written sectors or abrupt shutdowns.",
-                    evidence,
-                    "Run a file system check via 'chkdsk C: /scan'",
-                    vec!["Run chkdsk C: /scan online".to_string()],
-                ));
+                // chkdsk /scan checks and fixes what it can while Windows
+                // runs; the flag itself is cleared by the check Windows makes
+                // before it starts, which the flag schedules.
+                issues.push(
+                    Issue::new(
+                        "storage_dirty_bit",
+                        self.id(),
+                        "File system inconsistency on system drive C: (dirty bit set)",
+                        "Storage & File System",
+                        Severity::Critical,
+                        RiskScore::Medium,
+                        "Drive C: has the file system integrity flag ('dirty bit') set. That points to incompletely written sectors or abrupt shutdowns.",
+                        evidence,
+                        "Check the drive with 'chkdsk C: /scan', then restart so Windows checks it before it starts",
+                        vec![
+                            "Run chkdsk C: /scan online".to_string(),
+                            "Restart Windows".to_string(),
+                        ],
+                    )
+                    .with_requires_reboot(true),
+                );
             } else {
                 Self::send_progress(
                     &progress_tx,
@@ -209,47 +253,51 @@ impl DiagnosticModule for StorageModule {
         .await;
         sleep(Duration::from_millis(150)).await;
 
-        let mut total_temp_mb = 0;
-        let mut total_temp_files = 0;
+        let (temp_bytes, temp_files) = self
+            .temp_dirs
+            .iter()
+            .map(|dir| crate::utils::fs_stats::dir_stats_recursive(dir))
+            .fold((0u64, 0usize), |(bytes, files), s| {
+                (bytes + s.bytes, files + s.files)
+            });
+        let temp_size = format_bytes(temp_bytes);
 
-        if let Ok(temp_env) = std::env::var("TEMP") {
-            let (mb, count) = Self::calculate_dir_size_mb(Path::new(&temp_env));
-            total_temp_mb += mb;
-            total_temp_files += count;
-        }
-
-        let win_temp = Path::new(r"C:\Windows\Temp");
-        if win_temp.exists() {
-            let (mb, count) = Self::calculate_dir_size_mb(win_temp);
-            total_temp_mb += mb;
-            total_temp_files += count;
-        }
-
-        if total_temp_mb > self.config.temp_clean_threshold_mb {
-            issues.push(Issue::new(
-                "storage_temp_bloat",
-                self.id(),
-                format!("Found {} MB of temporary junk files ({} files)", total_temp_mb, total_temp_files),
-                "Storage & File System",
-                Severity::Warning,
-                RiskScore::Low,
-                format!("The system and user temp directories hold {} MB of stale temporary files taking up disk space.", total_temp_mb),
-                format!("Temp size: {} MB across {} files", total_temp_mb, total_temp_files),
-                "Safely clean temporary files (locked files are skipped)",
-                vec![
-                    "Clean the user temp directory (%TEMP%)".to_string(),
-                    "Clean the Windows temp directory (C:\\Windows\\Temp)".to_string(),
-                ],
-            )
-            .with_reclaimable_bytes(total_temp_mb * 1024 * 1024));
+        if temp_bytes > self.config.temp_clean_threshold_mb * 1024 * 1024 {
+            issues.push(
+                Issue::new(
+                    "storage_temp_bloat",
+                    self.id(),
+                    format!("Found {temp_size} of temporary files ({temp_files} files)"),
+                    "Storage & File System",
+                    Severity::Warning,
+                    RiskScore::Low,
+                    format!(
+                        "The temp folders hold {temp_size} of temporary files taking up disk space."
+                    ),
+                    format!(
+                        "Temp size: {temp_size} across {temp_files} files\n{}",
+                        self.temp_dirs
+                            .iter()
+                            .map(|d| d.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    ),
+                    "Clean the temporary files (files in use are skipped)",
+                    self.temp_dirs
+                        .iter()
+                        .map(|d| format!("Clean {}", d.display()))
+                        .collect(),
+                )
+                .with_reclaimable_bytes(temp_bytes),
+            );
         } else {
             Self::send_progress(
                 &progress_tx,
                 88,
                 "Temporary files within the normal range",
                 Some(&format!(
-                    "Temp files: {} MB ({} files), threshold is {} MB.",
-                    total_temp_mb, total_temp_files, self.config.temp_clean_threshold_mb
+                    "Temp files: {temp_size} ({temp_files} files), threshold is {} MB.",
+                    self.config.temp_clean_threshold_mb
                 )),
             )
             .await;
@@ -265,28 +313,32 @@ impl DiagnosticModule for StorageModule {
         .await;
         sleep(Duration::from_millis(150)).await;
 
-        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-            let icon_cache = PathBuf::from(&local_app_data).join("IconCache.db");
-            if icon_cache.exists()
-                && let Ok(meta) = icon_cache.metadata()
-                && meta.len() > 25 * 1024 * 1024
-            {
-                issues.push(Issue::new(
-                            "storage_icon_cache_bloated",
-                            self.id(),
-                            "Icon & thumbnail cache is oversized / corrupt",
-                            "Storage & File System",
-                            Severity::Info,
-                            RiskScore::Low,
-                            "The Windows icon cache exceeds 25 MB. That causes broken or blank icons in the taskbar and in Explorer.",
-                            format!("IconCache.db size: {} MB", meta.len() / (1024 * 1024)),
-                            "Rebuild the icon and thumbnail cache cleanly",
-                            vec![
-                                "Restart the Explorer process".to_string(),
-                                "Reset IconCache.db".to_string(),
-                            ],
-                        ));
-            }
+        // `%LOCALAPPDATA%\IconCache.db`, which this used to measure, is the
+        // cache of Windows 7; since Windows 8 it stays a few KB.
+        let (icon_files, icon_bytes) = self.icon_cache();
+        if icon_bytes > ICON_CACHE_LIMIT_BYTES {
+            let mut issue = Issue::new(
+                "storage_icon_cache_bloated",
+                self.id(),
+                format!("The icon cache has grown to {}", format_bytes(icon_bytes)),
+                "Storage & File System",
+                Severity::Info,
+                RiskScore::Low,
+                "A few dozen MB is normal for the icon cache; this much usually means it is damaged, which shows as blank or wrong icons. Rebuilding it restarts Explorer: the taskbar disappears for a few seconds.",
+                format!(
+                    "{} in {} {ICON_CACHE_PATTERN} files",
+                    format_bytes(icon_bytes),
+                    icon_files
+                ),
+                "Rebuild the icon cache (restarts Explorer)",
+                vec![
+                    "Stop Explorer".to_string(),
+                    format!("Delete {ICON_CACHE_PATTERN}"),
+                    "Start Explorer again".to_string(),
+                ],
+            );
+            issue.is_selected = false;
+            issues.push(issue);
         }
 
         Self::send_progress(
@@ -324,7 +376,7 @@ impl DiagnosticModule for StorageModule {
                         &self.runner,
                         "chkdsk.exe",
                         &["C:", "/scan"],
-                        Duration::from_secs(120),
+                        crate::modules::SERVICING_TIMEOUT,
                     )
                     .await
                     .map_err(|err| {
@@ -338,116 +390,132 @@ impl DiagnosticModule for StorageModule {
                         )
                     })?;
 
-                match out.exit_code {
-                    Some(0) => {
-                        Ok("File system check (chkdsk /scan) finished without errors.".to_string())
-                    }
+                // 3 means errors chkdsk cannot fix while Windows runs; any
+                // other code is no verdict. Only 0 to 2 are a check that ran.
+                let found = match out.exit_code {
+                    Some(code @ 0..=2) => chkdsk_exit_meaning(code),
                     Some(code) => {
                         dbg.hint(chkdsk_exit_meaning(code)).await;
-                        Ok(format!(
-                            "chkdsk /scan finished with exit code {} ({}).",
-                            code,
+                        return Err(format!(
+                            "chkdsk /scan finished with exit code {code}: {}. Restart Windows: it checks the drive before it starts.",
                             chkdsk_exit_meaning(code)
-                        ))
+                        ));
                     }
-                    None => Ok("chkdsk /scan ended without reporting an exit code.".to_string()),
+                    None => {
+                        return Err(
+                            "chkdsk /scan ended without an exit code; the drive was not checked."
+                                .to_string(),
+                        );
+                    }
+                };
+                match self.dirty_bit(&dbg).await {
+                    Some((false, _)) => Ok(format!("chkdsk /scan: {found}. The flag is cleared.")),
+                    _ => Ok(format!(
+                        "chkdsk /scan: {found}. Restart Windows: it checks the drive before it starts and clears the flag."
+                    )),
                 }
             }
+            // Counted in bytes, file by file, through the sweep the cleaner
+            // uses. In whole MB per file, everything below 1 MB counted as
+            // nothing and the message named a fraction of what was freed.
             "storage_temp_bloat" => {
-                let mut freed_mb = 0;
-                let mut deleted_files = 0;
-                let mut locked = 0;
-
-                let dirs_to_clean = [
-                    std::env::var("TEMP").unwrap_or_default(),
-                    r"C:\Windows\Temp".to_string(),
-                ];
-
                 dbg.section("sweeping temp directories").await;
-                for dir_str in dirs_to_clean {
-                    if dir_str.is_empty() {
-                        dbg.warn("TEMP is not set for this process - skipping that directory")
-                            .await;
-                        continue;
-                    }
-                    let dir = Path::new(&dir_str);
+                let mut total = CleanStats::default();
+                for dir in &self.temp_dirs {
                     dbg.path("directory", dir).await;
-                    match std::fs::read_dir(dir) {
-                        Ok(entries) => {
-                            for entry in entries.flatten() {
-                                let path = entry.path();
-                                if let Ok(meta) = path.metadata() {
-                                    let size = meta.len();
-                                    if path.is_file() {
-                                        match std::fs::remove_file(&path) {
-                                            Ok(()) => {
-                                                freed_mb += size / (1024 * 1024);
-                                                deleted_files += 1;
-                                            }
-                                            Err(err) => {
-                                                locked += 1;
-                                                dbg.warn(format!(
-                                                    "locked: {} ({})",
-                                                    path.display(),
-                                                    err
-                                                ))
-                                                .await;
-                                            }
-                                        }
-                                    } else if path.is_dir() {
-                                        let _ = std::fs::remove_dir_all(&path);
-                                    }
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            dbg.warn(format!("cannot list {}: {}", dir.display(), err))
-                                .await;
-                        }
-                    }
+                    let dir = dir.clone();
+                    let stats = tokio::task::spawn_blocking(move || clean_path_contents(&dir))
+                        .await
+                        .map_err(|e| format!("The temp sweep stopped: {e}"))?;
+                    total.freed_bytes += stats.freed_bytes;
+                    total.deleted_files += stats.deleted_files;
+                    total.skipped_locked += stats.skipped_locked;
+                    total.locked_bytes += stats.locked_bytes;
                 }
-                dbg.kv(
-                    "result",
-                    format!("{} deleted, {} locked", deleted_files, locked),
-                )
-                .await;
-                Ok(format!(
-                    "Temporary directories cleaned: {} files removed (about {} MB freed).",
-                    deleted_files, freed_mb
-                ))
+                cleanup_result("Temporary files cleaned", total)
             }
+            // Explorer holds the cache open, so it is stopped first; deleting
+            // before that, as this used to, deleted nothing.
             "storage_icon_cache_bloated" => {
-                dbg.section("resetting the icon cache").await;
-                if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-                    let icon_cache = PathBuf::from(&local_app_data).join("IconCache.db");
-                    dbg.path("IconCache.db", &icon_cache).await;
-                    if icon_cache.exists()
-                        && let Err(err) = std::fs::remove_file(&icon_cache)
-                    {
-                        dbg.warn(format!("could not delete IconCache.db: {}", err))
-                            .await;
-                    }
-                } else {
-                    dbg.warn("LOCALAPPDATA is not set - the icon cache path is unknown")
-                        .await;
-                }
-                let _ = dbg
-                    .run(
+                dbg.section("rebuilding the icon cache").await;
+                let Some(dir) = &self.explorer_dir else {
+                    return Err(
+                        "LOCALAPPDATA is not set, so the icon cache cannot be found.".to_string(),
+                    );
+                };
+                dbg.path("icon cache", dir).await;
+                let out = dbg
+                    .run_powershell(
                         &self.runner,
-                        "powershell.exe",
-                        &[
-                            "-NoProfile",
-                            "-Command",
-                            "Stop-Process -Name explorer -Force; Start-Process explorer",
-                        ],
-                        Duration::from_secs(8),
+                        &Self::icon_cache_script(dir),
+                        Duration::from_secs(30),
                     )
-                    .await;
-                Ok("Icon & thumbnail cache reset and Explorer restarted successfully.".to_string())
+                    .await?;
+                let counts = out
+                    .stdout
+                    .lines()
+                    .rev()
+                    .find_map(|line| line.trim().split_once('|'))
+                    .and_then(|(freed, left)| {
+                        Some((freed.parse::<u64>().ok()?, left.parse::<usize>().ok()?))
+                    });
+                match counts {
+                    Some((freed, 0)) => Ok(format!(
+                        "Icon cache rebuilt: {} deleted, Explorer restarted.",
+                        format_bytes(freed)
+                    )),
+                    Some((_, left)) => Err(format!(
+                        "{left} icon cache file(s) stayed in use and were not deleted. Sign out and in again, then try once more."
+                    )),
+                    None => Err(format!(
+                        "The icon cache could not be rebuilt (exit code {:?}): {}",
+                        out.exit_code,
+                        out.stderr.trim()
+                    )),
+                }
             }
             // A SMART warning is hardware wear and advice only: only a drive
             // replacement clears it, so a repair run never asks.
             _ => Err(format!("Unknown issue ID: {}", issue_id)),
+        }
+    }
+}
+
+impl StorageModule {
+    /// Whether C:'s dirty bit is set, and what said so; `None` when neither
+    /// WMI nor fsutil would tell.
+    ///
+    /// WMI first: `DirtyBitSet` is a boolean, the same on every Windows.
+    /// fsutil answers in a sentence in the display language, which only the
+    /// English and German wordings below can read; it stays as the fallback
+    /// for a machine whose WMI does not answer.
+    async fn dirty_bit(&self, dbg: &DebugTrace) -> Option<(bool, String)> {
+        let wmi_verdict = dbg
+            .run_powershell(&self.runner, DIRTY_BIT_SCRIPT, Duration::from_secs(10))
+            .await
+            .ok()
+            .filter(|out| out.success)
+            .and_then(|out| parse_dirty_bit_set(&out.stdout));
+        match wmi_verdict {
+            Some(dirty) => Some((
+                dirty,
+                format!(
+                    "Win32_Volume C: DirtyBitSet = {}",
+                    if dirty { "True" } else { "False" }
+                ),
+            )),
+            None => match dbg
+                .run(
+                    &self.runner,
+                    "fsutil.exe",
+                    &["dirty", "query", "C:"],
+                    Duration::from_secs(6),
+                )
+                .await
+            {
+                Ok(out) if out.success => Some((volume_is_dirty(&out.stdout), out.stdout)),
+                _ => None,
+            },
         }
     }
 }
@@ -687,13 +755,14 @@ mod tests {
 
     /// Exit code 3 means chkdsk found damage it could not repair online. Folding
     /// that into a bare "chkdsk ran" hid the one outcome that needs a reboot.
+    /// It is no repair either: the finding stays.
     #[tokio::test]
     async fn an_unrepairable_volume_is_named_in_the_result() {
         let mock = MockCommandRunner::new();
         mock.add_response("chkdsk.exe", CmdOutput::failed(3, ""));
 
         let module = StorageModule::with_runner(ModuleConfig::default(), Arc::new(mock));
-        let msg = module.fix("storage_dirty_bit", None).await.unwrap();
+        let msg = module.fix("storage_dirty_bit", None).await.unwrap_err();
 
         assert!(msg.contains("exit code 3"), "{}", msg);
         assert!(msg.contains("offline check"), "{}", msg);
@@ -746,5 +815,148 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A folder under the temp directory, removed when dropped.
+    struct Sandbox(PathBuf);
+
+    impl Sandbox {
+        fn new(tag: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("winmedic_storage_{tag}_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for Sandbox {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn sandboxed(
+        temp: &Sandbox,
+        explorer: Option<&Sandbox>,
+        mock: &MockCommandRunner,
+    ) -> StorageModule {
+        let config = ModuleConfig {
+            temp_clean_threshold_mb: 0,
+            ..ModuleConfig::default()
+        };
+        StorageModule::with_paths(
+            config,
+            Arc::new(mock.clone()),
+            vec![temp.0.clone()],
+            explorer.map(|e| e.0.clone()),
+        )
+    }
+
+    /// Three files of 100 KB each: every one of them counted as 0 MB before.
+    #[tokio::test]
+    async fn small_temp_files_count_in_what_is_freed() {
+        let temp = Sandbox::new("temp_small");
+        for name in ["a.tmp", "b.tmp", "c.tmp"] {
+            std::fs::write(temp.0.join(name), vec![0u8; 100 * 1024]).unwrap();
+        }
+        let mock = MockCommandRunner::with_default_success();
+        let module = sandboxed(&temp, None, &mock);
+
+        let issues = module.scan(None).await.unwrap();
+        let issue = issues
+            .iter()
+            .find(|i| i.id == "storage_temp_bloat")
+            .unwrap();
+        assert_eq!(issue.reclaimable_bytes, Some(300 * 1024));
+
+        let msg = module.fix("storage_temp_bloat", None).await.unwrap();
+        assert!(msg.contains("3 files deleted (300.0 KB freed"), "{msg}");
+        assert_eq!(std::fs::read_dir(&temp.0).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_icon_cache_is_measured_where_explorer_keeps_it() {
+        let temp = Sandbox::new("icon_temp");
+        let explorer = Sandbox::new("icon_explorer");
+        let big = std::fs::File::create(explorer.0.join("iconcache_256.db")).unwrap();
+        big.set_len(ICON_CACHE_LIMIT_BYTES + 1).unwrap();
+        drop(big);
+        std::fs::write(explorer.0.join("thumbcache_256.db"), b"not the icon cache").unwrap();
+        let mock = MockCommandRunner::with_default_success();
+
+        let issues = sandboxed(&temp, Some(&explorer), &mock)
+            .scan(None)
+            .await
+            .unwrap();
+        let issue = issues
+            .iter()
+            .find(|i| i.id == "storage_icon_cache_bloated")
+            .expect("256 MB of icon cache");
+        assert!(
+            issue
+                .technical_details
+                .contains("in 1 iconcache_*.db files")
+        );
+        assert!(!issue.is_selected, "it restarts Explorer");
+    }
+
+    #[tokio::test]
+    async fn a_normal_icon_cache_is_not_a_finding() {
+        let temp = Sandbox::new("icon_small_temp");
+        let explorer = Sandbox::new("icon_small_explorer");
+        std::fs::write(explorer.0.join("iconcache_32.db"), vec![0u8; 4096]).unwrap();
+        let mock = MockCommandRunner::with_default_success();
+        let issues = sandboxed(&temp, Some(&explorer), &mock)
+            .scan(None)
+            .await
+            .unwrap();
+        assert!(!issues.iter().any(|i| i.id == "storage_icon_cache_bloated"));
+    }
+
+    #[tokio::test]
+    async fn the_icon_cache_repair_reads_what_it_deleted() {
+        let temp = Sandbox::new("icon_fix_temp");
+        let explorer = Sandbox::new("icon_fix_explorer");
+        let mock = MockCommandRunner::new();
+        mock.add_response("iconcache_", CmdOutput::ok("80000000|0\r\n"));
+        let module = sandboxed(&temp, Some(&explorer), &mock);
+        let msg = module
+            .fix("storage_icon_cache_bloated", None)
+            .await
+            .unwrap();
+        assert!(msg.contains("76.3 MB deleted"), "{msg}");
+
+        let mock = MockCommandRunner::new();
+        mock.add_response("iconcache_", CmdOutput::ok("0|2\r\n"));
+        let module = sandboxed(&temp, Some(&explorer), &mock);
+        let err = module
+            .fix("storage_icon_cache_bloated", None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("2 icon cache file(s) stayed in use"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn the_icon_cache_script_parses() {
+        let script = StorageModule::icon_cache_script(Path::new(r"C:\Users\x\Explorer"));
+        assert_eq!(crate::utils::cmd::powershell_parse_errors(&script).await, 0);
+    }
+
+    #[tokio::test]
+    async fn a_check_that_ran_reads_the_flag_again() {
+        let mock = MockCommandRunner::new();
+        mock.add_response("chkdsk.exe", CmdOutput::ok(""));
+        mock.add_response("DirtyBitSet", CmdOutput::ok("True"));
+        let module = StorageModule::with_runner(ModuleConfig::default(), Arc::new(mock.clone()));
+        let msg = module.fix("storage_dirty_bit", None).await.unwrap();
+        assert!(msg.contains("Restart Windows"), "{msg}");
+
+        let mock = MockCommandRunner::new();
+        mock.add_response("chkdsk.exe", CmdOutput::ok(""));
+        mock.add_response("DirtyBitSet", CmdOutput::ok("False"));
+        let module = StorageModule::with_runner(ModuleConfig::default(), Arc::new(mock));
+        let msg = module.fix("storage_dirty_bit", None).await.unwrap();
+        assert!(msg.contains("The flag is cleared"), "{msg}");
     }
 }

@@ -690,9 +690,30 @@ pub fn ps_single_quoted(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
+/// How many syntax errors PowerShell's parser finds in `script`, which it
+/// only parses, never runs. For the tests of scripts that change the
+/// machine and so cannot be run by a test.
+#[cfg(test)]
+pub(crate) async fn powershell_parse_errors(script: &str) -> usize {
+    let check = format!(
+        "$errors = $null; [void][System.Management.Automation.Language.Parser]::ParseInput({}, [ref]$null, [ref]$errors); $errors.Count",
+        ps_single_quoted(script)
+    );
+    let out = run_powershell(&check, Duration::from_secs(60))
+        .await
+        .expect("PowerShell starts");
+    out.stdout.trim().parse().expect("a count")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn the_parse_check_finds_a_broken_script() {
+        assert_eq!(powershell_parse_errors("Get-Date; '{0}' -f 1").await, 0);
+        assert!(powershell_parse_errors("foreach ($x in @(1) { $x").await > 0);
+    }
 
     #[tokio::test]
     async fn test_mock_command_runner() {
