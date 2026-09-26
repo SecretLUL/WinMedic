@@ -67,7 +67,7 @@ eframe = { version = "0.36", default-features = false, features = [
 egui_extras = "0.36"
 
 [build-dependencies]
-winres = "0.1"
+winresource = "0.1"
 
 [profile.release]
 opt-level = 3
