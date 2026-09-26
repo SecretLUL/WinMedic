@@ -3,7 +3,6 @@ use crate::modules::system_cleaner::{
     CleanStats, clean_path_contents, cleanup_result, format_bytes,
 };
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
-use crate::utils::admin::is_admin;
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner, ps_single_quoted};
 use crate::utils::debug_log::DebugTrace;
 use std::path::{Path, PathBuf};
@@ -362,8 +361,6 @@ impl DiagnosticModule for StorageModule {
         match issue_id {
             "storage_dirty_bit" => {
                 dbg.section("preflight for chkdsk").await;
-                dbg.kv("elevated", if is_admin() { "yes" } else { "no" })
-                    .await;
                 for candidate in chkdsk_candidates() {
                     dbg.path("chkdsk image", &candidate).await;
                 }
@@ -806,7 +803,6 @@ mod tests {
             if verbose {
                 let joined = traces.join("\n");
                 assert!(joined.contains("chkdsk.exe C: /scan"), "{}", joined);
-                assert!(joined.contains("elevated"), "{}", joined);
             } else {
                 assert!(
                     traces.is_empty(),

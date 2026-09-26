@@ -36,8 +36,8 @@ time: click *More info*, then *Run anyway*.
 
 ## How to use it
 
-1. **Start WinMedic.** Repairs need administrator rights; WinMedic offers to
-   restart itself with them.
+1. **Start WinMedic** and confirm the Windows prompt. WinMedic needs
+   administrator rights to check and repair Windows.
 2. **Click Scan now.** It takes a minute or two and changes nothing.
 3. **Click Repair.** WinMedic fixes what it can and tells you if Windows needs
    a restart.
@@ -96,7 +96,8 @@ WinMedic collects no data and has no telemetry. It goes online only for this:
 
 ## For IT admins
 
-WinMedic also runs without its window, for scripts and remote support:
+WinMedic also runs without its window, for scripts and remote support, from a
+console started as Administrator:
 
 ```powershell
 winmedic --scan                        # check and print the findings

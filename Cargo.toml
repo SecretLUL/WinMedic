@@ -21,6 +21,9 @@ path = "src/lib.rs"
 [[bin]]
 name = "winmedic"
 path = "src/main.rs"
+# Its tests live in the library. The test executable of the binary carries the
+# binary's Administrator manifest (build.rs), so it would not start unelevated.
+test = false
 
 [dependencies]
 async-trait = "0.1"

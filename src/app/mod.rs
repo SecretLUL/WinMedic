@@ -69,8 +69,6 @@ pub enum BackgroundEvent {
         message: String,
     },
     UpdateChecked(Option<UpdateInfo>),
-    /// UAC was answered: the elevated WinMedic started, or why not.
-    ElevationAnswered(Result<(), String>),
     /// One step of an in-place update, for the status line.
     UpdateInstallStep(String),
     /// An in-place update finished, one way or the other.

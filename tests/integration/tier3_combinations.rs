@@ -679,7 +679,6 @@ async fn test_tier3_dry_run_flag_in_app_state() {
 #[tokio::test]
 async fn test_tier3_update_check_with_subsequent_triage_cleanup() {
     let mut app = App::new();
-    app.pending_confirm = None;
 
     // 1. Update detected on startup
     let info = UpdateInfo {

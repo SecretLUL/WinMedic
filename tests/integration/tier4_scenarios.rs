@@ -246,7 +246,6 @@ async fn test_scenario_3_startup_update_modal_and_confirm() {
 async fn test_scenario_4_disabled_update_check_workflow() {
     let mut app = App::new();
     app.config.check_for_updates = false;
-    app.pending_confirm = None;
 
     // Verify no background update modal appears when disabled
     assert!(app.pending_confirm.is_none());
@@ -341,36 +340,4 @@ async fn test_scenario_6_dism_german_locale_pipeline() {
     fixed_issues[0].is_fixed = true;
     let exit = exit_code::from_issues(&fixed_issues, 0);
     assert_eq!(exit, exit_code::OK);
-}
-
-// ============================================================================
-// SCENARIO 7: Non-admin / Elevation Safety Check across System Modules (F2, F3, F6, F9, F12)
-// ============================================================================
-
-#[test]
-fn test_scenario_7_non_admin_elevation_safety_check() {
-    // In headless auto-fix mode without admin and not dry-run, WinMedic enforces safety
-    let is_admin = false;
-    let auto_fix = true;
-    let dry_run = false;
-
-    let code = if auto_fix && !dry_run && !is_admin {
-        exit_code::NEEDS_ADMIN
-    } else {
-        exit_code::OK
-    };
-
-    assert_eq!(code, exit_code::NEEDS_ADMIN);
-    assert_eq!(
-        exit_code::describe(code),
-        "Administrator privileges required."
-    );
-
-    // When elevate flag is used, elevation request is initiated
-    let elevate = true;
-    let mut relaunch_requested = false;
-    if elevate && !is_admin {
-        relaunch_requested = true;
-    }
-    assert!(relaunch_requested);
 }

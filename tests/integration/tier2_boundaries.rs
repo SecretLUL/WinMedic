@@ -1210,14 +1210,6 @@ fn test_tier2_f15_confirm_request_rollback_labels() {
     assert_eq!(modal.dismiss_label(), "Cancel");
 }
 
-#[test]
-fn test_tier2_f15_confirm_request_elevate_labels() {
-    let modal = ConfirmRequest::Elevate;
-    assert_eq!(modal.title(), "ADMINISTRATOR PRIVILEGES REQUIRED");
-    assert_eq!(modal.confirm_label(), "Restart as Administrator now");
-    assert_eq!(modal.dismiss_label(), "Continue without Administrator");
-}
-
 // ============================================================================
 // FEATURE 16 BOUNDARIES: Default Browser Launch (F16)
 // ============================================================================

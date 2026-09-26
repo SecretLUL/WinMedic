@@ -14,6 +14,16 @@ fn main() {
     res.set("LegalCopyright", "Copyright (c) 2026 SecretLUL");
     res.compile()
         .expect("Failed to compile Windows PE resources");
+
+    // Nearly every check and every repair needs Administrator rights, so
+    // Windows asks for them before WinMedic starts. The linker writes the
+    // manifest rather than winresource, whose resources reach every target:
+    // a test executable demanding elevation would not start under an
+    // unelevated `cargo test`.
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        println!("cargo:rustc-link-arg-bin=winmedic=/MANIFEST:EMBED");
+        println!("cargo:rustc-link-arg-bin=winmedic=/MANIFESTUAC:level='requireAdministrator'");
+    }
 }
 
 #[cfg(not(windows))]

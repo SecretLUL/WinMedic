@@ -440,7 +440,7 @@ pub fn describe_os_error(code: i32) -> Option<OsErrorDescription> {
         740 => OsErrorDescription {
             name: "ELEVATION_REQUIRED",
             meaning: "the tool demands Administrator rights and WinMedic is not elevated",
-            likely_causes: &["WinMedic was started without elevation; restart it with '--elevate'"],
+            likely_causes: &["WinMedic was started without Administrator rights"],
         },
         1260 => OsErrorDescription {
             name: "ACCESS_DISABLED_BY_POLICY",

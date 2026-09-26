@@ -70,7 +70,7 @@ Settings live in the **`[2]` Settings** view and are persisted to `%APPDATA%\Win
 | Temp file threshold | `500 MB` | Size at which junk files are reported as an issue |
 | Event log window | `24 h` | How far back crash events are read (WHEA faults: at least a week) |
 | Verbose / debug logs | `off` | Adds command lines, timings and tool output to the scan and repair logs |
-| WinMedicHelper background scan | `off` | A scheduled task scans in the background while you are signed in; registered from WinMedic running as Administrator, it runs elevated too. A scan without Administrator rights never replaces one made with them |
+| WinMedicHelper background scan | `off` | A scheduled task scans in the background while you are signed in, with the highest rights |
 | WinMedicHelper scan frequency | `24 h` | Every 1–23 hours or every whole number of days |
 | Start WinMedic with Windows | `off` | Opens WinMedic minimized when you sign in |
 
@@ -181,10 +181,6 @@ winmedic.exe --json
 # Run fixes without creating a VSS restore point (e.g. for speed in VM testing)
 winmedic.exe --auto-fix --no-vss
 
-# Request Windows Administrator elevation. With --scan and the like, the elevated
-# run prints in a window of its own and this one returns its exit code
-winmedic.exe --elevate
-
 # Before deleting winmedic.exe: remove the background task and the "Start with Windows" entry
 winmedic.exe --uninstall
 
@@ -204,7 +200,7 @@ Headless runs report their outcome through `%ERRORLEVEL%`, so scripts and monito
 | `1` | Open warnings |
 | `2` | Open critical issues |
 | `3` | At least one repair failed |
-| `4` | `--auto-fix` requested without Administrator privileges, or `--elevate` declined at the UAC prompt |
+| `4` | Started without Administrator privileges |
 | `5` | Internal WinMedic error |
 | `6` | Run aborted with `Ctrl+C`; findings are incomplete |
 

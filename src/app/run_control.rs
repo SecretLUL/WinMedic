@@ -8,8 +8,6 @@ use std::time::Instant;
 use tokio::sync::mpsc::channel;
 use tokio_util::sync::CancellationToken;
 
-use super::confirm::ConfirmRequest;
-
 impl App {
     pub fn start_scan(&mut self) {
         if self.is_busy() {
@@ -49,12 +47,6 @@ impl App {
 
     pub fn start_repairs(&mut self) {
         if self.is_busy() {
-            return;
-        }
-
-        if !self.is_admin && !self.dry_run {
-            self.pending_confirm = Some(ConfirmRequest::Elevate);
-            self.status_message = Some("Repairs require Administrator privileges.".to_string());
             return;
         }
 

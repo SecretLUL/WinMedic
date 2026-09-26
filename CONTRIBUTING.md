@@ -7,8 +7,9 @@ get a higher bar than the rest.
 
 - **Windows.** `winreg` does not build anywhere else; a VM is fine.
 - **Rust 1.95 or newer**, the MSRV in `Cargo.toml` (set by `egui`/`eframe`).
-- **Administrator rights** only to try repairs by hand. The tests do not need
-  them.
+- **A terminal started as Administrator** for `cargo run`: the executable
+  demands Administrator rights and does not start without them. `cargo test`
+  does not need them.
 
 ## Before you push
 

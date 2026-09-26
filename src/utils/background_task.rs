@@ -121,15 +121,10 @@ fn register_helper_task(exe: &Path, frequency_hours: u32) -> Result<(), String> 
         schedule,
         "/mo",
         &modifier.to_string(),
-        // Without `/rl` a task runs with limited rights, and the checks that
-        // need Administrator rights (DISM, the dirty bit, minidumps) passed
-        // without having looked. Only an elevated WinMedic may ask for more.
+        // Without `/rl` a task runs with limited rights, and Windows refuses
+        // to start WinMedic, whose manifest demands Administrator rights.
         "/rl",
-        if crate::utils::admin::is_admin() {
-            "highest"
-        } else {
-            "limited"
-        },
+        "highest",
         "/f",
     ])?;
     check(output, "Could not create the scheduled task")
@@ -168,9 +163,9 @@ fn helper_task_is_current(exe: &Path) -> bool {
     };
     let exe = exe.display().to_string();
     let xml = xml.to_lowercase();
-    // A task registered with limited rights is registered again, elevated,
-    // once WinMedic runs as Administrator.
-    if crate::utils::admin::is_admin() && !xml.contains("<runlevel>highestavailable</runlevel>") {
+    // A task an older WinMedic registered with limited rights cannot start
+    // this one, so it is registered again with the highest.
+    if !xml.contains("<runlevel>highestavailable</runlevel>") {
         return false;
     }
     // schtasks writes the XML in the console code page, so a path outside ASCII

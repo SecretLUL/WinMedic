@@ -9,7 +9,7 @@
 //! That is Advanced mode. Easy mode draws its own page, [`super::easy`].
 
 use super::{easy, findings};
-use crate::app::{App, ConfirmRequest};
+use crate::app::App;
 use crate::engine::issue::Severity;
 use crate::gui::theme;
 use crate::modules::ModuleStatus;
@@ -259,26 +259,6 @@ fn actions(ui: &mut egui::Ui, app: &mut App, open: usize) {
 /// Things the user should know before acting, one line each.
 fn notices(ui: &mut egui::Ui, app: &mut App) {
     let palette = theme::palette(ui);
-
-    if !app.is_admin {
-        ui.add_space(4.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.colored_label(
-                palette.amber,
-                "Running without administrator rights: some checks are limited and repairs \
-                 need elevation.",
-            );
-            if ui
-                .add_enabled(
-                    !app.is_busy(),
-                    egui::Button::new("Restart as administrator"),
-                )
-                .clicked()
-            {
-                app.pending_confirm = Some(ConfirmRequest::Elevate);
-            }
-        });
-    }
 
     if !app.is_scanning {
         for (_, name, _, status) in &app.module_statuses {

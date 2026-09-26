@@ -105,8 +105,8 @@ impl WinMedicApp {
         let mut app = App::from_disk();
         // `App` builds an app that cannot touch the desktop. This is the
         // one place that wants it to: accepting the update dialog should really
-        // open a browser, accepting the elevation dialog should really raise
-        // UAC, and a repair run should really leave a restore point behind.
+        // open a browser, and a repair run should really leave a restore point
+        // behind.
         app.enable_real_system_actions();
         app.reconcile_background_integration();
         app.start_update_check();
@@ -376,18 +376,10 @@ mod tests {
     /// safety views, in Advanced mode.
     fn fresh_app() -> App {
         let mut app = App::new();
-        // `App::new` raises the elevation prompt when WinMedic is not running
-        // as Administrator, and that modal covers the view it is asked about.
-        app.pending_confirm = None;
-        // It also reads the mode from the developer's own config. Most of what
+        // `App::new` reads the mode from the developer's own config. Most of what
         // these tests look for is only drawn in Advanced mode; the Easy mode
         // tests below switch it off.
         app.config.advanced_mode = true;
-        // And whether this process is elevated, which differs between a
-        // developer's terminal and the CI runner, and with it whether the
-        // page carries the administrator notice. Fixed, so a test draws the
-        // same page on both.
-        app.is_admin = true;
         // It also restores the last scan from `%APPDATA%`, which on a machine
         // that has actually run WinMedic is a real one — and these tests
         // describe the state they want to draw. Start from nothing scanned.
@@ -728,15 +720,13 @@ mod tests {
     #[test]
     fn confirmation_blocks_clicks_on_the_navigation() {
         let mut app = fresh_app();
-        app.pending_confirm = Some(ConfirmRequest::Elevate);
+        app.pending_confirm = Some(ConfirmRequest::Unregister);
         let mut harness = window(app);
         harness.get_by_label("Settings").click();
         harness.run();
         assert_eq!(harness.state().active_tab, TAB_HOME);
         assert!(harness.state().pending_confirm.is_some());
-        harness
-            .get_by_label("Continue without Administrator")
-            .click();
+        harness.get_by_label("Cancel").click();
         harness.run();
         assert!(harness.state().pending_confirm.is_none());
     }
@@ -772,19 +762,17 @@ mod tests {
         for tab in 0..TAB_COUNT {
             let mut app = fresh_app();
             app.active_tab = tab;
-            app.pending_confirm = Some(ConfirmRequest::Elevate);
+            app.pending_confirm = Some(ConfirmRequest::Unregister);
 
             let harness = window(app);
             assert!(
                 harness
-                    .query_by_label_contains("ADMINISTRATOR PRIVILEGES REQUIRED")
+                    .query_by_label_contains("REMOVE WINMEDIC FROM WINDOWS?")
                     .is_some(),
-                "the elevation dialog is missing on view {tab}"
+                "the dialog is missing on view {tab}"
             );
             assert!(
-                harness
-                    .query_by_label_contains("Continue without Administrator")
-                    .is_some(),
+                harness.query_by_label("Cancel").is_some(),
                 "and offers no way out on view {tab}"
             );
         }
