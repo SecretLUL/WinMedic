@@ -1,0 +1,13 @@
+WINDOWS	Professional	26200	25H2
+MOUNTED	C:\Users\user\Downloads\Win11_25H2_German_x64_v2.iso
+ISO	D	C:\Users\user\Downloads\Win11_25H2_German_x64_v2.iso
+IMAGE	1	Core	10.0.26200.8037	de-DE	D:\sources\install.wim
+IMAGE	2	CoreN	10.0.26200.8037	de-DE	D:\sources\install.wim
+IMAGE	3	Education	10.0.26200.8037	de-DE	D:\sources\install.wim
+IMAGE	4	EducationN	10.0.26200.8037	de-DE	D:\sources\install.wim
+IMAGE	5	Professional	10.0.26200.8037	de-DE	D:\sources\install.wim
+IMAGE	6	ProfessionalN	10.0.26200.8037	de-DE	D:\sources\install.wim
+IMAGE	7	ProfessionalEducation	10.0.26200.8037	de-DE	D:\sources\install.wim
+IMAGE	8	ProfessionalEducationN	10.0.26200.8037	de-DE	D:\sources\install.wim
+IMAGE	9	ProfessionalWorkstation	10.0.26200.8037	de-DE	D:\sources\install.wim
+IMAGE	10	ProfessionalWorkstationN	10.0.26200.8037	de-DE	D:\sources\install.wim

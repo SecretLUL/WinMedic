@@ -59,6 +59,19 @@ of the pipe arrived:
 | `sfc_scannow_repaired_de.bin` | `sfc /scannow`, 80 seconds | UTF-16LE | "Der Windows-Ressourcenschutz hat beschädigte Dateien gefunden und erfolgreich repariert." Exit 0, like every SFC run captured here. |
 | `sfc_verifyonly_progress_de.bin` | `sfc /verifyonly` | UTF-16LE | The bar is one line redrawn after `\r`, `Überprüfung 26 % abgeschlossen.`, ended only at 100 %. SFC writes into a pipe in 4 KB blocks, which arrived after 16, 31, 49 and 57 seconds and reach 26, 55, 83 and 100 %; the first one stops mid-word. Exit code 0 although it reports integrity violations. |
 
+Captured elevated on 2026-09-25 with the German Windows 11 25H2 ISO from
+microsoft.com (`Win11_25H2_German_x64_v2.iso`, 7.9 GB, its images version
+10.0.26200.8037) in Downloads. The user folder name in the paths was replaced
+with `user`.
+
+| File | Command | Encoding | Notes |
+| --- | --- | --- | --- |
+| `powershell_install_media_mount.bin` | `install_media::find_script` with that ISO, not mounted yet | UTF-8 | `MOUNTED`, the ISO on `D`, and ten `IMAGE` lines from `Core` to `ProfessionalWorkstationN`: the edition id, not the name, tells Pro from Pro N. 27 seconds, most of it PowerShell preparing the storage and DISM modules. |
+| `powershell_install_media_mounted.bin` | the same with the ISO mounted already | UTF-8 | No `MOUNTED` line, so WinMedic leaves it mounted. |
+| `powershell_install_media_not_an_iso.bin` | the same with a text file named `not-an-iso.iso` | UTF-8 | `FAILED` with Windows' translated message. The real ISO was still mounted and is found as drive `D`. |
+| `dism_restorehealth_repair_content_missing.bin` | `dism /English /Online /Cleanup-Image /RestoreHealth /Source:wim:D:\sources\install.wim:5 /LimitAccess` | ASCII | Exit -2146498283, `Error: 0x800f0915` "The repair content could not be found anywhere.", after 81 seconds. CBS.log: 328 damaged payloads, all in 10.0.26100.1591 components that .9278 ones had replaced; the ISO holds neither version, so none was repaired. |
+| `dism_get_wiminfo_not_a_wim.bin` | `dism /English /Get-WimInfo /WimFile:C:\Windows\notepad.exe` | ASCII | Exit 11 for `Error: 11`: DISM exits with the code it prints, an HRESULT as the negative number above. |
+
 ## Files — `files/`
 
 | File | Content |
@@ -67,6 +80,8 @@ of the pipe arrived:
 | `cbs_sfc_verifyonly_found_damage.bin` | What the `sfc /verifyonly` run of `sfc_verifyonly_progress_de.bin` added to `C:\Windows\Logs\CBS\CBS.log`, cut out byte for byte (CRLF). Only `[SR] Verify` lines, then `DEPLOY [Pnp] Corrupt file: ...\BthA2dp.sys` and two more Bluetooth drivers: the damage SFC reported, in a format the older `[SR] Cannot repair member file` check never saw. |
 | `cbs_sfc_scannow_repaired.bin` | What `sfc /scannow` (`sfc_scannow_repaired_de.bin`) added to CBS.log, captured elevated on 2026-09-25: `[SR] Repairing 0 components`, then `Corrupt file:` and `Repaired file:` for each of the three drivers. |
 | `cbs_sfc_verifyonly_clean.bin` | What an `sfc /verifyonly` run right after it added: no `DEPLOY` line; SFC said "keine Integritätsverletzungen". |
+| `cbs_scanhealth_backups_missing.bin` | The report of a `DISM /ScanHealth` on 2026-09-25 at 11:01, cut from CBS.log byte for byte, from "Checking System Update Readiness." to "Total Operation Time". 328 `CSI Payload Corrupt (n)` lines, every one a file in a component's `r` folder (its reverse differential, a backup copy), and the summary "Total Detected Corruption: 328". The `/RestoreHealth` twenty minutes before had reported 2049 repaired, among them `SetComponentFileFlag(100)` for exactly these 328 files; none of them exists on disk. |
+| `cbs_restorehealth_backups_missing.bin` | The report of the `/RestoreHealth` from the ISO at 21:56 (`dism_restorehealth_repair_content_missing.bin`): the same 328 lines, each followed by "Repair failed: Missing replacement payload.", "Total Repaired Corruption: 0". The tests that need real damage next to them change one path so it is no longer in `r`. |
 | `hosts_blocking_update.bin` | The hosts file of the capture machine, byte for byte (UTF-8 with BOM, CRLF), its LAN address replaced with `192.168.1.10`. Next to telemetry blocks it blocks `fe3.delivery.mp.microsoft.com` — Windows Update's and the Store's metadata endpoint — and `ocsp.digicert.com`, which is what the hosts check exists to find. |
 
 The English DISM verdicts used in `src/modules/system_integrity.rs` are DISM's

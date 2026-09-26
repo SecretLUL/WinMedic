@@ -1,0 +1,682 @@
+2026-09-25 21:56:27, Info                  CBS    Checking System Update Readiness.
+2026-09-25 21:56:27, Info                  CBS    
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-w..ommand-line-utility_31bf3856ad364e35_10.0.26100.1150_none_3d9125d57cc0da9e\r\WMIC.exe
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			wow64_microsoft.ink_31bf3856ad364e35_10.0.26100.1455_none_2d133e9d84bb8579\r\Microsoft.Ink.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\app.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\appManager.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\helloEnrollmentPage.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\bridge.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\microsoftAccount.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\navigator.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\rewards.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\navigation.json
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\uriRules.json
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\oobehello-vm.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\oobelanguage-page.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\oobelanguage-vm.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\oobeerror-main.html
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\Microsoft.CloudExperienceHost.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\Microsoft.CloudExperienceHost.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\Family.Cache.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\MicrosoftAccount.TokenProvider.Core.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\MicrosoftAccount.TokenProvider.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\MicrosoftAccount.TokenProvider.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\MicrosoftAccount.Extension.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\MicrosoftAccount.UserOperations.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\userdeviceregistration.ngc.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\CloudDomainJoin.DataModel.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\CloudExperienceHostBroker.LocalNgc.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\CloudExperienceHostBroker.Account.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\CloudExperienceHostBroker.Hello.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\CloudExperienceHostBroker.SyncEngine.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\CloudExperienceHostBroker.Cortana.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\ContentManagement.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\CloudExperienceHostAPI.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\CloudExperienceHostBroker.RetailDemo.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\CloudExperienceHostAPI.SyncSettings.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\SystemSettings.DataModel.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\RetailDemo.Internal.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\resources.pri
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\UnifiedEnrollment.DataModel.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\enterprisedevicemanagement.enrollment.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\cloudexperiencehostapi.provisioning.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\microsoft.resourceaccountmanager.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\ApplicationTheme.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\WindowsUdk.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-c..riencehost.appxmain_31bf3856ad364e35_10.0.26100.1591_none_9e7873f8fda6cd33\r\GuidedSetup.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-s..settings-searchdata_31bf3856ad364e35_10.0.26100.1591_none_296b536d471b1fa3\r\AllSystemSettings_{FDB289F3-FCFC-4702-8015-18926E996EC1}.xml
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-b..ore-bootmanager-efi_31bf3856ad364e35_10.0.26100.1455_none_234757a24c629793\r\bootmgfw.efi
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-b..ore-bootmanager-efi_31bf3856ad364e35_10.0.26100.1455_none_234757a24c629793\r\bootmgfw_EX.efi
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-b..ore-bootmanager-efi_31bf3856ad364e35_10.0.26100.1455_none_234757a24c629793\r\SecureBootRecovery.efi
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-b..ore-bootmanager-efi_31bf3856ad364e35_10.0.26100.1455_none_234757a24c629793\r\bootmgr.efi
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft-windows-b..ore-bootmanager-efi_31bf3856ad364e35_10.0.26100.1455_none_234757a24c629793\r\bootmgr_EX.efi
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_microsoft.ink_31bf3856ad364e35_10.0.26100.1455_none_22be944b505ac37e\r\Microsoft.Ink.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_winappsdk-cbs_31bf3856ad364e35_10.0.26100.1591_none_60aad032a4073cbd\r\DeploymentAgent.exe
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_winappsdk-cbs_31bf3856ad364e35_10.0.26100.1591_none_60aad032a4073cbd\r\marshal.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_winappsdk-cbs_31bf3856ad364e35_10.0.26100.1591_none_60aad032a4073cbd\r\Microsoft.UI.Composition.OSSupport.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_winappsdk-cbs_31bf3856ad364e35_10.0.26100.1591_none_60aad032a4073cbd\r\Microsoft.UI.Windowing.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_winappsdk-cbs_31bf3856ad364e35_10.0.26100.1591_none_60aad032a4073cbd\r\Microsoft.Windows.ApplicationModel.Resources.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_winappsdk-cbs_31bf3856ad364e35_10.0.26100.1591_none_60aad032a4073cbd\r\Microsoft.Windows.Internal.Imaging.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_winappsdk-cbs_31bf3856ad364e35_10.0.26100.1591_none_60aad032a4073cbd\r\Microsoft.Windows.VisionInternal.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_winappsdk-cbs_31bf3856ad364e35_10.0.26100.1591_none_60aad032a4073cbd\r\Microsoft.Windows.Widgets.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_winappsdk-cbs_31bf3856ad364e35_10.0.26100.1591_none_60aad032a4073cbd\r\Microsoft.Windows.Widgets.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_winappsdk-cbs_31bf3856ad364e35_10.0.26100.1591_none_60aad032a4073cbd\r\Microsoft.WindowsAppRuntime.Bootstrap.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_winappsdk-cbs_31bf3856ad364e35_10.0.26100.1591_none_60aad032a4073cbd\r\Microsoft.WindowsAppRuntime.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_winappsdk-cbs_31bf3856ad364e35_10.0.26100.1591_none_60aad032a4073cbd\r\MRM.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_winappsdk-cbs_31bf3856ad364e35_10.0.26100.1591_none_60aad032a4073cbd\r\PushNotificationsLongRunningTask.ProxyStub.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_winappsdk-cbs_31bf3856ad364e35_10.0.26100.1591_none_60aad032a4073cbd\r\RestartAgent.exe
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_winappsdk-cbs_31bf3856ad364e35_10.0.26100.1591_none_60aad032a4073cbd\r\WindowsAppSdk.AppxDeploymentExtensions.Desktop-EventLog-Instrumentation.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\AppListBackup.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\appxblockmap.xml
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\appxmanifest.xml
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\BackupBanner.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\CopilotNudges.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\LogonWebHost.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\LogonWebHostProduct.exe
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\MicrosoftGraphRecentItemsManager.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\resources.pri
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\ScreenClipping.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\ScreenClippingHost.exe
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\SnapLauncherProtocol.exe
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\SnapLayout.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\accdb.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\archive.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\audio.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\calendar.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\code.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\contact.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\csv.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\docx.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\dotx.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\email.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\exe.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\fluid.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\folder.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\font.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\form.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\genericfile.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\html.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\link.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\model.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\mpp.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\mpt.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\one.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\onetoc.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\pdf.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\photo.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\potx.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\powerbi.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\ppsx.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\pptx.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\presentation.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\pub.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\rtf.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\splist.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\spo.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\spreadsheet.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\sway.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\sysfile.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\txt.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\vector.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\video.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\vsdx.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\vssx.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\vstx.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\whiteboard.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\xlsx.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\xltx.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\xml.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\xsn.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\24\zip.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\accdb.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\archive.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\audio.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\calendar.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\code.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\contact.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\csv.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\docx.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\dotx.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\email.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\exe.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\fluid.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\folder.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\font.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\form.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\genericfile.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\html.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\link.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\model.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\mpp.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\mpt.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\one.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\onetoc.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\pdf.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\photo.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\potx.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\powerbi.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\ppsx.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\pptx.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\presentation.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\pub.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\rtf.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\splist.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\spo.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\spreadsheet.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\sway.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\sysfile.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\txt.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\vector.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\video.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\vsdx.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\vssx.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\vstx.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\whiteboard.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\xlsx.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\xltx.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\xml.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\xsn.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\StartMenu\Assets\FileIcons\32\zip.svg
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\SystemSettingsExtensions.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-core_31bf3856ad364e35_10.0.26100.1591_none_53ec4fcd7ac99448\r\Core\Taskbar.View.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\AccountsService.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\AccountsService.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\appxblockmap.xml
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\appxmanifest.xml
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\CommandExecutor.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.Internal.Search.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.Search.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.Settings.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\11.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\12.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\13.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\14.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\15.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\16.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\17.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\18.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\19.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\2.html
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\20.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\21.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\22.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\23.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\24.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\25.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\26.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\27.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\28.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\29.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\30.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\31.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\32.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\33.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\34.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\4.css
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\5.css
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\8.css
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\SVLocal\Desktop\9.css
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\11.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\12.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\13.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\14.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\15.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\16.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\17.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\18.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\19.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\2.html
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\22.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\23.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\24.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\25.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\26.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\27.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\28.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\29.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\30.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\31.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\32.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\33.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\34.js
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\4.css
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\5.css
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\8.css
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Cortana.UI\cache\WV2Local\desktop\9.css
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\data\prod\navigation-scoobe.json
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\DefaultSettings.xml
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\DesktopSpotlight.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\DesktopSpotlight.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\DesktopStickerEditor.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\DesktopStickerEditorWin32Exe\DesktopStickerEditorWin32Exe.exe
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\FESearchHost.exe
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\FREUserInterface.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\FREUserInterface\Assets\Content\de-DE\CommandHelpWindowContent.json
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\FREUserInterface\Assets\Content\en-GB\CommandHelpWindowContent.json
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\FREUserInterface\Assets\Content\en-US\CommandHelpWindowContent.json
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\FREUserInterface\Assets\Content\es-ES\CommandHelpWindowContent.json
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\FREUserInterface\Assets\Content\es-MX\CommandHelpWindowContent.json
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\FREUserInterface\Assets\Content\fr-CA\CommandHelpWindowContent.json
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\FREUserInterface\Assets\Content\fr-FR\CommandHelpWindowContent.json
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\GetStarted.Eligibility.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\HardwareKeyboardUX.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\InputApp.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\IntentDefinitions\Strings\de-DE\IntentMapping.json
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\IntentDefinitions\Strings\en-GB\IntentMapping.json
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\IntentDefinitions\Strings\en-US\IntentMapping.json
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\IntentDefinitions\Strings\es-ES\IntentMapping.json
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\IntentDefinitions\Strings\es-MX\IntentMapping.json
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\IntentDefinitions\Strings\fr-CA\IntentMapping.json
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\IntentDefinitions\Strings\fr-FR\IntentMapping.json
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\IrisService.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\IrisService.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\LayoutData.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\LiveCaptions.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\LiveCaptionsBackend.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\LiveCaptionsDesktop.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\LiveCaptionsXamlApplication.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Microsoft.CognitiveServices.Speech.core.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Microsoft.CognitiveServices.Speech.extension.audio.sys.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Microsoft.CognitiveServices.Speech.extension.embedded.sr.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Microsoft.CognitiveServices.Speech.extension.embedded.sr.runtime.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Microsoft.CognitiveServices.Speech.extension.embedded.tts.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Microsoft.CognitiveServices.Speech.extension.lu.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Microsoft.CognitiveServices.Speech.extension.mas.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Microsoft.CognitiveServices.Speech.extension.onnxruntime.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\Microsoft.CognitiveServices.Speech.extension.telemetry.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\MiniSearchHost.exe
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\resources.pri
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\RulesEngine.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\SearchHost.exe
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\SearchUx.Core.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\SearchUx.InternalWebApi.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\SearchUx.MiniUI.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\SearchUx.Model.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\SearchUx.UI.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\SearchUx.WebApi.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\SmartActionsUX.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\SpeechRecognizer.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\SpeechSynthesizerExtension.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\TextInput.CarbonDictation.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\TextInput.DictationUI.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\TextInput.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\TextInputCommon.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\TextInputExtensions.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\TextInputHost.exe
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\TextInputLayoutData.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\TouchKeyboardUX.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\UserSetup.Eligibility.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\VoiceAccess.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\VoiceAccessCommon.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\VoiceAccessHost.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\VoiceAccessHost\VoiceAccessSupportedLanguages.xml
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\VoiceAccessHost\VoiceCommands.xml
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\VoiceAccessPlugin.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\VoiceAccessUserInterface.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\WebExperienceHost.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\WebExperienceHostApp.exe
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\WebHost.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\WindowsBackup.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\WindowsBackupClient.exe
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\WindowsInternal.ComposableShell.Experiences.SuggestionUIUndocked.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\WindowsInternal.ComposableShell.Experiences.SuggestionUIUndocked.winmd
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\WindowsInternal.ComposableShell.Experiences.SuggestionUIUndocked\app.appx
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-desktop_31bf3856ad364e35_10.0.26100.1591_none_c815e77f1a5104dd\r\CBS\wv2winrt.dll
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-oobe_31bf3856ad364e35_10.0.26100.1591_none_54983d2d7a4908c4\r\OOBE\data\prod\navigation-scoobe.json
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-oobe_31bf3856ad364e35_10.0.26100.1591_none_54983d2d7a4908c4\r\OOBE\webapps\guidedsetup\network\area-content\bg-BG\area-content.local.json
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-oobe_31bf3856ad364e35_10.0.26100.1591_none_54983d2d7a4908c4\r\OOBE\webapps\guidedsetup\network\area-content\fr-CA\area-content.local.json
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-oobe_31bf3856ad364e35_10.0.26100.1591_none_54983d2d7a4908c4\r\OOBE\webapps\guidedsetup\network\area-content\hy-AM\area-content.local.json
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    (p)	CSI Payload Corrupt	(n)			amd64_userexperience-oobe_31bf3856ad364e35_10.0.26100.1591_none_54983d2d7a4908c4\r\OOBE\webapps\guidedsetup\network\area-content\nl-NL\area-content.local.json
+2026-09-25 21:56:27, Info                  CBS    Repair failed: Missing replacement payload.
+2026-09-25 21:56:27, Info                  CBS    
+2026-09-25 21:56:27, Info                  CBS    Summary:
+2026-09-25 21:56:27, Info                  CBS    Operation: Detect and Repair 
+2026-09-25 21:56:27, Info                  CBS    Operation result: 0x800f0915
+2026-09-25 21:56:27, Info                  CBS    Last Successful Step: Remove staged packages completes.
+2026-09-25 21:56:27, Info                  CBS    Total Detected Corruption:	328
+2026-09-25 21:56:27, Info                  CBS    	CBS Manifest Corruption:	0
+2026-09-25 21:56:27, Info                  CBS    	CBS Metadata Corruption:	0
+2026-09-25 21:56:27, Info                  CBS    	CSI Manifest Corruption:	0
+2026-09-25 21:56:27, Info                  CBS    	CSI Metadata Corruption:	0
+2026-09-25 21:56:27, Info                  CBS    	CSI Payload Corruption:	328
+2026-09-25 21:56:27, Info                  CBS    	CSI FileFlags Corrupt:	0
+2026-09-25 21:56:27, Info                  CBS    Total Repaired Corruption:	0
+2026-09-25 21:56:27, Info                  CBS    	CBS Manifest Repaired:	0
+2026-09-25 21:56:27, Info                  CBS    	CSI Manifest Repaired:	0
+2026-09-25 21:56:27, Info                  CBS    	CSI Payload Repaired:	0
+2026-09-25 21:56:27, Info                  CBS    	CSI FileFlags Repaired:	0
+2026-09-25 21:56:27, Info                  CBS    	CSI Registry Metadata refreshed:	False
+2026-09-25 21:56:27, Info                  CBS    	CSI Store Metadata refreshed:	True
+2026-09-25 21:56:27, Info                  CBS    Staged Packages:
+2026-09-25 21:56:27, Info                  CBS    	CBS Staged packages:	0
+2026-09-25 21:56:27, Info                  CBS    	CBS Staged packages removed:	0
+2026-09-25 21:56:27, Info                  CBS    
+2026-09-25 21:56:27, Info                  CBS    Total Operation Time: 80 seconds.

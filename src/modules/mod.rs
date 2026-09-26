@@ -4,6 +4,8 @@ pub mod crash_analysis;
 pub mod crash_timeline;
 pub mod devices;
 pub mod event_log;
+/// Windows installation media as the repair source for DISM.
+pub mod install_media;
 pub mod network;
 pub mod page_file;
 pub mod registry_startup;
