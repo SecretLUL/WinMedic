@@ -121,6 +121,15 @@ fn register_helper_task(exe: &Path, frequency_hours: u32) -> Result<(), String> 
         schedule,
         "/mo",
         &modifier.to_string(),
+        // Without `/rl` a task runs with limited rights, and the checks that
+        // need Administrator rights (DISM, the dirty bit, minidumps) passed
+        // without having looked. Only an elevated WinMedic may ask for more.
+        "/rl",
+        if crate::utils::admin::is_admin() {
+            "highest"
+        } else {
+            "limited"
+        },
         "/f",
     ])?;
     check(output, "Could not create the scheduled task")
@@ -158,10 +167,16 @@ fn helper_task_is_current(exe: &Path) -> bool {
         return false;
     };
     let exe = exe.display().to_string();
+    let xml = xml.to_lowercase();
+    // A task registered with limited rights is registered again, elevated,
+    // once WinMedic runs as Administrator.
+    if crate::utils::admin::is_admin() && !xml.contains("<runlevel>highestavailable</runlevel>") {
+        return false;
+    }
     // schtasks writes the XML in the console code page, so a path outside ASCII
     // cannot be compared byte for byte. Such a task is taken as current rather
     // than re-created, and its schedule restarted, on every launch.
-    !exe.is_ascii() || xml.to_lowercase().contains(&exe.to_lowercase())
+    !exe.is_ascii() || xml.contains(&exe.to_lowercase())
 }
 
 /// Write the Run entry so that it starts `exe`.

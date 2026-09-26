@@ -34,6 +34,10 @@ pub struct ScanState {
     /// Windows' boot counter when the scan was saved, see [`current_boot_id`].
     #[serde(default)]
     pub boot_id: Option<u32>,
+    /// Whether the scan ran with Administrator rights. Without them the
+    /// checks that need them pass, so such a scan is the lesser one.
+    #[serde(default)]
+    pub elevated: Option<bool>,
 }
 
 /// Windows' boot counter, one more on every start: `BootId` under
@@ -81,6 +85,7 @@ impl ScanState {
             scan_duration_secs,
             boot_time_secs: Some(sysinfo::System::boot_time()),
             boot_id: current_boot_id(),
+            elevated: Some(crate::utils::admin::is_admin()),
         }
     }
 
@@ -98,6 +103,11 @@ impl ScanState {
         serde_json::from_str(&data)
             .ok()
             .filter(|state: &Self| state.format == FORMAT)
+    }
+
+    /// [`Self::save`], unless `skip`.
+    pub fn save_unless(&self, skip: bool) -> Result<(), std::io::Error> {
+        if skip { Ok(()) } else { self.save() }
     }
 
     pub fn save(&self) -> Result<(), std::io::Error> {
@@ -227,5 +237,17 @@ mod tests {
         assert!(!restarted_since(&old, None, boot + 90));
         assert!(restarted_since(&old, None, boot + 3600));
         assert!(!restarted_since(&saved(None, None), Some(1), boot));
+    }
+
+    #[test]
+    fn a_scan_knows_whether_it_ran_elevated() {
+        let state = ScanState::new(100, Vec::new(), Vec::new(), None);
+        assert_eq!(state.elevated, Some(crate::utils::admin::is_admin()));
+
+        // Saved before the field existed: not known, so never the lesser one.
+        let mut json = serde_json::to_value(&state).unwrap();
+        json.as_object_mut().unwrap().remove("elevated");
+        let old: ScanState = serde_json::from_value(json).unwrap();
+        assert_eq!(old.elevated, None);
     }
 }

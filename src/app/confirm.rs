@@ -504,12 +504,18 @@ impl App {
                     let _ = tx.send(BackgroundEvent::RollbackFinished { success, message });
                 });
             }
+            // The window stays until UAC was answered: declined, it goes on
+            // without Administrator rights instead of closing. The answer is
+            // awaited off the UI thread, which would not repaint meanwhile.
             ConfirmRequest::Elevate => {
-                if let Err(e) = (self.system_actions.relaunch_elevated)() {
-                    self.status_message = Some(format!("Elevation failed: {}", e));
-                } else {
-                    self.should_quit = true;
-                }
+                let relaunch = self.system_actions.relaunch_elevated;
+                let tx = self.bg_tx.clone();
+                self.status_message = Some("Waiting for the Administrator prompt...".to_string());
+                std::thread::spawn(move || {
+                    let _ = tx.send(BackgroundEvent::ElevationAnswered(
+                        relaunch().map_err(|e| e.to_string()),
+                    ));
+                });
             }
             ConfirmRequest::UpdateAvailable {
                 latest_version,
@@ -923,6 +929,52 @@ mod tests {
             app.status_message
                 .as_deref()
                 .is_some_and(|m| m.contains("Restart postponed"))
+        );
+    }
+
+    /// Waits until the background thread has answered, up to five seconds.
+    fn answered(app: &mut App) {
+        for _ in 0..500 {
+            app.process_background_events();
+            if app.should_quit
+                || app
+                    .status_message
+                    .as_deref()
+                    .is_some_and(|m| m.starts_with("Still"))
+            {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn the_window_closes_only_once_the_elevated_one_started() {
+        let mut app = App::new();
+        app.pending_confirm = Some(ConfirmRequest::Elevate);
+        app.confirm_pending_action();
+        answered(&mut app);
+        assert!(app.should_quit);
+    }
+
+    /// UAC declined: the window stays, without Administrator rights.
+    #[test]
+    fn a_declined_prompt_keeps_the_window() {
+        let mut app = App::new();
+        app.system_actions.relaunch_elevated = || {
+            Err(std::io::Error::other(
+                "the Administrator prompt (UAC) was declined",
+            ))
+        };
+        app.pending_confirm = Some(ConfirmRequest::Elevate);
+        app.confirm_pending_action();
+        answered(&mut app);
+        assert!(!app.should_quit);
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some(
+                "Still running without Administrator rights: the Administrator prompt (UAC) was declined."
+            )
         );
     }
 }
