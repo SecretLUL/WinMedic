@@ -1,8 +1,11 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
+use crate::modules::system_cleaner::{clean_path_contents, cleanup_result, format_bytes};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
-use crate::utils::service::{self, SERVICE_DISABLED};
-use std::path::Path;
+use crate::utils::service::{
+    self, SERVICE_DISABLED, SERVICE_RUNNING, SERVICE_START_PENDING, SERVICE_STOPPED,
+};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
@@ -13,6 +16,38 @@ use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ};
 pub struct WindowsUpdatesModule {
     config: ModuleConfig,
     runner: Arc<dyn CommandRunner>,
+    /// `%SystemRoot%\SoftwareDistribution\Download`.
+    download_dir: PathBuf,
+}
+
+/// The services that hold the update download cache open, in the order they
+/// are stopped.
+const CACHE_SERVICES: [&str; 3] = ["wuauserv", "bits", "cryptsvc"];
+
+/// Starts the update services again when dropped while still armed: when the
+/// repair is cancelled, or fails, between stopping and starting them. Through
+/// the runner, on the runtime, because a destructor cannot wait.
+struct StartAgain {
+    runner: Arc<dyn CommandRunner>,
+    armed: bool,
+}
+
+impl Drop for StartAgain {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let runner = self.runner.clone();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                for svc in CACHE_SERVICES.iter().rev() {
+                    let _ = runner
+                        .run("net.exe", &["start", svc], Duration::from_secs(30))
+                        .await;
+                }
+            });
+        }
+    }
 }
 
 /// The finding for restart work Windows has queued. The restart itself is
@@ -135,7 +170,80 @@ impl WindowsUpdatesModule {
     }
 
     pub fn with_runner(config: ModuleConfig, runner: Arc<dyn CommandRunner>) -> Self {
-        Self { config, runner }
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+        Self {
+            config,
+            runner,
+            download_dir: PathBuf::from(root).join(r"SoftwareDistribution\Download"),
+        }
+    }
+
+    /// For tests: empty this folder instead of the real download cache.
+    pub fn with_download_dir(mut self, dir: PathBuf) -> Self {
+        self.download_dir = dir;
+        self
+    }
+
+    /// Stop the services, empty the cache and start them again, checking
+    /// each step. A service that does not stop leaves the cache alone.
+    async fn clean_update_cache(&self, log_tx: Option<&Sender<String>>) -> Result<String, String> {
+        let say = |line: &str| {
+            let line = line.to_string();
+            async move {
+                if let Some(tx) = log_tx {
+                    let _ = tx.send(line).await;
+                }
+            }
+        };
+
+        say("Stopping the Windows Update services...").await;
+        let mut guard = StartAgain {
+            runner: self.runner.clone(),
+            armed: true,
+        };
+        for svc in CACHE_SERVICES {
+            let _ = self
+                .runner
+                .run("net.exe", &["stop", svc], Duration::from_secs(60))
+                .await;
+            let state = service::state(&*self.runner, svc).await?;
+            if state != Some(SERVICE_STOPPED) {
+                return Err(format!(
+                    "'{svc}' did not stop (state {state:?}), so the cache was left alone. The services are being started again."
+                ));
+            }
+        }
+
+        say("Emptying SoftwareDistribution\\Download...").await;
+        let dir = self.download_dir.clone();
+        let stats = tokio::task::spawn_blocking(move || clean_path_contents(&dir))
+            .await
+            .map_err(|e| format!("The cache sweep stopped: {e}"))?;
+
+        say("Starting the Windows Update services again...").await;
+        let mut not_running = Vec::new();
+        for svc in CACHE_SERVICES.iter().rev() {
+            let _ = self
+                .runner
+                .run("net.exe", &["start", svc], Duration::from_secs(60))
+                .await;
+            let state = service::state(&*self.runner, svc).await?;
+            if !matches!(state, Some(SERVICE_RUNNING | SERVICE_START_PENDING)) {
+                not_running.push(format!("{svc} (state {state:?})"));
+            }
+        }
+        guard.armed = false;
+        if !not_running.is_empty() {
+            return Err(format!(
+                "The cache was emptied ({} freed), but these services did not start again: {}. Restart Windows to start them.",
+                format_bytes(stats.freed_bytes),
+                not_running.join(", ")
+            ));
+        }
+        cleanup_result(
+            "Update download cache emptied, services started again",
+            stats,
+        )
     }
 
     async fn send_progress(
@@ -248,12 +356,12 @@ impl DiagnosticModule for WindowsUpdatesModule {
             &progress_tx,
             55,
             "Checking SoftwareDistribution cache integrity...",
-            Some("Checking C:\\Windows\\SoftwareDistribution\\Download..."),
+            Some("Checking SoftwareDistribution\\Download..."),
         )
         .await;
         sleep(Duration::from_millis(150)).await;
 
-        let soft_dist = Path::new(r"C:\Windows\SoftwareDistribution\Download");
+        let soft_dist = self.download_dir.as_path();
         if soft_dist.exists() {
             // Shared walker: recursive (the fix below deletes subdirectories too,
             // so measuring only the top level under-reported what it removes) and
@@ -426,67 +534,11 @@ impl DiagnosticModule for WindowsUpdatesModule {
                 // Update broken, so refuse instead of half-applying the fix.
                 if !self.config.auto_restart_services {
                     return Err(
-                        "Skipped: emptying the update cache requires stopping and restarting wuauserv, bits and cryptsvc. Turn on 'Restart services automatically' in the settings [6]."
+                        "Skipped: emptying the update cache requires stopping and restarting wuauserv, bits and cryptsvc. Turn on 'Restart services automatically' in the settings."
                             .to_string(),
                     );
                 }
-
-                if let Some(ref tx) = log_tx {
-                    let _ = tx
-                        .send("Stopping the Windows Update services...".to_string())
-                        .await;
-                }
-                let _ = self
-                    .runner
-                    .run("net.exe", &["stop", "wuauserv"], Duration::from_secs(15))
-                    .await;
-                let _ = self
-                    .runner
-                    .run("net.exe", &["stop", "bits"], Duration::from_secs(15))
-                    .await;
-                let _ = self
-                    .runner
-                    .run("net.exe", &["stop", "cryptsvc"], Duration::from_secs(15))
-                    .await;
-
-                if let Some(ref tx) = log_tx {
-                    let _ = tx
-                        .send("Cleaning the SoftwareDistribution\\Download cache...".to_string())
-                        .await;
-                }
-                let download_path = Path::new(r"C:\Windows\SoftwareDistribution\Download");
-                if download_path.exists()
-                    && let Ok(entries) = std::fs::read_dir(download_path)
-                {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.is_file() {
-                            let _ = std::fs::remove_file(path);
-                        } else if path.is_dir() {
-                            let _ = std::fs::remove_dir_all(path);
-                        }
-                    }
-                }
-
-                if let Some(ref tx) = log_tx {
-                    let _ = tx
-                        .send("Restarting the Windows Update services...".to_string())
-                        .await;
-                }
-                let _ = self
-                    .runner
-                    .run("net.exe", &["start", "wuauserv"], Duration::from_secs(15))
-                    .await;
-                let _ = self
-                    .runner
-                    .run("net.exe", &["start", "bits"], Duration::from_secs(15))
-                    .await;
-                let _ = self
-                    .runner
-                    .run("net.exe", &["start", "cryptsvc"], Duration::from_secs(15))
-                    .await;
-
-                Ok("SoftwareDistribution download cache cleaned and services restarted successfully.".to_string())
+                self.clean_update_cache(log_tx.as_ref()).await
             }
             REBOOT_PENDING => Ok(
                 "Pending reboot recorded. Please restart the system once the run has finished."
@@ -588,5 +640,102 @@ mod tests {
             || signals.wu_reboot_required
             || signals.pending_file_renames > 0;
         assert_eq!(pending_reboot_reason(&signals).is_some(), expected);
+    }
+
+    use crate::utils::service::test_support::sc_query_output;
+
+    /// A download cache in a temp folder with one 200 KB file.
+    struct Cache(PathBuf);
+
+    impl Cache {
+        fn new(tag: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("winmedic_wu_{tag}_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join("sub")).unwrap();
+            std::fs::write(dir.join("sub").join("update.cab"), vec![0u8; 200 * 1024]).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for Cache {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// `sc query` answers `before` for every service until a `net start`
+    /// ran, then `after`.
+    fn services(before: u32, after: u32) -> MockCommandRunner {
+        let mock = MockCommandRunner::new();
+        mock.add_response("net.exe", CmdOutput::ok(""));
+        for svc in CACHE_SERVICES {
+            mock.add_response(
+                format!("query {svc}"),
+                CmdOutput::ok(sc_query_output(svc, before)),
+            );
+            mock.add_response_after(
+                "net.exe start",
+                format!("query {svc}"),
+                CmdOutput::ok(sc_query_output(svc, after)),
+            );
+        }
+        mock
+    }
+
+    fn module(mock: &MockCommandRunner, cache: &Cache) -> WindowsUpdatesModule {
+        WindowsUpdatesModule::with_runner(ModuleConfig::default(), Arc::new(mock.clone()))
+            .with_download_dir(cache.0.clone())
+    }
+
+    #[tokio::test]
+    async fn the_cache_is_emptied_between_a_checked_stop_and_start() {
+        let cache = Cache::new("clean");
+        let mock = services(SERVICE_STOPPED, SERVICE_RUNNING);
+        let msg = module(&mock, &cache)
+            .fix("wu_cache_bloat", None)
+            .await
+            .unwrap();
+        assert!(msg.contains("200.0 KB freed"), "{msg}");
+        assert_eq!(std::fs::read_dir(&cache.0).unwrap().count(), 0);
+        let starts = mock
+            .executed()
+            .iter()
+            .filter(|c| c.starts_with("net.exe start"))
+            .count();
+        assert_eq!(starts, 3);
+    }
+
+    #[tokio::test]
+    async fn a_service_that_does_not_stop_leaves_the_cache_and_is_started_again() {
+        let cache = Cache::new("no_stop");
+        let mock = services(SERVICE_RUNNING, SERVICE_RUNNING);
+        let err = module(&mock, &cache)
+            .fix("wu_cache_bloat", None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("'wuauserv' did not stop"), "{err}");
+        assert!(cache.0.join("sub").join("update.cab").exists());
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            mock.executed()
+                .iter()
+                .any(|c| c == "net.exe start wuauserv"),
+            "{:?}",
+            mock.executed()
+        );
+    }
+
+    #[tokio::test]
+    async fn services_that_do_not_come_back_are_a_failure() {
+        let cache = Cache::new("no_start");
+        let mock = services(SERVICE_STOPPED, SERVICE_STOPPED);
+        let err = module(&mock, &cache)
+            .fix("wu_cache_bloat", None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("did not start again: cryptsvc"), "{err}");
     }
 }

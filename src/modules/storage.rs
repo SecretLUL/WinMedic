@@ -149,53 +149,31 @@ impl DiagnosticModule for StorageModule {
 
         let dbg = DebugTrace::scan(self.id(), progress_tx.clone(), self.config.verbose_logging);
 
-        // WMI first: `DirtyBitSet` is a boolean, the same on every Windows.
-        // fsutil answers in a sentence in the display language, which only the
-        // English and German wordings below can read; it stays as the fallback
-        // for a machine whose WMI does not answer.
-        let wmi_verdict = dbg
-            .run_powershell(&self.runner, DIRTY_BIT_SCRIPT, Duration::from_secs(10))
-            .await
-            .ok()
-            .filter(|out| out.success)
-            .and_then(|out| parse_dirty_bit_set(&out.stdout));
-        let dirty_check: Option<(bool, String)> = match wmi_verdict {
-            Some(dirty) => Some((
-                dirty,
-                format!(
-                    "Win32_Volume C: DirtyBitSet = {}",
-                    if dirty { "True" } else { "False" }
-                ),
-            )),
-            None => match dbg
-                .run(
-                    &self.runner,
-                    "fsutil.exe",
-                    &["dirty", "query", "C:"],
-                    Duration::from_secs(6),
-                )
-                .await
-            {
-                Ok(out) if out.success => Some((volume_is_dirty(&out.stdout), out.stdout)),
-                _ => None,
-            },
-        };
-        if let Some((verdict, evidence)) = dirty_check {
+        if let Some((verdict, evidence)) = self.dirty_bit(&dbg).await {
             dbg.kv("dirty bit", if verdict { "set" } else { "clear" })
                 .await;
             if verdict {
-                issues.push(Issue::new(
-                    "storage_dirty_bit",
-                    self.id(),
-                    "File system inconsistency on system drive C: (dirty bit set)",
-                    "Storage & File System",
-                    Severity::Critical,
-                    RiskScore::Medium,
-                    "Drive C: has the file system integrity flag ('dirty bit') set. That points to incompletely written sectors or abrupt shutdowns.",
-                    evidence,
-                    "Run a file system check via 'chkdsk C: /scan'",
-                    vec!["Run chkdsk C: /scan online".to_string()],
-                ));
+                // chkdsk /scan checks and fixes what it can while Windows
+                // runs; the flag itself is cleared by the check Windows makes
+                // before it starts, which the flag schedules.
+                issues.push(
+                    Issue::new(
+                        "storage_dirty_bit",
+                        self.id(),
+                        "File system inconsistency on system drive C: (dirty bit set)",
+                        "Storage & File System",
+                        Severity::Critical,
+                        RiskScore::Medium,
+                        "Drive C: has the file system integrity flag ('dirty bit') set. That points to incompletely written sectors or abrupt shutdowns.",
+                        evidence,
+                        "Check the drive with 'chkdsk C: /scan', then restart so Windows checks it before it starts",
+                        vec![
+                            "Run chkdsk C: /scan online".to_string(),
+                            "Restart Windows".to_string(),
+                        ],
+                    )
+                    .with_requires_reboot(true),
+                );
             } else {
                 Self::send_progress(
                     &progress_tx,
@@ -398,7 +376,7 @@ impl DiagnosticModule for StorageModule {
                         &self.runner,
                         "chkdsk.exe",
                         &["C:", "/scan"],
-                        Duration::from_secs(120),
+                        crate::modules::SERVICING_TIMEOUT,
                     )
                     .await
                     .map_err(|err| {
@@ -412,19 +390,29 @@ impl DiagnosticModule for StorageModule {
                         )
                     })?;
 
-                match out.exit_code {
-                    Some(0) => {
-                        Ok("File system check (chkdsk /scan) finished without errors.".to_string())
-                    }
+                // 3 means errors chkdsk cannot fix while Windows runs; any
+                // other code is no verdict. Only 0 to 2 are a check that ran.
+                let found = match out.exit_code {
+                    Some(code @ 0..=2) => chkdsk_exit_meaning(code),
                     Some(code) => {
                         dbg.hint(chkdsk_exit_meaning(code)).await;
-                        Ok(format!(
-                            "chkdsk /scan finished with exit code {} ({}).",
-                            code,
+                        return Err(format!(
+                            "chkdsk /scan finished with exit code {code}: {}. Restart Windows: it checks the drive before it starts.",
                             chkdsk_exit_meaning(code)
-                        ))
+                        ));
                     }
-                    None => Ok("chkdsk /scan ended without reporting an exit code.".to_string()),
+                    None => {
+                        return Err(
+                            "chkdsk /scan ended without an exit code; the drive was not checked."
+                                .to_string(),
+                        );
+                    }
+                };
+                match self.dirty_bit(&dbg).await {
+                    Some((false, _)) => Ok(format!("chkdsk /scan: {found}. The flag is cleared.")),
+                    _ => Ok(format!(
+                        "chkdsk /scan: {found}. Restart Windows: it checks the drive before it starts and clears the flag."
+                    )),
                 }
             }
             // Counted in bytes, file by file, through the sweep the cleaner
@@ -489,6 +477,45 @@ impl DiagnosticModule for StorageModule {
             // A SMART warning is hardware wear and advice only: only a drive
             // replacement clears it, so a repair run never asks.
             _ => Err(format!("Unknown issue ID: {}", issue_id)),
+        }
+    }
+}
+
+impl StorageModule {
+    /// Whether C:'s dirty bit is set, and what said so; `None` when neither
+    /// WMI nor fsutil would tell.
+    ///
+    /// WMI first: `DirtyBitSet` is a boolean, the same on every Windows.
+    /// fsutil answers in a sentence in the display language, which only the
+    /// English and German wordings below can read; it stays as the fallback
+    /// for a machine whose WMI does not answer.
+    async fn dirty_bit(&self, dbg: &DebugTrace) -> Option<(bool, String)> {
+        let wmi_verdict = dbg
+            .run_powershell(&self.runner, DIRTY_BIT_SCRIPT, Duration::from_secs(10))
+            .await
+            .ok()
+            .filter(|out| out.success)
+            .and_then(|out| parse_dirty_bit_set(&out.stdout));
+        match wmi_verdict {
+            Some(dirty) => Some((
+                dirty,
+                format!(
+                    "Win32_Volume C: DirtyBitSet = {}",
+                    if dirty { "True" } else { "False" }
+                ),
+            )),
+            None => match dbg
+                .run(
+                    &self.runner,
+                    "fsutil.exe",
+                    &["dirty", "query", "C:"],
+                    Duration::from_secs(6),
+                )
+                .await
+            {
+                Ok(out) if out.success => Some((volume_is_dirty(&out.stdout), out.stdout)),
+                _ => None,
+            },
         }
     }
 }
@@ -728,13 +755,14 @@ mod tests {
 
     /// Exit code 3 means chkdsk found damage it could not repair online. Folding
     /// that into a bare "chkdsk ran" hid the one outcome that needs a reboot.
+    /// It is no repair either: the finding stays.
     #[tokio::test]
     async fn an_unrepairable_volume_is_named_in_the_result() {
         let mock = MockCommandRunner::new();
         mock.add_response("chkdsk.exe", CmdOutput::failed(3, ""));
 
         let module = StorageModule::with_runner(ModuleConfig::default(), Arc::new(mock));
-        let msg = module.fix("storage_dirty_bit", None).await.unwrap();
+        let msg = module.fix("storage_dirty_bit", None).await.unwrap_err();
 
         assert!(msg.contains("exit code 3"), "{}", msg);
         assert!(msg.contains("offline check"), "{}", msg);
@@ -913,5 +941,22 @@ mod tests {
     async fn the_icon_cache_script_parses() {
         let script = StorageModule::icon_cache_script(Path::new(r"C:\Users\x\Explorer"));
         assert_eq!(crate::utils::cmd::powershell_parse_errors(&script).await, 0);
+    }
+
+    #[tokio::test]
+    async fn a_check_that_ran_reads_the_flag_again() {
+        let mock = MockCommandRunner::new();
+        mock.add_response("chkdsk.exe", CmdOutput::ok(""));
+        mock.add_response("DirtyBitSet", CmdOutput::ok("True"));
+        let module = StorageModule::with_runner(ModuleConfig::default(), Arc::new(mock.clone()));
+        let msg = module.fix("storage_dirty_bit", None).await.unwrap();
+        assert!(msg.contains("Restart Windows"), "{msg}");
+
+        let mock = MockCommandRunner::new();
+        mock.add_response("chkdsk.exe", CmdOutput::ok(""));
+        mock.add_response("DirtyBitSet", CmdOutput::ok("False"));
+        let module = StorageModule::with_runner(ModuleConfig::default(), Arc::new(mock));
+        let msg = module.fix("storage_dirty_bit", None).await.unwrap();
+        assert!(msg.contains("The flag is cleared"), "{msg}");
     }
 }
