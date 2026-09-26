@@ -760,6 +760,20 @@ impl DiagnosticReporter {
         )
     }
 
+    /// The audit entries logged at or after `since` (`%Y-%m-%d %H:%M:%S`, the
+    /// audit log's own format): what a report's own scan and repairs did.
+    ///
+    /// Handed the whole history, every report carried every scan and repair
+    /// ever logged on the PC (16,767 entries and 3.4 MB on the development
+    /// machine) - a record of the machine nobody meant to pass on with it.
+    pub fn audit_since(entries: &[AuditEntry], since: &str) -> Vec<AuditEntry> {
+        entries
+            .iter()
+            .filter(|entry| entry.timestamp.as_str() >= since)
+            .cloned()
+            .collect()
+    }
+
     /// Save report to `path` detecting format by extension (`.html`, `.md`, `.json`).
     pub fn save_report(
         path: &Path,
@@ -890,5 +904,25 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn a_report_carries_only_the_entries_of_its_own_run() {
+        let entry = |timestamp: &str| AuditEntry {
+            timestamp: timestamp.to_string(),
+            action_type: "SCAN".to_string(),
+            module_id: "engine".to_string(),
+            title: "Scan".to_string(),
+            status: "SUCCESS".to_string(),
+            details: String::new(),
+        };
+        let history = [
+            entry("2026-09-24 10:00:00"),
+            entry("2026-09-26 11:59:59"),
+            entry("2026-09-26 12:00:00"),
+            entry("2026-09-26 12:03:10"),
+        ];
+        let run = DiagnosticReporter::audit_since(&history, "2026-09-26 12:00:00");
+        assert_eq!(run, history[2..]);
     }
 }
