@@ -416,7 +416,6 @@ async fn adv_test_progress_reporting_all_steps() {
     let _ = module.scan(Some(tx)).await.unwrap();
     let steps = handle.await.unwrap();
 
-    assert!(steps.iter().any(|(pct, _)| *pct == 10));
     assert!(steps.iter().any(|(pct, _)| *pct == 22));
     assert!(steps.iter().any(|(pct, _)| *pct == 34));
     assert!(steps.iter().any(|(pct, _)| *pct == 46));
@@ -425,6 +424,7 @@ async fn adv_test_progress_reporting_all_steps() {
     assert!(steps.iter().any(|(pct, _)| *pct == 80));
     assert!(steps.iter().any(|(pct, _)| *pct == 90));
     assert!(steps.iter().any(|(pct, _)| *pct == 95));
+    assert!(steps.iter().any(|(pct, _)| *pct == 97));
     assert!(steps.iter().any(|(pct, _)| *pct == 100));
 }
 
