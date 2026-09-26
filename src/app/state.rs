@@ -246,8 +246,11 @@ impl App {
             saved_timestamp,
             init_msg,
         ) = if let Some(mut saved) = ScanState::load() {
-            let current_boot = sysinfo::System::boot_time();
-            let rebooted = saved.boot_time_secs.is_some_and(|b| current_boot > b);
+            let rebooted = super::scan_state::restarted_since(
+                &saved,
+                super::scan_state::current_boot_id(),
+                sysinfo::System::boot_time(),
+            );
             if rebooted {
                 settle_after_restart(&mut saved.issues);
             }

@@ -31,6 +31,38 @@ pub struct ScanState {
     pub scan_duration_secs: Option<u64>,
     #[serde(default)]
     pub boot_time_secs: Option<u64>,
+    /// Windows' boot counter when the scan was saved, see [`current_boot_id`].
+    #[serde(default)]
+    pub boot_id: Option<u32>,
+}
+
+/// Windows' boot counter, one more on every start: `BootId` under
+/// `PrefetchParameters`, readable without Administrator rights.
+///
+/// The boot time `sysinfo` reports is "now minus uptime", cut to seconds, so
+/// a clock correction, a wake from sleep or a second's rounding moved it, and
+/// restarts that were still due counted as done.
+pub fn current_boot_id() -> Option<u32> {
+    winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
+        .open_subkey(
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters",
+        )
+        .and_then(|key| key.get_value("BootId"))
+        .ok()
+}
+
+/// How far a file without a boot counter lets the boot time drift before it
+/// counts as a restart.
+const BOOT_TIME_TOLERANCE_SECS: u64 = 10 * 60;
+
+/// Whether Windows has started again since `saved` was written.
+pub fn restarted_since(saved: &ScanState, boot_id: Option<u32>, boot_time_secs: u64) -> bool {
+    match (saved.boot_id, boot_id) {
+        (Some(then), Some(now)) => then != now,
+        _ => saved
+            .boot_time_secs
+            .is_some_and(|then| boot_time_secs > then + BOOT_TIME_TOLERANCE_SECS),
+    }
 }
 
 impl ScanState {
@@ -48,6 +80,7 @@ impl ScanState {
             module_statuses,
             scan_duration_secs,
             boot_time_secs: Some(sysinfo::System::boot_time()),
+            boot_id: current_boot_id(),
         }
     }
 
@@ -154,5 +187,45 @@ mod tests {
 
         assert!(ScanState::load_from(&tmp).is_none());
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn this_machine_has_a_boot_counter() {
+        assert!(current_boot_id().is_some_and(|id| id > 0));
+    }
+
+    fn saved(boot_id: Option<u32>, boot_time_secs: Option<u64>) -> ScanState {
+        ScanState {
+            boot_id,
+            boot_time_secs,
+            ..ScanState::new(100, Vec::new(), Vec::new(), None)
+        }
+    }
+
+    #[test]
+    fn the_boot_counter_decides_whether_windows_restarted() {
+        let boot = 1_790_000_000;
+        assert!(!restarted_since(
+            &saved(Some(835), Some(boot)),
+            Some(835),
+            boot + 3
+        ));
+        assert!(restarted_since(
+            &saved(Some(835), Some(boot)),
+            Some(836),
+            boot
+        ));
+    }
+
+    /// A file saved before the counter was, compared by boot time: a clock
+    /// correction or a wake from sleep moves that by seconds, not a restart.
+    #[test]
+    fn without_a_counter_the_boot_time_may_drift() {
+        let boot = 1_790_000_000;
+        let old = saved(None, Some(boot));
+        assert!(!restarted_since(&old, Some(836), boot + 1));
+        assert!(!restarted_since(&old, None, boot + 90));
+        assert!(restarted_since(&old, None, boot + 3600));
+        assert!(!restarted_since(&saved(None, None), Some(1), boot));
     }
 }

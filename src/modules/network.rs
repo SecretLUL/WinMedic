@@ -1684,4 +1684,10 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("could not be switched off"), "{err}");
     }
+
+    #[tokio::test]
+    async fn the_resolver_probe_parses() {
+        let script = dns_probe_script("dns.google");
+        assert_eq!(crate::utils::cmd::powershell_parse_errors(&script).await, 0);
+    }
 }
