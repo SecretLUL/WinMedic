@@ -10,6 +10,8 @@ pub mod network;
 pub mod page_file;
 pub mod registry_startup;
 pub mod scheduled_tasks;
+/// Explorer crashing in a program's add-on, for the crash analysis.
+pub mod shell_extensions;
 pub mod storage;
 pub mod system_cleaner;
 pub mod system_integrity;

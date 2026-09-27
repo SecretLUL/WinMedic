@@ -1,7 +1,9 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::crash_timeline::{self, Change};
 use crate::modules::event_log::{memory_test_finding, schedule_memory_test};
+use crate::modules::shell_extensions;
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
+use crate::safety::reg_backup::RegBackupManager;
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner, ps_single_quoted};
 use crate::utils::debug_log::DebugTrace;
 use crate::utils::event_xml::{
@@ -77,6 +79,10 @@ fn crash_filter() -> String {
     )
 }
 
+fn windows_dir() -> String {
+    std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string())
+}
+
 /// The oldest event in the System log: how far back it reaches.
 const OLDEST_SYSTEM_EVENT: [&str; 5] = ["qe", "System", "/c:1", "/rd:false", "/f:xml"];
 
@@ -103,6 +109,10 @@ pub struct CrashAnalysisModule {
     /// `%LOCALAPPDATA%CrashDumps`, where programs' crash dumps go; `None`
     /// in tests.
     user_dump_dir: Option<PathBuf>,
+    /// `%SystemRoot%`: a module Explorer crashed in inside it is Windows' own.
+    windows_dir: String,
+    /// Where registry backups go.
+    backup_dir: PathBuf,
 }
 
 /// Dump files older than [`DUMP_EVIDENCE_DAYS`].
@@ -141,7 +151,15 @@ impl CrashAnalysisModule {
             dump_dir: PathBuf::from(DEFAULT_DUMP_DIR),
             user_dump_dir: std::env::var_os("LOCALAPPDATA")
                 .map(|local| Path::new(&local).join("CrashDumps")),
+            windows_dir: windows_dir(),
+            backup_dir: RegBackupManager::new().backup_dir().to_path_buf(),
         }
+    }
+
+    /// For tests: keep registry backups here.
+    pub fn with_backup_dir(mut self, dir: PathBuf) -> Self {
+        self.backup_dir = dir;
+        self
     }
 
     /// Test seam: like [`Self::with_runner`] but reading dumps from a custom
@@ -156,6 +174,8 @@ impl CrashAnalysisModule {
             runner,
             dump_dir: dump_dir.into(),
             user_dump_dir: None,
+            windows_dir: windows_dir(),
+            backup_dir: RegBackupManager::new().backup_dir().to_path_buf(),
         }
     }
 
@@ -347,7 +367,7 @@ impl DiagnosticModule for CrashAnalysisModule {
     }
 
     fn description(&self) -> &'static str {
-        "Parses kernel minidumps and BugCheck events to identify stop codes, faulting drivers and crash frequency"
+        "Parses kernel minidumps and BugCheck events to identify stop codes, faulting drivers and crash frequency, and finds program add-ons that crash Explorer"
     }
 
     fn icon(&self) -> &'static str {
@@ -361,6 +381,16 @@ impl DiagnosticModule for CrashAnalysisModule {
         let mut issues = Vec::new();
         let dbg = DebugTrace::scan(self.id(), progress_tx.clone(), self.config.verbose_logging);
         let window_hours = self.config.max_event_log_hours.max(1);
+
+        // Explorer crashing in a program's add-on: no blue screen, so it
+        // comes before the steps that stop when there was none.
+        match shell_extensions::findings(&*self.runner, self.id(), &self.windows_dir).await {
+            Ok(found) => issues.extend(found),
+            Err(err) => {
+                dbg.warn(format!("Explorer's crashes were not checked: {err}"))
+                    .await
+            }
+        }
 
         // Step 1: read minidump files
         Self::send_progress(
@@ -776,6 +806,10 @@ impl DiagnosticModule for CrashAnalysisModule {
             // The driver, video, unexpected-shutdown and bugcheck-history
             // findings are advice: a repair run never asks. Opening Device
             // Manager and calling that a repair counted them as fixed.
+            id if id.starts_with(shell_extensions::ID_PREFIX) => {
+                shell_extensions::block(&*self.runner, id, &self.windows_dir, &self.backup_dir)
+                    .await
+            }
             _ => Err(format!("Unknown crash analysis issue id: {}", issue_id)),
         }
     }
