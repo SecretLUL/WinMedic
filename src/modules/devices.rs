@@ -15,6 +15,11 @@ use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
 use crate::utils::pnp::PnpDevice;
 use crate::utils::registry;
+use crate::utils::service::{
+    self, SERVICE_AUTO_START, SERVICE_DISABLED, SERVICE_RUNNING, SERVICE_START_PENDING,
+    SERVICE_STOPPED,
+};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
@@ -166,8 +171,50 @@ pub fn meaning(problem: u32) -> &'static str {
     }
 }
 
+/// The print spooler's service name.
+const SPOOLER: &str = "spooler";
+/// A print job waiting this long is stuck, not printing.
+const STUCK_JOB_AGE: Duration = Duration::from_secs(60 * 60);
+/// The finding for a stuck print queue.
+pub const PRINT_QUEUE_STUCK: &str = "dev_print_queue_stuck";
+
+/// Print jobs in `dir` (`.SPL` and `.SHD` files) older than
+/// [`STUCK_JOB_AGE`], or why the folder could not be read. It needs
+/// Administrator rights.
+pub fn stuck_print_jobs(dir: &Path) -> Result<usize, String> {
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| format!("{} could not be read: {e}", dir.display()))?;
+    Ok(entries
+        .flatten()
+        .filter(|entry| {
+            entry.metadata().is_ok_and(|meta| {
+                meta.is_file()
+                    && meta
+                        .modified()
+                        .ok()
+                        .and_then(|at| at.elapsed().ok())
+                        .is_some_and(|age| age >= STUCK_JOB_AGE)
+            })
+        })
+        .count())
+}
+
+/// The files left in `dir`.
+fn files_in(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| e.metadata().is_ok_and(|m| m.is_file()))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
 pub struct DevicesModule {
     runner: Arc<dyn CommandRunner>,
+    /// `%SystemRoot%\System32\spool\PRINTERS`, where waiting print jobs are.
+    spool_dir: PathBuf,
 }
 
 impl Default for DevicesModule {
@@ -182,7 +229,103 @@ impl DevicesModule {
     }
 
     pub fn with_runner(runner: Arc<dyn CommandRunner>) -> Self {
-        Self { runner }
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+        Self {
+            runner,
+            spool_dir: PathBuf::from(root).join(r"System32\spool\PRINTERS"),
+        }
+    }
+
+    /// For tests: the print jobs are in this folder.
+    pub fn with_spool_dir(mut self, dir: PathBuf) -> Self {
+        self.spool_dir = dir;
+        self
+    }
+
+    /// The finding for a print queue that is stuck: jobs waiting for over an
+    /// hour, or a spooler that should run and does not. `None` when printing
+    /// is fine, the spooler is switched off on purpose, or `sc` did not say.
+    async fn print_queue_finding(&self) -> Option<Issue> {
+        let start_type = service::start_type(&*self.runner, SPOOLER).await.ok()??;
+        if start_type == SERVICE_DISABLED {
+            // Switched off on purpose, often against PrintNightmare.
+            return None;
+        }
+        let state = service::state(&*self.runner, SPOOLER).await.ok()??;
+        let stuck = stuck_print_jobs(&self.spool_dir).unwrap_or(0);
+        let stopped = start_type == SERVICE_AUTO_START && state == SERVICE_STOPPED;
+        if stuck == 0 && !stopped {
+            return None;
+        }
+        let title = if stuck > 0 {
+            format!("{stuck} print job(s) stuck for more than an hour")
+        } else {
+            "The print spooler is not running".to_string()
+        };
+        Some(Issue::new(
+            PRINT_QUEUE_STUCK,
+            self.id(),
+            title,
+            "Devices & Drivers",
+            Severity::Warning,
+            RiskScore::Low,
+            "Nothing prints while the queue is stuck: a damaged print job blocks every job behind it, or stops the print spooler whenever it starts. Clearing the queue deletes every waiting job; print them again afterwards.",
+            format!(
+                "sc qc spooler: START_TYPE {start_type}\nsc query spooler: STATE {state}\n{}: {stuck} job file(s) older than an hour",
+                self.spool_dir.display()
+            ),
+            "Clear the print queue and restart the print spooler",
+            vec![
+                "net stop spooler".to_string(),
+                format!("Delete the files in {}", self.spool_dir.display()),
+                "net start spooler".to_string(),
+            ],
+        ))
+    }
+
+    /// Stop the spooler and check it stopped, delete the waiting jobs, start
+    /// it again, then check it runs and the folder is empty.
+    async fn clear_print_queue(&self) -> Result<String, String> {
+        let _ = self
+            .runner
+            .run("net.exe", &["stop", SPOOLER], Duration::from_secs(60))
+            .await;
+        let state = service::state(&*self.runner, SPOOLER).await?;
+        if state != Some(SERVICE_STOPPED) {
+            return Err(format!(
+                "The print spooler did not stop (state {state:?}), so no print job was deleted."
+            ));
+        }
+        let mut deleted = 0;
+        if let Ok(entries) = std::fs::read_dir(&self.spool_dir) {
+            for entry in entries.flatten() {
+                if entry.metadata().is_ok_and(|m| m.is_file())
+                    && std::fs::remove_file(entry.path()).is_ok()
+                {
+                    deleted += 1;
+                }
+            }
+        }
+        let _ = self
+            .runner
+            .run("net.exe", &["start", SPOOLER], Duration::from_secs(60))
+            .await;
+        let state = service::state(&*self.runner, SPOOLER).await?;
+        let left = files_in(&self.spool_dir);
+        if !matches!(state, Some(SERVICE_RUNNING | SERVICE_START_PENDING)) {
+            return Err(format!(
+                "{deleted} print job file(s) deleted, but the print spooler did not start again (state {state:?}). Restart Windows; if it stops again, a printer driver is the likely cause."
+            ));
+        }
+        if left > 0 {
+            return Err(format!(
+                "The print spooler runs again, but {left} file(s) in {} could not be deleted.",
+                self.spool_dir.display()
+            ));
+        }
+        Ok(format!(
+            "The print queue was cleared ({deleted} file(s)) and the print spooler runs again. Print the documents again."
+        ))
     }
 
     /// The connected devices that report a problem.
@@ -446,7 +589,7 @@ impl DiagnosticModule for DevicesModule {
     }
 
     fn description(&self) -> &'static str {
-        "Finds devices that stopped working or have no driver, the warning signs in Device Manager, and restarts them"
+        "Finds devices that stopped working or have no driver, the warning signs in Device Manager, and restarts them; clears a stuck print queue"
     }
 
     fn icon(&self) -> &'static str {
@@ -494,6 +637,15 @@ impl DiagnosticModule for DevicesModule {
         if !without_driver.is_empty() && self.drivers_excluded().await {
             issues.push(self.drivers_excluded_finding(&without_driver));
         }
+
+        Self::send_progress(
+            &progress_tx,
+            80,
+            "Checking the print queue...",
+            Some("sc qc / sc query spooler, print jobs older than an hour"),
+        )
+        .await;
+        issues.extend(self.print_queue_finding().await);
         Self::send_progress(&progress_tx, 100, "Device check complete", Some(&summary)).await;
         Ok(issues)
     }
@@ -508,6 +660,8 @@ impl DiagnosticModule for DevicesModule {
             self.restart(issue_id).await
         } else if issue_id.starts_with(NO_DRIVER_ID) {
             self.find_driver(issue_id).await
+        } else if issue_id == PRINT_QUEUE_STUCK {
+            self.clear_print_queue().await
         } else {
             Err(format!("Unknown device issue id: {issue_id}"))
         }
@@ -741,7 +895,10 @@ mod tests {
         assert!(issues.iter().any(|i| i.id == DRIVERS_EXCLUDED_ID));
         assert!(executed.iter().any(|c| c.starts_with("reg.exe")));
         assert!(none.is_empty(), "{none:?}");
-        assert!(executed_none.is_empty(), "{executed_none:?}");
+        assert!(
+            !executed_none.iter().any(|c| c.starts_with("reg.exe")),
+            "{executed_none:?}"
+        );
     }
 
     #[tokio::test]
@@ -934,5 +1091,166 @@ mod tests {
         let issues = module(&mock).scan(None).await.unwrap();
         let issue = issues.iter().find(|i| i.id == brio_id(28)).unwrap();
         assert!(!issue.advice_only);
+    }
+
+    // `sc` about the print spooler, captured on a German Windows 11: it
+    // starts automatically and runs.
+    const QC_SPOOLER: &[u8] = include_bytes!("../../tests/fixtures/console/sc_qc_spooler.bin");
+    const QUERY_SPOOLER: &[u8] =
+        include_bytes!("../../tests/fixtures/console/sc_query_spooler.bin");
+
+    fn spooler_state(state: &str) -> CmdOutput {
+        CmdOutput::ok(decode_output(QUERY_SPOOLER).replace("4  RUNNING", state))
+    }
+
+    /// A spool folder in the temp directory, removed when the test ends.
+    struct Spool(PathBuf);
+
+    impl Spool {
+        fn new(tag: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("winmedic_spool_{tag}_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        /// A print job written `hours` ago.
+        fn job(&self, name: &str, hours: u64) -> &Self {
+            let path = self.0.join(name);
+            std::fs::write(&path, b"job").unwrap();
+            let when = std::time::SystemTime::now() - Duration::from_secs(hours * 3600);
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(when)
+                .unwrap();
+            self
+        }
+    }
+
+    impl Drop for Spool {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    async fn scan_spooler(qc: String, query: CmdOutput, spool: &Spool) -> Vec<Issue> {
+        let mock = MockCommandRunner::new();
+        mock.add_response("qc spooler", CmdOutput::ok(qc));
+        mock.add_response("query spooler", query);
+        module(&mock)
+            .with_spool_dir(spool.0.clone())
+            .scan(None)
+            .await
+            .unwrap()
+    }
+
+    #[test]
+    fn only_old_print_jobs_are_stuck() {
+        let spool = Spool::new("age");
+        spool.job("00012.SPL", 0).job("00012.SHD", 0);
+        assert_eq!(stuck_print_jobs(&spool.0), Ok(0));
+        spool.job("00011.SPL", 2).job("00011.SHD", 2);
+        assert_eq!(stuck_print_jobs(&spool.0), Ok(2));
+        assert!(stuck_print_jobs(&spool.0.join("missing")).is_err());
+    }
+
+    #[tokio::test]
+    async fn print_jobs_waiting_for_hours_are_a_finding() {
+        let spool = Spool::new("stuck");
+        spool.job("00011.SPL", 3).job("00011.SHD", 3);
+        let issues = scan_spooler(
+            decode_output(QC_SPOOLER),
+            spooler_state("4  RUNNING"),
+            &spool,
+        )
+        .await;
+        let issue = issues.iter().find(|i| i.id == PRINT_QUEUE_STUCK).unwrap();
+        assert_eq!(issue.title, "2 print job(s) stuck for more than an hour");
+        assert!(issue.is_selected);
+    }
+
+    #[tokio::test]
+    async fn a_stopped_spooler_that_should_run_is_a_finding() {
+        let spool = Spool::new("stopped");
+        let issues = scan_spooler(
+            decode_output(QC_SPOOLER),
+            spooler_state("1  STOPPED"),
+            &spool,
+        )
+        .await;
+        let issue = issues.iter().find(|i| i.id == PRINT_QUEUE_STUCK).unwrap();
+        assert_eq!(issue.title, "The print spooler is not running");
+    }
+
+    #[tokio::test]
+    async fn a_working_or_switched_off_spooler_is_left_alone() {
+        let spool = Spool::new("fine");
+        spool.job("00012.SPL", 0);
+        let issues = scan_spooler(
+            decode_output(QC_SPOOLER),
+            spooler_state("4  RUNNING"),
+            &spool,
+        )
+        .await;
+        assert!(issues.is_empty(), "{issues:?}");
+
+        // Switched off on purpose: old jobs or not, printing is not wanted.
+        spool.job("00011.SPL", 5);
+        let disabled = decode_output(QC_SPOOLER).replace("2   AUTO_START", "4   DISABLED");
+        let issues = scan_spooler(disabled, spooler_state("1  STOPPED"), &spool).await;
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    /// The spooler answers `before` until `net start` ran, then running.
+    fn spooler_repair(before: &str) -> MockCommandRunner {
+        let mock = MockCommandRunner::new();
+        mock.add_response("net.exe", CmdOutput::ok(""));
+        mock.add_response("query spooler", spooler_state(before));
+        mock.add_response_after(
+            "net.exe start",
+            "query spooler",
+            spooler_state("4  RUNNING"),
+        );
+        mock
+    }
+
+    #[tokio::test]
+    async fn the_queue_is_cleared_between_a_checked_stop_and_start() {
+        let spool = Spool::new("clear");
+        spool
+            .job("00011.SPL", 3)
+            .job("00011.SHD", 3)
+            .job("00012.SPL", 0);
+        let mock = spooler_repair("1  STOPPED");
+        let msg = module(&mock)
+            .with_spool_dir(spool.0.clone())
+            .fix(PRINT_QUEUE_STUCK, None)
+            .await
+            .unwrap();
+        assert!(msg.contains("3 file(s)"), "{msg}");
+        assert_eq!(files_in(&spool.0), 0);
+        let net: Vec<String> = mock
+            .executed()
+            .into_iter()
+            .filter(|c| c.starts_with("net.exe"))
+            .collect();
+        assert_eq!(net, ["net.exe stop spooler", "net.exe start spooler"]);
+    }
+
+    #[tokio::test]
+    async fn a_spooler_that_does_not_stop_keeps_the_jobs() {
+        let spool = Spool::new("nostop");
+        spool.job("00011.SPL", 3);
+        let mock = spooler_repair("4  RUNNING");
+        let err = module(&mock)
+            .with_spool_dir(spool.0.clone())
+            .fix(PRINT_QUEUE_STUCK, None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("did not stop"), "{err}");
+        assert_eq!(files_in(&spool.0), 1);
     }
 }
