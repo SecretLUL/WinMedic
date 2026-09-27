@@ -61,7 +61,7 @@ do without doing it.
 | **Startup** | Autostart entries and scheduled tasks that point at deleted programs or keep failing |
 | **Cleanup** | Caches and leftovers that take up space |
 | **Memory** | A switched-off or too small page file |
-| **Tweaks** | Services and policies that "tweak" and debloat tools switched off |
+| **Tweaks** | Services, policies and Defender that "tweak" and debloat tools switched off |
 | **Clock and restart** | A wrong clock, a PC that has not been restarted for weeks |
 | **Devices** | Devices that stopped working or have no driver, a stuck print queue |
 

@@ -370,6 +370,74 @@ pub fn policy_hits(wu: &[RegKeyValues], store: &[RegKeyValues]) -> Vec<PolicyHit
     hits
 }
 
+pub const DEFENDER_POLICY_KEY: &str = r"HKLM\SOFTWARE\Policies\Microsoft\Windows Defender";
+const DEFENDER_RTP_POLICY_KEY: &str =
+    r"HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection";
+pub const DEFENDER_OFF: &str = "tweak_policy_defender_off";
+
+/// The policy values debloat tools set to switch Microsoft Defender off,
+/// among `defender` (its policy key, read with `/s`).
+pub fn defender_policy_hit(defender: &[RegKeyValues]) -> Option<PolicyHit> {
+    let values: Vec<(&'static str, &'static str)> = [
+        (DEFENDER_POLICY_KEY, "DisableAntiSpyware"),
+        (DEFENDER_POLICY_KEY, "DisableAntiVirus"),
+        (DEFENDER_RTP_POLICY_KEY, "DisableRealtimeMonitoring"),
+        (DEFENDER_RTP_POLICY_KEY, "DisableBehaviorMonitoring"),
+        (DEFENDER_RTP_POLICY_KEY, "DisableOnAccessProtection"),
+        (DEFENDER_RTP_POLICY_KEY, "DisableIOAVProtection"),
+        (DEFENDER_RTP_POLICY_KEY, "DisableScanOnRealtimeEnable"),
+    ]
+    .into_iter()
+    .filter(|(key, name)| is_on(defender, key, name))
+    .collect();
+    (!values.is_empty()).then_some(PolicyHit {
+        id: DEFENDER_OFF,
+        title: "Microsoft Defender is switched off by policy",
+        severity: Severity::Critical,
+        description: "A policy switches Microsoft Defender's protection off, and no other antivirus is active. Debloat tools set it; this PC is unprotected against malware.",
+        values,
+    })
+}
+
+/// Whether Defender's real-time protection runs (`MP|True`), and every
+/// antivirus Windows Security knows as `AV|productState|instanceGuid|name`.
+/// `True`, the state number and the GUID are the same in every language.
+const DEFENDER_STATUS_SCRIPT: &str = "try { 'MP|{0}' -f (Get-MpComputerStatus -ErrorAction Stop).RealTimeProtectionEnabled } catch { 'MP|FAILED|' + $_.FullyQualifiedErrorId }; Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction SilentlyContinue | ForEach-Object { 'AV|{0}|{1}|{2}' -f $_.productState, $_.instanceGuid, $_.displayName }";
+
+/// Microsoft Defender's `instanceGuid` in Windows Security.
+const DEFENDER_GUID: &str = "{D68DDC3A-831F-4fae-9E44-DA132C1ACF46}";
+
+/// What [`DEFENDER_STATUS_SCRIPT`] printed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DefenderStatus {
+    /// Real-time protection on; `false` also when Defender does not answer.
+    pub realtime_on: bool,
+    /// Other antivirus products Windows Security reports switched on.
+    pub other_antivirus: Vec<String>,
+}
+
+pub fn parse_defender_status(output: &str) -> DefenderStatus {
+    let mut status = DefenderStatus::default();
+    for line in output.lines().map(str::trim) {
+        if let Some(rest) = line.strip_prefix("MP|") {
+            status.realtime_on = rest.eq_ignore_ascii_case("True");
+        } else if let Some(rest) = line.strip_prefix("AV|") {
+            let mut fields = rest.splitn(3, '|');
+            let (Some(state), Some(guid), Some(name)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            // Bits 12-15 of productState: 1 is switched on.
+            let on = state.parse::<u32>().is_ok_and(|s| (s >> 12) & 0xF == 1);
+            if on && !guid.eq_ignore_ascii_case(DEFENDER_GUID) {
+                status.other_antivirus.push(name.to_string());
+            }
+        }
+    }
+    status
+}
+
 /// Hosts entries that take a Windows endpoint out of reach.
 ///
 /// Only endpoints Windows needs to work are listed: updates, the Store's
@@ -488,6 +556,9 @@ pub struct TweaksModule {
     hosts_path: PathBuf,
     local_policy_path: PathBuf,
     backup_dir: PathBuf,
+    /// How long Defender gets to switch its protection on after the policy
+    /// is gone, before each of three looks.
+    defender_wait: Duration,
 }
 
 fn system_root() -> PathBuf {
@@ -527,7 +598,38 @@ impl TweaksModule {
             hosts_path,
             local_policy_path,
             backup_dir,
+            defender_wait: Duration::from_secs(5),
         }
+    }
+
+    /// For tests: do not wait for Defender.
+    pub fn with_defender_wait(mut self, wait: Duration) -> Self {
+        self.defender_wait = wait;
+        self
+    }
+
+    /// Defender's protection and the other antivirus, or `None` when the
+    /// query did not run.
+    async fn defender_status(&self) -> Option<DefenderStatus> {
+        let out = self
+            .runner
+            .query_powershell(DEFENDER_STATUS_SCRIPT, Duration::from_secs(30))
+            .await
+            .ok()?;
+        out.stdout
+            .contains("MP|")
+            .then(|| parse_defender_status(&out.stdout))
+    }
+
+    /// Whether real-time protection came on, looking three times.
+    async fn defender_came_on(&self) -> bool {
+        for _ in 0..3 {
+            tokio::time::sleep(self.defender_wait).await;
+            if self.defender_status().await.is_some_and(|s| s.realtime_on) {
+                return true;
+            }
+        }
+        false
     }
 
     async fn send_progress(
@@ -573,7 +675,12 @@ impl TweaksModule {
         let store = registry::query(&*self.runner, STORE_POLICY_KEY, false)
             .await?
             .unwrap_or_default();
-        Ok(policy_hits(&wu, &store))
+        let defender = registry::query(&*self.runner, DEFENDER_POLICY_KEY, true)
+            .await?
+            .unwrap_or_default();
+        let mut hits = policy_hits(&wu, &store);
+        hits.extend(defender_policy_hit(&defender));
+        Ok(hits)
     }
 
     /// Whether a value name appears in the local Group Policy file, which
@@ -650,6 +757,16 @@ impl TweaksModule {
                 "The values were deleted but the policy is still in effect - something re-applies it."
                     .to_string(),
             );
+        }
+        if issue_id == DEFENDER_OFF && !self.defender_came_on().await {
+            return Err(format!(
+                "Removed {}, but Defender's real-time protection is still off. Switch it on under Windows Security -> Virus & threat protection, or restart Windows and scan again.",
+                hit.values
+                    .iter()
+                    .map(|(_, name)| *name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
         }
         Ok(format!(
             "Removed {} policy value(s): {}.{}",
@@ -753,7 +870,7 @@ impl DiagnosticModule for TweaksModule {
     }
 
     fn description(&self) -> &'static str {
-        "Finds what tweak and debloat tools leave behind: disabled core services, update and Store policies, and hosts entries that block Windows"
+        "Finds what tweak and debloat tools leave behind: disabled core services, update, Store and Defender policies, and hosts entries that block Windows"
     }
 
     fn icon(&self) -> &'static str {
@@ -836,6 +953,36 @@ impl DiagnosticModule for TweaksModule {
             match self.current_policy_hits().await {
                 Ok(hits) => {
                     for hit in hits {
+                        // Defender switched off by policy is only a fault
+                        // while nothing else protects the PC.
+                        if hit.id == DEFENDER_OFF {
+                            match self.defender_status().await {
+                                Some(status)
+                                    if !status.realtime_on && status.other_antivirus.is_empty() => {
+                                }
+                                Some(status) => {
+                                    let why = if status.realtime_on {
+                                        "its real-time protection runs anyway".to_string()
+                                    } else {
+                                        format!(
+                                            "{} protects this PC",
+                                            status.other_antivirus.join(", ")
+                                        )
+                                    };
+                                    Self::send_progress(
+                                        &progress_tx,
+                                        70,
+                                        "Defender policy left alone",
+                                        Some(&format!(
+                                            "A policy switches Defender off, but {why}."
+                                        )),
+                                    )
+                                    .await;
+                                    continue;
+                                }
+                                None => continue,
+                            }
+                        }
                         let evidence = hit
                             .values
                             .iter()
@@ -1301,5 +1448,171 @@ mod tests {
         );
         let backups: Vec<_> = std::fs::read_dir(dir.join("backups")).unwrap().collect();
         assert_eq!(backups.len(), 1);
+    }
+
+    /// `reg query` of Defender's policy key on the capture machine: only an
+    /// empty `Policy Manager` subkey.
+    const DEFENDER_POLICY: &[u8] =
+        include_bytes!("../../tests/fixtures/console/reg_query_defender_policy.bin");
+    /// The Defender status query there: protection on, Defender the only
+    /// antivirus.
+    const DEFENDER_STATUS: &[u8] =
+        include_bytes!("../../tests/fixtures/console/powershell_defender_status.bin");
+
+    /// The captured key with what debloat tools write on top.
+    fn defender_switched_off() -> String {
+        format!(
+            "\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\r\n    DisableAntiSpyware    REG_DWORD    0x1\r\n{}\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Real-Time Protection\r\n    DisableRealtimeMonitoring    REG_DWORD    0x1\r\n    DisableBehaviorMonitoring    REG_DWORD    0x0\r\n\r\n",
+            decode_output(DEFENDER_POLICY).trim_end()
+        )
+    }
+
+    /// The captured status with real-time protection off.
+    fn defender_off_status() -> String {
+        decode_output(DEFENDER_STATUS).replace("MP|True", "MP|False")
+    }
+
+    #[test]
+    fn the_captured_defender_is_on_and_alone() {
+        let status = parse_defender_status(&decode_output(DEFENDER_STATUS));
+        assert_eq!(
+            status,
+            DefenderStatus {
+                realtime_on: true,
+                other_antivirus: Vec::new(),
+            }
+        );
+        assert!(
+            defender_policy_hit(&registry::parse_reg_query(&decode_output(DEFENDER_POLICY)))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn another_antivirus_counts_only_while_it_is_on() {
+        let status = parse_defender_status(&format!(
+            "{}AV|266240|{{17AD7D40-BA12-9C46-7131-94903A54AD8B}}|Avast Antivirus\r\nAV|262144|{{00000000-0000-0000-0000-000000000001}}|Old Antivirus\r\n",
+            defender_off_status()
+        ));
+        assert!(!status.realtime_on);
+        assert_eq!(status.other_antivirus, ["Avast Antivirus"]);
+        assert!(!parse_defender_status("MP|FAILED|HRESULT 0x800106ba").realtime_on);
+    }
+
+    #[test]
+    fn only_values_that_switch_defender_off_are_named() {
+        let hit =
+            defender_policy_hit(&registry::parse_reg_query(&defender_switched_off())).unwrap();
+        assert_eq!(hit.id, DEFENDER_OFF);
+        assert_eq!(
+            hit.values,
+            [
+                (DEFENDER_POLICY_KEY, "DisableAntiSpyware"),
+                (DEFENDER_RTP_POLICY_KEY, "DisableRealtimeMonitoring"),
+            ]
+        );
+    }
+
+    /// Not in a domain, every service fine, Defender switched off by
+    /// policy, the status query answering `status`.
+    async fn defender_scan(name: &str, status: String) -> Vec<Issue> {
+        let dir = sandbox(name);
+        let mock = MockCommandRunner::new();
+        mock.add_response("PartOfDomain", CmdOutput::ok("False\r\n"));
+        mock.add_response(
+            format!("query {DEFENDER_POLICY_KEY}"),
+            CmdOutput::ok(defender_switched_off()),
+        );
+        mock.add_response("Get-MpComputerStatus", CmdOutput::ok(status));
+        mock.add_response("reg.exe", CmdOutput::with_output(1, "", "FEHLER"));
+        mock.add_response("sc.exe", CmdOutput::ok(sc_qc_output("x", 3)));
+        module(mock, &dir, b"").scan(None).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn defender_switched_off_with_nothing_else_is_a_finding() {
+        let issues = defender_scan("defender_off", defender_off_status()).await;
+        let issue = issues.iter().find(|i| i.id == DEFENDER_OFF).unwrap();
+        assert_eq!(issue.severity, Severity::Critical);
+        assert!(
+            issue
+                .technical_details
+                .contains("DisableRealtimeMonitoring")
+        );
+    }
+
+    #[tokio::test]
+    async fn defender_policy_is_left_alone_while_something_protects() {
+        // The policy is set, but real-time protection runs anyway: Tamper
+        // Protection ignores such policies.
+        let issues = defender_scan("defender_on", decode_output(DEFENDER_STATUS)).await;
+        assert!(issues.is_empty(), "{issues:?}");
+        let other = format!(
+            "{}AV|266240|{{17AD7D40-BA12-9C46-7131-94903A54AD8B}}|Avast Antivirus\r\n",
+            defender_off_status()
+        );
+        let issues = defender_scan("defender_other", other).await;
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    /// Defender's policy is set until deleted; the status says `after` once
+    /// it was.
+    fn defender_repair(after: String) -> MockCommandRunner {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            format!("query {DEFENDER_POLICY_KEY}"),
+            CmdOutput::ok(defender_switched_off()),
+        );
+        mock.add_response_after(
+            "delete",
+            format!("query {DEFENDER_POLICY_KEY}"),
+            CmdOutput::ok(decode_output(DEFENDER_POLICY)),
+        );
+        mock.add_response("Get-MpComputerStatus", CmdOutput::ok(defender_off_status()));
+        mock.add_response_after("delete", "Get-MpComputerStatus", CmdOutput::ok(after));
+        mock.add_response("reg.exe delete", CmdOutput::ok(""));
+        mock.add_response("reg.exe", CmdOutput::with_output(1, "", "FEHLER"));
+        mock
+    }
+
+    #[tokio::test]
+    async fn defender_is_on_again_after_the_policy_is_gone() {
+        let dir = sandbox("defender_fix");
+        let mock = defender_repair(decode_output(DEFENDER_STATUS));
+        let msg = module(mock.clone(), &dir, b"")
+            .with_defender_wait(Duration::ZERO)
+            .fix(DEFENDER_OFF, None)
+            .await
+            .unwrap();
+        assert!(
+            msg.contains("DisableAntiSpyware, DisableRealtimeMonitoring"),
+            "{msg}"
+        );
+        let deletes: Vec<String> = mock
+            .executed()
+            .into_iter()
+            .filter(|c| c.starts_with("reg.exe delete"))
+            .collect();
+        assert_eq!(deletes.len(), 2, "{deletes:?}");
+    }
+
+    #[tokio::test]
+    async fn defender_that_stays_off_is_a_failure() {
+        let dir = sandbox("defender_stays");
+        let mock = defender_repair(defender_off_status());
+        let err = module(mock, &dir, b"")
+            .with_defender_wait(Duration::ZERO)
+            .fix(DEFENDER_OFF, None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("still off"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn the_defender_script_parses() {
+        assert_eq!(
+            crate::utils::cmd::powershell_parse_errors(DEFENDER_STATUS_SCRIPT).await,
+            0
+        );
     }
 }
