@@ -1,7 +1,9 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
+use crate::modules::crash_timeline::{DEFENDER_SIGNATURES, STORE_SERVICE, WU_PROVIDER, logged_at};
 use crate::modules::system_cleaner::{clean_path_contents, cleanup_result, format_bytes};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
+use crate::utils::event_xml::{EventRecord, read_events, system_log_query};
 use crate::utils::service::{
     self, SERVICE_DISABLED, SERVICE_RUNNING, SERVICE_START_PENDING, SERVICE_STOPPED,
 };
@@ -18,6 +20,9 @@ pub struct WindowsUpdatesModule {
     runner: Arc<dyn CommandRunner>,
     /// `%SystemRoot%\SoftwareDistribution\Download`.
     download_dir: PathBuf,
+    /// `%SystemRoot%\SoftwareDistribution` and `%SystemRoot%\System32\catroot2`,
+    /// which the component reset renames.
+    component_dirs: [PathBuf; 2],
 }
 
 /// The services that hold the update download cache open, in the order they
@@ -164,6 +169,263 @@ fn read_reboot_signals() -> RebootSignals {
     }
 }
 
+/// How far back failed installs are looked for.
+const FAILED_UPDATE_DAYS: u64 = 30;
+/// An update that failed once may just have been interrupted.
+const MIN_FAILURES: usize = 2;
+
+/// The events of Windows Update installing (19) or failing to install (20)
+/// something within the last [`FAILED_UPDATE_DAYS`].
+pub fn install_events_query() -> Vec<String> {
+    system_log_query(
+        &format!("Provider[@Name='{WU_PROVIDER}'] and (EventID=19 or EventID=20)"),
+        FAILED_UPDATE_DAYS * 24 * 3_600_000,
+        500,
+    )
+}
+
+/// An update Windows Update failed to install again and again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailedUpdate {
+    pub title: String,
+    /// The newest failure's `errorCode`, e.g. `0x800f081f`.
+    pub error_code: String,
+    pub failures: usize,
+}
+
+/// Updates that failed at least [`MIN_FAILURES`] times since the last update
+/// that did install.
+///
+/// Store apps (their own service, several a day) and Defender's signatures
+/// (retried within hours) are left out, as in the crash timeline. An install
+/// that works again clears the older failures: a failed monthly update is
+/// replaced by the next month's, whose install is the proof that Windows
+/// Update works, so a failure before it would never go away.
+pub fn failing_updates(events: &[EventRecord]) -> Vec<FailedUpdate> {
+    let relevant: Vec<&EventRecord> = events
+        .iter()
+        .filter(|e| e.provider == WU_PROVIDER && matches!(e.event_id, 19 | 20))
+        .filter(|e| {
+            e.data("serviceGuid")
+                .is_none_or(|service| !service.eq_ignore_ascii_case(STORE_SERVICE))
+        })
+        .filter(|e| {
+            e.data("updateTitle")
+                .is_none_or(|title| !title.contains(DEFENDER_SIGNATURES))
+        })
+        .collect();
+    let last_install = relevant
+        .iter()
+        .filter(|e| e.event_id == 19)
+        .filter_map(|e| logged_at(e))
+        .max();
+
+    // Newest first, as wevtutil lists them, so the first failure of an
+    // update seen is its newest.
+    let mut failed: Vec<(String, FailedUpdate, chrono::DateTime<chrono::Utc>)> = Vec::new();
+    for event in relevant.iter().filter(|e| e.event_id == 20) {
+        let Some(when) = logged_at(event) else {
+            continue;
+        };
+        if last_install.is_some_and(|installed| when <= installed) {
+            continue;
+        }
+        let title = event.data("updateTitle").unwrap_or("").to_string();
+        let key = event
+            .data("updateGuid")
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_else(|| title.clone());
+        match failed.iter_mut().find(|(known, _, _)| *known == key) {
+            Some((_, update, newest)) => {
+                update.failures += 1;
+                if when > *newest {
+                    *newest = when;
+                    update.error_code = event.data("errorCode").unwrap_or("").to_string();
+                }
+            }
+            None => failed.push((
+                key,
+                FailedUpdate {
+                    title,
+                    error_code: event.data("errorCode").unwrap_or("").to_string(),
+                    failures: 1,
+                },
+                when,
+            )),
+        }
+    }
+    failed
+        .into_iter()
+        .map(|(_, update, _)| update)
+        .filter(|update| update.failures >= MIN_FAILURES)
+        .collect()
+}
+
+/// What an update's error code points at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FailureCause {
+    /// Damaged component store: DISM repairs it.
+    ComponentStore,
+    DiskFull,
+    /// The update servers could not be reached: proxy, hosts file, DNS.
+    Connection,
+    /// The secure connection failed, which a wrong clock causes.
+    Clock,
+    /// A service Windows Update needs is disabled.
+    ServiceDisabled,
+    /// Nothing more specific: reset Windows Update's components.
+    Other,
+}
+
+impl FailureCause {
+    /// The cause behind an `errorCode` as event 20 writes it.
+    pub fn of(error_code: &str) -> Self {
+        match error_code.trim().to_ascii_lowercase().as_str() {
+            // CBS_E_SOURCE_MISSING, CBS_E_STORE_CORRUPTION,
+            // ERROR_SXS_COMPONENT_STORE_CORRUPT, ERROR_FILE_CORRUPT,
+            // ERROR_INVALID_DATA
+            "0x800f081f" | "0x800f0831" | "0x80073712" | "0x80070570" | "0x8007000d" => {
+                Self::ComponentStore
+            }
+            // ERROR_DISK_FULL, ERROR_HANDLE_DISK_FULL
+            "0x80070070" | "0x80070027" => Self::DiskFull,
+            // WinHTTP timeouts and refused connections, names that do not
+            // resolve, HTTP 503, a failed download of the repair source
+            "0x80072ee2" | "0x80072efd" | "0x80072efe" | "0x80072ee7" | "0x8024402c"
+            | "0x8024401c" | "0x80244022" | "0x8024402f" | "0x80240438" | "0x800f0906" => {
+                Self::Connection
+            }
+            // ERROR_INTERNET_SECURE_FAILURE
+            "0x80072f8f" => Self::Clock,
+            // ERROR_SERVICE_DISABLED
+            "0x80070422" => Self::ServiceDisabled,
+            _ => Self::Other,
+        }
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            Self::ComponentStore => "wu_failed_component_store",
+            Self::DiskFull => "wu_failed_disk_full",
+            Self::Connection => "wu_failed_connection",
+            Self::Clock => "wu_failed_clock",
+            Self::ServiceDisabled => "wu_failed_service",
+            Self::Other => UPDATE_RESET,
+        }
+    }
+
+    /// Why the updates fail, and where WinMedic repairs that.
+    fn advice(self) -> (&'static str, &'static [&'static str]) {
+        match self {
+            Self::ComponentStore => (
+                "Windows' component store, which every update is installed from, is damaged. DISM repairs it; System Integrity offers that repair when its check finds the damage.",
+                &[
+                    "DISM /Online /Cleanup-Image /RestoreHealth",
+                    "Run Windows Update again",
+                ],
+            ),
+            Self::DiskFull => (
+                "The drive ran out of space while the update was installed.",
+                &[
+                    "Free space on C: (System & Cache Cleaner)",
+                    "Run Windows Update again",
+                ],
+            ),
+            Self::Connection => (
+                "Windows Update could not reach Microsoft's servers. The usual causes are what the Network and Tweaks checks look for: a proxy nothing answers at, hosts entries that block the update servers, DNS.",
+                &[
+                    "Repair what the Network & DNS and Tweaks & Policies checks find",
+                    "Run Windows Update again",
+                ],
+            ),
+            Self::Clock => (
+                "The secure connection to the update servers failed, which a wrong clock causes.",
+                &[
+                    "Set the clock right (Clock & Restart)",
+                    "Run Windows Update again",
+                ],
+            ),
+            Self::ServiceDisabled => (
+                "A service Windows Update needs is disabled.",
+                &[
+                    "Set the disabled services back (Windows Update & Services, Tweaks & Policies)",
+                    "Run Windows Update again",
+                ],
+            ),
+            Self::Other => ("", &[]),
+        }
+    }
+}
+
+/// The finding for updates whose error code names no more specific cause.
+pub const UPDATE_RESET: &str = "wu_update_reset";
+
+fn failed_list(updates: &[&FailedUpdate]) -> String {
+    updates
+        .iter()
+        .map(|u| format!("{} - {} ({} failures)", u.title, u.error_code, u.failures))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// One finding per cause, listing the updates behind it.
+pub fn failed_update_findings(module_id: &str, failed: &[FailedUpdate]) -> Vec<Issue> {
+    let mut causes: Vec<FailureCause> = failed
+        .iter()
+        .map(|u| FailureCause::of(&u.error_code))
+        .collect();
+    causes.sort_unstable();
+    causes.dedup();
+    causes
+        .into_iter()
+        .map(|cause| {
+            let updates: Vec<&FailedUpdate> = failed
+                .iter()
+                .filter(|u| FailureCause::of(&u.error_code) == cause)
+                .collect();
+            let title = match updates.as_slice() {
+                [one] => format!("'{}' keeps failing to install", one.title),
+                many => format!("{} updates keep failing to install", many.len()),
+            };
+            if cause == FailureCause::Other {
+                let mut issue = Issue::new(
+                    UPDATE_RESET,
+                    module_id,
+                    title,
+                    "Windows Update & Services",
+                    Severity::Warning,
+                    RiskScore::Medium,
+                    "Windows Update tried again and again and failed each time. Resetting its components makes it start over with a fresh download folder and signature catalog. The update history in Settings is empty afterwards; the installed updates stay.",
+                    failed_list(&updates),
+                    "Reset Windows Update's components",
+                    vec![
+                        "Stop wuauserv, bits and cryptsvc".to_string(),
+                        r"Rename %SystemRoot%\SoftwareDistribution and %SystemRoot%\System32\catroot2".to_string(),
+                        "Start the services again".to_string(),
+                    ],
+                );
+                // The history is gone afterwards: the user's call.
+                issue.is_selected = false;
+                return issue;
+            }
+            let (why, steps) = cause.advice();
+            Issue::new(
+                cause.id(),
+                module_id,
+                title,
+                "Windows Update & Services",
+                Severity::Warning,
+                RiskScore::Low,
+                format!("Windows Update tried again and again and failed each time. {why}"),
+                failed_list(&updates),
+                steps[0],
+                steps.iter().map(|s| s.to_string()).collect(),
+            )
+            .with_advice_only()
+        })
+        .collect()
+}
+
 impl WindowsUpdatesModule {
     pub fn new(config: ModuleConfig) -> Self {
         Self::with_runner(config, Arc::new(SystemCommandRunner::new()))
@@ -171,17 +433,127 @@ impl WindowsUpdatesModule {
 
     pub fn with_runner(config: ModuleConfig, runner: Arc<dyn CommandRunner>) -> Self {
         let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+        let root = PathBuf::from(root);
         Self {
             config,
             runner,
-            download_dir: PathBuf::from(root).join(r"SoftwareDistribution\Download"),
+            download_dir: root.join(r"SoftwareDistribution\Download"),
+            component_dirs: [
+                root.join("SoftwareDistribution"),
+                root.join(r"System32\catroot2"),
+            ],
         }
+    }
+
+    /// For tests: rename these folders instead of the real ones.
+    pub fn with_component_dirs(mut self, dirs: [PathBuf; 2]) -> Self {
+        self.component_dirs = dirs;
+        self
     }
 
     /// For tests: empty this folder instead of the real download cache.
     pub fn with_download_dir(mut self, dir: PathBuf) -> Self {
         self.download_dir = dir;
         self
+    }
+
+    /// Stop [`CACHE_SERVICES`] and check each one stopped. The guard starts
+    /// them again if the caller does not get to; `untouched` says what was
+    /// left alone when one does not stop.
+    async fn stop_services(&self, untouched: &str) -> Result<StartAgain, String> {
+        let guard = StartAgain {
+            runner: self.runner.clone(),
+            armed: true,
+        };
+        for svc in CACHE_SERVICES {
+            let _ = self
+                .runner
+                .run("net.exe", &["stop", svc], Duration::from_secs(60))
+                .await;
+            let state = service::state(&*self.runner, svc).await?;
+            if state != Some(SERVICE_STOPPED) {
+                return Err(format!(
+                    "'{svc}' did not stop (state {state:?}), so {untouched}. The services are being started again."
+                ));
+            }
+        }
+        Ok(guard)
+    }
+
+    /// Start the services again; the ones that did not, with their state.
+    async fn start_services(&self, mut guard: StartAgain) -> Result<Vec<String>, String> {
+        let mut not_running = Vec::new();
+        for svc in CACHE_SERVICES.iter().rev() {
+            let _ = self
+                .runner
+                .run("net.exe", &["start", svc], Duration::from_secs(60))
+                .await;
+            let state = service::state(&*self.runner, svc).await?;
+            if !matches!(state, Some(SERVICE_RUNNING | SERVICE_START_PENDING)) {
+                not_running.push(format!("{svc} (state {state:?})"));
+            }
+        }
+        guard.armed = false;
+        Ok(not_running)
+    }
+
+    /// Reset Windows Update's components the way Microsoft describes it: stop
+    /// the services, rename `SoftwareDistribution` and `catroot2`, start the
+    /// services. Windows creates both folders anew. A folder that is not
+    /// there is skipped; when the second rename fails, the first is undone.
+    async fn reset_components(&self, log_tx: Option<&Sender<String>>) -> Result<String, String> {
+        let say = |line: String| async move {
+            if let Some(tx) = log_tx {
+                let _ = tx.send(line).await;
+            }
+        };
+        say("Stopping the Windows Update services...".to_string()).await;
+        let guard = self.stop_services("nothing was renamed").await?;
+
+        let suffix = format!("winmedic-{}", chrono::Local::now().format("%Y%m%d-%H%M%S"));
+        let mut renamed: Vec<(PathBuf, PathBuf)> = Vec::new();
+        for dir in &self.component_dirs {
+            if !dir.exists() {
+                continue;
+            }
+            let mut name = dir.file_name().unwrap_or_default().to_os_string();
+            name.push(format!(".{suffix}"));
+            let to = dir.with_file_name(name);
+            say(format!("Renaming {} to {}...", dir.display(), to.display())).await;
+            if let Err(e) = std::fs::rename(dir, &to) {
+                let undone = renamed
+                    .iter()
+                    .rev()
+                    .all(|(from, to)| std::fs::rename(to, from).is_ok());
+                return Err(format!(
+                    "{} could not be renamed ({e}); a service or another program still uses it. {} The services are being started again.",
+                    dir.display(),
+                    if undone {
+                        "Nothing was changed."
+                    } else {
+                        "The folder renamed before it could not be renamed back either."
+                    }
+                ));
+            }
+            renamed.push((dir.clone(), to));
+        }
+
+        say("Starting the Windows Update services again...".to_string()).await;
+        let not_running = self.start_services(guard).await?;
+        let moved = renamed
+            .iter()
+            .map(|(from, to)| format!("{} -> {}", from.display(), to.display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !not_running.is_empty() {
+            return Err(format!(
+                "The components were reset ({moved}), but these services did not start again: {}. Restart Windows to start them.",
+                not_running.join(", ")
+            ));
+        }
+        Ok(format!(
+            "Windows Update's components were reset ({moved}) and its services run. Run Windows Update now; the next scan shows whether the update installs. The update history in Settings starts empty."
+        ))
     }
 
     /// Stop the services, empty the cache and start them again, checking
@@ -197,22 +569,7 @@ impl WindowsUpdatesModule {
         };
 
         say("Stopping the Windows Update services...").await;
-        let mut guard = StartAgain {
-            runner: self.runner.clone(),
-            armed: true,
-        };
-        for svc in CACHE_SERVICES {
-            let _ = self
-                .runner
-                .run("net.exe", &["stop", svc], Duration::from_secs(60))
-                .await;
-            let state = service::state(&*self.runner, svc).await?;
-            if state != Some(SERVICE_STOPPED) {
-                return Err(format!(
-                    "'{svc}' did not stop (state {state:?}), so the cache was left alone. The services are being started again."
-                ));
-            }
-        }
+        let guard = self.stop_services("the cache was left alone").await?;
 
         say("Emptying SoftwareDistribution\\Download...").await;
         let dir = self.download_dir.clone();
@@ -221,18 +578,7 @@ impl WindowsUpdatesModule {
             .map_err(|e| format!("The cache sweep stopped: {e}"))?;
 
         say("Starting the Windows Update services again...").await;
-        let mut not_running = Vec::new();
-        for svc in CACHE_SERVICES.iter().rev() {
-            let _ = self
-                .runner
-                .run("net.exe", &["start", svc], Duration::from_secs(60))
-                .await;
-            let state = service::state(&*self.runner, svc).await?;
-            if !matches!(state, Some(SERVICE_RUNNING | SERVICE_START_PENDING)) {
-                not_running.push(format!("{svc} (state {state:?})"));
-            }
-        }
-        guard.armed = false;
+        let not_running = self.start_services(guard).await?;
         if !not_running.is_empty() {
             return Err(format!(
                 "The cache was emptied ({} freed), but these services did not start again: {}. Restart Windows to start them.",
@@ -276,7 +622,7 @@ impl DiagnosticModule for WindowsUpdatesModule {
     }
 
     fn description(&self) -> &'static str {
-        "Checks update caches (SoftwareDistribution/Catroot2), services (BITS, wuauserv) and update blockers"
+        "Checks update caches (SoftwareDistribution/Catroot2), services (BITS, wuauserv), update blockers and updates that keep failing"
     }
 
     fn icon(&self) -> &'static str {
@@ -446,6 +792,42 @@ impl DiagnosticModule for WindowsUpdatesModule {
             }
         }
 
+        // 4. Updates that keep failing
+        Self::send_progress(
+            &progress_tx,
+            95,
+            "Checking for updates that keep failing...",
+            Some("Reading Windows Update's install events (19 and 20)..."),
+        )
+        .await;
+        let query = install_events_query();
+        let query: Vec<&str> = query.iter().map(String::as_str).collect();
+        match read_events(
+            self.runner
+                .run("wevtutil.exe", &query, Duration::from_secs(15))
+                .await,
+        ) {
+            Ok(events) => {
+                let failed = failing_updates(&events);
+                if failed.is_empty() {
+                    Self::send_progress(
+                        &progress_tx,
+                        98,
+                        "No update keeps failing",
+                        Some(&format!(
+                            "No update failed twice since the last install in the last {FAILED_UPDATE_DAYS} days (Store apps and Defender signatures not counted)."
+                        )),
+                    )
+                    .await;
+                }
+                issues.extend(failed_update_findings(self.id(), &failed));
+            }
+            Err(err) => {
+                Self::send_progress(&progress_tx, 98, "Failed updates not checked", Some(&err))
+                    .await;
+            }
+        }
+
         Self::send_progress(
             &progress_tx,
             100,
@@ -539,6 +921,15 @@ impl DiagnosticModule for WindowsUpdatesModule {
                     );
                 }
                 self.clean_update_cache(log_tx.as_ref()).await
+            }
+            UPDATE_RESET => {
+                if !self.config.auto_restart_services {
+                    return Err(
+                        "Skipped: the reset requires stopping and restarting wuauserv, bits and cryptsvc. Turn on 'Restart services automatically' in the settings."
+                            .to_string(),
+                    );
+                }
+                self.reset_components(log_tx.as_ref()).await
             }
             REBOOT_PENDING => Ok(
                 "Pending reboot recorded. Please restart the system once the run has finished."
@@ -726,6 +1117,193 @@ mod tests {
             "{:?}",
             mock.executed()
         );
+    }
+
+    // Captured on a German Windows 11; see tests/fixtures/README.md.
+    const FAILED_STORE: &[u8] =
+        include_bytes!("../../tests/fixtures/events/wevtutil_wu_failed_20_store.bin");
+    const INSTALLED: &[u8] =
+        include_bytes!("../../tests/fixtures/events/wevtutil_wu_installed_19_de.bin");
+
+    /// Windows Update's own service, next to the Store's.
+    const WU_SERVICE: &str = "{9482f4b4-e343-43b6-b170-9a65bc822c77}";
+
+    fn text(bytes: &[u8]) -> String {
+        crate::utils::decode::decode_output_in(bytes, crate::utils::decode::CodePage::Ansi)
+    }
+
+    /// The four captured failures as Windows Update failing one update: its
+    /// service instead of the Store's, one `updateGuid`, the newest failure
+    /// with `newest_code`.
+    fn one_update_failing(newest_code: &str) -> String {
+        let mut xml = text(FAILED_STORE).replace(STORE_SERVICE, WU_SERVICE);
+        for guid in [
+            "{8d2eb37a-ec42-47cd-bd49-0df3df4bbe34}",
+            "{01e84f1c-8841-476e-8113-879c8e7a2ca7}",
+            "{5ef639d5-48dd-4a53-86a6-c73766c99346}",
+        ] {
+            xml = xml.replace(guid, "{a71d945c-a477-45f6-8f5d-3b4daab59c9d}");
+        }
+        xml.replacen("0x80073d02", newest_code, 1)
+    }
+
+    fn parse(xml: &str) -> Vec<EventRecord> {
+        crate::utils::event_xml::parse_events(xml)
+    }
+
+    #[test]
+    fn store_apps_failing_are_not_counted() {
+        // The capture machine: three Store apps failed with 0x80073d02.
+        assert_eq!(parse(&text(FAILED_STORE)).len(), 4);
+        assert!(failing_updates(&parse(&text(FAILED_STORE))).is_empty());
+    }
+
+    #[test]
+    fn an_update_that_fails_again_and_again_is_found() {
+        let failed = failing_updates(&parse(&one_update_failing("0x800f081f")));
+        assert_eq!(
+            failed,
+            [FailedUpdate {
+                title: "9MWPM2CQNLHN-Microsoft.GamingServices".to_string(),
+                error_code: "0x800f081f".to_string(),
+                failures: 4,
+            }]
+        );
+        // July's installs came before, so they change nothing.
+        let mut events = parse(&text(INSTALLED));
+        events.extend(parse(&one_update_failing("0x800f081f")));
+        assert_eq!(failing_updates(&events).len(), 1);
+    }
+
+    #[test]
+    fn an_install_after_the_failures_clears_them() {
+        // The Visual C++ update, the one install in the capture that counts.
+        let later = text(INSTALLED).replacen(
+            "2026-07-26T16:06:15.2191749Z",
+            "2026-09-01T10:00:00.0000000Z",
+            1,
+        );
+        let mut events = parse(&one_update_failing("0x800f081f"));
+        events.extend(parse(&later));
+        assert!(failing_updates(&events).is_empty());
+    }
+
+    #[test]
+    fn one_failure_is_not_enough() {
+        let xml = one_update_failing("0x800f081f");
+        let first = &xml[..xml.find("</Event>").unwrap() + "</Event>".len()];
+        assert!(failing_updates(&parse(first)).is_empty());
+    }
+
+    #[test]
+    fn the_error_code_names_the_repair() {
+        assert_eq!(FailureCause::of("0x800F081F"), FailureCause::ComponentStore);
+        assert_eq!(FailureCause::of("0x80070070"), FailureCause::DiskFull);
+        assert_eq!(FailureCause::of("0x8024402c"), FailureCause::Connection);
+        assert_eq!(FailureCause::of("0x80072f8f"), FailureCause::Clock);
+        assert_eq!(
+            FailureCause::of("0x80070422"),
+            FailureCause::ServiceDisabled
+        );
+        assert_eq!(FailureCause::of("0x80073d02"), FailureCause::Other);
+
+        let failed = failing_updates(&parse(&one_update_failing("0x800f081f")));
+        let issues = failed_update_findings("windows_updates", &failed);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].id, "wu_failed_component_store");
+        assert!(issues[0].advice_only);
+        assert!(issues[0].fix_steps[0].contains("RestoreHealth"));
+        assert!(
+            issues[0]
+                .technical_details
+                .contains("0x800f081f (4 failures)")
+        );
+    }
+
+    #[test]
+    fn an_unknown_code_offers_the_reset_unticked() {
+        let failed = failing_updates(&parse(&one_update_failing("0x80246007")));
+        let issues = failed_update_findings("windows_updates", &failed);
+        assert_eq!(issues[0].id, UPDATE_RESET);
+        assert!(issues[0].is_repairable());
+        assert!(!issues[0].is_selected, "the update history is lost");
+        assert_eq!(issues[0].risk_score, RiskScore::Medium);
+    }
+
+    #[tokio::test]
+    async fn the_scan_reads_the_install_events() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "wevtutil.exe",
+            CmdOutput::ok(one_update_failing("0x80246007")),
+        );
+        mock.add_response("sc.exe", CmdOutput::ok(sc_qc_output("x", 3)));
+        let issues =
+            WindowsUpdatesModule::with_runner(ModuleConfig::default(), Arc::new(mock.clone()))
+                .with_download_dir(std::env::temp_dir().join("winmedic_wu_no_such_cache"))
+                .scan(None)
+                .await
+                .unwrap();
+        assert!(issues.iter().any(|i| i.id == UPDATE_RESET), "{issues:?}");
+        let query = mock
+            .executed()
+            .into_iter()
+            .find(|c| c.starts_with("wevtutil.exe"))
+            .unwrap();
+        assert!(
+            query.contains("(EventID=19 or EventID=20)")
+                && query.contains("timediff(@SystemTime) <= 2592000000"),
+            "{query}"
+        );
+    }
+
+    /// `SoftwareDistribution` and `catroot2` in a temp folder.
+    fn component_dirs(cache: &Cache) -> [PathBuf; 2] {
+        let dirs = [
+            cache.0.join("SoftwareDistribution"),
+            cache.0.join("catroot2"),
+        ];
+        for dir in &dirs {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("DataStore.edb"), b"x").unwrap();
+        }
+        dirs
+    }
+
+    #[tokio::test]
+    async fn the_reset_renames_both_folders_between_a_checked_stop_and_start() {
+        let cache = Cache::new("reset");
+        let dirs = component_dirs(&cache);
+        let mock = services(SERVICE_STOPPED, SERVICE_RUNNING);
+        let msg = module(&mock, &cache)
+            .with_component_dirs(dirs.clone())
+            .fix(UPDATE_RESET, None)
+            .await
+            .unwrap();
+        assert!(msg.contains("components were reset"), "{msg}");
+        for dir in &dirs {
+            assert!(!dir.exists(), "{} was renamed", dir.display());
+        }
+        let renamed: Vec<String> = std::fs::read_dir(&cache.0)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".winmedic-"))
+            .collect();
+        assert_eq!(renamed.len(), 2, "{renamed:?}");
+    }
+
+    #[tokio::test]
+    async fn a_service_that_does_not_stop_leaves_the_folders() {
+        let cache = Cache::new("reset_no_stop");
+        let dirs = component_dirs(&cache);
+        let mock = services(SERVICE_RUNNING, SERVICE_RUNNING);
+        let err = module(&mock, &cache)
+            .with_component_dirs(dirs.clone())
+            .fix(UPDATE_RESET, None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("nothing was renamed"), "{err}");
+        assert!(dirs.iter().all(|d| d.exists()));
     }
 
     #[tokio::test]

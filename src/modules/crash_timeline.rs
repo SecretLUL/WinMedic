@@ -25,9 +25,9 @@ pub const SCM_PROVIDER: &str = "Service Control Manager";
 pub const MSI_PROVIDER: &str = "MsiInstaller";
 
 /// The Microsoft Store's update service: app updates, several a day.
-const STORE_SERVICE: &str = "{855e8a7c-ecb4-4ca3-b045-1dfa50104289}";
+pub const STORE_SERVICE: &str = "{855e8a7c-ecb4-4ca3-b045-1dfa50104289}";
 /// Microsoft Defender's signature update, several a day.
-const DEFENDER_SIGNATURES: &str = "KB2267602";
+pub const DEFENDER_SIGNATURES: &str = "KB2267602";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ChangeKind {
