@@ -1255,6 +1255,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_refused_policy_delete_is_a_failure() {
+        let dir = sandbox("policydenied");
+        let mock = auto_updates_off(CmdOutput::with_output(1, "", "FEHLER: Zugriff verweigert"));
+        let err = module(mock, &dir, b"")
+            .fix("tweak_policy_no_auto_update", None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("Zugriff verweigert"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_policy_that_is_still_set_after_the_delete_is_a_failure() {
+        let dir = sandbox("policystays");
+        let mock = auto_updates_off(CmdOutput::ok(""));
+        let err = module(mock, &dir, b"")
+            .fix("tweak_policy_no_auto_update", None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("still in effect"), "{err}");
+    }
+
+    #[tokio::test]
     async fn the_hosts_repair_backs_up_comments_out_and_reads_back() {
         let dir = sandbox("hostsfix");
         let mock = MockCommandRunner::with_default_success();

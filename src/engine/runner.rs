@@ -1011,6 +1011,131 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A module whose every repair answers `self.0`, so a test sees what the
+    /// engine makes of that answer and nothing reaches the machine.
+    struct Answers(Result<&'static str, &'static str>);
+
+    #[async_trait::async_trait]
+    impl DiagnosticModule for Answers {
+        fn id(&self) -> &'static str {
+            "answers"
+        }
+        fn name(&self) -> &'static str {
+            "Answers"
+        }
+        fn description(&self) -> &'static str {
+            ""
+        }
+        fn icon(&self) -> &'static str {
+            ""
+        }
+        async fn scan(
+            &self,
+            _progress_tx: Option<Sender<ModuleProgress>>,
+        ) -> Result<Vec<Issue>, String> {
+            Ok(Vec::new())
+        }
+        async fn fix(
+            &self,
+            _issue_id: &str,
+            _progress_tx: Option<Sender<FixProgress>>,
+        ) -> Result<String, String> {
+            self.0.map(str::to_string).map_err(str::to_string)
+        }
+    }
+
+    fn answered_issue() -> Issue {
+        Issue::new(
+            "answers_issue",
+            "answers",
+            "Answered issue",
+            "Category",
+            Severity::Warning,
+            RiskScore::Low,
+            "Description",
+            "Details",
+            "Fix",
+            vec![],
+        )
+    }
+
+    const LIVE: RepairOptions = RepairOptions {
+        create_vss: false,
+        dry_run: false,
+        verbose_logging: false,
+    };
+
+    /// A failed repair stays failed on the issue, in the events and in the
+    /// audit log, and counts towards the failures the exit code is made of.
+    #[tokio::test]
+    async fn a_failed_repair_is_reported_as_failed() {
+        let dir =
+            std::env::temp_dir().join(format!("winmedic_engine_failed_fix_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let logger = AuditLogger::with_dir_and_size(dir.clone(), 5 * 1024 * 1024);
+        let error = "sc config wuauserv failed: Zugriff verweigert";
+        let engine = DiagnosticEngine::with_modules(vec![Arc::new(Answers(Err(error)))])
+            .with_audit_log(logger.clone());
+        let mut issues = vec![answered_issue()];
+        let (tx, mut rx) = channel::<RepairEvent>(100);
+
+        let (fixed, failed) = engine
+            .run_repairs(&mut issues, LIVE, tx, CancellationToken::new())
+            .await;
+
+        assert_eq!((fixed, failed), (0, 1));
+        assert!(!issues[0].is_fixed);
+        assert_eq!(issues[0].fix_error.as_deref(), Some(error));
+
+        let mut finished = None;
+        let mut completed = None;
+        while let Ok(evt) = rx.try_recv() {
+            match evt {
+                RepairEvent::FixFinished {
+                    success, message, ..
+                } => finished = Some((success, message)),
+                RepairEvent::AllRepairsCompleted {
+                    fixed_count,
+                    failed_count,
+                } => completed = Some((fixed_count, failed_count)),
+                _ => {}
+            }
+        }
+        assert_eq!(finished, Some((false, error.to_string())));
+        assert_eq!(completed, Some((0, 1)));
+
+        let history = logger.get_history();
+        assert!(
+            history
+                .iter()
+                .any(|e| e.action_type == "FIX" && e.status == "FAILED" && e.details == error),
+            "{:?}",
+            history
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A repair that takes effect at the next restart counts as done, but
+    /// leaves the issue pending rather than fixed, and out of the next run.
+    #[tokio::test]
+    async fn a_repair_that_needs_a_restart_stays_pending() {
+        let engine = DiagnosticEngine::with_modules(vec![Arc::new(Answers(Ok(
+            "Takes effect after a restart.",
+        )))]);
+        let mut issues = vec![answered_issue().with_requires_reboot(true)];
+        let (tx, _rx) = channel::<RepairEvent>(100);
+
+        let (fixed, failed) = engine
+            .run_repairs(&mut issues, LIVE, tx, CancellationToken::new())
+            .await;
+
+        assert_eq!((fixed, failed), (1, 0));
+        assert!(issues[0].is_reboot_pending);
+        assert!(!issues[0].is_fixed);
+        assert!(!issues[0].will_repair());
+    }
+
     #[tokio::test]
     async fn test_cancelled_repairs_stop_before_first_fix() {
         let engine = DiagnosticEngine::new(&AppConfig::default());
