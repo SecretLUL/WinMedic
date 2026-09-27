@@ -652,13 +652,18 @@ impl TweaksModule {
             );
         }
         Ok(format!(
-            "Removed {} policy value(s): {}. A registry backup was taken first.",
+            "Removed {} policy value(s): {}.{}",
             hit.values.len(),
             hit.values
                 .iter()
                 .map(|(_, name)| *name)
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(", "),
+            if self.config.auto_backup_registry {
+                " A registry backup was taken first."
+            } else {
+                ""
+            }
         ))
     }
 
@@ -947,6 +952,9 @@ mod tests {
     /// The hosts file of a real Windows 11 (its LAN address replaced).
     const HOSTS: &[u8] = include_bytes!("../../tests/fixtures/files/hosts_blocking_update.bin");
 
+    /// `reg query` of the WindowsUpdate policy key on a real Windows 11.
+    const WU_POLICY: &[u8] = include_bytes!("../../tests/fixtures/console/reg_query_wu_policy.bin");
+
     /// A folder under the temp directory, removed when the test ends. Seven
     /// of them were left behind by every run.
     struct Sandbox(PathBuf);
@@ -1121,9 +1129,7 @@ mod tests {
     #[test]
     fn the_real_wu_policy_key_raises_nothing() {
         // The capture machine excludes drivers from quality updates, nothing more.
-        let wu = registry::parse_reg_query(&decode_output(include_bytes!(
-            "../../tests/fixtures/console/reg_query_wu_policy.bin"
-        )));
+        let wu = registry::parse_reg_query(&decode_output(WU_POLICY));
         assert!(policy_hits(&wu, &[]).is_empty());
         assert!(drivers_excluded_from_updates(&wu));
     }
@@ -1207,6 +1213,45 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("local Group Policy"), "{err}");
         assert!(!mock.executed().iter().any(|c| c.contains("delete")));
+    }
+
+    /// The captured policy key with automatic updates switched off by policy
+    /// on top; `reg delete` answers `delete`.
+    fn auto_updates_off(delete: CmdOutput) -> MockCommandRunner {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            format!("query {WU_POLICY_KEY}"),
+            CmdOutput::ok(format!(
+                "{}HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU\r\n    NoAutoUpdate    REG_DWORD    0x1\r\n\r\n",
+                decode_output(WU_POLICY)
+            )),
+        );
+        mock.add_response("reg.exe delete", delete);
+        mock.add_response("reg.exe", CmdOutput::with_output(1, "", "FEHLER"));
+        mock
+    }
+
+    #[tokio::test]
+    async fn a_policy_repair_deletes_the_value_and_reads_back() {
+        let dir = sandbox("policyfix");
+        let mock = auto_updates_off(CmdOutput::ok(""));
+        mock.add_response_after(
+            "delete",
+            format!("query {WU_POLICY_KEY}"),
+            CmdOutput::ok(decode_output(WU_POLICY)),
+        );
+        let module = module(mock.clone(), &dir, b"");
+
+        let msg = module
+            .fix("tweak_policy_no_auto_update", None)
+            .await
+            .unwrap();
+        assert!(msg.contains("NoAutoUpdate"), "{msg}");
+        // Registry backups are off in these tests: none may be claimed.
+        assert!(!msg.contains("backup"), "{msg}");
+        assert!(mock.executed().contains(&format!(
+            "reg.exe delete {WU_AU_POLICY_KEY} /v NoAutoUpdate /f"
+        )));
     }
 
     #[tokio::test]
