@@ -63,7 +63,7 @@ do without doing it.
 | **Memory** | A switched-off or too small page file |
 | **Tweaks** | Services and policies that "tweak" and debloat tools switched off |
 | **Clock and restart** | A wrong clock, a PC that has not been restarted for weeks |
-| **Devices** | Devices that stopped working or have no driver |
+| **Devices** | Devices that stopped working or have no driver, a stuck print queue |
 
 Exactly what each check looks at and runs is in
 [How WinMedic works](docs/how-it-works.md).

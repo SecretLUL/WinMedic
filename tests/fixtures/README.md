@@ -68,6 +68,8 @@ Captured on 2026-09-27 on the same machine, unelevated, read-only commands:
 | `reg_query_tcpip_interfaces.bin` | `reg query HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces /s` | CP850 | Every interface's TCP/IP settings by `InterfaceGuid`, in lower case (PowerShell prints it in upper case). `NameServer` is empty everywhere: DNS comes from DHCP (`DhcpNameServer`). LAN addresses `192.168.178.x` replaced with `192.168.1.x` in the text; the binary `DhcpInterfaceOptions` is unchanged. The tests type servers into the wired adapter's `NameServer`. |
 | `powershell_resolve_dns_server_timeout_de.bin` | The network module's probe of one DNS server (`Resolve-DnsName dns.google -Server 192.0.2.1 -DnsOnly -QuickTimeout`), a documentation address nothing answers at | UTF-8 | Exit 1 after 8 seconds, `FAILED\|ERROR_TIMEOUT,...\|<message>`: the id is the same in every language, the message is German. |
 | `powershell_resolve_dns_server.bin` | The same probe of the router's DNS server | UTF-8 | Four addresses, exit 0. |
+| `sc_qc_spooler.bin` | `sc qc spooler` | CP850 | `START_TYPE : 2 AUTO_START`; the display name is translated ("Druckwarteschlange"), the numbers are not. |
+| `sc_query_spooler.bin` | `sc query spooler` | CP850 | `STATE : 4 RUNNING`. The tests switch it to `1 STOPPED`. The print jobs in `spool\PRINTERS` need elevation to list; the tests write job files with an old modification time into a temp folder. |
 
 Captured elevated on 2026-09-25, read-only commands, with the time each piece
 of the pipe arrived:

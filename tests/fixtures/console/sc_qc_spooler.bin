@@ -1,0 +1,13 @@
+[SC] QueryServiceConfig ERFOLG
+
+SERVICE_NAME: spooler
+        TYPE               : 110  WIN32_OWN_PROCESS (interactive)
+        START_TYPE         : 2   AUTO_START
+        ERROR_CONTROL      : 1   NORMAL
+        BINARY_PATH_NAME   : C:\WINDOWS\System32\spoolsv.exe
+        LOAD_ORDER_GROUP   : SpoolerGroup
+        TAG                : 0
+        DISPLAY_NAME       : Druckwarteschlange
+        DEPENDENCIES       : RPCSS
+                           : http
+        SERVICE_START_NAME : LocalSystem

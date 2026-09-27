@@ -10,6 +10,8 @@
 use crate::utils::cmd::CommandRunner;
 use std::time::Duration;
 
+/// `START_TYPE` 2: Windows starts the service at boot.
+pub const SERVICE_AUTO_START: u32 = 2;
 /// `START_TYPE` 4: the service cannot be started, not even on demand.
 pub const SERVICE_DISABLED: u32 = 4;
 
