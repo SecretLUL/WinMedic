@@ -52,7 +52,7 @@ do without doing it.
 
 | Area | What WinMedic looks for |
 | :--- | :--- |
-| **System files** | Damaged Windows files, the recovery environment, WMI |
+| **System files** | Damaged Windows files, the recovery environment, WMI, Start, Settings or the Store not opening |
 | **Windows Update** | Stuck update services and download caches, updates that keep failing and why |
 | **Internet** | A switched-off adapter, no IP address, name resolution (DNS), dead DNS servers, the router, Winsock, broken proxies |
 | **Crashes** | Blue screens, what changed in the week before they began, the last memory test |

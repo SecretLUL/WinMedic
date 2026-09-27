@@ -460,6 +460,61 @@ impl Drop for Dismount {
     }
 }
 
+/// Every app package of this user as `status|full name|install location`.
+/// `Status` is an enum name (`Ok`, `Modified`, `Tampered`, `LicenseIssue`,
+/// `Disabled`, several joined with `, `), the same in every language. Start,
+/// Settings and the Store are such packages; a broken one does not open.
+const APPX_PACKAGES_SCRIPT: &str = "Get-AppxPackage -ErrorAction Stop | ForEach-Object { '{0}|{1}|{2}' -f $_.Status, $_.PackageFullName, $_.InstallLocation }";
+
+/// The finding for app packages that are not `Ok`.
+pub const APPX_BROKEN: &str = "sys_appx_broken";
+
+/// One line of [`APPX_PACKAGES_SCRIPT`]'s output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppxPackage {
+    pub status: String,
+    pub full_name: String,
+    pub install_location: String,
+}
+
+impl AppxPackage {
+    /// `Microsoft.WindowsStore` out of its full name.
+    pub fn name(&self) -> &str {
+        self.full_name.split('_').next().unwrap_or(&self.full_name)
+    }
+}
+
+pub fn parse_appx_packages(output: &str) -> Vec<AppxPackage> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.trim().splitn(3, '|');
+            Some(AppxPackage {
+                status: fields.next()?.to_string(),
+                full_name: fields.next()?.to_string(),
+                install_location: fields.next()?.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// The packages that are not `Ok` and can be registered again from their
+/// folder.
+pub fn broken_packages(packages: Vec<AppxPackage>) -> Vec<AppxPackage> {
+    packages
+        .into_iter()
+        .filter(|p| p.status != "Ok" && !p.install_location.is_empty())
+        .collect()
+}
+
+/// Registers the package in `install_location` again for this user.
+fn reregister_script(install_location: &str) -> String {
+    format!(
+        "Add-AppxPackage -DisableDevelopmentMode -Register {} -ErrorAction Stop",
+        crate::utils::cmd::ps_single_quoted(&format!(r"{install_location}\AppxManifest.xml"))
+    )
+}
+
 pub struct SystemIntegrityModule {
     runner: Arc<dyn CommandRunner>,
     cbs_log: PathBuf,
@@ -503,6 +558,74 @@ impl SystemIntegrityModule {
     pub fn with_downloads(mut self, folder: Option<PathBuf>) -> Self {
         self.downloads = folder;
         self
+    }
+
+    async fn app_packages(&self) -> Result<Vec<AppxPackage>, String> {
+        let out = self
+            .runner
+            .query_powershell(APPX_PACKAGES_SCRIPT, Duration::from_secs(60))
+            .await?;
+        if !out.success {
+            return Err(format!(
+                "Get-AppxPackage failed (exit code {:?}): {}",
+                out.exit_code,
+                out.stderr.lines().next().unwrap_or("").trim()
+            ));
+        }
+        Ok(parse_appx_packages(&out.stdout))
+    }
+
+    /// Register every damaged package again, then read the statuses back.
+    async fn reregister_packages(&self) -> Result<String, String> {
+        let broken = broken_packages(self.app_packages().await?);
+        if broken.is_empty() {
+            return Ok("Every app package is intact.".to_string());
+        }
+        let mut refused = Vec::new();
+        for package in &broken {
+            let out = self
+                .runner
+                .run_powershell(
+                    &reregister_script(&package.install_location),
+                    Duration::from_secs(120),
+                )
+                .await?;
+            if !out.success {
+                refused.push(format!(
+                    "{}: {}",
+                    package.name(),
+                    out.stderr.lines().next().unwrap_or("").trim()
+                ));
+            }
+        }
+        let still: Vec<AppxPackage> = broken_packages(self.app_packages().await?)
+            .into_iter()
+            .filter(|p| broken.iter().any(|b| b.full_name == p.full_name))
+            .collect();
+        if still.is_empty() {
+            return Ok(format!(
+                "Registered {} app package(s) again; Windows reports them intact: {}.",
+                broken.len(),
+                broken
+                    .iter()
+                    .map(|p| p.name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        Err(format!(
+            "Still damaged after registering them again: {}. Reinstall them from the Microsoft Store.{}",
+            still
+                .iter()
+                .map(|p| format!("{} ({})", p.name(), p.status))
+                .collect::<Vec<_>>()
+                .join(", "),
+            if refused.is_empty() {
+                String::new()
+            } else {
+                format!(" Add-AppxPackage said: {}", refused.join("; "))
+            }
+        ))
     }
 
     fn cbs_log_len(&self) -> u64 {
@@ -691,7 +814,7 @@ impl DiagnosticModule for SystemIntegrityModule {
     }
 
     fn description(&self) -> &'static str {
-        "Checks the component store (DISM), system files (SFC), Volume Shadow Copy, the recovery environment and WMI"
+        "Checks the component store (DISM), system files (SFC), Volume Shadow Copy, the recovery environment, WMI and the app packages of Start, Settings and the Store"
     }
 
     fn icon(&self) -> &'static str {
@@ -965,6 +1088,48 @@ impl DiagnosticModule for SystemIntegrityModule {
             }
         }
 
+        Self::send_progress(
+            &progress_tx,
+            99,
+            "Checking the app packages...",
+            Some("Get-AppxPackage: Start, Settings, the Store and every other app"),
+        )
+        .await;
+        match self.app_packages().await {
+            Ok(packages) => {
+                let broken = broken_packages(packages);
+                if !broken.is_empty() {
+                    issues.push(Issue::new(
+                        APPX_BROKEN,
+                        self.id(),
+                        format!("{} app package(s) are damaged", broken.len()),
+                        "System Integrity",
+                        Severity::Warning,
+                        RiskScore::Low,
+                        "Windows reports app packages that are not intact. When one of them is Start, Settings or the Store, it does not open. Registering the package again from its folder usually repairs it.",
+                        broken
+                            .iter()
+                            .map(|p| format!("{} ({}): {}", p.name(), p.status, p.install_location))
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                        "Register the packages again (Add-AppxPackage -Register)",
+                        broken
+                            .iter()
+                            .map(|p| {
+                                format!(
+                                    "Add-AppxPackage -DisableDevelopmentMode -Register \"{}\\AppxManifest.xml\"",
+                                    p.install_location
+                                )
+                            })
+                            .collect(),
+                    ));
+                }
+            }
+            Err(err) => {
+                Self::send_progress(&progress_tx, 99, "App packages not checked", Some(&err)).await;
+            }
+        }
+
         Self::send_progress(&progress_tx, 100, "System integrity check complete", None).await;
 
         Ok(issues)
@@ -1103,6 +1268,7 @@ impl DiagnosticModule for SystemIntegrityModule {
                     )),
                 }
             }
+            APPX_BROKEN => self.reregister_packages().await,
             _ => Err(format!("Unknown issue ID: {}", issue_id)),
         }
     }
@@ -2126,5 +2292,108 @@ mod tests {
     async fn the_attached_script_parses() {
         let script = install_media::attached_script(&[PathBuf::from(r"C:\a b.iso")]);
         assert_eq!(crate::utils::cmd::powershell_parse_errors(&script).await, 0);
+    }
+
+    /// Every app package of the capture machine's user, all `Ok`.
+    fn real_packages() -> String {
+        crate::utils::decode::decode_output(include_bytes!(
+            "../../tests/fixtures/console/powershell_appx_packages.bin"
+        ))
+    }
+
+    /// The same with Start's package damaged.
+    fn start_menu_damaged() -> String {
+        real_packages().replace(
+            "Ok|Microsoft.Windows.StartMenuExperienceHost_",
+            "Modified|Microsoft.Windows.StartMenuExperienceHost_",
+        )
+    }
+
+    const START: &str =
+        r"C:\Windows\SystemApps\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy";
+
+    #[test]
+    fn the_captured_packages_are_intact() {
+        let packages = parse_appx_packages(&real_packages());
+        assert_eq!(packages.len(), 163);
+        assert!(packages.iter().all(|p| p.status == "Ok"));
+        assert!(broken_packages(packages).is_empty());
+    }
+
+    #[test]
+    fn a_damaged_package_is_named_with_its_folder() {
+        let broken = broken_packages(parse_appx_packages(&start_menu_damaged()));
+        assert_eq!(broken.len(), 1);
+        assert_eq!(
+            broken[0].name(),
+            "Microsoft.Windows.StartMenuExperienceHost"
+        );
+        assert_eq!(broken[0].status, "Modified");
+        assert_eq!(broken[0].install_location, START);
+    }
+
+    #[tokio::test]
+    async fn a_damaged_package_is_a_finding() {
+        let mock = MockCommandRunner::with_default_success();
+        mock.add_response("Get-AppxPackage", CmdOutput::ok(start_menu_damaged()));
+        let issues = module_with(mock).scan(None).await.unwrap();
+        let issue = issues.iter().find(|i| i.id == APPX_BROKEN).unwrap();
+        assert!(issue.is_selected);
+        assert!(
+            issue
+                .technical_details
+                .contains("StartMenuExperienceHost (Modified)")
+        );
+    }
+
+    /// The package list answers `before` until a package was registered.
+    fn reregister_mock(add: CmdOutput, after: String) -> MockCommandRunner {
+        let mock = MockCommandRunner::new();
+        mock.add_response("Get-AppxPackage", CmdOutput::ok(start_menu_damaged()));
+        mock.add_response("Add-AppxPackage", add);
+        mock.add_response_after("Add-AppxPackage", "Get-AppxPackage", CmdOutput::ok(after));
+        mock
+    }
+
+    #[tokio::test]
+    async fn a_registered_package_is_read_back() {
+        let mock = reregister_mock(CmdOutput::ok(""), real_packages());
+        let msg = module_with(mock.clone())
+            .fix(APPX_BROKEN, None)
+            .await
+            .unwrap();
+        assert!(msg.contains("StartMenuExperienceHost"), "{msg}");
+        let add = mock
+            .executed()
+            .into_iter()
+            .find(|c| c.contains("Add-AppxPackage"))
+            .unwrap();
+        assert!(
+            add.contains(&format!(r"-Register '{START}\AppxManifest.xml'")),
+            "{add}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_package_that_stays_damaged_is_a_failure() {
+        let mock = reregister_mock(
+            CmdOutput::with_output(1, "", "Fehler bei der Bereitstellung. HRESULT: 0x80073CF6"),
+            start_menu_damaged(),
+        );
+        let err = module_with(mock).fix(APPX_BROKEN, None).await.unwrap_err();
+        assert!(
+            err.contains("Microsoft Store") && err.contains("0x80073CF6"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_app_package_scripts_parse() {
+        for script in [
+            APPX_PACKAGES_SCRIPT.to_string(),
+            reregister_script(r"C:\A'B"),
+        ] {
+            assert_eq!(crate::utils::cmd::powershell_parse_errors(&script).await, 0);
+        }
     }
 }
