@@ -57,7 +57,7 @@ do without doing it.
 | **Internet** | A switched-off adapter, no IP address, name resolution (DNS), dead DNS servers, the router, Winsock, broken proxies |
 | **Crashes** | Blue screens, what changed in the week before they began, the last memory test |
 | **Hardware** | Processor, memory and PCIe errors Windows has logged |
-| **Disk** | File system errors, drive health, temporary files |
+| **Disk** | File system errors, drive health, disk and controller errors Windows logged, temporary files |
 | **Startup** | Autostart entries and scheduled tasks that point at deleted programs or keep failing |
 | **Cleanup** | Caches and leftovers that take up space |
 | **Memory** | A switched-off or too small page file |
