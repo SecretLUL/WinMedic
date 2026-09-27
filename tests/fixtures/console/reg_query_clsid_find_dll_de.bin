@@ -1,0 +1,14 @@
+
+HKEY_LOCAL_MACHINE\SOFTWARE\Classes\CLSID\{506F4668-F13E-4AA1-BB04-B43203AB3CC0}\InprocServer32
+    (Standard)    REG_SZ    C:\Program Files\Microsoft Office\root\Office16\VISSHE.DLL
+    InprocServer32    REG_SZ    C:\Program Files\Microsoft Office\root\Office16\VISSHE.DLL
+
+HKEY_LOCAL_MACHINE\SOFTWARE\Classes\CLSID\{A394DCA9-3727-11D4-BD85-00C04F6B93A4}\InprocServer32
+    (Standard)    REG_SZ    C:\Program Files\Microsoft Office\root\Office16\VISSHE.DLL
+    InprocServer32    REG_SZ    C:\Program Files\Microsoft Office\root\Office16\VISSHE.DLL
+
+HKEY_LOCAL_MACHINE\SOFTWARE\Classes\CLSID\{D66DC78C-4F61-447F-942B-3FB6980118CF}\InprocServer32
+    (Standard)    REG_SZ    C:\Program Files\Microsoft Office\root\Office16\VISSHE.DLL
+    InprocServer32    REG_SZ    C:\Program Files\Microsoft Office\root\Office16\VISSHE.DLL
+
+Suchvorgang abgeschlossen: 6 Åbereinstimmende Zeichenfolge(n) gefunden.
