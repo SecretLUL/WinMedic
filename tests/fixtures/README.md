@@ -60,6 +60,12 @@ Captured on 2026-09-26 on the same machine, read-only commands:
 | `reg_query_run_hklm.bin` | `reg query HKLM\Software\Microsoft\Windows\CurrentVersion\Run` | CP850 | Three autostart entries, one `REG_EXPAND_SZ` with `%windir%`, one name with a space. The tests add a value whose program is gone. |
 | `reg_query_current_build.bin` | `reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion" /v CurrentBuild` | CP850 | `26200`. The tests replace it with a build from before Windows 10 2004. |
 
+Captured on 2026-09-27 on the same machine, unelevated, read-only commands:
+
+| File | Command | Encoding | Notes |
+| --- | --- | --- | --- |
+| `powershell_physical_adapters.bin` | The network module's physical adapter query (`Get-NetAdapter -Physical`: `InterfaceGuid`, `Status`, `AdminStatus`, `Name`) | UTF-8 | One wired adapter, `Up` and `Up`. Switching it off needs elevation and cuts the machine off, so the tests replace both with `Disabled` and `Down`, what Windows reports for an adapter switched off under Network Connections. |
+
 Captured elevated on 2026-09-25, read-only commands, with the time each piece
 of the pipe arrived:
 
