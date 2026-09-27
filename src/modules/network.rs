@@ -177,8 +177,9 @@ pub fn parse_adapters(output: &str) -> Vec<AdapterIpv4> {
         .collect()
 }
 
-fn no_dhcp_issue_id(adapter: &str) -> String {
-    let slug: String = adapter
+/// An adapter's name as part of a finding id.
+fn slug(adapter: &str) -> String {
+    adapter
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() {
@@ -187,8 +188,69 @@ fn no_dhcp_issue_id(adapter: &str) -> String {
                 '_'
             }
         })
-        .collect();
-    format!("net_no_dhcp_{slug}")
+        .collect()
+}
+
+fn no_dhcp_issue_id(adapter: &str) -> String {
+    format!("net_no_dhcp_{}", slug(adapter))
+}
+
+fn adapter_off_issue_id(adapter: &str) -> String {
+    format!("net_adapter_disabled_{}", slug(adapter))
+}
+
+/// Every physical adapter as `guid|status|admin status|name`, e.g.
+/// `{E9CE66A4-...}|Up|Up|Ethernet`, switched off or not. `Status` and
+/// `AdminStatus` are enum names, the same in every display language.
+/// [`ADAPTER_IPV4_SCRIPT`] sees only adapters that are up, so a switched-off
+/// one went unnoticed.
+const PHYSICAL_ADAPTERS_SCRIPT: &str = "Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Object { '{0}|{1}|{2}|{3}' -f $_.InterfaceGuid, $_.Status, $_.AdminStatus, $_.Name }";
+
+/// One line of [`PHYSICAL_ADAPTERS_SCRIPT`]'s output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalAdapter {
+    pub guid: String,
+    pub status: String,
+    pub admin_status: String,
+    pub name: String,
+}
+
+impl PhysicalAdapter {
+    /// Switched off in Windows: under Network Connections, in Device Manager
+    /// or with `Disable-NetAdapter`. Airplane mode and an unplugged cable
+    /// leave `AdminStatus` up.
+    pub fn switched_off(&self) -> bool {
+        self.admin_status.eq_ignore_ascii_case("Down")
+    }
+}
+
+/// The adapters [`PHYSICAL_ADAPTERS_SCRIPT`] printed. The name comes last, so
+/// one with a `|` in it still parses.
+pub fn parse_physical_adapters(output: &str) -> Vec<PhysicalAdapter> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.trim().splitn(4, '|');
+            let guid = fields.next()?;
+            let status = fields.next()?;
+            let admin_status = fields.next()?;
+            let name = fields.next()?;
+            guid.starts_with('{').then(|| PhysicalAdapter {
+                guid: guid.to_string(),
+                status: status.to_string(),
+                admin_status: admin_status.to_string(),
+                name: name.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Switches on the physical adapter with this `InterfaceGuid`.
+fn enable_adapter_script(guid: &str) -> String {
+    format!(
+        "Get-NetAdapter -Physical | Where-Object InterfaceGuid -eq {} | Enable-NetAdapter -Confirm:$false -ErrorAction Stop",
+        crate::utils::cmd::ps_single_quoted(guid)
+    )
 }
 
 const WINHTTP_KEY: &str =
@@ -465,6 +527,60 @@ impl NetworkModule {
         Ok(parse_adapters(&out.stdout))
     }
 
+    async fn physical_adapters(&self) -> Result<Vec<PhysicalAdapter>, String> {
+        let out = self
+            .runner
+            .query_powershell(PHYSICAL_ADAPTERS_SCRIPT, Duration::from_secs(20))
+            .await?;
+        if !out.success {
+            return Err(format!(
+                "the adapter query failed (exit code {:?}): {}",
+                out.exit_code,
+                out.stderr.trim()
+            ));
+        }
+        Ok(parse_physical_adapters(&out.stdout))
+    }
+
+    /// Switch the adapter on, then read its `AdminStatus` back.
+    async fn fix_adapter_off(&self, issue_id: &str) -> Result<String, String> {
+        let Some(adapter) = self
+            .physical_adapters()
+            .await?
+            .into_iter()
+            .find(|a| adapter_off_issue_id(&a.name) == issue_id)
+        else {
+            return Ok("The adapter is no longer there - nothing to switch on.".to_string());
+        };
+        if !adapter.switched_off() {
+            return Ok(format!("'{}' is already switched on.", adapter.name));
+        }
+        let out = self
+            .runner
+            .run_powershell(
+                &enable_adapter_script(&adapter.guid),
+                Duration::from_secs(30),
+            )
+            .await?;
+        let after = self
+            .physical_adapters()
+            .await?
+            .into_iter()
+            .find(|a| a.guid.eq_ignore_ascii_case(&adapter.guid));
+        match after {
+            Some(after) if !after.switched_off() => Ok(format!(
+                "'{}' is switched on again. It takes a few seconds to connect; the next scan checks its address and DNS.",
+                adapter.name
+            )),
+            _ => Err(format!(
+                "'{}' is still switched off (Enable-NetAdapter exit code {:?}): {}",
+                adapter.name,
+                out.exit_code,
+                out.stderr.lines().next().unwrap_or("").trim()
+            )),
+        }
+    }
+
     /// Ask the adapter's DHCP server again, then look at the address it holds.
     ///
     /// `ipconfig /renew` exits with an error when no server answers, but that
@@ -663,7 +779,61 @@ impl DiagnosticModule for NetworkModule {
             issue.is_selected = severity == Severity::Warning;
             issues.push(issue);
         }
-        let dhcp_explains_offline = !connected && adapters.iter().any(AdapterIpv4::dhcp_failed);
+        let mut adapter_explains_offline =
+            !connected && adapters.iter().any(AdapterIpv4::dhcp_failed);
+
+        // Physical adapters switched off in Windows, which the query above
+        // does not see.
+        match self.physical_adapters().await {
+            Ok(physical) => {
+                for adapter in physical.iter().filter(|a| a.switched_off()) {
+                    let (severity, consequence) = if connected {
+                        (
+                            Severity::Info,
+                            "Another adapter is connected, so it may have been switched off on purpose.",
+                        )
+                    } else {
+                        (
+                            Severity::Warning,
+                            "No other adapter is connected, so this PC has no network.",
+                        )
+                    };
+                    let mut issue = Issue::new(
+                        adapter_off_issue_id(&adapter.name),
+                        self.id(),
+                        format!("Network adapter '{}' is switched off", adapter.name),
+                        "Network & DNS",
+                        severity,
+                        RiskScore::Low,
+                        format!(
+                            "The adapter is disabled in Windows, so it does not connect at all. {consequence}"
+                        ),
+                        format!(
+                            "Adapter: {}\nStatus: {}\nAdminStatus: {}\nInterfaceGuid: {}",
+                            adapter.name, adapter.status, adapter.admin_status, adapter.guid
+                        ),
+                        "Switch the adapter on (Enable-NetAdapter)",
+                        vec![
+                            format!("Enable-NetAdapter \"{}\"", adapter.name),
+                            "Check that the adapter is switched on".to_string(),
+                        ],
+                    );
+                    issue.is_selected = severity == Severity::Warning;
+                    issues.push(issue);
+                }
+                // Switching it on is the repair; a Winsock reset is not.
+                adapter_explains_offline |= !connected && physical.iter().any(|a| a.switched_off());
+            }
+            Err(err) => {
+                Self::send_progress(
+                    &progress_tx,
+                    15,
+                    "Switched-off adapters could not be read",
+                    Some(&err),
+                )
+                .await;
+            }
+        }
 
         // 2. DNS Resolution Check
         Self::send_progress(
@@ -710,9 +880,10 @@ impl DiagnosticModule for NetworkModule {
                         "Confirm that name resolution works again".to_string(),
                     ],
                 ));
-            } else if dhcp_explains_offline {
-                // Resetting Winsock and the IP stack cannot hand out an address;
-                // the DHCP finding above names the actual fault and its repair.
+            } else if adapter_explains_offline {
+                // Resetting Winsock and the IP stack cannot hand out an address
+                // or switch an adapter on; the adapter finding above names the
+                // actual fault and its repair.
             } else {
                 // A reset of Winsock and the IP stack cannot bring back a
                 // router that is off, and it wipes static addresses and VPN
@@ -935,6 +1106,7 @@ impl DiagnosticModule for NetworkModule {
     ) -> Result<String, String> {
         match issue_id {
             id if id.starts_with("net_no_dhcp_") => self.fix_no_dhcp(id).await,
+            id if id.starts_with("net_adapter_disabled_") => self.fix_adapter_off(id).await,
             "net_winhttp_proxy_dead" => self.fix_winhttp_proxy().await,
             "net_dns_failure" => {
                 let _ = self
@@ -1683,6 +1855,174 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("could not be switched off"), "{err}");
+    }
+
+    /// [`PHYSICAL_ADAPTERS_SCRIPT`] on a German Windows 11: one wired
+    /// adapter, switched on and up.
+    fn real_physical_adapters() -> String {
+        crate::utils::decode::decode_output(include_bytes!(
+            "../../tests/fixtures/console/powershell_physical_adapters.bin"
+        ))
+    }
+
+    /// The same adapter switched off, as Windows reports it then.
+    fn switched_off_adapters() -> String {
+        real_physical_adapters().replace("|Up|Up|", "|Disabled|Down|")
+    }
+
+    /// What the mock matches the physical adapter query by.
+    const PHYSICAL: &str = "$_.AdminStatus";
+
+    #[test]
+    fn physical_adapters_are_read_as_captured() {
+        let adapters = parse_physical_adapters(&real_physical_adapters());
+        assert_eq!(
+            adapters,
+            vec![PhysicalAdapter {
+                guid: "{E9CE66A4-C563-4C8B-B099-1206C25056CE}".to_string(),
+                status: "Up".to_string(),
+                admin_status: "Up".to_string(),
+                name: "Ethernet".to_string(),
+            }]
+        );
+        assert!(!adapters[0].switched_off());
+        assert!(parse_physical_adapters(&switched_off_adapters())[0].switched_off());
+        // The IPv4 query's lines are not adapters of this one.
+        assert!(parse_physical_adapters(&real_adapters()).is_empty());
+        let odd = parse_physical_adapters("{A}|Disabled|Down|LAN | Dock");
+        assert_eq!(odd[0].name, "LAN | Dock");
+    }
+
+    /// Offline, with `physical` as the physical adapters.
+    fn adapter_off_mock(physical: String) -> MockCommandRunner {
+        let mock = MockCommandRunner::new();
+        mock.add_response(PHYSICAL, CmdOutput::ok(physical));
+        mock.add_response("Get-NetAdapter", CmdOutput::ok(""));
+        mock.add_response(PROBE, not_resolved());
+        mock.add_response("ping.exe", CmdOutput::failed(1, ""));
+        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
+        mock
+    }
+
+    #[tokio::test]
+    async fn a_switched_off_adapter_explains_being_offline() {
+        let issues =
+            NetworkModule::with_runner(Arc::new(adapter_off_mock(switched_off_adapters())))
+                .scan(None)
+                .await
+                .unwrap();
+        let issue = issues
+            .iter()
+            .find(|i| i.id == "net_adapter_disabled_ethernet")
+            .expect("the only adapter is switched off");
+        assert_eq!(issue.severity, Severity::Warning);
+        assert!(issue.is_selected);
+        assert!(
+            !issues.iter().any(|i| i.id == "net_offline_warning"),
+            "the router is not the fault: {issues:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_switched_on_adapter_is_not_a_finding() {
+        let issues =
+            NetworkModule::with_runner(Arc::new(adapter_off_mock(real_physical_adapters())))
+                .scan(None)
+                .await
+                .unwrap();
+        assert!(
+            !issues
+                .iter()
+                .any(|i| i.id.starts_with("net_adapter_disabled_"))
+        );
+        assert!(issues.iter().any(|i| i.id == "net_offline_warning"));
+    }
+
+    #[tokio::test]
+    async fn a_second_switched_off_adapter_is_only_information() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            PHYSICAL,
+            CmdOutput::ok(format!(
+                "{}{{7D6A3B1C-0000-0000-0000-000000000001}}|Disabled|Down|WLAN\r\n",
+                real_physical_adapters()
+            )),
+        );
+        mock.add_response("Get-NetAdapter", CmdOutput::ok(real_adapters()));
+        mock.add_response(PROBE, resolved());
+        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
+        let issues = NetworkModule::with_runner(Arc::new(mock))
+            .scan(None)
+            .await
+            .unwrap();
+        let issue = issues
+            .iter()
+            .find(|i| i.id == "net_adapter_disabled_wlan")
+            .unwrap();
+        assert_eq!(issue.severity, Severity::Info);
+        assert!(!issue.is_selected, "the PC is online through 'Ethernet'");
+    }
+
+    /// The adapter list answers `before` until the adapter was switched on,
+    /// then `after`.
+    fn enable_mock(before: String, enable: CmdOutput, after: String) -> MockCommandRunner {
+        let mock = MockCommandRunner::new();
+        mock.add_response(PHYSICAL, CmdOutput::ok(before));
+        mock.add_response("Enable-NetAdapter", enable);
+        mock.add_response_after("Enable-NetAdapter", PHYSICAL, CmdOutput::ok(after));
+        mock
+    }
+
+    #[tokio::test]
+    async fn switching_an_adapter_on_is_read_back() {
+        let mock = enable_mock(
+            switched_off_adapters(),
+            CmdOutput::ok(""),
+            real_physical_adapters(),
+        );
+        let msg = NetworkModule::with_runner(Arc::new(mock.clone()))
+            .fix("net_adapter_disabled_ethernet", None)
+            .await
+            .unwrap();
+        assert!(msg.contains("'Ethernet' is switched on again"), "{msg}");
+        let enable = mock
+            .executed()
+            .into_iter()
+            .find(|c| c.contains("Enable-NetAdapter"))
+            .unwrap();
+        assert!(
+            enable.contains("InterfaceGuid -eq '{E9CE66A4-C563-4C8B-B099-1206C25056CE}'"),
+            "{enable}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_adapter_that_stays_off_is_a_failure() {
+        let mock = enable_mock(
+            switched_off_adapters(),
+            CmdOutput::with_output(1, "", "Zugriff verweigert"),
+            switched_off_adapters(),
+        );
+        let err = NetworkModule::with_runner(Arc::new(mock))
+            .fix("net_adapter_disabled_ethernet", None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("still switched off") && err.contains("Zugriff verweigert"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_adapter_scripts_parse() {
+        assert_eq!(
+            crate::utils::cmd::powershell_parse_errors(PHYSICAL_ADAPTERS_SCRIPT).await,
+            0
+        );
+        assert_eq!(
+            crate::utils::cmd::powershell_parse_errors(&enable_adapter_script("{A'B}")).await,
+            0
+        );
     }
 
     #[tokio::test]

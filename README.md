@@ -54,7 +54,7 @@ do without doing it.
 | :--- | :--- |
 | **System files** | Damaged Windows files, the recovery environment, WMI |
 | **Windows Update** | Stuck update services and download caches |
-| **Internet** | No IP address, name resolution (DNS), the router, Winsock, broken proxies |
+| **Internet** | A switched-off adapter, no IP address, name resolution (DNS), the router, Winsock, broken proxies |
 | **Crashes** | Blue screens, what changed in the week before they began, the last memory test |
 | **Hardware** | Processor, memory and PCIe errors Windows has logged |
 | **Disk** | File system errors, drive health, temporary files |
