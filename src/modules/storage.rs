@@ -5,6 +5,7 @@ use crate::modules::system_cleaner::{
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner, ps_single_quoted};
 use crate::utils::debug_log::DebugTrace;
+use crate::utils::event_xml::{EventRecord, read_events, system_log_query};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,6 +30,88 @@ const ICON_CACHE_LIMIT_BYTES: u64 = 256 * 1024 * 1024;
 fn is_icon_cache_file(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     name.starts_with("iconcache_") && name.ends_with(".db")
+}
+
+/// The storage errors Windows logs when a disk, its cable or its controller
+/// fails, as warnings or errors: a bad block (disk 7), a paging error (disk
+/// 51), a retried I/O (disk 153), file system corruption (Ntfs 55), a reset
+/// controller (stornvme and storahci 129). Without `Level<=3` Ntfs' "healthy"
+/// events would come along. Named errors only: a generic check of the
+/// System log fires on every PC.
+const STORAGE_ERRORS: &str = "((Provider[@Name='disk'] and (EventID=7 or EventID=51 or EventID=153)) or (Provider[@Name='Ntfs'] and EventID=55) or ((Provider[@Name='stornvme'] or Provider[@Name='storahci']) and EventID=129)) and Level<=3";
+/// How far back storage errors are looked for.
+const STORAGE_ERROR_DAYS: u64 = 30;
+
+/// The storage error events of the last [`STORAGE_ERROR_DAYS`], newest first.
+pub fn storage_errors_query() -> Vec<String> {
+    system_log_query(STORAGE_ERRORS, STORAGE_ERROR_DAYS * 24 * 3_600_000, 20)
+}
+
+/// What a storage error event says, and whether it means data is being lost.
+fn storage_error_kind(event: &EventRecord) -> Option<(&'static str, bool)> {
+    Some(match (event.provider.as_str(), event.event_id) {
+        ("disk", 7) => ("bad block", true),
+        ("disk", 51) => ("error while paging", true),
+        ("disk", 153) => ("read or write had to be retried", false),
+        ("Ntfs", 55) => ("file system structure damaged", true),
+        ("stornvme" | "storahci", 129) => ("controller stopped answering and was reset", false),
+        _ => return None,
+    })
+}
+
+/// The finding for storage errors in the event log, or `None` without any.
+/// Advice: nothing WinMedic runs repairs a failing disk.
+pub fn storage_errors_finding(module_id: &str, events: &[EventRecord]) -> Option<Issue> {
+    let errors: Vec<(&EventRecord, &'static str, bool)> = events
+        .iter()
+        .filter_map(|e| storage_error_kind(e).map(|(kind, loses)| (e, kind, loses)))
+        .collect();
+    if errors.is_empty() {
+        return None;
+    }
+    let data_lost = errors.iter().any(|(_, _, loses)| *loses);
+    let details = errors
+        .iter()
+        .map(|(event, kind, _)| {
+            // The device, e.g. `\Device\Harddisk1\DR1`, is the first value of
+            // these events; they have no field names.
+            let device = event
+                .data
+                .first()
+                .map(|(_, value)| value.as_str())
+                .unwrap_or("");
+            format!("{}  {kind}  {device}", event.summary())
+                .trim_end()
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(
+        Issue::new(
+            "storage_disk_errors",
+            module_id,
+            format!(
+                "Windows logged {} storage error(s) in the last {STORAGE_ERROR_DAYS} days",
+                errors.len()
+            ),
+            "Storage & File System",
+            if data_lost {
+                Severity::Critical
+            } else {
+                Severity::Warning
+            },
+            RiskScore::Low,
+            "A disk, its cable or its controller reported errors. That causes hangs and damaged files, and reinstalling Windows does not help. Back up what matters first, while the disk still reads.",
+            details,
+            "Back up your files now, then check the disk and its cable",
+            vec![
+                "Back up your important files now".to_string(),
+                "Check the cable and connector of the disk (SATA) or reseat the SSD (M.2)".to_string(),
+                "Test the disk with its maker's tool (e.g. Samsung Magician, WD Dashboard, SeaTools)".to_string(),
+            ],
+        )
+        .with_advice_only(),
+    )
 }
 
 impl StorageModule {
@@ -123,7 +206,7 @@ impl DiagnosticModule for StorageModule {
     }
 
     fn description(&self) -> &'static str {
-        "Checks SMART drive health, file system errors (dirty bit), junk/temp files and the icon cache"
+        "Checks SMART drive health, disk and controller errors Windows logged, file system errors (dirty bit), junk/temp files and the icon cache"
     }
 
     fn icon(&self) -> &'static str {
@@ -239,6 +322,34 @@ impl DiagnosticModule for StorageModule {
                         );
                     }
                 }
+            }
+        }
+
+        // Storage errors Windows logged
+        let query = storage_errors_query();
+        let query: Vec<&str> = query.iter().map(String::as_str).collect();
+        match read_events(
+            self.runner
+                .run("wevtutil.exe", &query, Duration::from_secs(15))
+                .await,
+        ) {
+            Ok(events) => match storage_errors_finding(self.id(), &events) {
+                Some(issue) => issues.push(issue),
+                None => {
+                    Self::send_progress(
+                        &progress_tx,
+                        70,
+                        "No storage errors logged",
+                        Some(&format!(
+                            "No disk, NTFS or controller error in the last {STORAGE_ERROR_DAYS} days."
+                        )),
+                    )
+                    .await;
+                }
+            },
+            Err(err) => {
+                Self::send_progress(&progress_tx, 70, "Storage errors not checked", Some(&err))
+                    .await;
             }
         }
 
@@ -591,6 +702,83 @@ fn chkdsk_exit_meaning(code: i32) -> &'static str {
 mod tests {
     use super::*;
     use crate::utils::cmd::{CmdOutput, MockCommandRunner};
+
+    /// Constructed in the shape of real classic events; see
+    /// tests/fixtures/README.md.
+    const STORAGE_ERRORS_XML: &str =
+        include_str!("../../tests/fixtures/events/storage_errors_constructed.xml");
+
+    fn storage_errors() -> Vec<EventRecord> {
+        crate::utils::event_xml::parse_events(STORAGE_ERRORS_XML)
+    }
+
+    #[test]
+    fn named_storage_errors_are_listed_with_their_device() {
+        let issue = storage_errors_finding("storage", &storage_errors()).unwrap();
+        assert!(
+            issue.title.contains("4 storage error(s)"),
+            "{}",
+            issue.title
+        );
+        assert_eq!(issue.severity, Severity::Critical);
+        assert!(issue.advice_only);
+        let details = &issue.technical_details;
+        assert!(
+            details.contains("disk  Event 7  bad block  \\Device\\Harddisk1\\DR1"),
+            "{details}"
+        );
+        assert!(
+            details.contains("controller stopped answering"),
+            "{details}"
+        );
+        assert!(details.contains("Ntfs  Event 55  file system structure damaged  D:"));
+    }
+
+    #[test]
+    fn retries_and_resets_alone_are_a_warning() {
+        let events: Vec<EventRecord> = storage_errors()
+            .into_iter()
+            .filter(|e| matches!(e.event_id, 129 | 153))
+            .collect();
+        let issue = storage_errors_finding("storage", &events).unwrap();
+        assert_eq!(issue.severity, Severity::Warning);
+    }
+
+    #[test]
+    fn no_storage_error_is_no_finding() {
+        assert!(storage_errors_finding("storage", &[]).is_none());
+        // Anything else the query might return is not named here.
+        let other = crate::utils::event_xml::parse_events(include_str!(
+            "../../tests/fixtures/events/system_errors.xml"
+        ));
+        assert!(storage_errors_finding("storage", &other).is_none());
+    }
+
+    #[tokio::test]
+    async fn the_scan_asks_for_named_storage_errors_only() {
+        let mock = MockCommandRunner::new();
+        mock.add_response("wevtutil.exe", CmdOutput::ok(STORAGE_ERRORS_XML));
+        let issues = StorageModule::with_paths(
+            ModuleConfig::default(),
+            Arc::new(mock.clone()),
+            Vec::new(),
+            None,
+        )
+        .scan(None)
+        .await
+        .unwrap();
+        assert!(issues.iter().any(|i| i.id == "storage_disk_errors"));
+        let query = mock
+            .executed()
+            .into_iter()
+            .find(|c| c.starts_with("wevtutil.exe"))
+            .unwrap();
+        assert!(query.contains("and Level<=3"), "{query}");
+        assert!(
+            query.contains("timediff(@SystemTime) <= 2592000000"),
+            "{query}"
+        );
+    }
 
     #[tokio::test]
     async fn test_storage_detects_dirty_bit() {
