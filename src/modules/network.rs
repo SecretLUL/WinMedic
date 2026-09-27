@@ -1,6 +1,9 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
+use crate::safety::reg_backup::RegBackupManager;
 use crate::utils::cmd::{CmdOutput, CommandRunner, SystemCommandRunner};
+use crate::utils::registry::{self, RegKeyValues};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
@@ -121,6 +124,57 @@ fn dns_probe_failure(out: &CmdOutput) -> String {
     }
 }
 
+/// Ask the DNS server at `server` itself for `dns.google`, printing what
+/// [`dns_probe_script`] prints.
+fn server_probe_script(server: &str) -> String {
+    format!(
+        "try {{ Resolve-DnsName -Name 'dns.google' -Type A_AAAA -Server {} -DnsOnly -QuickTimeout -ErrorAction Stop | ForEach-Object {{ $_.IPAddress }} | Where-Object {{ $_ }} }} catch {{ 'FAILED|' + $_.FullyQualifiedErrorId + '|' + $_.Exception.Message; exit 1 }}",
+        crate::utils::cmd::ps_single_quoted(server)
+    )
+}
+
+/// Whether [`server_probe_script`] says nobody answered: `ERROR_TIMEOUT`, the
+/// same in every language. Any other error is an answer (a name the server
+/// does not know, a refusal), and a probe that did not run says nothing.
+pub fn server_timed_out(out: &CmdOutput) -> bool {
+    !out.success
+        && out.stdout.lines().any(|line| {
+            line.trim()
+                .strip_prefix("FAILED|")
+                .is_some_and(|rest| rest.starts_with("ERROR_TIMEOUT"))
+        })
+}
+
+/// Every network interface's TCP/IP settings, one subkey per `InterfaceGuid`.
+const TCPIP_INTERFACES_KEY: &str =
+    r"HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces";
+
+/// The DNS servers typed in for the interface `guid` (`NameServer`); empty
+/// when it takes them from DHCP (`DhcpNameServer`).
+pub fn static_dns_servers(interfaces: &[RegKeyValues], guid: &str) -> Vec<String> {
+    let key = format!(r"{TCPIP_INTERFACES_KEY}\{guid}");
+    registry::find(interfaces, &key, "NameServer")
+        .map(|value| {
+            value
+                .data
+                .split([',', ' '])
+                .map(str::trim)
+                .filter(|server| server.parse::<std::net::IpAddr>().is_ok())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Hands the DNS servers of the physical adapter with this `InterfaceGuid`
+/// back to DHCP.
+fn reset_dns_script(guid: &str) -> String {
+    format!(
+        "Get-NetAdapter -Physical | Where-Object InterfaceGuid -eq {} | ForEach-Object {{ Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ResetServerAddresses -ErrorAction Stop }}",
+        crate::utils::cmd::ps_single_quoted(guid)
+    )
+}
+
 /// Every physical, connected adapter's IPv4 setup as `name|dhcp|addresses`,
 /// e.g. `Ethernet|Enabled|192.168.1.10`. `Enabled` / `Disabled` are enum
 /// names, printed the same in every display language. Virtual adapters are
@@ -197,6 +251,10 @@ fn no_dhcp_issue_id(adapter: &str) -> String {
 
 fn adapter_off_issue_id(adapter: &str) -> String {
     format!("net_adapter_disabled_{}", slug(adapter))
+}
+
+fn dead_dns_issue_id(adapter: &str) -> String {
+    format!("net_static_dns_dead_{}", slug(adapter))
 }
 
 /// Every physical adapter as `guid|status|admin status|name`, e.g.
@@ -363,6 +421,8 @@ fn real_proxy_probe() -> ProxyProbe {
 pub struct NetworkModule {
     runner: Arc<dyn CommandRunner>,
     proxy_probe: ProxyProbe,
+    /// Where registry backups go.
+    backup_dir: PathBuf,
 }
 
 impl Default for NetworkModule {
@@ -380,7 +440,14 @@ impl NetworkModule {
         Self {
             runner,
             proxy_probe: real_proxy_probe(),
+            backup_dir: RegBackupManager::new().backup_dir().to_path_buf(),
         }
+    }
+
+    /// For tests: keep registry backups here.
+    pub fn with_backup_dir(mut self, dir: PathBuf) -> Self {
+        self.backup_dir = dir;
+        self
     }
 
     /// For tests: decide whether a proxy answers without touching the network.
@@ -540,6 +607,118 @@ impl NetworkModule {
             ));
         }
         Ok(parse_physical_adapters(&out.stdout))
+    }
+
+    async fn tcpip_interfaces(&self) -> Result<Vec<RegKeyValues>, String> {
+        Ok(registry::query(&*self.runner, TCPIP_INTERFACES_KEY, true)
+            .await?
+            .unwrap_or_default())
+    }
+
+    /// The DNS servers typed in for `adapter` and what each probe said, when
+    /// none of them answers. `None` when it has none, one answers, or one
+    /// could not be asked.
+    async fn dead_static_dns(
+        &self,
+        adapter: &PhysicalAdapter,
+        interfaces: &[RegKeyValues],
+    ) -> Option<(Vec<String>, Vec<String>)> {
+        let servers = static_dns_servers(interfaces, &adapter.guid);
+        if servers.is_empty() {
+            return None;
+        }
+        let mut log = Vec::new();
+        for server in &servers {
+            match self
+                .runner
+                .run_powershell(&server_probe_script(server), Duration::from_secs(20))
+                .await
+            {
+                Ok(out) if server_timed_out(&out) => {
+                    log.push(format!("{server}: {}", dns_probe_failure(&out)))
+                }
+                _ => return None,
+            }
+        }
+        Some((servers, log))
+    }
+
+    /// Whether 1.1.1.1 answers a ping: the internet is reachable by address.
+    async fn ip_reachable(&self) -> bool {
+        self.runner
+            .run(
+                "ping.exe",
+                &["-n", "1", "-w", "1500", "1.1.1.1"],
+                Duration::from_secs(4),
+            )
+            .await
+            .is_ok_and(|out| out.stdout.contains("TTL="))
+    }
+
+    /// Back up the adapter's TCP/IP key, hand its DNS servers back to DHCP,
+    /// then read the key back and ask the resolver.
+    async fn fix_dead_dns(&self, issue_id: &str) -> Result<String, String> {
+        let Some(adapter) = self
+            .physical_adapters()
+            .await?
+            .into_iter()
+            .find(|a| dead_dns_issue_id(&a.name) == issue_id)
+        else {
+            return Ok("The adapter is no longer there - nothing to change.".to_string());
+        };
+        let servers = static_dns_servers(&self.tcpip_interfaces().await?, &adapter.guid);
+        if servers.is_empty() {
+            return Ok(format!(
+                "'{}' already takes its DNS servers from the router.",
+                adapter.name
+            ));
+        }
+        let key = format!(r"{TCPIP_INTERFACES_KEY}\{}", adapter.guid);
+        RegBackupManager::with_dir(self.backup_dir.clone())
+            .export_key_with(
+                &*self.runner,
+                &key,
+                &format!("Before resetting the DNS servers of '{}'", adapter.name),
+            )
+            .await
+            .map_err(|e| {
+                format!(
+                    "Aborted: the registry backup of '{key}' failed ({e}). Nothing was changed."
+                )
+            })?;
+
+        let out = self
+            .runner
+            .run_powershell(&reset_dns_script(&adapter.guid), Duration::from_secs(30))
+            .await?;
+        let still = static_dns_servers(&self.tcpip_interfaces().await?, &adapter.guid);
+        if !still.is_empty() {
+            return Err(format!(
+                "'{}' still uses {} (Set-DnsClientServerAddress exit code {:?}): {}",
+                adapter.name,
+                still.join(", "),
+                out.exit_code,
+                out.stderr.lines().next().unwrap_or("").trim()
+            ));
+        }
+        let undo = format!(
+            "Set-DnsClientServerAddress -InterfaceAlias '{}' -ServerAddresses {}",
+            adapter.name,
+            servers.join(",")
+        );
+        match self.resolver_works().await {
+            (true, _) => Ok(format!(
+                "'{}' takes its DNS servers from the router again, and names resolve. It used {}; `{undo}` puts them back.",
+                adapter.name,
+                servers.join(", ")
+            )),
+            (false, log) => Err(format!(
+                "'{}' takes its DNS servers from the router again (it used {}), but names still do not resolve: {}. Restart the router, or check a VPN.",
+                adapter.name,
+                servers.join(", "),
+                log.join("; ")
+            )),
+        }
     }
 
     /// Switch the adapter on, then read its `AdminStatus` back.
@@ -784,7 +963,7 @@ impl DiagnosticModule for NetworkModule {
 
         // Physical adapters switched off in Windows, which the query above
         // does not see.
-        match self.physical_adapters().await {
+        let physical = match self.physical_adapters().await {
             Ok(physical) => {
                 for adapter in physical.iter().filter(|a| a.switched_off()) {
                     let (severity, consequence) = if connected {
@@ -823,6 +1002,7 @@ impl DiagnosticModule for NetworkModule {
                 }
                 // Switching it on is the repair; a Winsock reset is not.
                 adapter_explains_offline |= !connected && physical.iter().any(|a| a.switched_off());
+                physical
             }
             Err(err) => {
                 Self::send_progress(
@@ -832,6 +1012,73 @@ impl DiagnosticModule for NetworkModule {
                     Some(&err),
                 )
                 .await;
+                Vec::new()
+            }
+        };
+
+        // DNS servers typed in on a connected adapter, left behind by a VPN
+        // or an ad blocker that is gone. Judged only while the internet
+        // answers by address, since a router that is off answers nothing
+        // either, and only when none of them answers.
+        let mut dead_static_dns = false;
+        let up: Vec<&PhysicalAdapter> = physical.iter().filter(|a| a.status == "Up").collect();
+        if !up.is_empty() {
+            match self.tcpip_interfaces().await {
+                Ok(interfaces) => {
+                    for adapter in up {
+                        let Some((servers, log)) = self.dead_static_dns(adapter, &interfaces).await
+                        else {
+                            continue;
+                        };
+                        if !self.ip_reachable().await {
+                            Self::send_progress(
+                                &progress_tx,
+                                18,
+                                "DNS servers not judged",
+                                Some(&format!(
+                                    "No DNS server set on '{}' answers, but neither does 1.1.1.1.",
+                                    adapter.name
+                                )),
+                            )
+                            .await;
+                            continue;
+                        }
+                        dead_static_dns = true;
+                        issues.push(Issue::new(
+                            dead_dns_issue_id(&adapter.name),
+                            self.id(),
+                            format!("'{}' uses DNS servers that do not answer", adapter.name),
+                            "Network & DNS",
+                            Severity::Warning,
+                            RiskScore::Low,
+                            "The DNS servers of this adapter were set by hand or by a program, often a VPN or an ad blocker that has since been removed, and none of them answers. Websites then do not open although the connection works. Automatic DNS uses the router's servers again.",
+                            format!(
+                                "{TCPIP_INTERFACES_KEY}\\{}\nNameServer: {}\n{}\nping 1.1.1.1 succeeded",
+                                adapter.guid,
+                                servers.join(","),
+                                log.join("\n")
+                            ),
+                            "Switch the adapter back to automatic DNS (after a registry backup)",
+                            vec![
+                                "Back up the adapter's TCP/IP settings".to_string(),
+                                format!(
+                                    "Set-DnsClientServerAddress -InterfaceAlias \"{}\" -ResetServerAddresses",
+                                    adapter.name
+                                ),
+                                "Check that names resolve again".to_string(),
+                            ],
+                        ));
+                    }
+                }
+                Err(err) => {
+                    Self::send_progress(
+                        &progress_tx,
+                        18,
+                        "The DNS server settings could not be read",
+                        Some(&err),
+                    )
+                    .await;
+                }
             }
         }
 
@@ -848,22 +1095,13 @@ impl DiagnosticModule for NetworkModule {
         let (dns_healthy, probe_log) = self.resolver_works().await;
 
         if !dns_healthy {
-            let ping_test = self
-                .runner
-                .run(
-                    "ping.exe",
-                    &["-n", "1", "-w", "1500", "1.1.1.1"],
-                    Duration::from_secs(4),
-                )
-                .await;
-            let ip_reachable = match ping_test {
-                Ok(out) => out.stdout.contains("TTL="),
-                Err(_) => false,
-            };
-
+            let ip_reachable = self.ip_reachable().await;
             let evidence = probe_log.join("\n");
 
-            if ip_reachable {
+            if ip_reachable && dead_static_dns {
+                // Flushing the cache cannot bring a dead server back; the
+                // finding above names it and its repair.
+            } else if ip_reachable {
                 issues.push(Issue::new(
                     "net_dns_failure",
                     self.id(),
@@ -1107,6 +1345,7 @@ impl DiagnosticModule for NetworkModule {
         match issue_id {
             id if id.starts_with("net_no_dhcp_") => self.fix_no_dhcp(id).await,
             id if id.starts_with("net_adapter_disabled_") => self.fix_adapter_off(id).await,
+            id if id.starts_with("net_static_dns_dead_") => self.fix_dead_dns(id).await,
             "net_winhttp_proxy_dead" => self.fix_winhttp_proxy().await,
             "net_dns_failure" => {
                 let _ = self
@@ -2011,6 +2250,273 @@ mod tests {
             err.contains("still switched off") && err.contains("Zugriff verweigert"),
             "{err}"
         );
+    }
+
+    /// `reg query` of every interface's TCP/IP settings on the capture
+    /// machine: no DNS server typed in anywhere.
+    fn real_tcpip_interfaces() -> String {
+        crate::utils::decode::decode_output(include_bytes!(
+            "../../tests/fixtures/console/reg_query_tcpip_interfaces.bin"
+        ))
+    }
+
+    /// The same with `servers` typed in on the wired adapter, as the network
+    /// settings or `Set-DnsClientServerAddress` write them.
+    fn tcpip_with_static_dns(servers: &str) -> String {
+        let key = r"Interfaces\{e9ce66a4-c563-4c8b-b099-1206c25056ce}";
+        let real = real_tcpip_interfaces();
+        let (head, tail) = real.split_at(real.find(key).unwrap());
+        format!(
+            "{head}{}",
+            tail.replacen(
+                "    NameServer    REG_SZ    \r\n",
+                &format!("    NameServer    REG_SZ    {servers}\r\n"),
+                1
+            )
+        )
+    }
+
+    /// What `Resolve-DnsName -Server` printed for a server nobody answers at
+    /// (192.0.2.1), on a German Windows: exit 1.
+    fn server_timeout() -> CmdOutput {
+        CmdOutput::with_output(
+            1,
+            crate::utils::decode::decode_output(include_bytes!(
+                "../../tests/fixtures/console/powershell_resolve_dns_server_timeout_de.bin"
+            )),
+            "",
+        )
+    }
+
+    /// And for the router's DNS server, which answered.
+    fn server_answers() -> CmdOutput {
+        CmdOutput::ok(crate::utils::decode::decode_output(include_bytes!(
+            "../../tests/fixtures/console/powershell_resolve_dns_server.bin"
+        )))
+    }
+
+    /// What the mock matches a probe of one server by.
+    const SERVER_PROBE: &str = "-Server '";
+    const ETHERNET_GUID: &str = "{E9CE66A4-C563-4C8B-B099-1206C25056CE}";
+
+    #[test]
+    fn static_dns_servers_are_read_per_interface() {
+        let keys = |text: String| crate::utils::registry::parse_reg_query(&text);
+        assert!(static_dns_servers(&keys(real_tcpip_interfaces()), ETHERNET_GUID).is_empty());
+        let two = keys(tcpip_with_static_dns("10.0.0.53,10.0.0.54"));
+        assert_eq!(
+            static_dns_servers(&two, ETHERNET_GUID),
+            ["10.0.0.53", "10.0.0.54"]
+        );
+        // Another interface's key says nothing about this one.
+        assert!(static_dns_servers(&two, "{185843A9-23F8-4934-A3C7-D269404861F5}").is_empty());
+    }
+
+    #[test]
+    fn only_a_timeout_means_a_server_is_dead() {
+        assert!(server_timed_out(&server_timeout()));
+        assert!(!server_timed_out(&server_answers()));
+        // The server answered that the name does not exist.
+        assert!(!server_timed_out(&not_resolved()));
+        assert!(!server_timed_out(&CmdOutput::failed(1, "")));
+    }
+
+    /// Online by address, the wired adapter up with `tcpip`, every server
+    /// probe answering `probe`.
+    fn static_dns_mock(tcpip: String, probe: CmdOutput, ping: CmdOutput) -> MockCommandRunner {
+        let mock = MockCommandRunner::new();
+        mock.add_response(PHYSICAL, CmdOutput::ok(real_physical_adapters()));
+        mock.add_response("Get-NetAdapter", CmdOutput::ok(real_adapters()));
+        mock.add_response("reg.exe query HKLM\\SYSTEM", CmdOutput::ok(tcpip));
+        mock.add_response("reg.exe", CmdOutput::with_output(1, "", "FEHLER"));
+        mock.add_response(SERVER_PROBE, probe);
+        mock.add_response(PROBE, not_resolved());
+        mock.add_response("ping.exe", ping);
+        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
+        mock
+    }
+
+    fn ping_answers() -> CmdOutput {
+        CmdOutput::ok("Antwort von 1.1.1.1: Bytes=32 Zeit=7ms TTL=57")
+    }
+
+    #[tokio::test]
+    async fn dns_servers_nobody_answers_at_are_a_finding() {
+        let mock = static_dns_mock(
+            tcpip_with_static_dns("10.0.0.53,10.0.0.54"),
+            server_timeout(),
+            ping_answers(),
+        );
+        let issues = NetworkModule::with_runner(Arc::new(mock.clone()))
+            .scan(None)
+            .await
+            .unwrap();
+        let issue = issues
+            .iter()
+            .find(|i| i.id == "net_static_dns_dead_ethernet")
+            .expect("neither server answers");
+        assert!(issue.is_selected);
+        assert!(
+            issue
+                .technical_details
+                .contains("NameServer: 10.0.0.53,10.0.0.54"),
+            "{}",
+            issue.technical_details
+        );
+        assert!(
+            !issues.iter().any(|i| i.id == "net_dns_failure"),
+            "flushing the cache cannot help: {issues:?}"
+        );
+        let probes: Vec<String> = mock
+            .executed()
+            .into_iter()
+            .filter(|c| c.contains(SERVER_PROBE))
+            .collect();
+        assert_eq!(probes.len(), 2);
+        assert!(probes[1].contains("-Server '10.0.0.54'"), "{}", probes[1]);
+    }
+
+    #[tokio::test]
+    async fn a_server_that_answers_is_left_alone() {
+        let mock = static_dns_mock(
+            tcpip_with_static_dns("1.1.1.1"),
+            server_answers(),
+            ping_answers(),
+        );
+        let issues = NetworkModule::with_runner(Arc::new(mock))
+            .scan(None)
+            .await
+            .unwrap();
+        assert!(
+            !issues
+                .iter()
+                .any(|i| i.id.starts_with("net_static_dns_dead_"))
+        );
+    }
+
+    #[tokio::test]
+    async fn dns_servers_are_not_judged_while_nothing_answers() {
+        // A router that is off answers neither DNS nor ping; the servers
+        // typed in may be fine.
+        let mock = static_dns_mock(
+            tcpip_with_static_dns("1.1.1.1"),
+            server_timeout(),
+            CmdOutput::failed(1, ""),
+        );
+        let issues = NetworkModule::with_runner(Arc::new(mock))
+            .scan(None)
+            .await
+            .unwrap();
+        assert!(
+            !issues
+                .iter()
+                .any(|i| i.id.starts_with("net_static_dns_dead_"))
+        );
+    }
+
+    /// A sandbox for registry backups, removed when the test ends.
+    struct Backups(std::path::PathBuf);
+
+    impl Backups {
+        fn new(tag: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("winmedic_net_{tag}_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            Self(dir)
+        }
+    }
+
+    impl Drop for Backups {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The servers are typed in until the reset ran, then `after`.
+    fn dns_reset_mock(export: CmdOutput, after: String) -> MockCommandRunner {
+        let mock = MockCommandRunner::new();
+        mock.add_response(PHYSICAL, CmdOutput::ok(real_physical_adapters()));
+        mock.add_response(
+            "reg.exe query",
+            CmdOutput::ok(tcpip_with_static_dns("10.0.0.53")),
+        );
+        mock.add_response_after(
+            "ResetServerAddresses",
+            "reg.exe query",
+            CmdOutput::ok(after),
+        );
+        mock.add_response("reg.exe export", export);
+        mock.add_response("ResetServerAddresses", CmdOutput::ok(""));
+        mock.add_response(PROBE, resolved());
+        mock
+    }
+
+    #[tokio::test]
+    async fn the_dns_reset_is_backed_up_and_read_back() {
+        let backups = Backups::new("dnsreset");
+        let mock = dns_reset_mock(CmdOutput::ok(""), real_tcpip_interfaces());
+        let msg = NetworkModule::with_runner(Arc::new(mock.clone()))
+            .with_backup_dir(backups.0.clone())
+            .fix("net_static_dns_dead_ethernet", None)
+            .await
+            .unwrap();
+        assert!(
+            msg.contains("-ServerAddresses 10.0.0.53"),
+            "the message has to say how to undo it: {msg}"
+        );
+        let executed = mock.executed();
+        let export = executed
+            .iter()
+            .position(|c| c.starts_with("reg.exe export"))
+            .unwrap();
+        let reset = executed
+            .iter()
+            .position(|c| c.contains("ResetServerAddresses"))
+            .unwrap();
+        assert!(export < reset, "{executed:?}");
+        assert!(executed[export].contains(&format!(r"Interfaces\{ETHERNET_GUID}")));
+        assert!(executed[reset].contains(&format!("InterfaceGuid -eq '{ETHERNET_GUID}'")));
+        assert!(backups.0.join("index.json").exists());
+    }
+
+    #[tokio::test]
+    async fn a_failed_backup_changes_nothing() {
+        let backups = Backups::new("dnsbackup");
+        let mock = dns_reset_mock(
+            CmdOutput::with_output(1, "", "FEHLER"),
+            real_tcpip_interfaces(),
+        );
+        let err = NetworkModule::with_runner(Arc::new(mock.clone()))
+            .with_backup_dir(backups.0.clone())
+            .fix("net_static_dns_dead_ethernet", None)
+            .await
+            .unwrap_err();
+        assert!(err.starts_with("Aborted"), "{err}");
+        assert!(
+            !mock
+                .executed()
+                .iter()
+                .any(|c| c.contains("ResetServerAddresses"))
+        );
+    }
+
+    #[tokio::test]
+    async fn servers_that_stay_are_a_failure() {
+        let backups = Backups::new("dnsstays");
+        let mock = dns_reset_mock(CmdOutput::ok(""), tcpip_with_static_dns("10.0.0.53"));
+        let err = NetworkModule::with_runner(Arc::new(mock))
+            .with_backup_dir(backups.0.clone())
+            .fix("net_static_dns_dead_ethernet", None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("still uses 10.0.0.53"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn the_dns_scripts_parse() {
+        for script in [server_probe_script("10.0.0.53"), reset_dns_script("{A'B}")] {
+            assert_eq!(crate::utils::cmd::powershell_parse_errors(&script).await, 0);
+        }
     }
 
     #[tokio::test]

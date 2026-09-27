@@ -1,4 +1,4 @@
-use crate::utils::cmd::run_cmd;
+use crate::utils::cmd::{CommandRunner, SystemCommandRunner, run_cmd};
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -58,6 +58,18 @@ impl RegBackupManager {
         key_path: &str,
         description: &str,
     ) -> Result<BackupRecord, String> {
+        self.export_key_with(&SystemCommandRunner::new(), key_path, description)
+            .await
+    }
+
+    /// [`Self::export_key`] through `runner`, so a module's tests can answer
+    /// `reg export` instead of running it.
+    pub async fn export_key_with(
+        &self,
+        runner: &dyn CommandRunner,
+        key_path: &str,
+        description: &str,
+    ) -> Result<BackupRecord, String> {
         let timestamp_slug = Local::now().format("%Y%m%d_%H%M%S").to_string();
         let safe_key = key_path.replace(['\\', '/'], "_");
         let file_name = format!("reg_{}_{}.reg", timestamp_slug, safe_key);
@@ -69,12 +81,13 @@ impl RegBackupManager {
             )
         })?;
 
-        let output = run_cmd(
-            "reg",
-            &["export", key_path, &file_path.to_string_lossy(), "/y"],
-            Duration::from_secs(15),
-        )
-        .await?;
+        let output = runner
+            .run(
+                "reg.exe",
+                &["export", key_path, &file_path.to_string_lossy(), "/y"],
+                Duration::from_secs(15),
+            )
+            .await?;
 
         if !output.success {
             return Err(format!(
