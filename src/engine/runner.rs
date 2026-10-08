@@ -353,6 +353,8 @@ impl DiagnosticEngine {
         });
 
         let mut set = JoinSet::new();
+        // A module that panics leaves no result to name it by, only its task.
+        let mut module_of_task = std::collections::HashMap::new();
         for module in &self.modules {
             let mod_id = module.id().to_string();
             let mod_name = module.name().to_string();
@@ -364,7 +366,8 @@ impl DiagnosticEngine {
                 .send(ScanEvent::ModuleStarted(mod_id.clone()))
                 .await;
 
-            set.spawn(async move {
+            let named = (mod_id.clone(), mod_name.clone());
+            let task = set.spawn(async move {
                 if verbose {
                     let _ = p_tx
                         .send(ModuleProgress {
@@ -381,6 +384,7 @@ impl DiagnosticEngine {
                 let result = module.scan(Some(p_tx)).await;
                 (mod_id, mod_name, result)
             });
+            module_of_task.insert(task.id(), named);
         }
         // Drop the extra sender reference so prog_rx closes once all module tasks complete
         drop(prog_tx);
@@ -512,7 +516,29 @@ impl DiagnosticEngine {
                             }
                         }
                         Err(join_err) => {
-                            eprintln!("Scan task was aborted or failed: {}", join_err);
+                            // A panic in a debug build, where it unwinds. The
+                            // module's findings are missing just as when its
+                            // check is refused, so it is reported the same way:
+                            // logged here, it left the run looking complete.
+                            let Some((mod_id, mod_name)) = module_of_task.remove(&join_err.id())
+                            else {
+                                eprintln!("Scan task was aborted or failed: {}", join_err);
+                                continue;
+                            };
+                            let err = format!("The check stopped unexpectedly: {}", join_err);
+                            let _ = event_tx
+                                .send(ScanEvent::ModuleFailed {
+                                    module_id: mod_id.clone(),
+                                    error: err.clone(),
+                                })
+                                .await;
+                            self.audit_logger.log(
+                                "SCAN",
+                                &mod_id,
+                                &mod_name,
+                                "FAILED",
+                                &format!("Scan error: {}", err),
+                            );
                         }
                     }
                 }
@@ -1042,6 +1068,67 @@ mod tests {
         ) -> Result<String, String> {
             self.0.map(str::to_string).map_err(str::to_string)
         }
+    }
+
+    /// A module whose check panics, as a parser meeting output it did not
+    /// expect can.
+    struct Panics;
+
+    #[async_trait::async_trait]
+    impl DiagnosticModule for Panics {
+        fn id(&self) -> &'static str {
+            "panics"
+        }
+        fn name(&self) -> &'static str {
+            "Panics"
+        }
+        fn description(&self) -> &'static str {
+            ""
+        }
+        fn icon(&self) -> &'static str {
+            ""
+        }
+        async fn scan(
+            &self,
+            _progress_tx: Option<Sender<ModuleProgress>>,
+        ) -> Result<Vec<Issue>, String> {
+            panic!("unexpected tool output")
+        }
+        async fn fix(
+            &self,
+            _issue_id: &str,
+            _progress_tx: Option<Sender<FixProgress>>,
+        ) -> Result<String, String> {
+            Err(String::new())
+        }
+    }
+
+    /// A check that panics counts as failed, like one that was refused, and
+    /// so reaches the exit code; it used to be only printed.
+    #[tokio::test]
+    async fn a_check_that_panics_is_reported_as_failed() {
+        let engine =
+            DiagnosticEngine::with_modules(vec![Arc::new(Panics), Arc::new(Answers(Ok("")))]);
+        let (tx, mut rx) = channel::<ScanEvent>(50);
+        engine.run_scan(tx, CancellationToken::new()).await;
+
+        let mut failed = Vec::new();
+        let mut finished = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            match evt {
+                ScanEvent::ModuleFailed { module_id, error } => failed.push((module_id, error)),
+                ScanEvent::ModuleFinished { module_id, .. } => finished.push(module_id),
+                _ => {}
+            }
+        }
+        assert_eq!(finished, ["answers"]);
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        assert_eq!(failed[0].0, "panics");
+        assert!(
+            failed[0].1.contains("unexpected tool output"),
+            "{}",
+            failed[0].1
+        );
     }
 
     fn answered_issue() -> Issue {

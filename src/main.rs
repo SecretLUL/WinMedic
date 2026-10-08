@@ -294,8 +294,9 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         tokio::spawn(async move { engine_for_scan.run_scan(tx, scan_cancel).await });
 
     let mut scan_cancelled = false;
-    // For the helper, which records module outcomes itself: a module that
-    // failed reported no findings, and counting findings alone calls it passed.
+    // For the exit code, and for the helper, which records module outcomes
+    // itself: a module that failed reported no findings, and counting
+    // findings alone calls it passed.
     let mut failed_modules = HashMap::new();
     while let Some(evt) = rx.recv().await {
         match &evt {
