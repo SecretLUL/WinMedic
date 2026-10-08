@@ -7,7 +7,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc::channel;
+use tokio::sync::mpsc::{Sender, channel};
 use tokio_util::sync::CancellationToken;
 
 use common::{
@@ -23,7 +23,9 @@ use winmedic::engine::runner::{DiagnosticEngine, RepairEvent, RepairOptions, Sca
 use winmedic::modules::system_cleaner::{
     CleanerPaths, SystemCleanerModule, clean_path_contents, scan_path_recursive,
 };
-use winmedic::modules::{DiagnosticModule, ModuleConfig, get_all_modules_with_runner};
+use winmedic::modules::{
+    DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress, get_all_modules_with_runner,
+};
 use winmedic::safety::audit::{AuditEntry, AuditLogger, MAX_LOG_FILE_BYTES};
 use winmedic::utils::cmd::{CmdOutput, CommandRunner};
 use winmedic::utils::updater::{UpdateInfo, check_for_update};
@@ -149,12 +151,12 @@ async fn test_tier3_triage_selection_logs_temp_with_real_fix() {
     let _dir = ws.create_dir("Logs");
     let log_file = ws.create_file("Logs/setup.log", &[0xBB; 2000]);
     // The payload the repair is expected to remove, inside the sandbox.
-    let pkg_payload = ws.create_file("ProgramData/Package Cache/vs/setup.msi", &[0xAA; 1500]);
+    let temp_payload = ws.create_file("Windows/SystemTemp/svc.tmp", &[0xAA; 1500]);
 
     let mut issues = vec![Issue::new(
-        "sys_clean_package_cache",
+        "sys_clean_system_temp",
         "system_cleaner",
-        "Package Cache",
+        "Extended system temp directories",
         "System & Cache Cleaner",
         Severity::Info,
         RiskScore::Low,
@@ -165,10 +167,10 @@ async fn test_tier3_triage_selection_logs_temp_with_real_fix() {
     )];
     issues[0].is_selected = true;
 
-    // This is a *real* (non-dry-run) repair, and the package-cache fix deletes
+    // This is a *real* (non-dry-run) repair, and the system temp fix deletes
     // files. The engine therefore gets a cleaner rooted in the sandbox — built
     // from `DiagnosticEngine::with_runner` it would empty the test machine's own
-    // %ProgramData%\Package Cache.
+    // %SystemRoot%\SystemTemp.
     let runner = Arc::new(ProgrammableMockRunner::new());
     let cleaner = SystemCleanerModule::with_runner_and_paths(
         ModuleConfig::default(),
@@ -194,8 +196,8 @@ async fn test_tier3_triage_selection_logs_temp_with_real_fix() {
     let (repaired_issues, (fixed, _failed)) = fix_handle.await.unwrap();
     assert_eq!(fixed, 1);
     assert!(repaired_issues[0].is_fixed);
-    // Only the package cache was swept; the unrelated log file survives.
-    assert!(!pkg_payload.exists());
+    // Only the system temp was swept; the unrelated log file survives.
+    assert!(!temp_payload.exists());
     assert!(log_file.exists());
 }
 
@@ -353,12 +355,12 @@ fn test_tier3_exit_code_after_system_cleaner_fixes() {
     ];
 
     // Pre-fix: warnings present -> exit code 1
-    assert_eq!(exit_code::from_issues(&issues, 0), exit_code::WARNINGS);
+    assert_eq!(exit_code::from_issues(&issues, 0, 0), exit_code::WARNINGS);
 
     // Post-fix: all issues fixed -> exit code 0
     issues[0].is_fixed = true;
     issues[1].is_fixed = true;
-    assert_eq!(exit_code::from_issues(&issues, 0), exit_code::OK);
+    assert_eq!(exit_code::from_issues(&issues, 0, 0), exit_code::OK);
 }
 
 #[test]
@@ -377,7 +379,64 @@ fn test_tier3_exit_code_on_failed_winsxs_repair() {
     )];
 
     // 1 failed fix outranks severity -> exit code 3
-    assert_eq!(exit_code::from_issues(&issues, 1), exit_code::FIX_FAILED);
+    assert_eq!(exit_code::from_issues(&issues, 1, 0), exit_code::FIX_FAILED);
+}
+
+/// A module whose check is refused, as when Windows turns down its query.
+struct RefusedCheck;
+
+#[async_trait::async_trait]
+impl DiagnosticModule for RefusedCheck {
+    fn id(&self) -> &'static str {
+        "refused_check"
+    }
+    fn name(&self) -> &'static str {
+        "Refused check"
+    }
+    fn description(&self) -> &'static str {
+        ""
+    }
+    fn icon(&self) -> &'static str {
+        ""
+    }
+    async fn scan(
+        &self,
+        _progress_tx: Option<Sender<ModuleProgress>>,
+    ) -> Result<Vec<Issue>, String> {
+        Err("the query was refused".to_string())
+    }
+    async fn fix(
+        &self,
+        _issue_id: &str,
+        _progress_tx: Option<Sender<FixProgress>>,
+    ) -> Result<String, String> {
+        Err("nothing to repair".to_string())
+    }
+}
+
+#[tokio::test]
+async fn test_tier3_refused_check_exits_incomplete_not_clean() {
+    let engine = DiagnosticEngine::with_modules(vec![Arc::new(RefusedCheck)]);
+    let (tx, mut rx) = channel(50);
+    let scan_handle =
+        tokio::spawn(async move { engine.run_scan(tx, CancellationToken::new()).await });
+
+    // main.rs counts these to build the exit code.
+    let mut failed_modules = 0;
+    while let Some(evt) = rx.recv().await {
+        if let ScanEvent::ModuleFailed { .. } = evt {
+            failed_modules += 1;
+        }
+    }
+
+    let issues = scan_handle.await.unwrap();
+    assert!(issues.is_empty());
+    assert_eq!(failed_modules, 1);
+    // Nothing is open, but the check never ran: that must not read as healthy.
+    assert_eq!(
+        exit_code::from_issues(&issues, 0, failed_modules),
+        exit_code::INCOMPLETE
+    );
 }
 
 #[test]
@@ -428,11 +487,11 @@ fn test_tier3_reporter_html_with_system_cleaner_issues() {
 #[test]
 fn test_tier3_reporter_markdown_with_system_cleaner_issues() {
     let issues = vec![Issue::new(
-        "sys_clean_package_cache",
+        "sys_clean_delivery_optimization",
         "system_cleaner",
-        "Installer package cache (1.20 GB, 50 files)",
+        "Delivery Optimization (WUDO) cache (1.20 GB, 50 files)",
         "System & Cache Cleaner",
-        Severity::Warning,
+        Severity::Info,
         RiskScore::Low,
         "Description",
         "Details",
@@ -443,8 +502,9 @@ fn test_tier3_reporter_markdown_with_system_cleaner_issues() {
     let audit_entries = vec![];
 
     let md = DiagnosticReporter::to_markdown(&issues, health, &audit_entries);
-    assert!(md.contains("Installer package cache"));
-    assert!(md.contains("system_cleaner"));
+    // Values are escaped for Markdown: `(`, `)`, `.` and `_` are special there.
+    assert!(md.contains(r"Delivery Optimization \(WUDO\) cache \(1\.20 GB, 50 files\)"));
+    assert!(md.contains(r"system\_cleaner"));
 }
 
 #[test]

@@ -1,5 +1,6 @@
 use crate::utils::decode::{CodePage, LineDecoder, decode_output_in};
 use crate::utils::pnp::PnpDevice;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -465,13 +466,144 @@ fn describe_spawn_failure(program: &str, err: &std::io::Error) -> String {
     }
 }
 
+/// The full path of a Windows tool WinMedic starts by name, such as
+/// `reg.exe`, `powershell` or `explorer.exe`. A name with a folder in it is
+/// taken as it is.
+///
+/// Given a bare name, Rust looks in the folder of the running executable
+/// before System32, and winmedic.exe usually sits in Downloads or in WinGet's
+/// package folder under %LOCALAPPDATA%, both writable without Administrator
+/// rights: a `reg.exe` put next to it would run in the elevated WinMedic
+/// process. So every tool is started from the Windows folders, as Windows
+/// reports them, never as the environment (`%SystemRoot%`, `PATH`) says.
+pub fn system_program(program: &str) -> Result<PathBuf, String> {
+    if program.contains(['\\', '/']) {
+        return Ok(PathBuf::from(program));
+    }
+    let file = if Path::new(program).extension().is_some() {
+        program.to_string()
+    } else {
+        format!("{program}.exe")
+    };
+    let folder = |dir: Option<&'static Path>| {
+        dir.ok_or_else(|| {
+            format!("'{program}' was not started: Windows did not say where its system folder is")
+        })
+    };
+    Ok(match file.to_ascii_lowercase().as_str() {
+        "powershell.exe" => folder(system_dir())?.join(r"WindowsPowerShell\v1.0\powershell.exe"),
+        "winmgmt.exe" => folder(system_dir())?.join(r"wbem\winmgmt.exe"),
+        "explorer.exe" => folder(windows_dir())?.join(file),
+        _ => folder(system_dir())?.join(file),
+    })
+}
+
+/// System32, from `GetSystemDirectoryW`.
+fn system_dir() -> Option<&'static Path> {
+    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    #[cfg(windows)]
+    let dir = DIR.get_or_init(|| {
+        windows_folder(windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW)
+    });
+    #[cfg(not(windows))]
+    let dir = DIR.get_or_init(|| None);
+    dir.as_deref()
+}
+
+/// The Windows folder, from `GetSystemWindowsDirectoryW`, which unlike
+/// `GetWindowsDirectoryW` is the shared one on a terminal server too.
+fn windows_dir() -> Option<&'static Path> {
+    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    #[cfg(windows)]
+    let dir = DIR.get_or_init(|| {
+        windows_folder(windows_sys::Win32::System::SystemInformation::GetSystemWindowsDirectoryW)
+    });
+    #[cfg(not(windows))]
+    let dir = DIR.get_or_init(|| None);
+    dir.as_deref()
+}
+
+/// Ask one of the `Get...DirectoryW` functions for its folder. They return
+/// the length without the terminating null, or the size needed with it when
+/// the buffer was too small, or 0 on failure.
+#[cfg(windows)]
+fn windows_folder(get: unsafe extern "system" fn(*mut u16, u32) -> u32) -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+
+    let mut buffer = vec![0u16; 260];
+    loop {
+        let len = unsafe { get(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+        if len == 0 {
+            return None;
+        }
+        if len < buffer.len() {
+            buffer.truncate(len);
+            return Some(PathBuf::from(std::ffi::OsString::from_wide(&buffer)));
+        }
+        buffer.resize(len, 0);
+    }
+}
+
+/// How long the output readers get to finish once the process has exited.
+///
+/// They end when the pipes close, and a process the command started can hold
+/// them open after the command itself has ended: waiting for the readers
+/// without a limit then waited for that process, however long it ran. The
+/// command's own output is in the pipe by the time it exits, so reading the
+/// rest takes milliseconds; whatever arrived by the limit is kept.
+const PIPE_DRAIN_LIMIT: Duration = Duration::from_secs(10);
+
+/// Wait up to `limit` ([`PIPE_DRAIN_LIMIT`]) for both readers, then stop
+/// them.
+async fn drain_readers<T>(
+    stdout: tokio::task::JoinHandle<T>,
+    stderr: tokio::task::JoinHandle<T>,
+    limit: Duration,
+) {
+    let (stop_stdout, stop_stderr) = (stdout.abort_handle(), stderr.abort_handle());
+    let both = async {
+        let _ = tokio::join!(stdout, stderr);
+    };
+    if timeout(limit, both).await.is_err() {
+        stop_stdout.abort();
+        stop_stderr.abort();
+    }
+}
+
+/// Read `pipe` to the end into `out`, a piece at a time, so that what has
+/// arrived is kept when the reader is stopped early.
+async fn read_into(pipe: Option<impl tokio::io::AsyncRead + Unpin>, out: Arc<Mutex<Vec<u8>>>) {
+    let Some(mut pipe) = pipe else {
+        return;
+    };
+    let mut buf = [0u8; 4096];
+    loop {
+        match pipe.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(read) => {
+                if let Ok(mut out) = out.lock() {
+                    out.extend_from_slice(&buf[..read]);
+                }
+            }
+        }
+    }
+}
+
+/// What a reader collected, taken out of its shared buffer.
+fn take_collected<T: Default>(collected: &Mutex<T>) -> T {
+    collected
+        .lock()
+        .map(|mut collected| std::mem::take(&mut *collected))
+        .unwrap_or_default()
+}
+
 /// Execute a system command with timeout and return the complete output.
 pub async fn run_cmd(
     program: &str,
     args: &[&str],
     timeout_duration: Duration,
 ) -> Result<CmdOutput, String> {
-    let mut cmd = TokioCommand::new(program);
+    let mut cmd = TokioCommand::new(system_program(program)?);
     cmd.args(args);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -489,35 +621,20 @@ pub async fn run_cmd(
         .spawn()
         .map_err(|e| describe_spawn_failure(program, &e))?;
 
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-
-    let stdout_handle = tokio::spawn(async move {
-        let mut out = Vec::new();
-        if let Some(mut s) = stdout {
-            let _ = s.read_to_end(&mut out).await;
-        }
-        out
-    });
-
-    let stderr_handle = tokio::spawn(async move {
-        let mut err = Vec::new();
-        if let Some(mut s) = stderr {
-            let _ = s.read_to_end(&mut err).await;
-        }
-        err
-    });
+    let stdout_bytes = Arc::new(Mutex::new(Vec::new()));
+    let stderr_bytes = Arc::new(Mutex::new(Vec::new()));
+    let stdout_handle = tokio::spawn(read_into(child.stdout.take(), stdout_bytes.clone()));
+    let stderr_handle = tokio::spawn(read_into(child.stderr.take(), stderr_bytes.clone()));
 
     let status_res = timeout(timeout_duration, child.wait()).await;
     match status_res {
         Ok(Ok(status)) => {
-            let stdout_bytes = stdout_handle.await.unwrap_or_default();
-            let stderr_bytes = stderr_handle.await.unwrap_or_default();
+            drain_readers(stdout_handle, stderr_handle, PIPE_DRAIN_LIMIT).await;
             Ok(CmdOutput {
                 success: status.success(),
                 exit_code: status.code(),
-                stdout: decode_output_in(&stdout_bytes, CodePage::of(program)),
-                stderr: decode_output_in(&stderr_bytes, CodePage::of(program)),
+                stdout: decode_output_in(&take_collected(&stdout_bytes), CodePage::of(program)),
+                stderr: decode_output_in(&take_collected(&stderr_bytes), CodePage::of(program)),
             })
         }
         Ok(Err(e)) => Err(format!("Command execution error: {}", e)),
@@ -535,7 +652,7 @@ pub async fn run_cmd_streaming(
     log_tx: Option<Sender<String>>,
     timeout_duration: Duration,
 ) -> Result<CmdOutput, String> {
-    let mut cmd = TokioCommand::new(program);
+    let mut cmd = TokioCommand::new(system_program(program)?);
     cmd.args(args);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -556,23 +673,23 @@ pub async fn run_cmd_streaming(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
-    let mut stdout_lines = Vec::new();
-    let mut stderr_lines = Vec::new();
+    let stdout_lines = Arc::new(Mutex::new(Vec::new()));
+    let stderr_lines = Arc::new(Mutex::new(Vec::new()));
 
     let stdout_tx = log_tx.clone();
+    let stdout_sink = stdout_lines.clone();
     let stdout_handle = tokio::spawn(async move {
         if let Some(stdout) = stdout {
-            forward_lines(stdout, stdout_tx, "", &mut stdout_lines).await;
+            forward_lines(stdout, stdout_tx, "", &stdout_sink).await;
         }
-        stdout_lines
     });
 
     let stderr_tx = log_tx;
+    let stderr_sink = stderr_lines.clone();
     let stderr_handle = tokio::spawn(async move {
         if let Some(stderr) = stderr {
-            forward_lines(stderr, stderr_tx, "[STDERR] ", &mut stderr_lines).await;
+            forward_lines(stderr, stderr_tx, "[STDERR] ", &stderr_sink).await;
         }
-        stderr_lines
     });
 
     // The readers end when the pipes close, which is when the process has
@@ -592,12 +709,12 @@ pub async fn run_cmd_streaming(
         }
     };
 
-    let (stdout_out, stderr_out) = tokio::join!(stdout_handle, stderr_handle);
+    drain_readers(stdout_handle, stderr_handle, PIPE_DRAIN_LIMIT).await;
     Ok(CmdOutput {
         success: status.success(),
         exit_code: status.code(),
-        stdout: stdout_out.unwrap_or_default().join("\n"),
-        stderr: stderr_out.unwrap_or_default().join("\n"),
+        stdout: take_collected(&stdout_lines).join("\n"),
+        stderr: take_collected(&stderr_lines).join("\n"),
     })
 }
 
@@ -614,7 +731,7 @@ async fn forward_lines(
     mut pipe: impl tokio::io::AsyncRead + Unpin,
     tx: Option<Sender<String>>,
     prefix: &str,
-    lines: &mut Vec<String>,
+    lines: &Mutex<Vec<String>>,
 ) {
     let mut decoder = LineDecoder::new();
     let mut buf = [0u8; 4096];
@@ -628,7 +745,7 @@ async fn forward_lines(
             if let Some(ref tx) = tx {
                 let _ = tx.send(format!("{prefix}{line}")).await;
             }
-            lines.push(line);
+            keep(lines, line);
             sent_progress = None;
         }
         let progress = decoder.progress();
@@ -643,6 +760,13 @@ async fn forward_lines(
         if let Some(ref tx) = tx {
             let _ = tx.send(format!("{prefix}{line}")).await;
         }
+        keep(lines, line);
+    }
+}
+
+/// Add a finished line to the command's output.
+fn keep(lines: &Mutex<Vec<String>>, line: String) {
+    if let Ok(mut lines) = lines.lock() {
         lines.push(line);
     }
 }
@@ -679,15 +803,36 @@ pub async fn run_powershell(command_str: &str, timeout_dur: Duration) -> Result<
 ///
 /// PowerShell performs no interpolation inside single-quoted strings, so
 /// `$var`, `$(...)`, `@(...)` and backtick escapes are all inert there. That
-/// leaves `'` as the only metacharacter, and it is escaped by doubling it —
-/// which is why this needs no allow-list and cannot be defeated by an encoding
-/// the caller did not anticipate.
+/// leaves the single quote as the only metacharacter, and it is escaped by
+/// doubling it — which is why this needs no allow-list.
+///
+/// PowerShell knows five single quotes, not one: besides `'` it ends a
+/// single-quoted string at `‘`, `’`, `‚` and `‛` as well (see
+/// [`is_ps_single_quote`]). A task called "Bob’s Backup", with the apostrophe
+/// Word and most keyboards on phones type, closed the literal early. All five
+/// are doubled, as PowerShell's own
+/// `CodeGeneration.EscapeSingleQuotedStringContent` does.
 ///
 /// This protects a *value*. It does not make an arbitrary script safe: command
 /// names, parameter names and script structure must always be literals in the
 /// source, never assembled from external input.
 pub fn ps_single_quoted(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('\'');
+    for c in value.chars() {
+        if is_ps_single_quote(c) {
+            quoted.push(c);
+        }
+        quoted.push(c);
+    }
+    quoted.push('\'');
+    quoted
+}
+
+/// Whether PowerShell's tokenizer treats `c` as a single quote: the ASCII
+/// apostrophe and the four typographic ones (`CharExtensions.IsSingleQuote`).
+pub fn is_ps_single_quote(c: char) -> bool {
+    matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}')
 }
 
 /// How many syntax errors PowerShell's parser finds in `script`, which it
@@ -813,8 +958,9 @@ mod tests {
         let captured: &[u8] =
             include_bytes!("../../tests/fixtures/console/sfc_verifyonly_progress_de.bin");
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(256);
-        let mut lines = Vec::new();
-        forward_lines(captured, Some(tx), "", &mut lines).await;
+        let lines = Mutex::new(Vec::new());
+        forward_lines(captured, Some(tx), "", &lines).await;
+        let lines = lines.into_inner().unwrap();
 
         let mut forwarded = Vec::new();
         while let Ok(line) = rx.try_recv() {
@@ -846,6 +992,94 @@ mod tests {
             "returned after {:?}",
             started.elapsed()
         );
+    }
+
+    /// cmd ends at once, but the ping it starts inherits the pipes and holds
+    /// them for twenty seconds. Loopback only, no window.
+    #[tokio::test]
+    async fn a_process_left_holding_the_pipes_does_not_hold_up_the_command() {
+        let started = std::time::Instant::now();
+        let out = run_cmd(
+            "cmd.exe",
+            &["/c", "echo verdict& start /b ping -n 20 127.0.0.1 >nul"],
+            Duration::from_secs(60),
+        )
+        .await
+        .expect("cmd starts");
+        assert_eq!(out.stdout.trim(), "verdict");
+        assert!(
+            started.elapsed() < PIPE_DRAIN_LIMIT + Duration::from_secs(7),
+            "returned after {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// A reader whose pipe stays open is stopped at the limit, and what it
+    /// read until then is kept.
+    #[tokio::test]
+    async fn a_reader_held_open_is_stopped_and_keeps_what_it_read() {
+        let collected = Arc::new(Mutex::new(Vec::new()));
+        let sink = collected.clone();
+        let held = tokio::spawn(async move {
+            sink.lock().unwrap().extend_from_slice(b"verdict");
+            std::future::pending::<()>().await
+        });
+        let probe = held.abort_handle();
+        let finished = tokio::spawn(async {});
+
+        let started = std::time::Instant::now();
+        drain_readers(held, finished, Duration::from_millis(200)).await;
+        assert!(started.elapsed() < Duration::from_secs(5));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !probe.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the held reader is stopped");
+        assert_eq!(take_collected(&collected), b"verdict");
+    }
+
+    #[test]
+    fn system_tools_are_started_by_their_full_path() {
+        let system32 = system_dir().expect("Windows names its system folder");
+        assert!(system32.is_absolute());
+        assert_eq!(system_program("reg.exe").unwrap(), system32.join("reg.exe"));
+        assert_eq!(system_program("reg").unwrap(), system32.join("reg.exe"));
+        assert_eq!(
+            system_program("powershell").unwrap(),
+            system32.join(r"WindowsPowerShell\v1.0\powershell.exe")
+        );
+        assert_eq!(
+            system_program("WINMGMT.EXE").unwrap(),
+            system32.join(r"wbem\winmgmt.exe")
+        );
+        let windows = windows_dir().expect("Windows names its own folder");
+        assert_eq!(
+            system_program("explorer.exe").unwrap(),
+            windows.join("explorer.exe")
+        );
+        // A path is the caller's choice: the updater starts the new winmedic.exe.
+        assert_eq!(
+            system_program(r"C:\Tools\winmedic.exe").unwrap(),
+            PathBuf::from(r"C:\Tools\winmedic.exe")
+        );
+    }
+
+    /// The tools that live outside System32 itself are where this Windows
+    /// keeps them. Only looks, starts nothing.
+    #[test]
+    fn the_tools_are_where_they_are_started_from() {
+        for tool in [
+            "powershell",
+            "winmgmt.exe",
+            "explorer.exe",
+            "reg.exe",
+            "sc.exe",
+        ] {
+            let path = system_program(tool).unwrap();
+            assert!(path.is_file(), "{tool}: no {}", path.display());
+        }
     }
 
     const QUERY_TIMEOUT: Duration = Duration::from_secs(20);
@@ -1015,5 +1249,85 @@ mod tests {
         assert_eq!(once, "'O''Brien'");
         assert_eq!(twice, "'''O''''Brien'''");
         assert_eq!(twice.matches('\'').count() % 2, 0);
+    }
+
+    /// Reads a single-quoted literal off the front of `script` the way
+    /// PowerShell's tokenizer does (`Tokenizer.ScanStringLiteral`): any of the
+    /// five quotes opens and closes it, and two of them in a row stand for the
+    /// second one. Returns the value and what follows the literal.
+    fn scan_ps_literal(script: &str) -> Option<(String, &str)> {
+        let mut chars = script.char_indices().peekable();
+        let (_, open) = chars.next()?;
+        if !is_ps_single_quote(open) {
+            return None;
+        }
+        let mut value = String::new();
+        while let Some((at, c)) = chars.next() {
+            if is_ps_single_quote(c) {
+                match chars.peek() {
+                    Some(&(_, next)) if is_ps_single_quote(next) => {
+                        value.push(next);
+                        chars.next();
+                        continue;
+                    }
+                    _ => return Some((value, &script[at + c.len_utf8()..])),
+                }
+            }
+            value.push(c);
+        }
+        None
+    }
+
+    #[test]
+    fn ps_quoting_doubles_every_quote_powershell_knows() {
+        for quote in ['\'', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}'] {
+            let value = format!("Bob{quote}s Backup{quote}; Remove-Item C:\\x; {quote}");
+            let quoted = ps_single_quoted(&value);
+            assert_eq!(
+                quoted,
+                format!(
+                    "'Bob{quote}{quote}s Backup{quote}{quote}; Remove-Item C:\\x; {quote}{quote}'"
+                ),
+                "U+{:04X}",
+                quote as u32
+            );
+            assert_eq!(
+                scan_ps_literal(&quoted),
+                Some((value.clone(), "")),
+                "the literal must end exactly where the quoting ends (U+{:04X})",
+                quote as u32
+            );
+        }
+    }
+
+    #[test]
+    fn a_typographic_apostrophe_no_longer_ends_the_literal() {
+        // What the old helper made of it: the literal closed after "Bob".
+        let old = format!("'{}'", "Bob\u{2019}s Backup".replace('\'', "''"));
+        assert_eq!(
+            scan_ps_literal(&old),
+            Some(("Bob".to_string(), "s Backup'"))
+        );
+
+        let quoted = ps_single_quoted("Bob\u{2019}s Backup");
+        assert_eq!(
+            scan_ps_literal(&quoted),
+            Some(("Bob\u{2019}s Backup".to_string(), ""))
+        );
+        assert!(!is_ps_single_quote('"'));
+        assert!(!is_ps_single_quote('`'));
+    }
+
+    /// PowerShell itself reads every quoted value back unchanged, whichever
+    /// quotes it holds.
+    #[tokio::test]
+    async fn powershell_reads_a_quoted_value_back_unchanged() {
+        let value = "Bob's \u{2018}Backup\u{2019} \u{201A}x\u{201B} $(Get-Date) `n";
+        let script = format!("[Console]::Out.Write({})", ps_single_quoted(value));
+        let out = run_powershell(&script, Duration::from_secs(60))
+            .await
+            .expect("PowerShell starts");
+        assert_eq!(out.stdout, value);
+        assert_eq!(powershell_parse_errors(&script).await, 0);
     }
 }

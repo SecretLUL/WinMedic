@@ -12,9 +12,10 @@ const RESULT_MARKER: &str = "WINMEDIC_RP:";
 pub enum RestorePointOutcome {
     /// A new restore point exists that did not exist before.
     Created,
-    /// Windows refused because one was already created recently. By default it
-    /// allows only one restore point per 24 hours
-    /// (`SystemRestorePointCreationFrequency`, 1440 minutes).
+    /// No new restore point appeared although older ones exist. By default
+    /// Windows allows only one per 24 hours (`SystemRestorePointCreationFrequency`,
+    /// 1440 minutes); the script lifts that for its own checkpoint, so this is
+    /// Windows declining for another reason.
     Throttled,
     /// The checkpoint call did not fail, but the restore point list could not be
     /// read back, so creation could not be confirmed. Usually missing rights.
@@ -38,10 +39,9 @@ impl RestorePointOutcome {
             Self::NotRequested => "No restore point was requested: this engine was built \
                  without access to Windows System Restore."
                 .to_string(),
-            Self::Throttled => "Windows did not create a new restore point: one was already \
-                 created within the last 24 hours (the Windows default throttle). \
-                 A recent point therefore exists, but it does not capture the state \
-                 immediately before this repair."
+            Self::Throttled => "Windows did not create a new restore point, although WinMedic \
+                 lifted the once-a-day limit for it. A recent point exists, but it does \
+                 not capture the state immediately before this repair."
                 .to_string(),
             Self::Unverified => "The restore point could not be confirmed: the list of restore \
                  points was unreadable (missing Administrator privileges?). Whether \
@@ -121,11 +121,27 @@ fn checkpoint_script(description: &str) -> String {
 
         try {{
             $before = Get-MaxSeq
-            Enable-ComputerRestore -Drive 'C:\' -ErrorAction SilentlyContinue
-            # Windows reports the 24h rate limit as a *warning*, not an error, so
-            # -ErrorAction cannot catch it and the call still "succeeds". The only
-            # reliable check is whether a new sequence number actually appeared.
-            Checkpoint-Computer -Description {} -RestorePointType 'MODIFY_SETTINGS' -WarningAction SilentlyContinue
+            # Turns System Protection on for the system drive if it is off.
+            Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction SilentlyContinue
+            # Windows creates at most one restore point a day and skips the rest
+            # silently. A frequency of 0 lifts that, as Microsoft documents for
+            # CreateRestorePoint; the old value is put back afterwards.
+            $key = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore'
+            $name = 'SystemRestorePointCreationFrequency'
+            $old = (Get-ItemProperty -Path $key -Name $name -ErrorAction SilentlyContinue).$name
+            New-ItemProperty -Path $key -Name $name -Value 0 -PropertyType DWord -Force -ErrorAction SilentlyContinue | Out-Null
+            try {{
+                # Windows reports the rate limit as a *warning*, not an error, so
+                # -ErrorAction cannot catch it and the call still "succeeds". The
+                # only reliable check is whether a new sequence number appeared.
+                Checkpoint-Computer -Description {} -RestorePointType 'MODIFY_SETTINGS' -WarningAction SilentlyContinue
+            }} finally {{
+                if ($null -eq $old) {{
+                    Remove-ItemProperty -Path $key -Name $name -ErrorAction SilentlyContinue
+                }} else {{
+                    New-ItemProperty -Path $key -Name $name -Value $old -PropertyType DWord -Force -ErrorAction SilentlyContinue | Out-Null
+                }}
+            }}
             $after = Get-MaxSeq
             if ($after -gt $before) {{
                 "{}CREATED"
@@ -221,6 +237,22 @@ impl RestorePointService {
         }
     }
 
+    /// Reports [`RestorePointOutcome::Throttled`] without touching Windows:
+    /// a request Windows answered without a new point.
+    #[cfg(test)]
+    pub(crate) fn declined() -> Self {
+        fn checkpoint(description: String) -> RestorePointFuture {
+            Box::pin(std::future::ready(RestorePointResult::from_outcome(
+                &description,
+                RestorePointOutcome::Throttled,
+            )))
+        }
+        Self {
+            checkpoint,
+            live: false,
+        }
+    }
+
     /// Whether [`Self::create`] reaches the real Windows System Restore.
     pub fn is_live(&self) -> bool {
         self.live
@@ -273,7 +305,7 @@ mod tests {
         assert_eq!(out, RestorePointOutcome::Throttled);
         // The whole point of this change: a throttled run is not protected.
         assert!(!out.is_protected());
-        assert!(out.message().contains("24 hours"));
+        assert!(out.message().contains("once-a-day limit"));
     }
 
     #[test]
@@ -324,6 +356,41 @@ mod tests {
         // And the string never terminates early, which is what would let the
         // rest execute as code.
         assert!(!script.contains("O'Brien"));
+    }
+
+    /// The once-a-day limit is lifted for WinMedic's own checkpoint only, and
+    /// whatever was set before comes back whether the checkpoint works or not.
+    #[test]
+    fn the_daily_limit_is_lifted_for_the_checkpoint_and_put_back() {
+        let script = checkpoint_script("WinMedic Auto-Restore Point (before repairs)");
+        let lift = script
+            .find("-Name $name -Value 0")
+            .expect("the frequency is set to 0");
+        let checkpoint = script.find("Checkpoint-Computer").unwrap();
+        let finally = script.find("} finally {").expect("restored in a finally");
+        assert!(lift < checkpoint && checkpoint < finally);
+        assert!(script.contains("Remove-ItemProperty -Path $key -Name $name"));
+        assert!(script.contains("-Name $name -Value $old -PropertyType DWord"));
+        assert!(script.contains("SystemRestorePointCreationFrequency"));
+    }
+
+    /// System Protection is switched on for the drive Windows is on, which is
+    /// not always C:.
+    #[test]
+    fn protection_is_switched_on_for_the_system_drive() {
+        let script = checkpoint_script("x");
+        assert!(script.contains(r#"Enable-ComputerRestore -Drive "$env:SystemDrive\""#));
+        assert!(!script.contains("'C:\\'"));
+    }
+
+    #[tokio::test]
+    async fn the_checkpoint_script_parses() {
+        let script = checkpoint_script("WinMedic O'Brien \u{2019}s point");
+        assert_eq!(
+            crate::utils::cmd::powershell_parse_errors(&script).await,
+            0,
+            "{script}"
+        );
     }
 
     #[test]

@@ -23,6 +23,11 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         println!("cargo:rustc-link-arg-bin=winmedic=/MANIFEST:EMBED");
         println!("cargo:rustc-link-arg-bin=winmedic=/MANIFESTUAC:level='requireAdministrator'");
+        // The DLLs the executable imports are loaded from System32 only
+        // (LOAD_LIBRARY_SEARCH_SYSTEM32), not from the folder it was started
+        // from, which is often Downloads. `main` sets the same rule for
+        // every DLL loaded later.
+        println!("cargo:rustc-link-arg-bin=winmedic=/DEPENDENTLOADFLAG:0x800");
     }
 }
 

@@ -17,7 +17,7 @@ use crate::utils::pnp::PnpDevice;
 use crate::utils::registry;
 use crate::utils::service::{
     self, SERVICE_AUTO_START, SERVICE_DISABLED, SERVICE_RUNNING, SERVICE_START_PENDING,
-    SERVICE_STOPPED,
+    SERVICE_STOPPED, StartAgain,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -215,6 +215,8 @@ pub struct DevicesModule {
     runner: Arc<dyn CommandRunner>,
     /// `%SystemRoot%\System32\spool\PRINTERS`, where waiting print jobs are.
     spool_dir: PathBuf,
+    /// The setting "Restart services automatically".
+    restart_services: bool,
 }
 
 impl Default for DevicesModule {
@@ -233,7 +235,15 @@ impl DevicesModule {
         Self {
             runner,
             spool_dir: PathBuf::from(root).join(r"System32\spool\PRINTERS"),
+            restart_services: true,
         }
+    }
+
+    /// Whether a repair may stop a service and start it again: the setting
+    /// "Restart services automatically".
+    pub fn restarting_services(mut self, allowed: bool) -> Self {
+        self.restart_services = allowed;
+        self
     }
 
     /// For tests: the print jobs are in this folder.
@@ -284,8 +294,18 @@ impl DevicesModule {
     }
 
     /// Stop the spooler and check it stopped, delete the waiting jobs, start
-    /// it again, then check it runs and the folder is empty.
+    /// it again, then check it runs and the folder is empty. Until that second
+    /// start, a cancelled or failing repair starts the spooler again itself.
     async fn clear_print_queue(&self) -> Result<String, String> {
+        if !self.restart_services {
+            return Err(
+                "Skipped: clearing the print queue stops the print spooler and starts it again. Turn on 'Restart services automatically' in the settings."
+                    .to_string(),
+            );
+        }
+        // Armed before the stop, so that a cancel, or a failed state check,
+        // between stopping and starting does not leave the spooler stopped.
+        let mut start_again = StartAgain::new(self.runner.clone(), &[SPOOLER]);
         let _ = self
             .runner
             .run("net.exe", &["stop", SPOOLER], Duration::from_secs(60))
@@ -310,6 +330,7 @@ impl DevicesModule {
             .runner
             .run("net.exe", &["start", SPOOLER], Duration::from_secs(60))
             .await;
+        start_again.disarm();
         let state = service::state(&*self.runner, SPOOLER).await?;
         let left = files_in(&self.spool_dir);
         if !matches!(state, Some(SERVICE_RUNNING | SERVICE_START_PENDING)) {
@@ -1232,6 +1253,9 @@ mod tests {
             .unwrap();
         assert!(msg.contains("3 file(s)"), "{msg}");
         assert_eq!(files_in(&spool.0), 0);
+        // The success path starts the spooler once. The guard must not add a
+        // second start.
+        settle().await;
         let net: Vec<String> = mock
             .executed()
             .into_iter()
@@ -1241,7 +1265,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_spooler_that_does_not_stop_keeps_the_jobs() {
+    async fn a_spooler_that_does_not_stop_keeps_the_jobs_and_is_started_again() {
         let spool = Spool::new("nostop");
         spool.job("00011.SPL", 3);
         let mock = spooler_repair("4  RUNNING");
@@ -1251,6 +1275,113 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("did not stop"), "{err}");
+        assert_eq!(files_in(&spool.0), 1);
+        settle().await;
+        assert_eq!(spooler_starts(&mock), 1, "{:?}", mock.executed());
+    }
+
+    #[tokio::test]
+    async fn the_print_queue_is_left_alone_when_services_may_not_be_restarted() {
+        let spool = Spool::new("norestart");
+        spool.job("00011.SPL", 3);
+        let mock = spooler_repair("1  STOPPED");
+        let err = module(&mock)
+            .with_spool_dir(spool.0.clone())
+            .restarting_services(false)
+            .fix(PRINT_QUEUE_STUCK, None)
+            .await
+            .unwrap_err();
+        assert!(err.starts_with("Skipped:"), "{err}");
+        assert!(mock.executed().is_empty(), "{:?}", mock.executed());
+        assert_eq!(files_in(&spool.0), 1);
+    }
+
+    /// Lets the restart that a dropped repair spawns on the runtime run.
+    async fn settle() {
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// How often `net start spooler` ran.
+    fn spooler_starts(mock: &MockCommandRunner) -> usize {
+        mock.executed()
+            .iter()
+            .filter(|c| c.as_str() == "net.exe start spooler")
+            .count()
+    }
+
+    /// Answers like its mock, except that the spooler's state query after the
+    /// stop never returns: the repair waits there until it is dropped, as it
+    /// is when the user cancels.
+    struct StuckAfterStop(MockCommandRunner);
+
+    #[async_trait::async_trait]
+    impl CommandRunner for StuckAfterStop {
+        async fn run(
+            &self,
+            program: &str,
+            args: &[&str],
+            timeout: Duration,
+        ) -> Result<CmdOutput, String> {
+            let stopped = self
+                .0
+                .executed()
+                .iter()
+                .any(|c| c == "net.exe stop spooler");
+            if stopped && args.first() == Some(&"query") {
+                std::future::pending::<()>().await;
+            }
+            self.0.run(program, args, timeout).await
+        }
+
+        async fn run_streaming(
+            &self,
+            program: &str,
+            args: &[&str],
+            log_tx: Option<Sender<String>>,
+            timeout: Duration,
+        ) -> Result<CmdOutput, String> {
+            self.0.run_streaming(program, args, log_tx, timeout).await
+        }
+    }
+
+    /// A `sc query` that fails after the stop: the state check returns early,
+    /// and the spooler is still started again.
+    #[tokio::test]
+    async fn a_spooler_whose_state_cannot_be_read_after_the_stop_is_started_again() {
+        let spool = Spool::new("unreadable");
+        spool.job("00011.SPL", 3);
+        // No answer for `sc query`, so the runner fails.
+        let mock = MockCommandRunner::new();
+        mock.add_response("net.exe", CmdOutput::ok(""));
+        let result = module(&mock)
+            .with_spool_dir(spool.0.clone())
+            .fix(PRINT_QUEUE_STUCK, None)
+            .await;
+        assert!(result.is_err());
+        settle().await;
+        assert_eq!(spooler_starts(&mock), 1, "{:?}", mock.executed());
+        assert_eq!(files_in(&spool.0), 1);
+    }
+
+    /// The user cancels while the repair waits between the stop and the start.
+    #[tokio::test]
+    async fn a_repair_cancelled_while_the_spooler_is_stopped_starts_it_again() {
+        let spool = Spool::new("cancelled");
+        spool.job("00011.SPL", 3);
+        let mock = spooler_repair("1  STOPPED");
+        let repairs = DevicesModule::with_runner(Arc::new(StuckAfterStop(mock.clone())))
+            .with_spool_dir(spool.0.clone());
+        // Dropped while it waits for the state after the stop, as a cancel drops it.
+        let finished = tokio::time::timeout(
+            Duration::from_millis(20),
+            repairs.fix(PRINT_QUEUE_STUCK, None),
+        )
+        .await;
+        assert!(finished.is_err(), "the state query was answered");
+        settle().await;
+        assert_eq!(spooler_starts(&mock), 1, "{:?}", mock.executed());
         assert_eq!(files_in(&spool.0), 1);
     }
 }

@@ -14,7 +14,8 @@ WinMedic finds out why and repairs it, so you do not have to reinstall Windows.
 
 It is a single program. Nothing to install, nothing else to download. It only
 looks until you click **Repair**, and it creates a restore point first, so you
-can go back.
+can go back. If Windows will not create one, WinMedic asks before it repairs
+without it.
 
 ![WinMedic after a scan: the problems it found, what Repair does, and the Repair button](assets/screenshot.png)
 
@@ -54,7 +55,7 @@ do without doing it.
 | :--- | :--- |
 | **System files** | Damaged Windows files, the recovery environment, WMI, Start, Settings or the Store not opening |
 | **Windows Update** | Stuck update services and download caches, updates that keep failing and why |
-| **Internet** | A switched-off adapter, no IP address, name resolution (DNS), dead DNS servers, the router, Winsock, broken proxies |
+| **Internet** | A switched-off adapter, no IP address from the router (DHCP), name resolution (DNS), dead DNS servers, Winsock, broken proxies |
 | **Crashes** | Blue screens, what changed in the week before they began, the last memory test, program add-ons that crash Explorer |
 | **Hardware** | Processor, memory and PCIe errors Windows has logged |
 | **Disk** | File system errors, drive health, disk and controller errors Windows logged, temporary files |
@@ -90,7 +91,10 @@ WinMedic collects no data and has no telemetry. It goes online only for this:
   [privacy statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement)
   applies to both.
 - **Scan:** it tests your internet connection by looking up `dns.google` and
-  `www.microsoft.com`, and compares your clock with `time.windows.com`.
+  `www.microsoft.com`, and compares your clock with `time.windows.com`. It
+  asks the DNS servers and proxies set on your PC whether they answer, and
+  when names do not resolve it pings `1.1.1.1` by address, to tell a DNS
+  fault from no connection at all.
 - **Repair:** DISM takes intact system files from Windows Update, and the
   clock is set from `time.windows.com`.
 
@@ -103,12 +107,14 @@ console started as Administrator:
 winmedic --scan                        # check and print the findings
 winmedic --scan --output report.html   # ... and save a report (.html, .md or .json)
 winmedic --auto-fix                    # check and repair what is safe to repair
-winmedic --dry-run                     # show what a repair would run, run nothing
+winmedic --dry-run                     # show each repair and its steps, run nothing
 ```
 
 The exit code tells a script how it went: `0` fine, `1` warnings, `2` critical
-problems, `3` a repair failed. Every flag and code is listed in
-[How WinMedic works](docs/how-it-works.md#cli-headless-automation-mode).
+problems, `3` a repair failed, `7` a check could not run, so the findings are
+incomplete. `2` and `3` can also come with an incomplete scan; without `--json`
+the console names each failed module (`[X] Module ... failed`). Every flag and
+code is listed in [How WinMedic works](docs/how-it-works.md#cli-headless-automation-mode).
 
 ## Uninstall
 

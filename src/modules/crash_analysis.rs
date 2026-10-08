@@ -204,48 +204,93 @@ impl CrashAnalysisModule {
     /// Reads the `*.dmp` files in `dump_dir` younger than
     /// [`DUMP_EVIDENCE_DAYS`] as crash instances, and counts the older ones.
     ///
+    /// The files are read on a blocking thread. A kernel dump can be hundreds of
+    /// megabytes; read on the async task, the read would hold a Tokio worker,
+    /// and a cancelled scan would wait for it to finish.
+    ///
     /// No admin rights or no crashes at all is not an error: the event-log
     /// correlation still works.
-    fn collect_dump_crashes(&self) -> (Vec<CrashInstance>, StaleDumps) {
-        let mut crashes = Vec::new();
-        let mut stale = StaleDumps::default();
+    async fn collect_dump_crashes(&self) -> (Vec<CrashInstance>, StaleDumps) {
+        let dir = self.dump_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut crashes = Vec::new();
+            let mut stale = StaleDumps::default();
 
-        for path in dump_dir_dmp_files(&self.dump_dir) {
-            let Ok(meta) = std::fs::metadata(&path) else {
-                continue;
-            };
-            if meta.modified().is_ok_and(is_stale) {
-                stale.count += 1;
-                stale.bytes += meta.len();
-                continue;
+            for path in dump_dir_dmp_files(&dir) {
+                let Ok(meta) = std::fs::metadata(&path) else {
+                    continue;
+                };
+                if meta.modified().is_ok_and(is_stale) {
+                    stale.count += 1;
+                    stale.bytes += meta.len();
+                    continue;
+                }
+                let modified = meta.modified().ok().map(|t| {
+                    DateTime::<Local>::from(t)
+                        .format("%Y-%m-%d %H:%M")
+                        .to_string()
+                });
+                let file_name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown.dmp")
+                    .to_string();
+
+                let bytes = match std::fs::read(&path) {
+                    Ok(bytes) => bytes,
+                    Err(_) => continue,
+                };
+                let Some(info) = parse_minidump_header(&bytes) else {
+                    continue;
+                };
+
+                crashes.push(CrashInstance {
+                    bugcheck_code: info.bugcheck_code,
+                    when: modified,
+                    source_file: file_name,
+                });
             }
-            let modified = meta.modified().ok().map(|t| {
-                DateTime::<Local>::from(t)
-                    .format("%Y-%m-%d %H:%M")
-                    .to_string()
-            });
-            let file_name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown.dmp")
-                .to_string();
 
-            let bytes = match std::fs::read(&path) {
-                Ok(bytes) => bytes,
-                Err(_) => continue,
-            };
-            let Some(info) = parse_minidump_header(&bytes) else {
-                continue;
-            };
+            (crashes, stale)
+        })
+        .await
+        .unwrap_or_default()
+    }
 
-            crashes.push(CrashInstance {
-                bugcheck_code: info.bugcheck_code,
-                when: modified,
-                source_file: file_name,
-            });
-        }
-
-        (crashes, stale)
+    /// The faulting driver each dump in `dump_dir` names, keyed by file name.
+    ///
+    /// Read on a blocking thread, for the same reason as
+    /// [`Self::collect_dump_crashes`].
+    async fn faulting_drivers(&self) -> BTreeMap<String, String> {
+        let dir = self.dump_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            // We need owned copies of driver names for map keys; the dump payload
+            // scan already produced them per crash, so re-derive via the dump files
+            // referenced by each instance.
+            let mut driver_by_source: BTreeMap<String, String> = BTreeMap::new();
+            for path in dump_dir_dmp_files(&dir) {
+                if std::fs::metadata(&path)
+                    .and_then(|m| m.modified())
+                    .is_ok_and(is_stale)
+                {
+                    continue;
+                }
+                let file_name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown.dmp")
+                    .to_string();
+                if let Ok(bytes) = std::fs::read(&path)
+                    && let Some(info) = parse_minidump_header(&bytes)
+                    && let Some(driver) = info.faulting_driver
+                {
+                    driver_by_source.insert(file_name, driver);
+                }
+            }
+            driver_by_source
+        })
+        .await
+        .unwrap_or_default()
     }
 
     /// The events a `wevtutil` query returns, or `None` when it failed.
@@ -406,7 +451,7 @@ impl DiagnosticModule for CrashAnalysisModule {
         dbg.kv("dump_dir", DEFAULT_DUMP_DIR).await;
         dbg.kv("lookback_hours", window_hours.to_string()).await;
 
-        let (dump_crashes, stale_kernel) = self.collect_dump_crashes();
+        let (dump_crashes, stale_kernel) = self.collect_dump_crashes().await;
         let stale_user = self.stale_user_mode_dumps();
         dbg.kv("recent_kernel_dumps", dump_crashes.len().to_string())
             .await;
@@ -531,29 +576,7 @@ impl DiagnosticModule for CrashAnalysisModule {
         let memory_codes = [0x1A, 0x50, 0x2E, 0x77, 0xC2, 0x19];
         let video_codes = [0x116, 0x117];
 
-        // We need owned copies of driver names for map keys; the dump payload
-        // scan already produced them per crash, so re-derive via the dump files
-        // referenced by each instance.
-        let mut driver_by_source: BTreeMap<String, String> = BTreeMap::new();
-        for path in dump_dir_dmp_files(&self.dump_dir) {
-            if std::fs::metadata(&path)
-                .and_then(|m| m.modified())
-                .is_ok_and(is_stale)
-            {
-                continue;
-            }
-            let file_name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown.dmp")
-                .to_string();
-            if let Ok(bytes) = std::fs::read(&path)
-                && let Some(info) = parse_minidump_header(&bytes)
-                && let Some(driver) = info.faulting_driver
-            {
-                driver_by_source.insert(file_name, driver);
-            }
-        }
+        let driver_by_source = self.faulting_drivers().await;
 
         let mut memory_crashes = Vec::new();
         let mut video_crashes = Vec::new();
@@ -948,7 +971,6 @@ fn flush_driver_token(token: &str, out: &mut BTreeSet<String>) {
 /// embedded in the dump we name it as the faulting module.
 const KNOWN_TROUBLE_DRIVERS: &[&str] = &[
     "nvlddmkm.sys",
-    "nvlddmkm",
     "amdkmdag.sys",
     "amdkmdap.sys",
     "atikmdag.sys",

@@ -185,7 +185,7 @@ mod tests {
     #[test]
     fn the_space_is_what_the_ticked_cleanups_measured() {
         let mut unticked =
-            issue("sys_clean_package_cache", Severity::Warning).with_reclaimable_bytes(5 * GB);
+            issue("sys_clean_recycle_bin", Severity::Info).with_reclaimable_bytes(5 * GB);
         unticked.is_selected = false;
         let mut done =
             issue("sys_clean_browser_cache", Severity::Info).with_reclaimable_bytes(3 * GB);
@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn health_after_is_the_score_once_every_ticked_repair_worked() {
-        let mut unticked = issue("sys_clean_package_cache", Severity::Warning);
+        let mut unticked = issue("restart_overdue", Severity::Warning);
         unticked.is_selected = false;
         let app = app_with(vec![
             issue("sys_dism_corrupt", Severity::Critical),

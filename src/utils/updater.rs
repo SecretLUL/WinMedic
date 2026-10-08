@@ -19,7 +19,9 @@ pub const GITHUB_RELEASE_URL_PREFIX: &str = "https://github.com/";
 /// `/releases/download/` is the only path GitHub serves uploaded release assets
 /// from, so pinning it means a tampered API response cannot aim the downloader
 /// at an arbitrary attacker-controlled file that merely happens to live on
-/// github.com — a gist, a raw blob, another account's repository.
+/// github.com — a gist, a raw blob, another account's repository. A `..` after
+/// the prefix would walk out of it again, so [`is_safe_release_url`] refuses
+/// dot segments.
 pub const GITHUB_RELEASE_DOWNLOAD_PREFIX: &str =
     "https://github.com/SecretLUL/WinMedic/releases/download/";
 
@@ -297,8 +299,9 @@ pub fn is_safe_asset_name(name: &str) -> bool {
 /// Whether `url` is a release *asset* download that may be fetched to disk.
 ///
 /// Stricter than [`is_safe_release_url`] and built on top of it, so the
-/// shell-metacharacter, scheme and length rules cover the download URL too — the
-/// release page is not the only URL in this flow that arrives off the wire.
+/// shell-metacharacter, backslash, dot-segment, scheme and length rules cover
+/// the download URL too — the release page is not the only URL in this flow
+/// that arrives off the wire.
 pub fn is_safe_download_url(url: &str) -> bool {
     is_safe_release_url(url) && url.starts_with(GITHUB_RELEASE_DOWNLOAD_PREFIX)
 }
@@ -350,13 +353,30 @@ pub fn parse_sha256_manifest(content: &str, expected_name: &str) -> Result<Strin
 ///
 /// The URL arrives from a network response, so it is treated as untrusted input:
 /// only `https://github.com/` targets are accepted, and any whitespace, control
-/// character or shell metacharacter disqualifies it outright.
+/// character or shell metacharacter disqualifies it outright. So does a
+/// backslash, which some clients read as a path separator, and a `.` or `..`
+/// path segment, which curl and browsers remove before they send the request.
 pub fn is_safe_release_url(url: &str) -> bool {
     if !url.starts_with(GITHUB_RELEASE_URL_PREFIX) || url.len() > 2048 {
         return false;
     }
+    // Only the path is checked for dot segments, since a query or fragment is
+    // never normalized. A percent-encoded dot (`%2e`) is not a `.` segment here,
+    // but it does not need to be: `%` is refused by the character rule below.
+    let path = url[GITHUB_RELEASE_URL_PREFIX.len()..]
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default();
+    if path
+        .split('/')
+        .any(|segment| segment == "." || segment == "..")
+    {
+        return false;
+    }
     !url.chars().any(|c| {
-        c.is_whitespace() || c.is_control() || matches!(c, '&' | '|' | '^' | '<' | '>' | '"' | '%')
+        c.is_whitespace()
+            || c.is_control()
+            || matches!(c, '&' | '|' | '^' | '<' | '>' | '"' | '%' | '\\')
     })
 }
 
@@ -398,7 +418,7 @@ pub fn launch_browser(url: &str) -> Result<(), String> {
         use std::process::Command;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-        let mut cmd = Command::new("explorer.exe");
+        let mut cmd = Command::new(crate::utils::cmd::system_program("explorer.exe")?);
         cmd.arg(url);
         cmd.creation_flags(CREATE_NO_WINDOW);
 
@@ -693,6 +713,44 @@ mod tests {
         assert!(!is_safe_release_url("https://github.com/a^calc"));
         assert!(!is_safe_release_url("https://github.com/a>out.txt"));
         assert!(!is_safe_release_url("https://github.com/a b"));
+
+        // A `.` or `..` segment is removed by curl and by browsers, so the page
+        // or file they reach would not be the one that was checked.
+        assert!(!is_safe_release_url(
+            "https://github.com/SecretLUL/WinMedic/releases/download/../../../../other/repo/releases/download/v1/x.exe"
+        ));
+        assert!(!is_safe_release_url(
+            "https://github.com/SecretLUL/WinMedic/releases/./tag/v0.2.0"
+        ));
+        assert!(!is_safe_release_url(
+            "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0/.."
+        ));
+        assert!(!is_safe_release_url(
+            "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0/."
+        ));
+        assert!(!is_safe_release_url("https://github.com/.."));
+        // Encoded dots are not `.` segments, but `%` is refused, so they fail too.
+        assert!(!is_safe_release_url(
+            "https://github.com/SecretLUL/WinMedic/releases/%2e%2e/x"
+        ));
+        assert!(!is_safe_release_url(
+            "https://github.com/SecretLUL/WinMedic/releases/%2E%2E/x"
+        ));
+        // A backslash is a path separator to some clients, so `..\..\` climbs too.
+        assert!(!is_safe_release_url(
+            r"https://github.com/SecretLUL/..\..\evil"
+        ));
+        assert!(!is_safe_release_url(
+            r"https://github.com/SecretLUL/WinMedic\releases"
+        ));
+        // Only whole segments count: a dot inside a name is an ordinary character.
+        assert!(is_safe_release_url(
+            "https://github.com/SecretLUL/WinMedic/releases/tag/v0..2.0"
+        ));
+        // A query or fragment is not part of the path, so it is not checked.
+        assert!(is_safe_release_url(
+            "https://github.com/SecretLUL/WinMedic/releases#/../changelog"
+        ));
     }
 
     #[test]
@@ -775,6 +833,11 @@ mod tests {
             "https://github.com/attacker/WinMedic/releases/download/v1/winmedic-v0.3.3.exe",
             // Downgraded scheme.
             "http://github.com/SecretLUL/WinMedic/releases/download/v1/winmedic-v0.3.3.exe",
+            // Dot segments climb out of the download path into another account's
+            // releases, which curl would resolve before sending the request.
+            "https://github.com/SecretLUL/WinMedic/releases/download/v0.3.3/../../../../attacker/WinMedic/releases/download/v1/winmedic-v0.3.3.exe",
+            // The same climb with backslashes, for a client that reads them as separators.
+            r"https://github.com/SecretLUL/WinMedic/releases/download/v0.3.3\..\..\..\..\attacker\WinMedic\releases\download\v1\winmedic-v0.3.3.exe",
         ] {
             let assets = vec![
                 ReleaseAsset {
@@ -854,6 +917,16 @@ mod tests {
         )));
         assert!(!is_safe_download_url(&format!(
             "{}/winmedic .exe",
+            DOWNLOAD_BASE
+        )));
+        // So are dot segments and backslashes, which would move the download
+        // out of the release's own directory.
+        assert!(!is_safe_download_url(&format!(
+            "{}/../winmedic-v0.3.3.exe",
+            DOWNLOAD_BASE
+        )));
+        assert!(!is_safe_download_url(&format!(
+            r"{}\winmedic-v0.3.3.exe",
             DOWNLOAD_BASE
         )));
         assert!(!is_safe_download_url(

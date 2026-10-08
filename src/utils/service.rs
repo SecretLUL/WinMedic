@@ -8,6 +8,7 @@
 //! nothing here depends on the language.
 
 use crate::utils::cmd::CommandRunner;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// `START_TYPE` 2: Windows starts the service at boot.
@@ -59,6 +60,52 @@ pub async fn start_type(runner: &dyn CommandRunner, service: &str) -> Result<Opt
         .run("sc.exe", &["qc", service], Duration::from_secs(8))
         .await?;
     Ok(parse_start_type(&out.stdout))
+}
+
+/// Starts `services`, in the order given, when dropped while still armed: a
+/// repair that is cancelled, or fails, between stopping a service and starting
+/// it again must not leave it stopped. Through the runner, on the runtime,
+/// because a destructor cannot wait. Armed by [`Self::new`]; [`Self::disarm`]
+/// once the caller has started them itself.
+pub struct StartAgain {
+    runner: Arc<dyn CommandRunner>,
+    services: &'static [&'static str],
+    armed: bool,
+}
+
+impl StartAgain {
+    /// Armed: dropping the guard runs `net start` for each of `services`.
+    pub fn new(runner: Arc<dyn CommandRunner>, services: &'static [&'static str]) -> Self {
+        Self {
+            runner,
+            services,
+            armed: true,
+        }
+    }
+
+    /// The caller has started the services, so dropping the guard does nothing.
+    pub fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for StartAgain {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let runner = self.runner.clone();
+        let services = self.services;
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                for svc in services {
+                    let _ = runner
+                        .run("net.exe", &["start", svc], Duration::from_secs(30))
+                        .await;
+                }
+            });
+        }
+    }
 }
 
 /// Real `sc qc` output for other modules' tests.

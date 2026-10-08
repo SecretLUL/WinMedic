@@ -20,7 +20,7 @@ If it modifies the system:
 
 - [ ] The `RiskScore` is honest (`High` for destructive or reboot-requiring changes)
 - [ ] Whatever it modifies is backed up first (`safety::reg_backup` for registry keys)
-- [ ] The dry-run path describes the exact commands without executing them
+- [ ] The dry-run path describes each repair and its steps without executing them
 - [ ] No runtime value is interpolated into a PowerShell script without `ps_single_quoted`
 
 ## Checks

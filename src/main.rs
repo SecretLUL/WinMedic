@@ -34,7 +34,10 @@ Exit codes (headless mode):
   3  at least one repair failed
   4  started without Administrator privileges
   5  internal error
-  6  aborted with Ctrl+C"
+  6  aborted with Ctrl+C
+  7  at least one check could not run, so the findings are incomplete
+
+2 and 3 can also come with an incomplete scan; without --json, the console output names each failed module (\"[X] Module ... failed\")."
 )]
 struct CliArgs {
     /// Run diagnostic scan in headless CLI mode and output report
@@ -57,7 +60,7 @@ struct CliArgs {
     #[arg(short, long, value_name = "FILE")]
     output: Option<std::path::PathBuf>,
 
-    /// Skip creating a Windows System Restore point before repairs
+    /// Skip creating a Windows System Restore point before repairs. Without it, repairs stop before the first one when Windows creates no restore point
     #[arg(long)]
     no_vss: bool,
 
@@ -92,6 +95,7 @@ impl CliArgs {
 }
 
 fn main() -> ExitCode {
+    load_dlls_from_system32_only();
     let args = CliArgs::parse();
 
     match run(args) {
@@ -100,6 +104,26 @@ fn main() -> ExitCode {
             eprintln!("WinMedic: {}", err);
             ExitCode::from(exit_code::INTERNAL_ERROR)
         }
+    }
+}
+
+/// Have Windows look for a DLL in System32 only, before anything loads one.
+///
+/// winmedic.exe usually runs from Downloads or from WinGet's package folder,
+/// which the signed-in user can write to without Administrator rights, and
+/// Windows looks for a DLL next to the executable first: one put there would
+/// run inside the elevated process. WinMedic brings no DLLs of its own, and
+/// the ones it uses are Windows' own. The DLLs the executable imports are
+/// loaded before `main`, so the linker sets the same rule for them
+/// (`/DEPENDENTLOADFLAG`, build.rs).
+fn load_dlls_from_system32_only() {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::LibraryLoader::{
+            LOAD_LIBRARY_SEARCH_SYSTEM32, SetDefaultDllDirectories,
+        };
+        // Only Windows 7 without KB2533623 lacks it, and WinMedic needs 10.
+        unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) };
     }
 }
 
@@ -228,6 +252,27 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     if args.helper && !config.helper_enabled {
         return Ok(exit_code::OK);
     }
+    // A task an older WinMedic set up for a winmedic.exe that someone besides
+    // the administrators can change would start whatever is put in its place
+    // with the highest rights. Unless that has happened already, this run
+    // takes the task out.
+    if args.helper
+        && let Ok(exe) = std::env::current_exe()
+        && let Some(problem) = utils::background_task::helper_location_problem(&exe)
+    {
+        let removed = utils::background_task::sync_helper_task(false, 0);
+        safety::audit::AuditLogger::real().log(
+            "SCAN",
+            "WinMedicHelper",
+            "Automated background diagnostic scan",
+            "CANCELLED",
+            &match removed {
+                Ok(()) => format!("The scheduled task was removed: {problem}"),
+                Err(e) => format!("{e}: {problem}"),
+            },
+        );
+        return Ok(exit_code::OK);
+    }
     let quiet = args.json || args.helper;
 
     // Ctrl+C cancels the run instead of leaving orphaned DISM/chkdsk children.
@@ -270,8 +315,9 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         tokio::spawn(async move { engine_for_scan.run_scan(tx, scan_cancel).await });
 
     let mut scan_cancelled = false;
-    // For the helper, which records module outcomes itself: a module that
-    // failed reported no findings, and counting findings alone calls it passed.
+    // For the exit code, and for the helper, which records module outcomes
+    // itself: a module that failed reported no findings, and counting
+    // findings alone calls it passed.
     let mut failed_modules = HashMap::new();
     while let Some(evt) = rx.recv().await {
         match &evt {
@@ -439,6 +485,9 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
                     if success { "Created" } else { "Notice" },
                     message
                 ),
+                RepairEvent::RestorePointMissing { message } => println!(
+                    "[X] Nothing was repaired: {message}\n    Run again with --no-vss to repair without a restore point."
+                ),
                 RepairEvent::FixStarted { title, .. } => println!("Fix: {}", title),
                 RepairEvent::FixOutput { line, .. } => println!("   [LOG] {}", line),
                 RepairEvent::FixFinished {
@@ -519,7 +568,7 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         // scheduled-task check would then report against the helper itself.
         exit_code::OK
     } else {
-        exit_code::from_issues(&issues, failed_fixes)
+        exit_code::from_issues(&issues, failed_fixes, failed_modules.len())
     };
 
     if !quiet {

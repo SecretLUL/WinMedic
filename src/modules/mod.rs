@@ -108,6 +108,27 @@ pub struct ModuleProgress {
     pub log_message: Option<String>,
 }
 
+impl ModuleProgress {
+    /// An event that carries only a log line, such as a verbose trace.
+    ///
+    /// It has no percentage and no step, so applying it to a module's bar would
+    /// reset the bar. [`Self::is_log_only`] is how the scan tells it apart.
+    pub fn log_only(module_id: &str, line: String) -> Self {
+        Self {
+            module_id: module_id.to_string(),
+            progress_percent: 0,
+            current_step: String::new(),
+            log_message: Some(line),
+        }
+    }
+
+    /// Whether this event only carries a log line. Every real progress event
+    /// names the step its module is on, so an empty step marks a log-only one.
+    pub fn is_log_only(&self) -> bool {
+        self.current_step.is_empty()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FixProgress {
     pub issue_id: String,
@@ -167,9 +188,10 @@ pub fn get_all_modules_with_runner(
     runner: Arc<dyn crate::utils::cmd::CommandRunner>,
 ) -> Vec<Arc<dyn DiagnosticModule>> {
     vec![
-        Arc::new(system_integrity::SystemIntegrityModule::with_runner(
-            runner.clone(),
-        )),
+        Arc::new(
+            system_integrity::SystemIntegrityModule::with_runner(runner.clone())
+                .restarting_services(cfg.auto_restart_services),
+        ),
         Arc::new(windows_updates::WindowsUpdatesModule::with_runner(
             cfg.clone(),
             runner.clone(),
@@ -208,7 +230,10 @@ pub fn get_all_modules_with_runner(
             cfg.clone(),
             runner.clone(),
         )),
-        Arc::new(devices::DevicesModule::with_runner(runner)),
+        Arc::new(
+            devices::DevicesModule::with_runner(runner)
+                .restarting_services(cfg.auto_restart_services),
+        ),
     ]
 }
 

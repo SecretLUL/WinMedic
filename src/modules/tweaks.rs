@@ -18,7 +18,8 @@ use crate::safety::reg_backup::RegBackupManager;
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
 use crate::utils::registry::{self, RegKeyValues};
 use crate::utils::service::{self, SERVICE_DISABLED};
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
@@ -500,54 +501,124 @@ pub fn hosts_blocks(hosts: &str) -> Vec<HostsBlock> {
     hosts
         .lines()
         .enumerate()
-        .filter_map(|(line, text)| {
-            let text = text.trim_start_matches('\u{feff}');
-            let content = text.split('#').next().unwrap_or("");
-            let mut fields = content.split_whitespace();
-            let address = fields.next()?.to_string();
-            let (hosts, others): (Vec<String>, Vec<String>) = fields
-                .map(str::to_string)
-                .partition(|h| is_needed_endpoint(h));
-            (!hosts.is_empty()).then_some(HostsBlock {
-                line,
-                address,
-                hosts,
-                others,
-            })
-        })
+        .filter_map(|(line, text)| block_on_line(line, text.as_bytes()))
         .collect()
 }
 
-/// `hosts` with every blocking line commented out, keeping its byte order
-/// mark, its line endings and every other name on the line.
-pub fn unblock_hosts(hosts: &str) -> String {
-    let blocks = hosts_blocks(hosts);
-    let newline = if hosts.contains("\r\n") { "\r\n" } else { "\n" };
-    let bom = if hosts.starts_with('\u{feff}') {
-        "\u{feff}"
-    } else {
-        ""
-    };
-    let body = hosts.trim_start_matches('\u{feff}');
-    let ends_with_newline = body.ends_with('\n');
+const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
 
-    let mut lines: Vec<String> = Vec::new();
-    for (index, line) in body.lines().enumerate() {
-        match blocks.iter().find(|b| b.line == index) {
-            Some(block) => {
-                lines.push(format!("# WinMedic unblocked: {}", line.trim_end()));
-                if !block.others.is_empty() {
-                    lines.push(format!("{} {}", block.address, block.others.join(" ")));
-                }
-            }
-            None => lines.push(line.to_string()),
+/// The fields of one hosts line: the text before a `#`, split at ASCII
+/// whitespace, without a byte order mark in front. Judging a line and
+/// rewriting it both start from these, so they agree on where each name ends.
+fn line_fields(line: &[u8]) -> Vec<&[u8]> {
+    let mut text = line;
+    while let Some(rest) = text.strip_prefix(UTF8_BOM) {
+        text = rest;
+    }
+    let text = text.split(|&b| b == b'#').next().unwrap_or_default();
+    text.split(u8::is_ascii_whitespace)
+        .filter(|field| !field.is_empty())
+        .collect()
+}
+
+/// The block one line makes, if it maps a needed endpoint. Each name is
+/// decoded on its own, leniently: a name with bytes that are not UTF-8 cannot
+/// be a needed endpoint anyway.
+fn block_on_line(line: usize, text: &[u8]) -> Option<HostsBlock> {
+    let fields = line_fields(text);
+    let (address, names) = fields.split_first()?;
+    let (hosts, others): (Vec<String>, Vec<String>) = names
+        .iter()
+        .map(|name| String::from_utf8_lossy(name).into_owned())
+        .partition(|name| is_needed_endpoint(name));
+    (!hosts.is_empty()).then_some(HostsBlock {
+        line,
+        address: String::from_utf8_lossy(address).into_owned(),
+        hosts,
+        others,
+    })
+}
+
+/// `hosts`, the bytes of a hosts file, with every blocking line commented out
+/// and nothing else changed. A blocking line becomes `# WinMedic unblocked:`
+/// followed by its own text; the names on it that are not needed stay active on
+/// a line of their own. Every other byte is copied as it was: the byte order
+/// mark, Windows-1252 text, and each line's own terminator (CRLF, LF, or none
+/// on a last line).
+pub fn unblock_hosts(hosts: &[u8]) -> Vec<u8> {
+    let (bom, body) = hosts.split_at(if hosts.starts_with(UTF8_BOM) {
+        UTF8_BOM.len()
+    } else {
+        0
+    });
+    let file_newline: &[u8] = if body.windows(2).any(|pair| pair == b"\r\n") {
+        b"\r\n"
+    } else {
+        b"\n"
+    };
+
+    let mut out = bom.to_vec();
+    for (index, line) in body.split_inclusive(|&b| b == b'\n').enumerate() {
+        let (text, eol) = split_eol(line);
+        let Some(block) = block_on_line(index, text) else {
+            out.extend_from_slice(line);
+            continue;
+        };
+        out.extend_from_slice(b"# WinMedic unblocked: ");
+        out.extend_from_slice(text.trim_ascii_end());
+        if block.others.is_empty() {
+            out.extend_from_slice(eol);
+        } else {
+            // A last line without a terminator still needs one before the names that stay.
+            out.extend_from_slice(if eol.is_empty() { file_newline } else { eol });
+            out.extend_from_slice(&active_remainder(text));
+            out.extend_from_slice(eol);
         }
     }
-    let mut out = format!("{bom}{}", lines.join(newline));
-    if ends_with_newline {
-        out.push_str(newline);
+    out
+}
+
+/// A line's text and its terminator: CRLF, LF, or nothing on a last line.
+fn split_eol(line: &[u8]) -> (&[u8], &[u8]) {
+    if let Some(text) = line.strip_suffix(b"\r\n") {
+        (text, b"\r\n")
+    } else if let Some(text) = line.strip_suffix(b"\n") {
+        (text, b"\n")
+    } else {
+        (line, b"")
+    }
+}
+
+/// The address and the names of a blocking line that are not needed, as the
+/// bytes of the original line, joined by single spaces.
+fn active_remainder(text: &[u8]) -> Vec<u8> {
+    let mut fields = line_fields(text).into_iter();
+    let mut out = fields.next().unwrap_or_default().to_vec();
+    for field in fields.filter(|field| !is_needed_endpoint(&String::from_utf8_lossy(field))) {
+        out.push(b' ');
+        out.extend_from_slice(field);
     }
     out
+}
+
+/// Replaces the file at `path` with `bytes` in one step. The bytes are written
+/// and synced to `path.winmedic-tmp` beside it, which is then renamed over
+/// `path`. The rename either happens or it does not, so `path` is always either
+/// the old file or the new one. A failure removes the temp file.
+fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("winmedic-tmp");
+    let written = write_synced(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
+}
+
+fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(bytes)?;
+    file.flush()?;
+    file.sync_all()
 }
 
 pub struct TweaksModule {
@@ -806,56 +877,94 @@ impl TweaksModule {
                 svc.name
             ));
         }
-        if svc.restore != StartMode::Demand && self.config.auto_restart_services {
-            let _ = self
-                .runner
-                .run("net.exe", &["start", svc.name], Duration::from_secs(20))
-                .await;
-        }
-        Ok(format!(
+        let set = format!(
             "'{}' is set to start {} again.",
             svc.display,
             svc.restore.label()
-        ))
+        );
+        if svc.restore == StartMode::Demand {
+            return Ok(set);
+        }
+        if !self.config.auto_restart_services {
+            return Ok(format!(
+                "{set} Starting it was skipped because 'Restart services automatically' is off in the settings; Windows starts it at the next start."
+            ));
+        }
+        let _ = self
+            .runner
+            .run("net.exe", &["start", svc.name], Duration::from_secs(20))
+            .await;
+        Ok(set)
     }
 
+    /// Backs the hosts file up, then replaces it with the unblocked bytes. The
+    /// result is read back and checked; if the check fails, the backup is
+    /// copied back over the hosts file.
     fn fix_hosts(&self) -> Result<String, String> {
-        let bytes = std::fs::read(&self.hosts_path)
-            .map_err(|e| format!("Could not read {}: {e}", self.hosts_path.display()))?;
-        let text = String::from_utf8_lossy(&bytes).into_owned();
-        let blocks = hosts_blocks(&text);
+        let original = std::fs::read(&self.hosts_path).map_err(|e| {
+            format!(
+                "Could not read {} ({e}). Nothing was changed.",
+                self.hosts_path.display()
+            )
+        })?;
+        let blocks = hosts_blocks(&String::from_utf8_lossy(&original));
         if blocks.is_empty() {
             return Ok("The hosts file no longer blocks any Windows endpoint.".to_string());
         }
 
-        std::fs::create_dir_all(&self.backup_dir).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&self.backup_dir).map_err(|e| {
+            format!(
+                "Aborted: the backup folder {} could not be created ({e}). Nothing was changed.",
+                self.backup_dir.display()
+            )
+        })?;
         let backup = self.backup_dir.join(format!(
             "hosts_{}.bak",
             chrono::Local::now().format("%Y%m%d_%H%M%S")
         ));
         std::fs::copy(&self.hosts_path, &backup).map_err(|e| {
+            // A partial copy is not a backup.
+            let _ = std::fs::remove_file(&backup);
             format!("Aborted: the hosts file could not be backed up ({e}). Nothing was changed.")
         })?;
 
-        std::fs::write(&self.hosts_path, unblock_hosts(&text)).map_err(|e| {
-            format!(
-                "Could not write {} ({e}). Antivirus software often protects it; the original is unchanged.",
-                self.hosts_path.display()
-            )
-        })?;
-
-        let after = std::fs::read(&self.hosts_path).map_err(|e| e.to_string())?;
-        if !hosts_blocks(&String::from_utf8_lossy(&after)).is_empty() {
-            return Err(
-                "The hosts file was written but still blocks Windows endpoints.".to_string(),
-            );
+        let fixed = unblock_hosts(&original);
+        if let Err(e) = replace_file(&self.hosts_path, &fixed) {
+            return Err(format!(
+                "Could not write {} ({e}); the hosts file was not changed. Antivirus software often protects it. The backup is {}.",
+                self.hosts_path.display(),
+                backup.display()
+            ));
         }
-        let unblocked: Vec<String> = blocks.into_iter().flat_map(|b| b.hosts).collect();
-        Ok(format!(
-            "Unblocked {} in the hosts file; the old file is saved as {}.",
-            unblocked.join(", "),
-            backup.display()
-        ))
+
+        // The hosts file has been replaced: it must be exactly what was written and must block nothing.
+        let problem = match std::fs::read(&self.hosts_path) {
+            Err(e) => format!("The new hosts file could not be read back ({e})"),
+            Ok(after) if after != fixed => "The new hosts file is not what was written".to_string(),
+            Ok(after) if !hosts_blocks(&String::from_utf8_lossy(&after)).is_empty() => {
+                "The hosts file was written but still blocks Windows endpoints".to_string()
+            }
+            Ok(_) => {
+                let unblocked: Vec<String> = blocks.into_iter().flat_map(|b| b.hosts).collect();
+                return Ok(format!(
+                    "Unblocked {} in the hosts file; the old file is saved as {}.",
+                    unblocked.join(", "),
+                    backup.display()
+                ));
+            }
+        };
+        Err(
+            match std::fs::read(&backup).and_then(|bytes| replace_file(&self.hosts_path, &bytes)) {
+                Ok(()) => format!(
+                    "{problem}, so the backup was copied back and the hosts file is as it was. The backup is {}.",
+                    backup.display()
+                ),
+                Err(e) => format!(
+                    "{problem}, and the backup could not be copied back ({e}). The hosts file has the new content; the original is in {}.",
+                    backup.display()
+                ),
+            },
+        )
     }
 }
 
@@ -1196,12 +1305,30 @@ mod tests {
     #[test]
     fn unblocking_keeps_bom_line_endings_and_other_names() {
         let original = "\u{feff}127.0.0.1 localhost\r\n0.0.0.0 fe3.delivery.mp.microsoft.com mine.example # x\r\n# comment\r\n";
-        let fixed = unblock_hosts(original);
+        let fixed = unblock_hosts(original.as_bytes());
         assert_eq!(
             fixed,
-            "\u{feff}127.0.0.1 localhost\r\n# WinMedic unblocked: 0.0.0.0 fe3.delivery.mp.microsoft.com mine.example # x\r\n0.0.0.0 mine.example\r\n# comment\r\n"
+            "\u{feff}127.0.0.1 localhost\r\n# WinMedic unblocked: 0.0.0.0 fe3.delivery.mp.microsoft.com mine.example # x\r\n0.0.0.0 mine.example\r\n# comment\r\n".as_bytes()
         );
-        assert!(hosts_blocks(&fixed).is_empty());
+        assert!(hosts_blocks(&String::from_utf8_lossy(&fixed)).is_empty());
+    }
+
+    #[test]
+    fn unblocking_copies_every_byte_it_does_not_have_to_change() {
+        // "für" with a Windows-1252 ü (0xFC), in a comment on a line that stays
+        // and in one on the blocking line, next to CRLF and LF lines and with no
+        // line ending at the end of the file.
+        let original: &[u8] = b"# F\xFCr Updates\r\n0.0.0.0 fe3.delivery.mp.microsoft.com # f\xFCr Updates\r\n127.0.0.1 localhost\n0.0.0.0 vortex.data.microsoft.com";
+        let expected: &[u8] = b"# F\xFCr Updates\r\n# WinMedic unblocked: 0.0.0.0 fe3.delivery.mp.microsoft.com # f\xFCr Updates\r\n127.0.0.1 localhost\n0.0.0.0 vortex.data.microsoft.com";
+        assert_eq!(unblock_hosts(original), expected);
+    }
+
+    #[test]
+    fn a_last_line_without_a_terminator_gets_the_file_newline_before_the_names_that_stay() {
+        assert_eq!(
+            unblock_hosts(b"127.0.0.1 localhost\r\n0.0.0.0 fe3.delivery.mp.microsoft.com mine.example"),
+            b"127.0.0.1 localhost\r\n# WinMedic unblocked: 0.0.0.0 fe3.delivery.mp.microsoft.com mine.example\r\n0.0.0.0 mine.example"
+        );
     }
 
     #[tokio::test]
@@ -1251,6 +1378,32 @@ mod tests {
                 .iter()
                 .any(|c| c == "sc.exe config Dhcp start= auto")
         );
+    }
+
+    #[tokio::test]
+    async fn a_service_is_not_started_when_services_may_not_be_and_says_so() {
+        let dir = sandbox("svcnostart");
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "config Dhcp",
+            CmdOutput::ok("[SC] ChangeServiceConfig ERFOLG"),
+        );
+        mock.add_response("qc Dhcp", CmdOutput::ok(sc_qc_output("Dhcp", 2)));
+        std::fs::write(dir.join("hosts"), b"").unwrap();
+        let module = TweaksModule::with_paths(
+            ModuleConfig {
+                auto_backup_registry: false,
+                auto_restart_services: false,
+                ..ModuleConfig::default()
+            },
+            Arc::new(mock.clone()),
+            dir.join("hosts"),
+            dir.join("Registry.pol"),
+            dir.join("backups"),
+        );
+        let msg = module.fix("tweak_svc_dhcp", None).await.unwrap();
+        assert!(msg.contains("Starting it was skipped"), "{msg}");
+        assert!(!mock.executed().iter().any(|c| c.starts_with("net.exe")));
     }
 
     #[test]
@@ -1448,6 +1601,75 @@ mod tests {
         );
         let backups: Vec<_> = std::fs::read_dir(dir.join("backups")).unwrap().collect();
         assert_eq!(backups.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_hosts_repair_changes_only_the_blocking_lines_and_leaves_no_temp_file() {
+        let dir = sandbox("hostsbytes");
+        let original: &[u8] = b"# F\xFCr Updates\r\n0.0.0.0 fe3.delivery.mp.microsoft.com\r\n127.0.0.1 localhost\n# Telemetrie \xE4\xF6\xFC\r\n0.0.0.0 vortex.data.microsoft.com";
+        let expected: &[u8] = b"# F\xFCr Updates\r\n# WinMedic unblocked: 0.0.0.0 fe3.delivery.mp.microsoft.com\r\n127.0.0.1 localhost\n# Telemetrie \xE4\xF6\xFC\r\n0.0.0.0 vortex.data.microsoft.com";
+        let module = module(MockCommandRunner::with_default_success(), &dir, original);
+
+        module
+            .fix("tweak_hosts_blocks_windows", None)
+            .await
+            .unwrap();
+
+        assert_eq!(std::fs::read(dir.join("hosts")).unwrap(), expected);
+        assert!(!dir.join("hosts.winmedic-tmp").exists());
+        let backups: Vec<PathBuf> = std::fs::read_dir(dir.join("backups"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(std::fs::read(&backups[0]).unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn a_hosts_repair_that_cannot_write_says_the_file_is_unchanged() {
+        let dir = sandbox("hostsnowrite");
+        // The new file cannot be created while a folder has its name.
+        std::fs::create_dir(dir.join("hosts.winmedic-tmp")).unwrap();
+        let module = module(MockCommandRunner::with_default_success(), &dir, HOSTS);
+
+        let err = module
+            .fix("tweak_hosts_blocks_windows", None)
+            .await
+            .unwrap_err();
+
+        assert!(err.contains("was not changed"), "{err}");
+        assert!(
+            err.contains(&dir.join("backups").display().to_string()),
+            "{err}"
+        );
+        assert_eq!(std::fs::read(dir.join("hosts")).unwrap(), HOSTS);
+    }
+
+    #[tokio::test]
+    async fn a_read_only_hosts_file_is_not_replaced_and_no_temp_file_is_left() {
+        let dir = sandbox("hostsreadonly");
+        let module = module(MockCommandRunner::with_default_success(), &dir, HOSTS);
+        set_read_only(&dir.join("hosts"), true);
+
+        let err = module
+            .fix("tweak_hosts_blocks_windows", None)
+            .await
+            .unwrap_err();
+
+        assert!(err.contains("was not changed"), "{err}");
+        assert_eq!(std::fs::read(dir.join("hosts")).unwrap(), HOSTS);
+        assert!(!dir.join("hosts.winmedic-tmp").exists());
+        // A read-only file cannot be removed with the sandbox: clear the flags first.
+        for entry in std::fs::read_dir(dir.join("backups")).unwrap() {
+            set_read_only(&entry.unwrap().path(), false);
+        }
+        set_read_only(&dir.join("hosts"), false);
+    }
+
+    fn set_read_only(path: &Path, read_only: bool) {
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        permissions.set_readonly(read_only);
+        std::fs::set_permissions(path, permissions).unwrap();
     }
 
     /// `reg query` of Defender's policy key on the capture machine: only an

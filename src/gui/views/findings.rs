@@ -169,6 +169,28 @@ fn list(ui: &mut egui::Ui, app: &mut App, indices: &[usize]) {
         });
 }
 
+/// The background of a finding's row.
+///
+/// egui's own selection fill (a saturated blue) and hover fill left the
+/// status words on a row below 4.5:1 contrast: "Repair failed" at 2.5:1 on
+/// the dark theme's selection. A tint of the selection colour over the panel
+/// keeps every status colour and the muted text at 4.5:1 or more in both
+/// themes, which `the_status_words_stay_legible_on_every_row` checks.
+fn row_fill(visuals: &egui::Visuals, highlighted: bool, hovered: bool) -> egui::Color32 {
+    let tint = |share| {
+        visuals
+            .panel_fill
+            .lerp_to_gamma(visuals.selection.bg_fill, share)
+    };
+    if highlighted {
+        tint(0.2)
+    } else if hovered {
+        tint(0.1)
+    } else {
+        egui::Color32::TRANSPARENT
+    }
+}
+
 fn row(ui: &mut egui::Ui, app: &mut App, issue_index: usize, highlighted: bool, position: usize) {
     // The row is a `Ui` that senses clicks, rather than a `Frame` whose response
     // was handed a click sense afterwards. That distinction is the whole reason
@@ -188,17 +210,11 @@ fn row(ui: &mut egui::Ui, app: &mut App, issue_index: usize, highlighted: bool, 
             // is a list entry rather than prose, so the row keeps the click.
             ui.style_mut().interaction.selectable_labels = false;
             let hovered = ui.response().hovered();
-            let visuals = ui.visuals();
-            let fill = if highlighted {
-                visuals.selection.bg_fill
-            } else if hovered {
-                visuals.widgets.hovered.weak_bg_fill
-            } else {
-                egui::Color32::TRANSPARENT
-            };
+            let fill = row_fill(ui.visuals(), highlighted, hovered);
+            let marker = ui.visuals().selection.stroke.color;
             let palette = theme::palette(ui);
 
-            egui::Frame::NONE
+            let shown = egui::Frame::NONE
                 .fill(fill)
                 .corner_radius(2)
                 .inner_margin(egui::Margin::symmetric(6, 3))
@@ -256,8 +272,18 @@ fn row(ui: &mut egui::Ui, app: &mut App, issue_index: usize, highlighted: bool, 
                         ticked
                     })
                     .inner
-                })
-                .inner
+                });
+            // The row the arrow keys are on, marked by a bar in the selection's
+            // text colour at its left edge as well as by its tint.
+            if highlighted {
+                let rect = shown.response.rect;
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height())),
+                    1,
+                    marker,
+                );
+            }
+            shown.inner
         },
     );
 
@@ -358,6 +384,59 @@ fn empty(ui: &mut egui::Ui, headline: &str, hint: &str) {
 
 #[cfg(test)]
 mod tests {
+    /// The WCAG 2 contrast ratio of two opaque colours.
+    fn contrast(a: egui::Color32, b: egui::Color32) -> f32 {
+        let luminance = |c: egui::Color32| {
+            let channel = |v: u8| {
+                let v = f32::from(v) / 255.0;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+        };
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    /// Every word a row can carry, on every background a row can have, in
+    /// both themes: 4.5:1 at least, the WCAG minimum for text.
+    #[test]
+    fn the_status_words_stay_legible_on_every_row() {
+        let ctx = egui::Context::default();
+        crate::gui::theme::apply(&ctx);
+        for kind in [egui::Theme::Dark, egui::Theme::Light] {
+            let visuals = ctx.style_of(kind).visuals.clone();
+            let palette = crate::gui::theme::palette_of(&visuals);
+            let words = [
+                ("Fixed", palette.green),
+                ("Restart", palette.amber),
+                ("Repair failed", palette.red),
+                ("muted", visuals.weak_text_color()),
+                ("title", visuals.text_color()),
+            ];
+            for (highlighted, hovered) in [(true, false), (false, true), (false, false)] {
+                let fill = super::row_fill(&visuals, highlighted, hovered);
+                let background = if fill == egui::Color32::TRANSPARENT {
+                    visuals.panel_fill
+                } else {
+                    fill
+                };
+                for (word, colour) in words {
+                    let ratio = contrast(colour, background);
+                    assert!(
+                        ratio >= 4.5,
+                        "{kind:?}, highlighted {highlighted}, hovered {hovered}: {word} at {ratio:.2}:1"
+                    );
+                }
+            }
+            // The bar marking the highlighted row stands out from the panel.
+            assert!(contrast(visuals.selection.stroke.color, visuals.panel_fill) >= 3.0);
+        }
+    }
+
     use super::*;
     use eframe::egui::accesskit::Role;
     use egui_kittest::Harness;

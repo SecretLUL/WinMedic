@@ -224,7 +224,8 @@ fn attribute(tag: &str, name: &str) -> Option<String> {
     None
 }
 
-fn unescape(text: &str) -> String {
+/// `text` with the five entities XML predefines replaced by their characters.
+pub(crate) fn unescape(text: &str) -> String {
     if !text.contains('&') {
         return text.to_string();
     }
