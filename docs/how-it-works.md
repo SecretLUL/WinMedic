@@ -65,7 +65,7 @@ Settings live in the **`[2]` Settings** view and are persisted to `%APPDATA%\Win
 | :--- | :--- | :--- |
 | VSS restore point before repair | `on` | Creates a system checkpoint before the first fix of a run |
 | Back up registry before change | `on` | Exports affected keys to `.reg`; when off, registry fixes run unprotected |
-| Restart services automatically | `on` | Allows fixes to stop/start Windows services; when off, those fixes are skipped rather than half-applied |
+| Restart services automatically | `on` | Allows repairs to stop and start Windows services. When off, a repair that has to stop a service (the update cache, the component reset, the print queue) is skipped rather than half-applied, a repaired start type is left for Windows to start, and the clock is only set while the Windows Time service already runs |
 | Check for updates automatically | `on` | Queries the latest GitHub release on startup and flags a newer version with `[U]`, which can then install it in place after verifying its checksum |
 | Temp file threshold | `500 MB` | Size at which junk files are reported as an issue |
 | Event log window | `24 h` | How far back crash events are read (WHEA faults: at least a week) |

@@ -877,17 +877,24 @@ impl TweaksModule {
                 svc.name
             ));
         }
-        if svc.restore != StartMode::Demand && self.config.auto_restart_services {
-            let _ = self
-                .runner
-                .run("net.exe", &["start", svc.name], Duration::from_secs(20))
-                .await;
-        }
-        Ok(format!(
+        let set = format!(
             "'{}' is set to start {} again.",
             svc.display,
             svc.restore.label()
-        ))
+        );
+        if svc.restore == StartMode::Demand {
+            return Ok(set);
+        }
+        if !self.config.auto_restart_services {
+            return Ok(format!(
+                "{set} Starting it was skipped because 'Restart services automatically' is off in the settings; Windows starts it at the next start."
+            ));
+        }
+        let _ = self
+            .runner
+            .run("net.exe", &["start", svc.name], Duration::from_secs(20))
+            .await;
+        Ok(set)
     }
 
     /// Backs the hosts file up, then replaces it with the unblocked bytes. The
@@ -1371,6 +1378,32 @@ mod tests {
                 .iter()
                 .any(|c| c == "sc.exe config Dhcp start= auto")
         );
+    }
+
+    #[tokio::test]
+    async fn a_service_is_not_started_when_services_may_not_be_and_says_so() {
+        let dir = sandbox("svcnostart");
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "config Dhcp",
+            CmdOutput::ok("[SC] ChangeServiceConfig ERFOLG"),
+        );
+        mock.add_response("qc Dhcp", CmdOutput::ok(sc_qc_output("Dhcp", 2)));
+        std::fs::write(dir.join("hosts"), b"").unwrap();
+        let module = TweaksModule::with_paths(
+            ModuleConfig {
+                auto_backup_registry: false,
+                auto_restart_services: false,
+                ..ModuleConfig::default()
+            },
+            Arc::new(mock.clone()),
+            dir.join("hosts"),
+            dir.join("Registry.pol"),
+            dir.join("backups"),
+        );
+        let msg = module.fix("tweak_svc_dhcp", None).await.unwrap();
+        assert!(msg.contains("Starting it was skipped"), "{msg}");
+        assert!(!mock.executed().iter().any(|c| c.starts_with("net.exe")));
     }
 
     #[test]

@@ -521,6 +521,8 @@ pub struct SystemIntegrityModule {
     reagent_xml: PathBuf,
     /// Where a Windows ISO to repair from is looked for.
     downloads: Option<PathBuf>,
+    /// The setting "Restart services automatically".
+    restart_services: bool,
 }
 
 impl Default for SystemIntegrityModule {
@@ -545,7 +547,15 @@ impl SystemIntegrityModule {
             cbs_log,
             reagent_xml: default_reagent_xml(),
             downloads: dirs::download_dir(),
+            restart_services: true,
         }
+    }
+
+    /// Whether a repair may start a service: the setting "Restart services
+    /// automatically".
+    pub fn restarting_services(mut self, allowed: bool) -> Self {
+        self.restart_services = allowed;
+        self
     }
 
     /// For tests: read `path` instead of the machine's own ReAgent.xml.
@@ -1184,13 +1194,19 @@ impl DiagnosticModule for SystemIntegrityModule {
                 }
                 // VSS is a demand-start service: it only has to be startable,
                 // so a start that fails because it is already running is fine.
-                let _ = self
-                    .runner
-                    .run("net.exe", &["start", "vss"], Duration::from_secs(10))
-                    .await;
+                if self.restart_services {
+                    let _ = self
+                        .runner
+                        .run("net.exe", &["start", "vss"], Duration::from_secs(10))
+                        .await;
+                }
                 match service::start_type(&*self.runner, "vss").await? {
                     Some(SERVICE_DISABLED) => Err(
                         "Windows accepted the change but VSS is still disabled - a group policy may enforce it"
+                            .to_string(),
+                    ),
+                    _ if !self.restart_services => Ok(
+                        "Volume Shadow Copy (VSS) service set to start on demand. Starting it was skipped because 'Restart services automatically' is off in the settings."
                             .to_string(),
                     ),
                     _ => Ok("Volume Shadow Copy (VSS) service set to start on demand.".to_string()),
@@ -1934,6 +1950,24 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("still disabled"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn vss_is_not_started_when_services_may_not_be() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "config vss",
+            CmdOutput::ok("[SC] ChangeServiceConfig ERFOLG"),
+        );
+        mock.add_response("qc vss", CmdOutput::ok(sc_qc_output("vss", 3)));
+
+        let msg = module_with(mock.clone())
+            .restarting_services(false)
+            .fix("sys_vss_disabled", None)
+            .await
+            .unwrap();
+        assert!(msg.contains("Starting it was skipped"), "{msg}");
+        assert!(!mock.executed().iter().any(|c| c.starts_with("net.exe")));
     }
 
     fn cbs_line(text: &str) -> String {

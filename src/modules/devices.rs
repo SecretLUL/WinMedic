@@ -215,6 +215,8 @@ pub struct DevicesModule {
     runner: Arc<dyn CommandRunner>,
     /// `%SystemRoot%\System32\spool\PRINTERS`, where waiting print jobs are.
     spool_dir: PathBuf,
+    /// The setting "Restart services automatically".
+    restart_services: bool,
 }
 
 impl Default for DevicesModule {
@@ -233,7 +235,15 @@ impl DevicesModule {
         Self {
             runner,
             spool_dir: PathBuf::from(root).join(r"System32\spool\PRINTERS"),
+            restart_services: true,
         }
+    }
+
+    /// Whether a repair may stop a service and start it again: the setting
+    /// "Restart services automatically".
+    pub fn restarting_services(mut self, allowed: bool) -> Self {
+        self.restart_services = allowed;
+        self
     }
 
     /// For tests: the print jobs are in this folder.
@@ -287,6 +297,12 @@ impl DevicesModule {
     /// it again, then check it runs and the folder is empty. Until that second
     /// start, a cancelled or failing repair starts the spooler again itself.
     async fn clear_print_queue(&self) -> Result<String, String> {
+        if !self.restart_services {
+            return Err(
+                "Skipped: clearing the print queue stops the print spooler and starts it again. Turn on 'Restart services automatically' in the settings."
+                    .to_string(),
+            );
+        }
         // Armed before the stop, so that a cancel, or a failed state check,
         // between stopping and starting does not leave the spooler stopped.
         let mut start_again = StartAgain::new(self.runner.clone(), &[SPOOLER]);
@@ -1262,6 +1278,22 @@ mod tests {
         assert_eq!(files_in(&spool.0), 1);
         settle().await;
         assert_eq!(spooler_starts(&mock), 1, "{:?}", mock.executed());
+    }
+
+    #[tokio::test]
+    async fn the_print_queue_is_left_alone_when_services_may_not_be_restarted() {
+        let spool = Spool::new("norestart");
+        spool.job("00011.SPL", 3);
+        let mock = spooler_repair("1  STOPPED");
+        let err = module(&mock)
+            .with_spool_dir(spool.0.clone())
+            .restarting_services(false)
+            .fix(PRINT_QUEUE_STUCK, None)
+            .await
+            .unwrap_err();
+        assert!(err.starts_with("Skipped:"), "{err}");
+        assert!(mock.executed().is_empty(), "{:?}", mock.executed());
+        assert_eq!(files_in(&spool.0), 1);
     }
 
     /// Lets the restart that a dropped repair spawns on the runtime run.

@@ -187,11 +187,18 @@ impl ClockRestartModule {
         if service::start_type(&*self.runner, "W32Time").await? == Some(service::SERVICE_DISABLED) {
             return Err("The Windows Time service (W32Time) is disabled, so Windows cannot set its clock. Nothing was changed; re-enable the service first (the Tweaks & Policies check reports it).".to_string());
         }
-        // Already running is fine; anything else shows in the result below.
-        let _ = self
-            .runner
-            .run("sc.exe", &["start", "W32Time"], Duration::from_secs(15))
-            .await;
+        if self.config.auto_restart_services {
+            // Already running is fine; anything else shows in the result below.
+            let _ = self
+                .runner
+                .run("sc.exe", &["start", "W32Time"], Duration::from_secs(15))
+                .await;
+        } else if !matches!(
+            service::state(&*self.runner, "W32Time").await?,
+            Some(service::SERVICE_RUNNING | service::SERVICE_START_PENDING)
+        ) {
+            return Err("Skipped: setting the clock needs the Windows Time service (W32Time), which is stopped, and 'Restart services automatically' is off in the settings. Nothing was changed.".to_string());
+        }
         // Waits for the synchronisation unless /nowait is given.
         let _ = self
             .runner
@@ -444,7 +451,7 @@ mod tests {
     use super::*;
     use crate::utils::cmd::{CmdOutput, MockCommandRunner};
     use crate::utils::decode::decode_output;
-    use crate::utils::service::test_support::sc_qc_output;
+    use crate::utils::service::test_support::{sc_qc_output, sc_query_output};
 
     // Captured on a German Windows 11; see tests/fixtures/README.md.
     const STRIPCHART: &[u8] =
@@ -740,6 +747,51 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("still off by 3 min 5 s"), "{err}");
+    }
+
+    /// With services not to be started, the clock is set only while the
+    /// time service already runs, and it is never started.
+    #[tokio::test]
+    async fn the_time_service_is_not_started_when_services_may_not_be() {
+        let no_restart = |mock: &MockCommandRunner| {
+            ClockRestartModule::with_runner(
+                ModuleConfig {
+                    auto_backup_registry: false,
+                    auto_restart_services: false,
+                    ..ModuleConfig::default()
+                },
+                Arc::new(mock.clone()),
+            )
+        };
+
+        let stopped = clock_mock(3, "+00.0123000s");
+        stopped.add_response("sc.exe query", CmdOutput::ok(sc_query_output("W32Time", 1)));
+        let err = no_restart(&stopped)
+            .fix("clock_offset", None)
+            .await
+            .unwrap_err();
+        assert!(err.starts_with("Skipped:"), "{err}");
+        assert!(
+            !stopped
+                .executed()
+                .iter()
+                .any(|c| c.contains("sc.exe start"))
+        );
+        assert!(!stopped.executed().iter().any(|c| c.contains("/resync")));
+
+        let running = clock_mock(3, "+00.0123000s");
+        running.add_response("sc.exe query", CmdOutput::ok(sc_query_output("W32Time", 4)));
+        let msg = no_restart(&running)
+            .fix("clock_offset", None)
+            .await
+            .unwrap();
+        assert!(msg.contains("now off by 0.0 s"), "{msg}");
+        assert!(
+            !running
+                .executed()
+                .iter()
+                .any(|c| c.contains("sc.exe start"))
+        );
     }
 
     #[tokio::test]

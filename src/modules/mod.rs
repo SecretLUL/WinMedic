@@ -188,9 +188,10 @@ pub fn get_all_modules_with_runner(
     runner: Arc<dyn crate::utils::cmd::CommandRunner>,
 ) -> Vec<Arc<dyn DiagnosticModule>> {
     vec![
-        Arc::new(system_integrity::SystemIntegrityModule::with_runner(
-            runner.clone(),
-        )),
+        Arc::new(
+            system_integrity::SystemIntegrityModule::with_runner(runner.clone())
+                .restarting_services(cfg.auto_restart_services),
+        ),
         Arc::new(windows_updates::WindowsUpdatesModule::with_runner(
             cfg.clone(),
             runner.clone(),
@@ -229,7 +230,10 @@ pub fn get_all_modules_with_runner(
             cfg.clone(),
             runner.clone(),
         )),
-        Arc::new(devices::DevicesModule::with_runner(runner)),
+        Arc::new(
+            devices::DevicesModule::with_runner(runner)
+                .restarting_services(cfg.auto_restart_services),
+        ),
     ]
 }
 
