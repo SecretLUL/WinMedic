@@ -185,8 +185,20 @@ impl App {
             }
             _ => Ok(()),
         };
-        if let Err(e) = synced {
-            message = format!("{message} - but Windows was not updated: {e}");
+        match synced {
+            // A background scan that could not be set up is off, and the
+            // setting says so: left on, every start of the window tried again.
+            Err(e) if index == 7 && self.config.helper_enabled => {
+                self.config.helper_enabled = false;
+                message = format!("The background scan stays off: {e}");
+                if self.system_actions.persist_config
+                    && let Err(save) = self.config.save()
+                {
+                    message = format!("{message} The setting could not be saved: {save}");
+                }
+            }
+            Err(e) => message = format!("{message} - but Windows was not updated: {e}"),
+            Ok(()) => {}
         }
         self.status_message = Some(message);
 
@@ -279,6 +291,32 @@ mod tests {
         assert_eq!(input5.setting_index, 5);
         assert_eq!(input5.setting_name, "Event log analysis window");
         assert_eq!(input5.buffer, "24");
+    }
+
+    /// A background scan Windows did not set up, such as one WinMedic refuses
+    /// for a winmedic.exe in Downloads, does not stay switched on.
+    #[test]
+    fn a_background_scan_that_could_not_be_set_up_stays_off() {
+        let mut app = App::new();
+        app.config.helper_enabled = false;
+        app.system_actions.sync_helper_task = |enabled, _| {
+            if enabled {
+                Err("PC\\Bob can change C:\\Users\\Bob\\Downloads\\winmedic.exe".to_string())
+            } else {
+                Ok(())
+            }
+        };
+        app.selected_setting_index = 7;
+
+        app.toggle_current_setting();
+
+        assert!(!app.config.helper_enabled);
+        let message = app.status_message.unwrap_or_default();
+        assert!(
+            message.starts_with("The background scan stays off: "),
+            "{message}"
+        );
+        assert!(message.contains("Downloads"), "{message}");
     }
 
     #[test]

@@ -99,9 +99,30 @@ fn query_helper_task(name: &str) -> Option<String> {
         .then(|| crate::utils::decode::decode_output(&output.stdout))
 }
 
+/// What keeps WinMedic from letting the helper task start `exe`, if anything.
+///
+/// The task starts WinMedic with the highest rights, on a schedule and without
+/// a UAC prompt. Whoever can change winmedic.exe, or a folder on its path,
+/// decides what runs there as Administrator: the signed-in account itself
+/// when it sits in Downloads or in WinGet's per-user package folder, and any
+/// program that account runs. So the task is only registered for a file that
+/// only administrators can change, as under Program Files.
+pub fn helper_location_problem(exe: &Path) -> Option<String> {
+    crate::utils::acl::admin_only_problem(exe).map(|problem| {
+        format!(
+            "{problem}, and the scheduled task would start winmedic.exe from there with the highest rights, without asking. \
+             Move winmedic.exe to a folder only administrators can change, such as C:\\Program Files\\WinMedic, \
+             or install it with winget install SecretLUL.WinMedic --scope machine, then turn the background scan on again."
+        )
+    })
+}
+
 /// Create or replace the helper task so that it runs `exe`.
 #[cfg(windows)]
 fn register_helper_task(exe: &Path, frequency_hours: u32) -> Result<(), String> {
+    if let Some(problem) = helper_location_problem(exe) {
+        return Err(problem);
+    }
     let (schedule, modifier) = helper_schedule(frequency_hours).ok_or_else(|| {
         format!(
             "Task Scheduler cannot repeat every {frequency_hours} h: use 1-23 hours or whole days"
@@ -126,21 +147,29 @@ fn register_helper_task(exe: &Path, frequency_hours: u32) -> Result<(), String> 
     check(output, "Could not create the scheduled task")
 }
 
+/// Delete the helper task, if there is one.
+#[cfg(windows)]
+fn delete_helper_task() -> Result<(), String> {
+    let name = helper_task_name();
+    if query_helper_task(&name).is_some() {
+        // Only a task that exists is deleted, so a failure here is a real
+        // one (access denied, say) rather than "there was nothing to delete".
+        check(
+            schtasks(&["/delete", "/tn", &name, "/f"])?,
+            "Could not delete the scheduled task",
+        )
+    } else {
+        Ok(())
+    }
+}
+
 pub fn sync_helper_task(enabled: bool, frequency_hours: u32) -> Result<(), String> {
     #[cfg(windows)]
     {
-        let name = helper_task_name();
         if enabled {
             register_helper_task(&current_exe()?, frequency_hours)
-        } else if query_helper_task(&name).is_some() {
-            // Only a task that exists is deleted, so a failure here is a real
-            // one (access denied, say) rather than "there was nothing to delete".
-            check(
-                schtasks(&["/delete", "/tn", &name, "/f"])?,
-                "Could not delete the scheduled task",
-            )
         } else {
-            Ok(())
+            delete_helper_task()
         }
     }
 
@@ -154,11 +183,17 @@ pub fn sync_helper_task(enabled: bool, frequency_hours: u32) -> Result<(), Strin
 /// Whether the helper task exists and runs `exe`.
 #[cfg(windows)]
 fn helper_task_is_current(exe: &Path) -> bool {
-    let Some(xml) = query_helper_task(&helper_task_name()) else {
-        return false;
-    };
+    query_helper_task(&helper_task_name()).is_some_and(|xml| task_runs(&xml, exe))
+}
+
+/// Whether the task `xml` describes, as `schtasks /query /xml` prints it,
+/// starts `exe` with the highest rights.
+fn task_runs(xml: &str, exe: &Path) -> bool {
     let exe = exe.display().to_string();
-    let xml = xml.to_lowercase();
+    // The path is text in the XML, where `&` reads `&amp;`: compared as it
+    // was, a path with one never matched, and the task was registered again,
+    // its schedule restarted, on every start of the window.
+    let xml = crate::utils::event_xml::unescape(xml).to_lowercase();
     // A task an older WinMedic registered with limited rights cannot start
     // this one, so it is registered again with the highest.
     if !xml.contains("<runlevel>highestavailable</runlevel>") {
@@ -218,13 +253,26 @@ pub fn remove_legacy_autostart() -> Result<bool, String> {
 ///
 /// The task is only repaired, never removed: with a corrupt config every
 /// setting reads as off, and that must not delete what the user set up. A task
-/// left behind is inert anyway, because `--helper` checks the setting.
+/// left behind is inert anyway, because `--helper` checks the setting. The one
+/// exception is a task for a winmedic.exe that someone besides the
+/// administrators can change, which an older version registered: it would
+/// start whatever is put in its place with the highest rights.
 pub fn reconcile(config: &AppConfig, exe: &Path) -> Result<(), String> {
     #[cfg(windows)]
     {
         let mut problems = Vec::new();
-        if config.helper_enabled && !helper_task_is_current(exe) {
-            problems.extend(register_helper_task(exe, config.helper_frequency_hours).err());
+        if config.helper_enabled {
+            if let Some(problem) = helper_location_problem(exe) {
+                match delete_helper_task() {
+                    Ok(()) => problems.push(format!("The background scan is off: {problem}")),
+                    Err(e) => problems.push(format!(
+                        "{e}. Delete the task {} in Task Scheduler: {problem}",
+                        helper_task_name()
+                    )),
+                }
+            } else if !helper_task_is_current(exe) {
+                problems.extend(register_helper_task(exe, config.helper_frequency_hours).err());
+            }
         }
         problems.extend(remove_legacy_autostart().err());
         if problems.is_empty() {
@@ -261,6 +309,24 @@ mod tests {
         let name = helper_task_name();
         assert!(name.starts_with(HELPER_TASK_NAME));
         assert!(!name.contains(['\\', '/', ':', '*', '?', '"', '<', '>', '|']));
+    }
+
+    #[test]
+    fn a_path_with_an_ampersand_is_found_in_the_task() {
+        let xml = r#"<Task><Principals><Principal id="Author"><RunLevel>HighestAvailable</RunLevel></Principal></Principals><Actions Context="Author"><Exec><Command>%SystemRoot%\System32\conhost.exe</Command><Arguments>--headless "C:\Program Files\Tom &amp; Jerry\winmedic.exe" --helper</Arguments></Exec></Actions></Task>"#;
+        assert!(task_runs(
+            xml,
+            Path::new(r"C:\Program Files\Tom & Jerry\winmedic.exe")
+        ));
+        assert!(!task_runs(
+            xml,
+            Path::new(r"C:\Program Files\WinMedic\winmedic.exe")
+        ));
+        let limited = xml.replace("HighestAvailable", "LeastPrivilege");
+        assert!(!task_runs(
+            &limited,
+            Path::new(r"C:\Program Files\Tom & Jerry\winmedic.exe")
+        ));
     }
 
     /// What 0.5.0 to 0.6.0 wrote is removed; another program's value under

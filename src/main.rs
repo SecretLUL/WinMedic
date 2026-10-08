@@ -252,6 +252,27 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     if args.helper && !config.helper_enabled {
         return Ok(exit_code::OK);
     }
+    // A task an older WinMedic set up for a winmedic.exe that someone besides
+    // the administrators can change would start whatever is put in its place
+    // with the highest rights. Unless that has happened already, this run
+    // takes the task out.
+    if args.helper
+        && let Ok(exe) = std::env::current_exe()
+        && let Some(problem) = utils::background_task::helper_location_problem(&exe)
+    {
+        let removed = utils::background_task::sync_helper_task(false, 0);
+        safety::audit::AuditLogger::real().log(
+            "SCAN",
+            "WinMedicHelper",
+            "Automated background diagnostic scan",
+            "CANCELLED",
+            &match removed {
+                Ok(()) => format!("The scheduled task was removed: {problem}"),
+                Err(e) => format!("{e}: {problem}"),
+            },
+        );
+        return Ok(exit_code::OK);
+    }
     let quiet = args.json || args.helper;
 
     // Ctrl+C cancels the run instead of leaving orphaned DISM/chkdsk children.

@@ -70,7 +70,7 @@ Settings live in the **`[2]` Settings** view and are persisted to `%APPDATA%\Win
 | Temp file threshold | `500 MB` | Size at which junk files are reported as an issue |
 | Event log window | `24 h` | How far back crash events are read (WHEA faults: at least a week) |
 | Verbose / debug logs | `off` | Adds command lines, timings and tool output to the scan and repair logs |
-| WinMedicHelper background scan | `off` | A scheduled task scans in the background while you are signed in, with the highest rights |
+| WinMedicHelper background scan | `off` | A scheduled task scans in the background while you are signed in, with the highest rights. Only for a `winmedic.exe` that only administrators can change, such as one in `C:\Program Files\WinMedic` or installed with `winget install SecretLUL.WinMedic --scope machine`: whoever can change the file would decide what that task runs as Administrator. In Downloads the setting is refused, and a task an older version set up there is removed |
 | WinMedicHelper scan frequency | `24 h` | Every 1–23 hours or every whole number of days |
 
 
