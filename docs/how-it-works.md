@@ -49,7 +49,7 @@ Where Windows offers nothing but a translated sentence, only the English and Ger
 ## Safety & Backup Architecture
 
 Before WinMedic touches your system:
-1. **Windows System Restore Point (VSS)**: A checkpoint named `"WinMedic Auto-Restore Point (before repairs)"` is automatically triggered via WMI / PowerShell. WinMedic then **verifies** that a new restore point actually appeared instead of trusting the exit status — Windows silently declines to create one if another was made within the last 24 hours (`SystemRestorePointCreationFrequency`), and reports that refusal as a warning rather than an error. A throttled run is surfaced as a warning, never as success.
+1. **Windows System Restore Point (VSS)**: A checkpoint named `"WinMedic Auto-Restore Point (before repairs)"` is created through PowerShell before the first repair. Windows creates at most one restore point a day and silently skips the rest, so WinMedic sets `SystemRestorePointCreationFrequency` to 0 for its own checkpoint, as Microsoft documents, and puts the old value back right after. If System Protection is off for the system drive (`%SystemDrive%`, not always `C:`), `Enable-ComputerRestore` switches it on. WinMedic then **verifies** that a new restore point actually appeared instead of trusting the exit status. If none did, nothing is repaired: the window asks whether to repair without one, and the command line stops with exit code `3` unless it was started with `--no-vss`.
 2. **Registry Snapshotting**: The registry keys WinMedic deletes values from or rewrites — `Run` entries, policy values, the Fast Startup switch — are exported into `%APPDATA%\WinMedic\backups\reg_<timestamp>.reg` first, and the hosts file is copied before it is edited. If the export fails, the fix is aborted instead of applied. Other changes are not exported, and their message says how to undo them where that is possible: the user proxy switch (the address stays), `netsh winsock reset` and `netsh winhttp reset proxy`, service start types (`sc config`), the page file (`PagingFiles`) and power settings (`powercfg`). The restore point covers them. The backup index is written atomically, and an index that cannot be parsed is moved aside as `index.json.corrupt-<timestamp>` rather than overwritten, so previously recorded backups are never lost.
 3. **One-Key Rollback**: Any stored snapshot can be restored directly from the **`[2]` Settings** view — `[B]` moves the arrow keys onto the snapshot list, `[U]` restores the highlighted one after an explicit confirmation prompt. Only a `.reg` file in the backup folder is imported.
 4. **Dry-Run First**: the simulation switch in the window or `--dry-run` on the CLI lists every repair a run would make, by its description and its steps, without running any of it.
@@ -177,7 +177,8 @@ winmedic.exe --dry-run
 # Output diagnostic findings as structured JSON for automation
 winmedic.exe --json
 
-# Run fixes without creating a VSS restore point (e.g. for speed in VM testing)
+# Run fixes without creating a VSS restore point (e.g. for speed in VM testing).
+# Without it, a run stops before the first repair when Windows creates none.
 winmedic.exe --auto-fix --no-vss
 
 # Before deleting winmedic.exe: remove the background scan task

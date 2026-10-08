@@ -46,6 +46,16 @@ impl App {
     }
 
     pub fn start_repairs(&mut self) {
+        self.start_repairs_with(self.config.create_vss_before_repair);
+    }
+
+    /// Repair the same selection again, without the restore point Windows
+    /// would not create; the user said yes to that.
+    pub fn start_repairs_without_restore_point(&mut self) {
+        self.start_repairs_with(false);
+    }
+
+    fn start_repairs_with(&mut self, create_vss: bool) {
         if self.is_busy() {
             return;
         }
@@ -63,7 +73,7 @@ impl App {
         self.total_to_fix = selected_count;
         self.vss_status = if self.dry_run {
             "Simulation".to_string()
-        } else if !self.config.create_vss_before_repair {
+        } else if !create_vss {
             "Skipped".to_string()
         } else {
             "Initialising...".to_string()
@@ -86,7 +96,10 @@ impl App {
 
         let mut issues_clone = self.issues.clone();
         let engine_clone = self.engine.clone();
-        let options = RepairOptions::from_config(&self.config, self.dry_run);
+        let options = RepairOptions {
+            create_vss,
+            ..RepairOptions::from_config(&self.config, self.dry_run)
+        };
 
         tokio::spawn(async move {
             engine_clone

@@ -60,7 +60,7 @@ struct CliArgs {
     #[arg(short, long, value_name = "FILE")]
     output: Option<std::path::PathBuf>,
 
-    /// Skip creating a Windows System Restore point before repairs
+    /// Skip creating a Windows System Restore point before repairs. Without it, repairs stop before the first one when Windows creates no restore point
     #[arg(long)]
     no_vss: bool,
 
@@ -484,6 +484,9 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
                     "   └─ VSS Status: {} ({})",
                     if success { "Created" } else { "Notice" },
                     message
+                ),
+                RepairEvent::RestorePointMissing { message } => println!(
+                    "[X] Nothing was repaired: {message}\n    Run again with --no-vss to repair without a restore point."
                 ),
                 RepairEvent::FixStarted { title, .. } => println!("Fix: {}", title),
                 RepairEvent::FixOutput { line, .. } => println!("   [LOG] {}", line),

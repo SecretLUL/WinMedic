@@ -14,7 +14,8 @@ WinMedic finds out why and repairs it, so you do not have to reinstall Windows.
 
 It is a single program. Nothing to install, nothing else to download. It only
 looks until you click **Repair**, and it creates a restore point first, so you
-can go back.
+can go back. If Windows will not create one, WinMedic asks before it repairs
+without it.
 
 ![WinMedic after a scan: the problems it found, what Repair does, and the Repair button](assets/screenshot.png)
 

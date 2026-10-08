@@ -5,7 +5,7 @@ use crate::modules::{
     get_all_modules_with_runner,
 };
 use crate::safety::audit::AuditLogger;
-use crate::safety::restore_point::RestorePointService;
+use crate::safety::restore_point::{RestorePointOutcome, RestorePointService};
 use crate::utils::cmd::{CommandRunner, describe_os_error};
 use crate::utils::debug_log::{
     DebugTag, extract_os_error_code, render_debug_kv, render_debug_line,
@@ -49,6 +49,12 @@ pub enum RepairEvent {
         success: bool,
         message: String,
     },
+    /// Windows created no restore point, so nothing was repaired: the run
+    /// ends here. The window asks whether to repair without one, the command
+    /// line leaves that to `--no-vss`.
+    RestorePointMissing {
+        message: String,
+    },
     FixStarted {
         issue_id: String,
         title: String,
@@ -76,7 +82,8 @@ pub enum RepairEvent {
 /// How a repair run should behave.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RepairOptions {
-    /// Create a VSS restore point before touching anything.
+    /// Create a VSS restore point before touching anything, and repair
+    /// nothing when Windows creates none.
     pub create_vss: bool,
     /// Report what each fix *would* do without executing it.
     pub dry_run: bool,
@@ -640,9 +647,6 @@ impl DiagnosticEngine {
                 .await;
             if !vss_res.success {
                 run_trace.explain_failure(&vss_res.message).await;
-                run_trace
-                    .hint("repairs continue without a rollback point - System Protection may be off for C:")
-                    .await;
             }
             let _ = event_tx
                 .send(RepairEvent::VssCompleted {
@@ -662,6 +666,32 @@ impl DiagnosticEngine {
                 },
                 &vss_res.message,
             );
+
+            // A repair run promises a restore point first. Without a new one,
+            // going on is the user's decision, not the engine's. An engine with
+            // no restore point service (the tests) was never asked for one.
+            if !vss_res.success && vss_res.outcome != RestorePointOutcome::NotRequested {
+                run_trace
+                    .hint("no repair runs without a new restore point unless the user says so")
+                    .await;
+                let message = format!("Nothing was repaired: {}", vss_res.message);
+                for issue in issues.iter_mut().filter(|i| i.will_repair()) {
+                    issue.fix_error = Some(message.clone());
+                }
+                self.audit_logger.log(
+                    "FIX",
+                    "engine",
+                    "Repair run",
+                    "WARNING",
+                    &format!("{message} {pending} selected repairs were not started."),
+                );
+                let _ = event_tx
+                    .send(RepairEvent::RestorePointMissing {
+                        message: vss_res.message,
+                    })
+                    .await;
+                return (0, pending);
+            }
         }
 
         let mut fixed_count = 0;
@@ -1129,6 +1159,58 @@ mod tests {
             "{}",
             failed[0].1
         );
+    }
+
+    /// Without a new restore point nothing is repaired, and the run says why.
+    #[tokio::test]
+    async fn no_repair_runs_when_windows_creates_no_restore_point() {
+        let engine = DiagnosticEngine::with_modules(vec![Arc::new(Answers(Ok("repaired")))])
+            .with_restore_points(RestorePointService::declined());
+        let mut issues = vec![answered_issue()];
+        let (tx, mut rx) = channel(50);
+        let options = RepairOptions {
+            create_vss: true,
+            ..LIVE
+        };
+
+        let (fixed, failed) = engine
+            .run_repairs(&mut issues, options, tx, CancellationToken::new())
+            .await;
+
+        assert_eq!((fixed, failed), (0, 1), "the exit code counts it as failed");
+        let mut missing = None;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                RepairEvent::FixStarted { .. } => panic!("a repair started"),
+                RepairEvent::RestorePointMissing { message } => missing = Some(message),
+                _ => {}
+            }
+        }
+        assert!(missing.is_some_and(|m| m.contains("restore point")));
+        assert!(!issues[0].is_fixed);
+        assert!(
+            issues[0]
+                .fix_error
+                .as_deref()
+                .is_some_and(|e| e.starts_with("Nothing was repaired: ")),
+            "{:?}",
+            issues[0].fix_error
+        );
+    }
+
+    /// Told to go on without one, the run repairs.
+    #[tokio::test]
+    async fn without_a_restore_point_requested_the_repairs_run() {
+        let engine = DiagnosticEngine::with_modules(vec![Arc::new(Answers(Ok("repaired")))])
+            .with_restore_points(RestorePointService::declined());
+        let mut issues = vec![answered_issue()];
+        let (tx, _rx) = channel(50);
+
+        let (fixed, failed) = engine
+            .run_repairs(&mut issues, LIVE, tx, CancellationToken::new())
+            .await;
+
+        assert_eq!((fixed, failed), (1, 0));
     }
 
     fn answered_issue() -> Issue {

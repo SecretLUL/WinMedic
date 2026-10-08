@@ -167,6 +167,11 @@ pub enum ConfirmRequest {
     /// deletes the executable, which would otherwise leave both pointing at a
     /// file that is gone.
     Unregister,
+    /// Windows created no restore point, so the repair run stopped before
+    /// its first repair. Going on without one is the user's call.
+    RepairWithoutRestorePoint {
+        reason: String,
+    },
 }
 
 impl ConfirmRequest {
@@ -176,6 +181,7 @@ impl ConfirmRequest {
             ConfirmRequest::UpdateAvailable { .. } => "NEW WINMEDIC UPDATE AVAILABLE",
             ConfirmRequest::RestartRequired { .. } => "SYSTEM RESTART REQUIRED",
             ConfirmRequest::Unregister => "REMOVE WINMEDIC FROM WINDOWS?",
+            ConfirmRequest::RepairWithoutRestorePoint { .. } => "REPAIR WITHOUT A RESTORE POINT?",
         }
     }
 
@@ -190,6 +196,7 @@ impl ConfirmRequest {
             }
             ConfirmRequest::RestartRequired { .. } => "Restart now",
             ConfirmRequest::Unregister => "Remove",
+            ConfirmRequest::RepairWithoutRestorePoint { .. } => "Repair without one",
         }
     }
 
@@ -199,6 +206,7 @@ impl ConfirmRequest {
             ConfirmRequest::UpdateAvailable { .. } => "Remind me later",
             ConfirmRequest::RestartRequired { .. } => "Later",
             ConfirmRequest::Unregister => "Cancel",
+            ConfirmRequest::RepairWithoutRestorePoint { .. } => "Cancel",
         }
     }
 
@@ -284,6 +292,16 @@ impl ConfirmRequest {
                 "Settings, logs and registry backups stay where they are; the".to_string(),
                 "command line 'winmedic --uninstall --purge' deletes them too.".to_string(),
             ],
+            ConfirmRequest::RepairWithoutRestorePoint { reason } => vec![
+                "Windows did not create a restore point, so nothing was repaired yet:".to_string(),
+                String::new(),
+                reason.clone(),
+                String::new(),
+                "Without one, System Restore cannot take the PC back to how it".to_string(),
+                "was before these repairs.".to_string(),
+                String::new(),
+                "Repair anyway?".to_string(),
+            ],
         }
     }
 }
@@ -309,6 +327,12 @@ impl App {
                 }
                 ConfirmRequest::Unregister => {
                     self.status_message = Some("Cancelled - nothing was changed.".to_string());
+                }
+                ConfirmRequest::RepairWithoutRestorePoint { .. } => {
+                    self.status_message = Some(
+                        "Nothing was repaired. Windows creates restore points only while System Protection is on for the system drive."
+                            .to_string(),
+                    );
                 }
             }
         }
@@ -520,6 +544,9 @@ impl App {
                 }
             }
             ConfirmRequest::Unregister => self.unregister_from_windows(),
+            ConfirmRequest::RepairWithoutRestorePoint { .. } => {
+                self.start_repairs_without_restore_point()
+            }
         }
     }
 }

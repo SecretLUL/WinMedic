@@ -6,7 +6,7 @@
 //! until empty, never awaiting, so a slow producer cannot stall rendering.
 
 use super::state::{App, ModuleScanProgress};
-use super::{BackgroundEvent, push_bounded_log};
+use super::{BackgroundEvent, ConfirmRequest, push_bounded_log};
 use crate::engine::runner::{DiagnosticEngine, RepairEvent, ScanEvent};
 use crate::modules::ModuleStatus;
 use crate::utils::progress::percent;
@@ -241,6 +241,20 @@ impl App {
                             &mut self.repair_console_lines,
                             format!("VSS: {}", message),
                         );
+                    }
+                    RepairEvent::RestorePointMissing { message } => {
+                        self.is_fixing = false;
+                        repair_ended = true;
+                        self.vss_status = "Not created".to_string();
+                        push_bounded_log(
+                            &mut self.repair_console_lines,
+                            format!("[STOP] Nothing was repaired: {message}"),
+                        );
+                        self.status_message = Some(
+                            "Nothing was repaired: Windows created no restore point.".to_string(),
+                        );
+                        self.pending_confirm =
+                            Some(ConfirmRequest::RepairWithoutRestorePoint { reason: message });
                     }
                     RepairEvent::FixStarted { issue_id: _, title } => {
                         self.start_repair_step(&title);
@@ -930,6 +944,44 @@ mod tests {
         app.is_fixing = true;
         app.total_to_fix = total;
         (app, tx)
+    }
+
+    /// A run that stopped for want of a restore point asks before it repairs
+    /// without one; a yes repairs the same selection with none.
+    #[tokio::test]
+    async fn a_missing_restore_point_is_a_question_and_yes_repairs_without_one() {
+        let (mut app, tx) = repairing_app(1);
+        app.issues = vec![crate::engine::issue::Issue::new(
+            "sys_dism_corrupt",
+            "system_integrity",
+            "Damaged component store",
+            "System Integrity",
+            crate::engine::issue::Severity::Critical,
+            crate::engine::issue::RiskScore::Low,
+            "Description",
+            "Details",
+            "Fix",
+            vec![],
+        )];
+        tx.send(RepairEvent::RestorePointMissing {
+            message: "Restore point failed: System Protection is off".to_string(),
+        })
+        .await
+        .unwrap();
+
+        app.process_background_events();
+
+        assert!(!app.is_fixing, "the run has ended");
+        assert!(!app.issues[0].is_fixed);
+        let Some(ConfirmRequest::RepairWithoutRestorePoint { reason }) = &app.pending_confirm
+        else {
+            panic!("no question: {:?}", app.pending_confirm);
+        };
+        assert!(reason.contains("System Protection is off"));
+
+        app.confirm_pending_action();
+        assert!(app.is_fixing, "yes starts the repairs");
+        assert_eq!(app.vss_status, "Skipped", "and asks for no restore point");
     }
 
     fn output(line: &str) -> RepairEvent {
