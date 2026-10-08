@@ -421,8 +421,10 @@ fn check_contents(bytes: &[u8], key_path: &str) -> Result<(), String> {
         .filter(|body| body.len() % 2 == 0)
         .and_then(|body| {
             let units: Vec<u16> = body
-                .chunks_exact(2)
-                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&pair| u16::from_le_bytes(pair))
                 .collect();
             String::from_utf16(&units).ok()
         })
@@ -566,8 +568,10 @@ mod tests {
 
     fn text_of(export: &[u8]) -> String {
         let units: Vec<u16> = export[2..]
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&pair| u16::from_le_bytes(pair))
             .collect();
         String::from_utf16(&units).unwrap()
     }
