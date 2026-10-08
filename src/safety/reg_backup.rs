@@ -559,11 +559,9 @@ mod tests {
         let _ = std::fs::remove_file(&outside);
     }
 
-    /// The Fast Startup key as `reg export` writes it. Constructed; see the
-    /// fixture's entry in tests/fixtures/README.md.
-    const POWER_EXPORT: &[u8] = include_bytes!(
-        "../../tests/fixtures/files/reg_export_session_manager_power_constructed.bin"
-    );
+    /// The Fast Startup key as `reg export` wrote it on Windows 11.
+    const POWER_EXPORT: &[u8] =
+        include_bytes!("../../tests/fixtures/files/reg_export_session_manager_power.bin");
     const POWER_KEY: &str = r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power";
 
     fn text_of(export: &[u8]) -> String {
