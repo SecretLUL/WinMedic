@@ -124,11 +124,13 @@ jobs:
           }
           $code = $LASTEXITCODE
           $out = $lines -join "`n"
-          if ($code -gt 2) { throw "winmedic --scan exited with $code" }
+          # First, so that exit code 7 (a check could not run) names the
+          # modules rather than only the code.
           $failed = [regex]::Matches($out, '(?m)^\[X\] Module .*$')
           if ($failed.Count -gt 0) {
             throw "Modules failed on a real Windows:`n$(($failed | ForEach-Object Value) -join "`n")"
           }
+          if ($code -gt 2) { throw "winmedic --scan exited with $code" }
           if ($out -notmatch '(?m)^\[OK\] Module ') { throw 'No module reported finishing' }
           # Exit codes 1 and 2 are findings on the runner, not failures, but
           # Actions ends a pwsh step with the last native exit code.
