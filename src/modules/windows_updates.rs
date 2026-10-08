@@ -4,6 +4,7 @@ use crate::modules::system_cleaner::{clean_path_contents, cleanup_result, format
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
 use crate::utils::event_xml::{EventRecord, read_events, system_log_query};
+use crate::utils::fs_stats::{dir_stats_recursive, measure_dirs};
 use crate::utils::service::{
     self, SERVICE_DISABLED, SERVICE_RUNNING, SERVICE_START_PENDING, SERVICE_STOPPED,
 };
@@ -714,7 +715,7 @@ impl DiagnosticModule for WindowsUpdatesModule {
             // rounding to megabytes once at the end. Dividing per file discarded
             // every file below 1 MB, and this cache is mostly small files — the
             // 5000 MB threshold could barely be reached.
-            let stats = crate::utils::fs_stats::dir_stats_recursive(soft_dist);
+            let stats = measure_dirs(vec![soft_dist.to_path_buf()], dir_stats_recursive).await;
             let total_size_mb = stats.bytes / (1024 * 1024);
             let file_count = stats.files;
 

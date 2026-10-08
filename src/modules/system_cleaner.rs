@@ -4,7 +4,7 @@ use crate::modules::{
 };
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
 use crate::utils::debug_log::DebugTrace;
-use crate::utils::fs_stats::dir_stats_recursive;
+use crate::utils::fs_stats::{dir_stats_recursive, measure_dirs};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -740,42 +740,15 @@ impl SystemCleanerModule {
 
     /// Measure `dirs` on a blocking thread and return the combined totals.
     ///
-    /// The walks below are synchronous `std::fs` recursion over locations that
-    /// routinely hold hundreds of thousands of files. Run inline they would pin
-    /// a Tokio worker for minutes, and — having no await point — would make the
-    /// scan task un-abortable, so `[Esc]` could not cancel it.
+    /// The walks are synchronous and can run for minutes; see [`measure_dirs`]
+    /// for why they must not run inline.
     async fn scan_dirs(dirs: Vec<PathBuf>) -> DirStats {
-        Self::scan_dirs_with(dirs, scan_path_recursive).await
-    }
-
-    /// Like [`Self::scan_dirs`], but measuring each directory with `measure`.
-    async fn scan_dirs_with(dirs: Vec<PathBuf>, measure: fn(&Path) -> DirStats) -> DirStats {
-        tokio::task::spawn_blocking(move || {
-            let mut total = DirStats::default();
-            for dir in &dirs {
-                let stats = measure(dir);
-                total.bytes += stats.bytes;
-                total.files += stats.files;
-            }
-            total
-        })
-        .await
-        .unwrap_or_default()
+        measure_dirs(dirs, scan_path_recursive).await
     }
 
     /// Like [`Self::scan_dirs`], but counting only log/diagnostic archive files.
     async fn scan_log_dirs(dirs: Vec<PathBuf>) -> DirStats {
-        tokio::task::spawn_blocking(move || {
-            let mut total = DirStats::default();
-            for dir in &dirs {
-                let stats = scan_log_dir_files(dir);
-                total.bytes += stats.bytes;
-                total.files += stats.files;
-            }
-            total
-        })
-        .await
-        .unwrap_or_default()
+        measure_dirs(dirs, scan_log_dir_files).await
     }
 
     /// Delete the contents of `dirs` on a blocking thread, reporting each one.
@@ -1138,7 +1111,7 @@ impl DiagnosticModule for SystemCleanerModule {
         .await;
 
         let recycle_dirs = self.paths.recycle_bins.clone();
-        let recycle_stats = Self::scan_dirs_with(recycle_dirs, scan_recycle_bin_contents).await;
+        let recycle_stats = measure_dirs(recycle_dirs, scan_recycle_bin_contents).await;
 
         if worth_reporting(recycle_stats, MIN_REPORTABLE_CLEANUP_BYTES) {
             let mut recycle_issue = Issue::new(

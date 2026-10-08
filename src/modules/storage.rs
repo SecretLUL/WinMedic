@@ -6,6 +6,7 @@ use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner, ps_single_quoted};
 use crate::utils::debug_log::DebugTrace;
 use crate::utils::event_xml::{EventRecord, read_events, system_log_query};
+use crate::utils::fs_stats::{dir_stats_recursive, measure_dirs};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -363,13 +364,10 @@ impl DiagnosticModule for StorageModule {
         .await;
         sleep(Duration::from_millis(150)).await;
 
-        let (temp_bytes, temp_files) = self
-            .temp_dirs
-            .iter()
-            .map(|dir| crate::utils::fs_stats::dir_stats_recursive(dir))
-            .fold((0u64, 0usize), |(bytes, files), s| {
-                (bytes + s.bytes, files + s.files)
-            });
+        // Walked on a blocking thread, so that cancelling the scan does not wait
+        // for the walk to finish.
+        let temp = measure_dirs(self.temp_dirs.clone(), dir_stats_recursive).await;
+        let (temp_bytes, temp_files) = (temp.bytes, temp.files);
         let temp_size = format_bytes(temp_bytes);
 
         if temp_bytes > self.config.temp_clean_threshold_mb * 1024 * 1024 {
