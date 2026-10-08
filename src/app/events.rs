@@ -61,7 +61,12 @@ impl App {
                     }
                 }
                 ScanEvent::ModuleProgressUpdate(prog) => {
-                    if let Some(module) = self.module_progress_mut(&prog.module_id) {
+                    // A log-only event has no percentage or step of its own:
+                    // applying its zero would reset the module's bar and blank
+                    // the step it is on.
+                    if !prog.is_log_only()
+                        && let Some(module) = self.module_progress_mut(&prog.module_id)
+                    {
                         module.percent = prog.progress_percent;
                         module.set_step(&prog.current_step);
                     }
@@ -475,6 +480,7 @@ mod tests {
     use crate::app::ConfirmRequest;
     use crate::modules::ModuleProgress;
     use crate::safety::audit::AuditLogger;
+    use crate::utils::debug_log::DebugTrace;
     use crate::utils::self_update::{InstalledUpdate, SignatureStatus, UpdateFailure};
     use std::path::PathBuf;
     use std::time::Duration;
@@ -504,6 +510,46 @@ mod tests {
             .iter()
             .find(|m| m.id == id)
             .expect("module is registered")
+    }
+
+    /// A verbose trace line is only a log line: it must neither reset the bar
+    /// of the module it came from nor restart the clock on the step it is on.
+    #[tokio::test]
+    async fn a_trace_line_leaves_the_bar_and_the_step_alone() {
+        let (mut app, tx) = scanning_app();
+        tx.send(progress(
+            "storage",
+            40,
+            "Measuring junk & temp file size...",
+        ))
+        .await
+        .unwrap();
+        app.process_background_events();
+        let since = find(&app, "storage").step_since;
+
+        // The event the module's trace sink sends, as the scan receives it.
+        let (trace_tx, mut trace_rx) = channel::<ModuleProgress>(8);
+        DebugTrace::scan("storage", Some(trace_tx), true)
+            .data("C:\\Windows\\Temp (directory)")
+            .await;
+        tx.send(ScanEvent::ModuleProgressUpdate(
+            trace_rx.recv().await.unwrap(),
+        ))
+        .await
+        .unwrap();
+        app.process_background_events();
+
+        let module = find(&app, "storage");
+        assert_eq!(module.percent, 40);
+        assert_eq!(module.step, "Measuring junk & temp file size...");
+        assert_eq!(module.step_since, since, "and its clock keeps running");
+        assert!(
+            app.scan_log_messages
+                .iter()
+                .any(|line| line.ends_with("C:\\Windows\\Temp (directory)")),
+            "the line still reaches the log: {:?}",
+            app.scan_log_messages
+        );
     }
 
     /// Every module keeps its own step, rather than all of them sharing one

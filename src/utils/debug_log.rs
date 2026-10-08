@@ -212,14 +212,7 @@ impl DebugTrace {
                     .await;
             }
             DebugSink::Scan { module_id, tx } => {
-                let _ = tx
-                    .send(ModuleProgress {
-                        module_id: module_id.clone(),
-                        progress_percent: 0,
-                        current_step: String::new(),
-                        log_message: Some(line),
-                    })
-                    .await;
+                let _ = tx.send(ModuleProgress::log_only(module_id, line)).await;
             }
             DebugSink::Discard => {}
         }

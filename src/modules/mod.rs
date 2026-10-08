@@ -108,6 +108,27 @@ pub struct ModuleProgress {
     pub log_message: Option<String>,
 }
 
+impl ModuleProgress {
+    /// An event that carries only a log line, such as a verbose trace.
+    ///
+    /// It has no percentage and no step, so applying it to a module's bar would
+    /// reset the bar. [`Self::is_log_only`] is how the scan tells it apart.
+    pub fn log_only(module_id: &str, line: String) -> Self {
+        Self {
+            module_id: module_id.to_string(),
+            progress_percent: 0,
+            current_step: String::new(),
+            log_message: Some(line),
+        }
+    }
+
+    /// Whether this event only carries a log line. Every real progress event
+    /// names the step its module is on, so an empty step marks a log-only one.
+    pub fn is_log_only(&self) -> bool {
+        self.current_step.is_empty()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FixProgress {
     pub issue_id: String,
