@@ -6,7 +6,7 @@ use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
 use crate::utils::event_xml::{EventRecord, read_events, system_log_query};
 use crate::utils::fs_stats::{dir_stats_recursive, measure_dirs};
 use crate::utils::service::{
-    self, SERVICE_DISABLED, SERVICE_RUNNING, SERVICE_START_PENDING, SERVICE_STOPPED,
+    self, SERVICE_DISABLED, SERVICE_RUNNING, SERVICE_START_PENDING, SERVICE_STOPPED, StartAgain,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -30,31 +30,9 @@ pub struct WindowsUpdatesModule {
 /// are stopped.
 const CACHE_SERVICES: [&str; 3] = ["wuauserv", "bits", "cryptsvc"];
 
-/// Starts the update services again when dropped while still armed: when the
-/// repair is cancelled, or fails, between stopping and starting them. Through
-/// the runner, on the runtime, because a destructor cannot wait.
-struct StartAgain {
-    runner: Arc<dyn CommandRunner>,
-    armed: bool,
-}
-
-impl Drop for StartAgain {
-    fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-        let runner = self.runner.clone();
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(async move {
-                for svc in CACHE_SERVICES.iter().rev() {
-                    let _ = runner
-                        .run("net.exe", &["start", svc], Duration::from_secs(30))
-                        .await;
-                }
-            });
-        }
-    }
-}
+/// [`CACHE_SERVICES`] in reverse: the order they are started again.
+const CACHE_SERVICES_REVERSED: [&str; 3] =
+    [CACHE_SERVICES[2], CACHE_SERVICES[1], CACHE_SERVICES[0]];
 
 /// The finding for restart work Windows has queued. The restart itself is
 /// what settles it, so the app treats it like a repair waiting on one.
@@ -462,10 +440,7 @@ impl WindowsUpdatesModule {
     /// them again if the caller does not get to; `untouched` says what was
     /// left alone when one does not stop.
     async fn stop_services(&self, untouched: &str) -> Result<StartAgain, String> {
-        let guard = StartAgain {
-            runner: self.runner.clone(),
-            armed: true,
-        };
+        let guard = StartAgain::new(self.runner.clone(), &CACHE_SERVICES_REVERSED);
         for svc in CACHE_SERVICES {
             let _ = self
                 .runner
@@ -484,7 +459,7 @@ impl WindowsUpdatesModule {
     /// Start the services again; the ones that did not, with their state.
     async fn start_services(&self, mut guard: StartAgain) -> Result<Vec<String>, String> {
         let mut not_running = Vec::new();
-        for svc in CACHE_SERVICES.iter().rev() {
+        for svc in CACHE_SERVICES_REVERSED {
             let _ = self
                 .runner
                 .run("net.exe", &["start", svc], Duration::from_secs(60))
@@ -494,7 +469,7 @@ impl WindowsUpdatesModule {
                 not_running.push(format!("{svc} (state {state:?})"));
             }
         }
-        guard.armed = false;
+        guard.disarm();
         Ok(not_running)
     }
 
@@ -1111,12 +1086,18 @@ mod tests {
         for _ in 0..10 {
             tokio::task::yield_now().await;
         }
-        assert!(
-            mock.executed()
-                .iter()
-                .any(|c| c == "net.exe start wuauserv"),
-            "{:?}",
-            mock.executed()
+        let started: Vec<String> = mock
+            .executed()
+            .into_iter()
+            .filter(|c| c.starts_with("net.exe start"))
+            .collect();
+        assert_eq!(
+            started,
+            [
+                "net.exe start cryptsvc",
+                "net.exe start bits",
+                "net.exe start wuauserv"
+            ]
         );
     }
 
