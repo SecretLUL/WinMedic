@@ -948,7 +948,6 @@ fn flush_driver_token(token: &str, out: &mut BTreeSet<String>) {
 /// embedded in the dump we name it as the faulting module.
 const KNOWN_TROUBLE_DRIVERS: &[&str] = &[
     "nvlddmkm.sys",
-    "nvlddmkm",
     "amdkmdag.sys",
     "amdkmdap.sys",
     "atikmdag.sys",
