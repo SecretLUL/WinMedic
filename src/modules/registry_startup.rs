@@ -131,8 +131,11 @@ impl RegistryStartupModule {
             return Some(PathBuf::from(&rest[..end_quote]));
         }
 
-        // 2. Look for case-insensitive .exe / .cmd / .bat in the command string
-        let lower = trimmed.to_lowercase();
+        // 2. Look for case-insensitive .exe / .cmd / .bat in the command string.
+        // Lowering only ASCII keeps every byte position, so an index found in
+        // `lower` is valid in `trimmed` too. `to_lowercase` changes the byte
+        // length of some letters (U+0130, U+212A) and moved the cut.
+        let lower = trimmed.to_ascii_lowercase();
         for ext in [".exe", ".bat", ".cmd", ".vbs"] {
             if let Some(idx) = lower.find(ext) {
                 let candidate = &trimmed[..idx + ext.len()];
@@ -431,5 +434,35 @@ mod tests {
             data: r"C:\WinMedic-no-such-dir\tool.exe".to_string(),
         };
         assert_eq!(missing_target(&value), None);
+    }
+
+    // Some letters change their length in UTF-8 when lowercased: U+0130 grows
+    // from 2 bytes to 3, U+212B and U+212A shrink from 3 to 2 and 1.
+    #[test]
+    fn an_unquoted_path_with_a_dotted_capital_i_stops_at_its_extension() {
+        assert_eq!(
+            RegistryStartupModule::extract_exe_path("C:\\Users\\\u{130}lkay\\tool.exe /background"),
+            Some(PathBuf::from("C:\\Users\\\u{130}lkay\\tool.exe"))
+        );
+    }
+
+    #[test]
+    fn an_unquoted_path_with_a_dotted_capital_i_and_no_arguments_does_not_panic() {
+        assert_eq!(
+            RegistryStartupModule::extract_exe_path("C:\\Users\\\u{130}lkay\\tool.exe"),
+            Some(PathBuf::from("C:\\Users\\\u{130}lkay\\tool.exe"))
+        );
+    }
+
+    #[test]
+    fn an_unquoted_path_with_angstrom_and_kelvin_signs_stops_at_its_extension() {
+        assert_eq!(
+            RegistryStartupModule::extract_exe_path(
+                "C:\\Program Files\\\u{212B}\u{212A}\\tool.exe --min"
+            ),
+            Some(PathBuf::from(
+                "C:\\Program Files\\\u{212B}\u{212A}\\tool.exe"
+            ))
+        );
     }
 }
