@@ -338,6 +338,6 @@ async fn test_scenario_6_dism_german_locale_pipeline() {
     // 3. Post-repair exit code calculation
     let mut fixed_issues = issues.clone();
     fixed_issues[0].is_fixed = true;
-    let exit = exit_code::from_issues(&fixed_issues, 0);
+    let exit = exit_code::from_issues(&fixed_issues, 0, 0);
     assert_eq!(exit, exit_code::OK);
 }

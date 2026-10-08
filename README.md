@@ -107,8 +107,10 @@ winmedic --dry-run                     # show what a repair would run, run nothi
 ```
 
 The exit code tells a script how it went: `0` fine, `1` warnings, `2` critical
-problems, `3` a repair failed. Every flag and code is listed in
-[How WinMedic works](docs/how-it-works.md#cli-headless-automation-mode).
+problems, `3` a repair failed, `7` a check could not run, so the findings are
+incomplete. `2` and `3` can also come with an incomplete scan; without `--json`
+the console names each failed module (`[X] Module ... failed`). Every flag and
+code is listed in [How WinMedic works](docs/how-it-works.md#cli-headless-automation-mode).
 
 ## Uninstall
 

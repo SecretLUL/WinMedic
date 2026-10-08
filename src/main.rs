@@ -34,7 +34,10 @@ Exit codes (headless mode):
   3  at least one repair failed
   4  started without Administrator privileges
   5  internal error
-  6  aborted with Ctrl+C"
+  6  aborted with Ctrl+C
+  7  at least one check could not run, so the findings are incomplete
+
+2 and 3 can also come with an incomplete scan; without --json, the console output names each failed module (\"[X] Module ... failed\")."
 )]
 struct CliArgs {
     /// Run diagnostic scan in headless CLI mode and output report
@@ -540,7 +543,7 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         // scheduled-task check would then report against the helper itself.
         exit_code::OK
     } else {
-        exit_code::from_issues(&issues, failed_fixes)
+        exit_code::from_issues(&issues, failed_fixes, failed_modules.len())
     };
 
     if !quiet {

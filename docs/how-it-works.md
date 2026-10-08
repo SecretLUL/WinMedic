@@ -202,6 +202,9 @@ Headless runs report their outcome through `%ERRORLEVEL%`, so scripts and monito
 | `4` | Started without Administrator privileges |
 | `5` | Internal WinMedic error |
 | `6` | Run aborted with `Ctrl+C`; findings are incomplete |
+| `7` | At least one check could not run, so the findings are incomplete |
+
+`2` and `3` can also come with an incomplete scan; without `--json`, the console names each failed module as `[X] Module ... failed`.
 
 ```powershell
 winmedic.exe --scan
