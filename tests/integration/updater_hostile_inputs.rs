@@ -769,6 +769,30 @@ async fn test_github_api_large_payload_stress() {
     assert!(info.release_body.unwrap().len() > 65536);
 }
 
+/// A tampered `html_url` that climbs out of the release path, or uses a
+/// backslash, is dropped even though the release is newer.
+#[tokio::test]
+async fn test_github_api_release_url_with_dot_segments_or_backslash_is_dropped() {
+    for html_url in [
+        "https://github.com/SecretLUL/WinMedic/releases/../../../attacker/WinMedic/releases/tag/v9.9.9",
+        "https://github.com/SecretLUL/WinMedic/releases/tag/v9.9.9/..",
+        r"https://github.com/SecretLUL\..\attacker\WinMedic\releases\tag\v9.9.9",
+    ] {
+        let mock = MockCommandRunner::new();
+        let payload = serde_json::json!({
+            "tag_name": "v9.9.9",
+            "html_url": html_url,
+            "draft": false,
+            "prerelease": false
+        })
+        .to_string();
+        mock.add_response("curl.exe", CmdOutput::ok(payload));
+
+        let info = check_for_update(&mock, "0.1.0", Duration::from_secs(5)).await;
+        assert_eq!(info, None, "a release page at {} was announced", html_url);
+    }
+}
+
 // ============================================================================
 // 4. APPCONFIG BOUNDARY SETTINGS & PERSISTENCE
 // ============================================================================
@@ -881,6 +905,20 @@ fn test_browser_launch_validation() {
     assert!(
         validate_release_url("https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0").is_ok()
     );
+}
+
+/// Dot segments are removed by curl and browsers, and a backslash is a path
+/// separator to some clients, so neither may reach the browser launcher.
+#[test]
+fn test_browser_launch_refuses_dot_segments_and_backslashes() {
+    for url in [
+        "https://github.com/SecretLUL/WinMedic/releases/../../evil",
+        "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0/.",
+        "https://github.com/SecretLUL/WinMedic/releases/%2e%2e/evil",
+        r"https://github.com/SecretLUL\..\..\evil",
+    ] {
+        assert!(validate_release_url(url).is_err(), "accepted {}", url);
+    }
 }
 
 #[test]

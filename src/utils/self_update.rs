@@ -1356,6 +1356,10 @@ mod tests {
             // Another account's release assets are still not this project's.
             "https://github.com/attacker/WinMedic/releases/download/v1/winmedic.exe",
             "https://evil.example/winmedic.exe",
+            // Dot segments climb out of the download path; curl would remove them.
+            "https://github.com/SecretLUL/WinMedic/releases/download/v1/../../../../attacker/WinMedic/releases/download/v1/winmedic.exe",
+            // A backslash is a path separator to some clients, so it climbs the same way.
+            r"https://github.com/SecretLUL/WinMedic/releases/download/v1\..\..\winmedic.exe",
         ] {
             let err = curl_download(
                 &mock,
