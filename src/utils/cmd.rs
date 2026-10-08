@@ -544,6 +544,59 @@ fn windows_folder(get: unsafe extern "system" fn(*mut u16, u32) -> u32) -> Optio
     }
 }
 
+/// How long the output readers get to finish once the process has exited.
+///
+/// They end when the pipes close, and a process the command started can hold
+/// them open after the command itself has ended: waiting for the readers
+/// without a limit then waited for that process, however long it ran. The
+/// command's own output is in the pipe by the time it exits, so reading the
+/// rest takes milliseconds; whatever arrived by the limit is kept.
+const PIPE_DRAIN_LIMIT: Duration = Duration::from_secs(10);
+
+/// Wait up to `limit` ([`PIPE_DRAIN_LIMIT`]) for both readers, then stop
+/// them.
+async fn drain_readers<T>(
+    stdout: tokio::task::JoinHandle<T>,
+    stderr: tokio::task::JoinHandle<T>,
+    limit: Duration,
+) {
+    let (stop_stdout, stop_stderr) = (stdout.abort_handle(), stderr.abort_handle());
+    let both = async {
+        let _ = tokio::join!(stdout, stderr);
+    };
+    if timeout(limit, both).await.is_err() {
+        stop_stdout.abort();
+        stop_stderr.abort();
+    }
+}
+
+/// Read `pipe` to the end into `out`, a piece at a time, so that what has
+/// arrived is kept when the reader is stopped early.
+async fn read_into(pipe: Option<impl tokio::io::AsyncRead + Unpin>, out: Arc<Mutex<Vec<u8>>>) {
+    let Some(mut pipe) = pipe else {
+        return;
+    };
+    let mut buf = [0u8; 4096];
+    loop {
+        match pipe.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(read) => {
+                if let Ok(mut out) = out.lock() {
+                    out.extend_from_slice(&buf[..read]);
+                }
+            }
+        }
+    }
+}
+
+/// What a reader collected, taken out of its shared buffer.
+fn take_collected<T: Default>(collected: &Mutex<T>) -> T {
+    collected
+        .lock()
+        .map(|mut collected| std::mem::take(&mut *collected))
+        .unwrap_or_default()
+}
+
 /// Execute a system command with timeout and return the complete output.
 pub async fn run_cmd(
     program: &str,
@@ -568,35 +621,20 @@ pub async fn run_cmd(
         .spawn()
         .map_err(|e| describe_spawn_failure(program, &e))?;
 
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-
-    let stdout_handle = tokio::spawn(async move {
-        let mut out = Vec::new();
-        if let Some(mut s) = stdout {
-            let _ = s.read_to_end(&mut out).await;
-        }
-        out
-    });
-
-    let stderr_handle = tokio::spawn(async move {
-        let mut err = Vec::new();
-        if let Some(mut s) = stderr {
-            let _ = s.read_to_end(&mut err).await;
-        }
-        err
-    });
+    let stdout_bytes = Arc::new(Mutex::new(Vec::new()));
+    let stderr_bytes = Arc::new(Mutex::new(Vec::new()));
+    let stdout_handle = tokio::spawn(read_into(child.stdout.take(), stdout_bytes.clone()));
+    let stderr_handle = tokio::spawn(read_into(child.stderr.take(), stderr_bytes.clone()));
 
     let status_res = timeout(timeout_duration, child.wait()).await;
     match status_res {
         Ok(Ok(status)) => {
-            let stdout_bytes = stdout_handle.await.unwrap_or_default();
-            let stderr_bytes = stderr_handle.await.unwrap_or_default();
+            drain_readers(stdout_handle, stderr_handle, PIPE_DRAIN_LIMIT).await;
             Ok(CmdOutput {
                 success: status.success(),
                 exit_code: status.code(),
-                stdout: decode_output_in(&stdout_bytes, CodePage::of(program)),
-                stderr: decode_output_in(&stderr_bytes, CodePage::of(program)),
+                stdout: decode_output_in(&take_collected(&stdout_bytes), CodePage::of(program)),
+                stderr: decode_output_in(&take_collected(&stderr_bytes), CodePage::of(program)),
             })
         }
         Ok(Err(e)) => Err(format!("Command execution error: {}", e)),
@@ -635,23 +673,23 @@ pub async fn run_cmd_streaming(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
-    let mut stdout_lines = Vec::new();
-    let mut stderr_lines = Vec::new();
+    let stdout_lines = Arc::new(Mutex::new(Vec::new()));
+    let stderr_lines = Arc::new(Mutex::new(Vec::new()));
 
     let stdout_tx = log_tx.clone();
+    let stdout_sink = stdout_lines.clone();
     let stdout_handle = tokio::spawn(async move {
         if let Some(stdout) = stdout {
-            forward_lines(stdout, stdout_tx, "", &mut stdout_lines).await;
+            forward_lines(stdout, stdout_tx, "", &stdout_sink).await;
         }
-        stdout_lines
     });
 
     let stderr_tx = log_tx;
+    let stderr_sink = stderr_lines.clone();
     let stderr_handle = tokio::spawn(async move {
         if let Some(stderr) = stderr {
-            forward_lines(stderr, stderr_tx, "[STDERR] ", &mut stderr_lines).await;
+            forward_lines(stderr, stderr_tx, "[STDERR] ", &stderr_sink).await;
         }
-        stderr_lines
     });
 
     // The readers end when the pipes close, which is when the process has
@@ -671,12 +709,12 @@ pub async fn run_cmd_streaming(
         }
     };
 
-    let (stdout_out, stderr_out) = tokio::join!(stdout_handle, stderr_handle);
+    drain_readers(stdout_handle, stderr_handle, PIPE_DRAIN_LIMIT).await;
     Ok(CmdOutput {
         success: status.success(),
         exit_code: status.code(),
-        stdout: stdout_out.unwrap_or_default().join("\n"),
-        stderr: stderr_out.unwrap_or_default().join("\n"),
+        stdout: take_collected(&stdout_lines).join("\n"),
+        stderr: take_collected(&stderr_lines).join("\n"),
     })
 }
 
@@ -693,7 +731,7 @@ async fn forward_lines(
     mut pipe: impl tokio::io::AsyncRead + Unpin,
     tx: Option<Sender<String>>,
     prefix: &str,
-    lines: &mut Vec<String>,
+    lines: &Mutex<Vec<String>>,
 ) {
     let mut decoder = LineDecoder::new();
     let mut buf = [0u8; 4096];
@@ -707,7 +745,7 @@ async fn forward_lines(
             if let Some(ref tx) = tx {
                 let _ = tx.send(format!("{prefix}{line}")).await;
             }
-            lines.push(line);
+            keep(lines, line);
             sent_progress = None;
         }
         let progress = decoder.progress();
@@ -722,6 +760,13 @@ async fn forward_lines(
         if let Some(ref tx) = tx {
             let _ = tx.send(format!("{prefix}{line}")).await;
         }
+        keep(lines, line);
+    }
+}
+
+/// Add a finished line to the command's output.
+fn keep(lines: &Mutex<Vec<String>>, line: String) {
+    if let Ok(mut lines) = lines.lock() {
         lines.push(line);
     }
 }
@@ -913,8 +958,9 @@ mod tests {
         let captured: &[u8] =
             include_bytes!("../../tests/fixtures/console/sfc_verifyonly_progress_de.bin");
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(256);
-        let mut lines = Vec::new();
-        forward_lines(captured, Some(tx), "", &mut lines).await;
+        let lines = Mutex::new(Vec::new());
+        forward_lines(captured, Some(tx), "", &lines).await;
+        let lines = lines.into_inner().unwrap();
 
         let mut forwarded = Vec::new();
         while let Ok(line) = rx.try_recv() {
@@ -946,6 +992,52 @@ mod tests {
             "returned after {:?}",
             started.elapsed()
         );
+    }
+
+    /// cmd ends at once, but the ping it starts inherits the pipes and holds
+    /// them for twenty seconds. Loopback only, no window.
+    #[tokio::test]
+    async fn a_process_left_holding_the_pipes_does_not_hold_up_the_command() {
+        let started = std::time::Instant::now();
+        let out = run_cmd(
+            "cmd.exe",
+            &["/c", "echo verdict& start /b ping -n 20 127.0.0.1 >nul"],
+            Duration::from_secs(60),
+        )
+        .await
+        .expect("cmd starts");
+        assert_eq!(out.stdout.trim(), "verdict");
+        assert!(
+            started.elapsed() < PIPE_DRAIN_LIMIT + Duration::from_secs(7),
+            "returned after {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// A reader whose pipe stays open is stopped at the limit, and what it
+    /// read until then is kept.
+    #[tokio::test]
+    async fn a_reader_held_open_is_stopped_and_keeps_what_it_read() {
+        let collected = Arc::new(Mutex::new(Vec::new()));
+        let sink = collected.clone();
+        let held = tokio::spawn(async move {
+            sink.lock().unwrap().extend_from_slice(b"verdict");
+            std::future::pending::<()>().await
+        });
+        let probe = held.abort_handle();
+        let finished = tokio::spawn(async {});
+
+        let started = std::time::Instant::now();
+        drain_readers(held, finished, Duration::from_millis(200)).await;
+        assert!(started.elapsed() < Duration::from_secs(5));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !probe.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the held reader is stopped");
+        assert_eq!(take_collected(&collected), b"verdict");
     }
 
     #[test]
