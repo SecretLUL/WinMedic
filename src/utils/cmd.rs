@@ -679,15 +679,36 @@ pub async fn run_powershell(command_str: &str, timeout_dur: Duration) -> Result<
 ///
 /// PowerShell performs no interpolation inside single-quoted strings, so
 /// `$var`, `$(...)`, `@(...)` and backtick escapes are all inert there. That
-/// leaves `'` as the only metacharacter, and it is escaped by doubling it —
-/// which is why this needs no allow-list and cannot be defeated by an encoding
-/// the caller did not anticipate.
+/// leaves the single quote as the only metacharacter, and it is escaped by
+/// doubling it — which is why this needs no allow-list.
+///
+/// PowerShell knows five single quotes, not one: besides `'` it ends a
+/// single-quoted string at `‘`, `’`, `‚` and `‛` as well (see
+/// [`is_ps_single_quote`]). A task called "Bob’s Backup", with the apostrophe
+/// Word and most keyboards on phones type, closed the literal early. All five
+/// are doubled, as PowerShell's own
+/// `CodeGeneration.EscapeSingleQuotedStringContent` does.
 ///
 /// This protects a *value*. It does not make an arbitrary script safe: command
 /// names, parameter names and script structure must always be literals in the
 /// source, never assembled from external input.
 pub fn ps_single_quoted(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('\'');
+    for c in value.chars() {
+        if is_ps_single_quote(c) {
+            quoted.push(c);
+        }
+        quoted.push(c);
+    }
+    quoted.push('\'');
+    quoted
+}
+
+/// Whether PowerShell's tokenizer treats `c` as a single quote: the ASCII
+/// apostrophe and the four typographic ones (`CharExtensions.IsSingleQuote`).
+pub fn is_ps_single_quote(c: char) -> bool {
+    matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}')
 }
 
 /// How many syntax errors PowerShell's parser finds in `script`, which it
@@ -1015,5 +1036,85 @@ mod tests {
         assert_eq!(once, "'O''Brien'");
         assert_eq!(twice, "'''O''''Brien'''");
         assert_eq!(twice.matches('\'').count() % 2, 0);
+    }
+
+    /// Reads a single-quoted literal off the front of `script` the way
+    /// PowerShell's tokenizer does (`Tokenizer.ScanStringLiteral`): any of the
+    /// five quotes opens and closes it, and two of them in a row stand for the
+    /// second one. Returns the value and what follows the literal.
+    fn scan_ps_literal(script: &str) -> Option<(String, &str)> {
+        let mut chars = script.char_indices().peekable();
+        let (_, open) = chars.next()?;
+        if !is_ps_single_quote(open) {
+            return None;
+        }
+        let mut value = String::new();
+        while let Some((at, c)) = chars.next() {
+            if is_ps_single_quote(c) {
+                match chars.peek() {
+                    Some(&(_, next)) if is_ps_single_quote(next) => {
+                        value.push(next);
+                        chars.next();
+                        continue;
+                    }
+                    _ => return Some((value, &script[at + c.len_utf8()..])),
+                }
+            }
+            value.push(c);
+        }
+        None
+    }
+
+    #[test]
+    fn ps_quoting_doubles_every_quote_powershell_knows() {
+        for quote in ['\'', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}'] {
+            let value = format!("Bob{quote}s Backup{quote}; Remove-Item C:\\x; {quote}");
+            let quoted = ps_single_quoted(&value);
+            assert_eq!(
+                quoted,
+                format!(
+                    "'Bob{quote}{quote}s Backup{quote}{quote}; Remove-Item C:\\x; {quote}{quote}'"
+                ),
+                "U+{:04X}",
+                quote as u32
+            );
+            assert_eq!(
+                scan_ps_literal(&quoted),
+                Some((value.clone(), "")),
+                "the literal must end exactly where the quoting ends (U+{:04X})",
+                quote as u32
+            );
+        }
+    }
+
+    #[test]
+    fn a_typographic_apostrophe_no_longer_ends_the_literal() {
+        // What the old helper made of it: the literal closed after "Bob".
+        let old = format!("'{}'", "Bob\u{2019}s Backup".replace('\'', "''"));
+        assert_eq!(
+            scan_ps_literal(&old),
+            Some(("Bob".to_string(), "s Backup'"))
+        );
+
+        let quoted = ps_single_quoted("Bob\u{2019}s Backup");
+        assert_eq!(
+            scan_ps_literal(&quoted),
+            Some(("Bob\u{2019}s Backup".to_string(), ""))
+        );
+        assert!(!is_ps_single_quote('"'));
+        assert!(!is_ps_single_quote('`'));
+    }
+
+    /// PowerShell itself reads every quoted value back unchanged, whichever
+    /// quotes it holds.
+    #[tokio::test]
+    async fn powershell_reads_a_quoted_value_back_unchanged() {
+        let value = "Bob's \u{2018}Backup\u{2019} \u{201A}x\u{201B} $(Get-Date) `n";
+        let script = format!("[Console]::Out.Write({})", ps_single_quoted(value));
+        let out = run_powershell(&script, Duration::from_secs(60))
+            .await
+            .expect("PowerShell starts");
+        assert_eq!(out.stdout, value);
+        assert_eq!(powershell_parse_errors(&script).await, 0);
     }
 }
