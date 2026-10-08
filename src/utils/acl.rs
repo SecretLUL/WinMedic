@@ -168,10 +168,10 @@ pub fn admin_only_problem(path: &Path) -> Option<String> {
     None
 }
 
-/// Create `dir`, and the folders missing above it, so that only
-/// Administrators and SYSTEM can change them; then check that nobody else
-/// can change `dir` or a folder above it, since a folder of that name may
-/// have been there already, made by someone else.
+/// Create `dir`, and the folders missing above it, owned by Administrators
+/// and changeable by Administrators and SYSTEM only; then check that nobody
+/// else can change `dir` or a folder above it, since a folder of that name
+/// may have been there already, made by someone else.
 pub fn create_admin_only_dir(dir: &Path) -> Result<(), String> {
     let mut missing = Vec::new();
     let mut at = Some(dir);
@@ -337,8 +337,58 @@ fn account(sid: windows_sys::Win32::Security::PSID) -> Option<Account> {
     })
 }
 
-/// Create one folder whose permissions let only SYSTEM and Administrators
-/// in, inherited by everything created inside, and not inherited from above.
+/// Make Administrators the owner of `path`.
+///
+/// A new file belongs to the default owner of the program that wrote it:
+/// Administrators for a program elevated under UAC, but it can be the
+/// account itself, for instance with UAC switched off. An owner can always
+/// rewrite the permissions, so [`admin_only_problem`] counts such a file as
+/// changeable by that account.
+#[cfg(windows)]
+pub fn hand_to_administrators(path: &Path) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::{ERROR_SUCCESS, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSidToSidW, SE_FILE_OBJECT, SetNamedSecurityInfoW,
+    };
+    use windows_sys::Win32::Security::{OWNER_SECURITY_INFORMATION, PSID};
+
+    let mut administrators: PSID = std::ptr::null_mut();
+    if unsafe {
+        ConvertStringSidToSidW(
+            wide(std::ffi::OsStr::new(ADMINISTRATORS)).as_ptr(),
+            &mut administrators,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    let status = unsafe {
+        SetNamedSecurityInfoW(
+            wide(path.as_os_str()).as_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            administrators,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    unsafe { LocalFree(administrators) };
+    if status == ERROR_SUCCESS {
+        Ok(())
+    } else {
+        Err(std::io::Error::from_raw_os_error(status as i32).to_string())
+    }
+}
+
+#[cfg(not(windows))]
+pub fn hand_to_administrators(_path: &Path) -> Result<(), String> {
+    Err("owners are only set on Windows".to_string())
+}
+
+/// Create one folder owned by Administrators, whose permissions let only
+/// SYSTEM and Administrators in, inherited by everything created inside, and
+/// not inherited from above.
 #[cfg(windows)]
 fn create_admin_only(folder: &Path) -> std::io::Result<()> {
     use windows_sys::Win32::Foundation::LocalFree;
@@ -348,7 +398,8 @@ fn create_admin_only(folder: &Path) -> std::io::Result<()> {
     use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
     use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
 
-    const ADMINS_AND_SYSTEM_ONLY: &str = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
+    // The owner, for the reason given at `hand_to_administrators`.
+    const ADMINS_AND_SYSTEM_ONLY: &str = "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
 
     let sddl = wide(std::ffi::OsStr::new(ADMINS_AND_SYSTEM_ONLY));
     let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();

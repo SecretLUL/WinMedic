@@ -912,12 +912,9 @@ impl TweaksModule {
             return Ok("The hosts file no longer blocks any Windows endpoint.".to_string());
         }
 
-        std::fs::create_dir_all(&self.backup_dir).map_err(|e| {
-            format!(
-                "Aborted: the backup folder {} could not be created ({e}). Nothing was changed.",
-                self.backup_dir.display()
-            )
-        })?;
+        RegBackupManager::with_dir(self.backup_dir.clone())
+            .ensure_backup_dir()
+            .map_err(|e| format!("Aborted: {e}. Nothing was changed."))?;
         let backup = self.backup_dir.join(format!(
             "hosts_{}.bak",
             chrono::Local::now().format("%Y%m%d_%H%M%S")

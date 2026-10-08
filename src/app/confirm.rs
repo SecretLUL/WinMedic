@@ -360,11 +360,12 @@ impl App {
 
         self.status_message = Some(if problems.is_empty() {
             format!(
-                "Removed from Windows - winmedic.exe can be deleted now. Settings, logs and backups stay in {}.",
+                "Removed from Windows - winmedic.exe can be deleted now. Settings and logs stay in {}, registry backups in {}.",
                 AppConfig::config_path()
                     .parent()
                     .map(|dir| dir.display().to_string())
-                    .unwrap_or_default()
+                    .unwrap_or_default(),
+                crate::safety::reg_backup::default_backup_dir().display()
             )
         } else {
             format!("Not everything could be removed: {}", problems.join("; "))
@@ -866,10 +867,11 @@ mod tests {
         app.confirm_pending_action();
 
         assert!(!app.config.helper_enabled);
+        let backups = crate::safety::reg_backup::default_backup_dir();
         assert!(
-            app.status_message
-                .as_deref()
-                .is_some_and(|m| m.contains("can be deleted now")),
+            app.status_message.as_deref().is_some_and(|m| {
+                m.contains("can be deleted now") && m.contains(&backups.display().to_string())
+            }),
             "{:?}",
             app.status_message
         );
