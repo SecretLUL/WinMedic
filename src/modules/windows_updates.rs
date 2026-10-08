@@ -879,10 +879,25 @@ impl DiagnosticModule for WindowsUpdatesModule {
                 .runner
                 .run("net.exe", &["start", svc], Duration::from_secs(10))
                 .await;
-            return Ok(format!(
-                "Service '{}' was set to start type 'Manual' and started.",
-                svc
-            ));
+            // Read back, as the cache repair does: net start's own verdict is
+            // a translated sentence. The start type is repaired either way, so
+            // a service that stays stopped is reported, not failed.
+            return Ok(match service::state(&*self.runner, svc).await {
+                Ok(Some(SERVICE_RUNNING | SERVICE_START_PENDING)) => {
+                    format!("Service '{svc}' was set to start type 'Manual' and started.")
+                }
+                Ok(state) => format!(
+                    "Service '{svc}' was set to start type 'Manual', but it did not start ({}). Windows starts a Manual service when something needs it.",
+                    match state {
+                        Some(SERVICE_STOPPED) => "it is stopped".to_string(),
+                        Some(other) => format!("state {other}"),
+                        None => "its state is unknown".to_string(),
+                    }
+                ),
+                Err(e) => format!(
+                    "Service '{svc}' was set to start type 'Manual'; whether it started could not be checked: {e}"
+                ),
+            });
         }
 
         match issue_id {
@@ -921,7 +936,7 @@ mod tests {
     use super::*;
     use crate::utils::cmd::{CmdOutput, MockCommandRunner};
 
-    use crate::utils::service::test_support::sc_qc_output;
+    use crate::utils::service::test_support::{sc_qc_output, sc_query_output};
 
     #[tokio::test]
     async fn test_windows_updates_detects_disabled_service() {
@@ -937,6 +952,41 @@ mod tests {
         assert!(disabled_wu.is_some());
         assert_eq!(disabled_wu.unwrap().severity, Severity::Critical);
         assert!(!issues.iter().any(|i| i.id == "wu_svc_disabled_bits"));
+    }
+
+    /// A disabled service set back to Manual: what `sc query` says after
+    /// `net start` decides whether the message may say it started.
+    fn disabled_service_repair(state_after_start: u32) -> MockCommandRunner {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "config wuauserv",
+            CmdOutput::ok("[SC] ChangeServiceConfig ERFOLG"),
+        );
+        mock.add_response("qc wuauserv", CmdOutput::ok(sc_qc_output("wuauserv", 3)));
+        mock.add_response("net.exe start wuauserv", CmdOutput::ok(""));
+        mock.add_response(
+            "query wuauserv",
+            CmdOutput::ok(sc_query_output("wuauserv", state_after_start)),
+        );
+        mock
+    }
+
+    #[tokio::test]
+    async fn a_service_set_back_to_manual_is_called_started_only_when_it_runs() {
+        let module = WindowsUpdatesModule::with_runner(
+            ModuleConfig::default(),
+            Arc::new(disabled_service_repair(SERVICE_RUNNING)),
+        );
+        let msg = module.fix("wu_svc_disabled_wuauserv", None).await.unwrap();
+        assert!(msg.ends_with("and started."), "{msg}");
+
+        let module = WindowsUpdatesModule::with_runner(
+            ModuleConfig::default(),
+            Arc::new(disabled_service_repair(SERVICE_STOPPED)),
+        );
+        let msg = module.fix("wu_svc_disabled_wuauserv", None).await.unwrap();
+        assert!(msg.contains("did not start (it is stopped)"), "{msg}");
+        assert!(!msg.contains("and started"), "{msg}");
     }
 
     #[tokio::test]
@@ -1008,8 +1058,6 @@ mod tests {
             || signals.pending_file_renames > 0;
         assert_eq!(pending_reboot_reason(&signals).is_some(), expected);
     }
-
-    use crate::utils::service::test_support::sc_query_output;
 
     /// A download cache in a temp folder with one 200 KB file.
     struct Cache(PathBuf);
