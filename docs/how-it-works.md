@@ -107,7 +107,7 @@ The window has two views, and everything you need for a checkup is on the first 
 
 - **Scan & Repair** — the top of the page says what state the PC is in and offers the one step that makes sense next: *Scan now* on a machine that has never been checked, *Repair* once there is something to repair, *Cancel* while something runs. What the rest of the page shows depends on the mode:
   - **Easy mode** (what WinMedic opens in) is one short column: how many problems there are, the health score, a box *What Repair does*, and two big buttons, *Repair* and *Scan again*. The box is a forecast built only from what the scan measured: the disk space the ticked cleanups counted ("Frees about 8.4 GB", or "at least" when the component store cleanup is among them, whose size DISM cannot tell beforehand), one line for each kind of repair that changes something you notice ("Windows Update works again", "The internet connection is repaired" …), and the health score once every repair has worked. Findings WinMedic cannot repair — hardware errors, crash history, a failing drive — are advice: they cannot be ticked, a repair run leaves them alone, and they keep counting against the health score. *Repair* repairs what the checks recommend (the findings ticked by default); the rest is counted in one line with a link to Advanced mode. Once only restarts are left, the page asks for one and offers *Restart now*; WinMedic never opens the restart dialog by itself.
-  - **Advanced mode** shows the checks while a scan runs, and afterwards every finding with a tick box, filters, a search box and the technical details on the right. Each finding shows its outcome (*Fixed*, *Repair failed*, *Restart*) as the run lands, the scan log and the repair output are one click away under *Show log*, and *Simulate only* lists what a repair would run without running it.
+  - **Advanced mode** shows the checks while a scan runs, and afterwards every finding with a tick box, filters, a search box and the technical details on the right. Each finding shows its outcome (*Fixed*, *Repair failed*, *Restart*) as the run lands, the scan log and the repair output are one click away under *Show log*, and *Simulate only* lists each repair and its steps without running them.
 
   `F7`, or the button top right next to *Export report*, switches between the two, as it does in a BIOS setup screen. WinMedic remembers the choice. In Easy mode the window keeps its smallest size, 960 × 640, and cannot be resized or maximized; Advanced mode gives it back at the size, or maximized, as it was. On a screen with less room than that (1920 × 1080 at 175 %, say) the window is maximized and can be resized in both modes.
 - **Settings** — what WinMedic is allowed to do, plus everything to undo it: registry snapshots with rollback, system restore points, recent activity, the log folder, and *Remove WinMedic from Windows* for before you delete it.
@@ -171,7 +171,7 @@ winmedic.exe --auto-fix
 # Run fixes and export the updated report, with this run's audit entries
 winmedic.exe --auto-fix --output final_report.html
 
-# Show exactly which commands a repair run would execute, without executing them
+# List each repair a run would make, with its description and steps, without executing them
 winmedic.exe --dry-run
 
 # Output diagnostic findings as structured JSON for automation

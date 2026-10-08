@@ -57,7 +57,8 @@ WinMedic runs in every display language.
   failure paths, not only the happy path.
 - **`fix()` in `src/modules/`**: a truthful `RiskScore` (`High` when it is
   destructive or needs a reboot), risky repairs start unticked, the dry run
-  lists the exact commands, and whatever is changed is backed up first
+  lists each repair with the steps the module records for it (each step says
+  what it runs or changes), and whatever is changed is backed up first
   (`safety::reg_backup` for registry keys).
 - **`src/utils/self_update.rs`**: download, hash, compare with the published
   `.sha256`, only then swap. Everything from the network is hostile input, and

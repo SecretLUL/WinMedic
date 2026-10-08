@@ -103,7 +103,7 @@ console started as Administrator:
 winmedic --scan                        # check and print the findings
 winmedic --scan --output report.html   # ... and save a report (.html, .md or .json)
 winmedic --auto-fix                    # check and repair what is safe to repair
-winmedic --dry-run                     # show what a repair would run, run nothing
+winmedic --dry-run                     # show each repair and its steps, run nothing
 ```
 
 The exit code tells a script how it went: `0` fine, `1` warnings, `2` critical
