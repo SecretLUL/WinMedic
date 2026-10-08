@@ -982,55 +982,10 @@ impl DiagnosticModule for SystemCleanerModule {
             ).with_reclaimable_bytes(wudo_stats.bytes));
         }
 
-        // 2. Package Cache Audit
+        // 2. Browser Caches
         Self::send_progress(
             &progress_tx,
             34,
-            "Checking the installer package cache...",
-            Some("Scanning %ProgramData%\\Package Cache..."),
-        )
-        .await;
-
-        let prog_data = self.paths.prog_data.clone();
-        let pkg_cache_dir = prog_data.join("Package Cache");
-        let pkg_stats = Self::scan_dirs(vec![pkg_cache_dir]).await;
-
-        if worth_reporting(pkg_stats, MIN_REPORTABLE_CLEANUP_BYTES) {
-            let mut pkg_issue = Issue::new(
-                "sys_clean_package_cache",
-                self.id(),
-                format!(
-                    "Installer package cache ({}, {} files)",
-                    format_bytes(pkg_stats.bytes),
-                    pkg_stats.files
-                ),
-                "System & Cache Cleaner",
-                Severity::Warning,
-                // The fix empties the directory wholesale, including the payloads
-                // of *installed* products — not a low-risk operation.
-                RiskScore::High,
-                "The package cache (%ProgramData%\\Package Cache) holds the install and update payloads (.msi, .cab, .exe) of Visual Studio, WiX, VC++ redistributables and .NET. WARNING: this cleanup removes the entire folder contents, not just orphaned packages.",
-                format!(
-                    "Package cache size: {} across {} files under %ProgramData%\\Package Cache",
-                    format_bytes(pkg_stats.bytes),
-                    pkg_stats.files
-                ),
-                "Empty the whole package cache — repairing, changing or uninstalling the affected products then requires the original installers",
-                vec![
-                    "Empty %ProgramData%\\Package Cache completely (locked files are skipped)".to_string(),
-                    "Re-download the Visual Studio / VC++ redistributable installers afterwards if needed".to_string(),
-                ],
-            );
-            // Not reversible by the VSS checkpoint, so it never runs unattended
-            // under `--auto-fix`; the user has to select it deliberately.
-            pkg_issue.is_selected = false;
-            issues.push(pkg_issue.with_reclaimable_bytes(pkg_stats.bytes));
-        }
-
-        // 3. Browser Caches
-        Self::send_progress(
-            &progress_tx,
-            46,
             "Checking browser caches (Chrome, Edge, Brave, Opera, Firefox)...",
             Some("Scanning the installed Chromium and Firefox profiles..."),
         )
@@ -1066,10 +1021,10 @@ impl DiagnosticModule for SystemCleanerModule {
             ).with_reclaimable_bytes(browser_stats.bytes));
         }
 
-        // 4. Windows Setup & System Logs
+        // 3. Windows Setup & System Logs
         Self::send_progress(
             &progress_tx,
-            58,
+            46,
             "Checking Windows setup & system logs...",
             Some("Scanning the Panther, CBS, DISM and MoSetup logs..."),
         )
@@ -1101,15 +1056,16 @@ impl DiagnosticModule for SystemCleanerModule {
             ).with_reclaimable_bytes(setup_log_stats.bytes));
         }
 
-        // 5. Error Reporting & Crash Dumps
+        // 4. Error Reporting & Crash Dumps
         Self::send_progress(
             &progress_tx,
-            70,
+            58,
             "Checking Windows error reports & crash dumps...",
             Some("Scanning the WER archives and CrashDumps..."),
         )
         .await;
 
+        let prog_data = self.paths.prog_data.clone();
         let wer_dirs = discover_wer_and_dump_dirs(&local_app_data, &prog_data);
         let wer_stats = Self::scan_dirs(wer_dirs).await;
 
@@ -1136,10 +1092,10 @@ impl DiagnosticModule for SystemCleanerModule {
             ).with_reclaimable_bytes(wer_stats.bytes));
         }
 
-        // 6. DirectX Shader & Certificate Caches
+        // 5. DirectX Shader & Certificate Caches
         Self::send_progress(
             &progress_tx,
-            80,
+            70,
             "Checking DirectX shader & certificate caches...",
             Some("Scanning D3DSCache, DirectX ShaderCache and CryptnetUrlCache..."),
         )
@@ -1172,10 +1128,10 @@ impl DiagnosticModule for SystemCleanerModule {
             ).with_reclaimable_bytes(shader_stats.bytes));
         }
 
-        // 7. Windows Recycle Bin
+        // 6. Windows Recycle Bin
         Self::send_progress(
             &progress_tx,
-            90,
+            80,
             "Checking the Windows Recycle Bin...",
             Some("Scanning $Recycle.Bin on the system drives..."),
         )
@@ -1214,10 +1170,10 @@ impl DiagnosticModule for SystemCleanerModule {
             issues.push(recycle_issue.with_reclaimable_bytes(recycle_stats.bytes));
         }
 
-        // 8. Extended System Temp Directories
+        // 7. Extended System Temp Directories
         Self::send_progress(
             &progress_tx,
-            95,
+            90,
             "Checking the extended system temp directories...",
             Some("Scanning systemprofile Temp and SystemTemp..."),
         )
@@ -1249,7 +1205,7 @@ impl DiagnosticModule for SystemCleanerModule {
             ).with_reclaimable_bytes(system_temp_stats.bytes));
         }
 
-        // 9. WinSxS Component Store Deep Clean
+        // 8. WinSxS Component Store Deep Clean
         //
         // Reliably the longest step in the whole scan: DISM walks the component
         // store itself and routinely takes a minute or two, during which it says
@@ -1433,14 +1389,6 @@ impl DiagnosticModule for SystemCleanerModule {
                     format_bytes(total_clean.freed_bytes),
                     total_clean.skipped_locked
                 ))
-            }
-            "sys_clean_package_cache" => {
-                dbg.section("installer package cache").await;
-                let pkg_cache_dir = self.paths.prog_data.join("Package Cache");
-                let stats =
-                    Self::clean_dirs_reporting(vec![pkg_cache_dir], clean_path_contents, &dbg)
-                        .await;
-                cleanup_result("Package cache cleaned", stats)
             }
             "sys_clean_browser_cache" => {
                 dbg.section("browser caches").await;
@@ -2401,34 +2349,29 @@ The operation completed successfully.";
     async fn test_destructive_issues_are_not_auto_selected() {
         let mock = MockCommandRunner::new();
         let td = TestDir::new("auto_select_guard");
-        // Both destructive locations get enough content to clear the reporting
-        // floor, so the issues are raised.
+        // The destructive location gets enough content to clear the reporting
+        // floor, so the issue is raised.
         td.create_file("$Recycle.Bin/S-1-5-21/deleted.docx", &reportable_payload());
-        td.create_file(
-            "ProgramData/Package Cache/vs/setup.msi",
-            &reportable_payload(),
-        );
 
         let module = sandboxed(&td, Arc::new(mock));
         let issues = module.scan(None).await.unwrap();
 
-        for id in ["sys_clean_recycle_bin", "sys_clean_package_cache"] {
-            let issue = issues
-                .iter()
-                .find(|i| i.id == id)
-                .unwrap_or_else(|| panic!("{} should have been detected", id));
-            assert_eq!(
-                issue.risk_score,
-                RiskScore::High,
-                "{} destroys data that no restore point brings back",
-                id
-            );
-            assert!(
-                !issue.is_selected,
-                "{} must not be picked up by --auto-fix without the user asking",
-                id
-            );
-        }
+        let id = "sys_clean_recycle_bin";
+        let issue = issues
+            .iter()
+            .find(|i| i.id == id)
+            .unwrap_or_else(|| panic!("{} should have been detected", id));
+        assert_eq!(
+            issue.risk_score,
+            RiskScore::High,
+            "{} destroys data that no restore point brings back",
+            id
+        );
+        assert!(
+            !issue.is_selected,
+            "{} must not be picked up by --auto-fix without the user asking",
+            id
+        );
 
         // The reversible cache sweeps stay selected by default.
         for id in ["sys_clean_browser_cache", "sys_clean_setup_logs"] {
@@ -2466,16 +2409,6 @@ The operation completed successfully.";
                 .join("Windows/SoftwareDistribution/DeliveryOptimization/frag.dat")
                 .exists()
         );
-    }
-
-    #[tokio::test]
-    async fn test_package_cache_fix() {
-        let mock = MockCommandRunner::new();
-        let td = TestDir::new("pkg_cache_fix");
-        let module = sandboxed(&td, Arc::new(mock));
-        let fix_res = module.fix("sys_clean_package_cache", None).await;
-        assert!(fix_res.is_ok());
-        assert!(fix_res.unwrap().contains("Package cache cleaned"));
     }
 
     #[tokio::test]

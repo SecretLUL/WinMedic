@@ -26,8 +26,8 @@ static TEST_COUNTER: AtomicUsize = AtomicUsize::new(1);
 ///
 /// `scan` and `fix` delete for real. A test must never build this module with
 /// the default env-derived paths: that aims it at the *test machine's* own
-/// browser caches, WER archives, `%ProgramData%\Package Cache` and
-/// `C:\Windows\Panther`, and `cargo test` would wipe them.
+/// browser caches, WER archives and `C:\Windows\Panther`, and `cargo test`
+/// would wipe them.
 ///
 /// The returned workspace owns the directory — keep it bound for the duration of
 /// the test (`let (_sandbox, module) = ...`) so cleanup happens on drop.
@@ -92,7 +92,6 @@ impl TempWorkspace {
             self.create_dir("Windows/System32/config/systemprofile/AppData/Local/Temp");
 
         let prog_data = self.create_dir("ProgramData");
-        let pkg_cache = self.create_dir("ProgramData/Package Cache");
         let pd_wer = self.create_dir("ProgramData/Microsoft/Windows/WER/ReportArchive");
 
         let local_app_data = self.create_dir("AppData/Local");
@@ -128,7 +127,6 @@ impl TempWorkspace {
             sys_temp,
             sysprofile_temp,
             prog_data,
-            pkg_cache,
             pd_wer,
             local_app_data,
             chrome_cache,
@@ -165,7 +163,6 @@ pub struct MockWindowsPaths {
     pub sys_temp: PathBuf,
     pub sysprofile_temp: PathBuf,
     pub prog_data: PathBuf,
-    pub pkg_cache: PathBuf,
     pub pd_wer: PathBuf,
     pub local_app_data: PathBuf,
     pub chrome_cache: PathBuf,

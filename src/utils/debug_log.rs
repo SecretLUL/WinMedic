@@ -464,7 +464,7 @@ mod tests {
         // Ordinary repair output, including output that merely mentions a tag.
         for line in [
             "Repairing: Recycle Bin",
-            "[OK] Package cache cleaned",
+            "[OK] Browser caches cleaned",
             "[DBG] EXEC something",
             "[DBG 09:30:48.123] NOPE unknown tag",
             "[DBG 09:30:48.123]",

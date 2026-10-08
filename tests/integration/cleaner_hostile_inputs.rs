@@ -423,7 +423,6 @@ async fn adv_test_progress_reporting_all_steps() {
     assert!(steps.iter().any(|(pct, _)| *pct == 70));
     assert!(steps.iter().any(|(pct, _)| *pct == 80));
     assert!(steps.iter().any(|(pct, _)| *pct == 90));
-    assert!(steps.iter().any(|(pct, _)| *pct == 95));
     assert!(steps.iter().any(|(pct, _)| *pct == 97));
     assert!(steps.iter().any(|(pct, _)| *pct == 100));
 }
@@ -442,7 +441,7 @@ async fn adv_test_module_metadata_and_trait_conformance() {
 }
 
 #[tokio::test]
-async fn adv_test_all_9_fix_issue_ids_respond() {
+async fn adv_test_all_8_fix_issue_ids_respond() {
     let mock = MockCommandRunner::new();
     mock.add_response("StartComponentCleanup", CmdOutput::ok("Success"));
     mock.add_response("Delete-DeliveryOptimizationCache", CmdOutput::ok(""));
@@ -453,7 +452,6 @@ async fn adv_test_all_9_fix_issue_ids_respond() {
     let ids = [
         "sys_clean_winsxs",
         "sys_clean_delivery_optimization",
-        "sys_clean_package_cache",
         "sys_clean_browser_cache",
         "sys_clean_setup_logs",
         "sys_clean_error_reporting",

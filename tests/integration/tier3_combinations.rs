@@ -151,12 +151,12 @@ async fn test_tier3_triage_selection_logs_temp_with_real_fix() {
     let _dir = ws.create_dir("Logs");
     let log_file = ws.create_file("Logs/setup.log", &[0xBB; 2000]);
     // The payload the repair is expected to remove, inside the sandbox.
-    let pkg_payload = ws.create_file("ProgramData/Package Cache/vs/setup.msi", &[0xAA; 1500]);
+    let temp_payload = ws.create_file("Windows/SystemTemp/svc.tmp", &[0xAA; 1500]);
 
     let mut issues = vec![Issue::new(
-        "sys_clean_package_cache",
+        "sys_clean_system_temp",
         "system_cleaner",
-        "Package Cache",
+        "Extended system temp directories",
         "System & Cache Cleaner",
         Severity::Info,
         RiskScore::Low,
@@ -167,10 +167,10 @@ async fn test_tier3_triage_selection_logs_temp_with_real_fix() {
     )];
     issues[0].is_selected = true;
 
-    // This is a *real* (non-dry-run) repair, and the package-cache fix deletes
+    // This is a *real* (non-dry-run) repair, and the system temp fix deletes
     // files. The engine therefore gets a cleaner rooted in the sandbox — built
     // from `DiagnosticEngine::with_runner` it would empty the test machine's own
-    // %ProgramData%\Package Cache.
+    // %SystemRoot%\SystemTemp.
     let runner = Arc::new(ProgrammableMockRunner::new());
     let cleaner = SystemCleanerModule::with_runner_and_paths(
         ModuleConfig::default(),
@@ -196,8 +196,8 @@ async fn test_tier3_triage_selection_logs_temp_with_real_fix() {
     let (repaired_issues, (fixed, _failed)) = fix_handle.await.unwrap();
     assert_eq!(fixed, 1);
     assert!(repaired_issues[0].is_fixed);
-    // Only the package cache was swept; the unrelated log file survives.
-    assert!(!pkg_payload.exists());
+    // Only the system temp was swept; the unrelated log file survives.
+    assert!(!temp_payload.exists());
     assert!(log_file.exists());
 }
 
@@ -487,11 +487,11 @@ fn test_tier3_reporter_html_with_system_cleaner_issues() {
 #[test]
 fn test_tier3_reporter_markdown_with_system_cleaner_issues() {
     let issues = vec![Issue::new(
-        "sys_clean_package_cache",
+        "sys_clean_delivery_optimization",
         "system_cleaner",
-        "Installer package cache (1.20 GB, 50 files)",
+        "Delivery Optimization (WUDO) cache (1.20 GB, 50 files)",
         "System & Cache Cleaner",
-        Severity::Warning,
+        Severity::Info,
         RiskScore::Low,
         "Description",
         "Details",
@@ -502,8 +502,8 @@ fn test_tier3_reporter_markdown_with_system_cleaner_issues() {
     let audit_entries = vec![];
 
     let md = DiagnosticReporter::to_markdown(&issues, health, &audit_entries);
-    assert!(md.contains("Installer package cache"));
-    // The module id is escaped for Markdown: `_` is a special character there.
+    // Values are escaped for Markdown: `(`, `)`, `.` and `_` are special there.
+    assert!(md.contains(r"Delivery Optimization \(WUDO\) cache \(1\.20 GB, 50 files\)"));
     assert!(md.contains(r"system\_cleaner"));
 }
 
