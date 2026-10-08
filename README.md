@@ -91,7 +91,10 @@ WinMedic collects no data and has no telemetry. It goes online only for this:
   [privacy statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement)
   applies to both.
 - **Scan:** it tests your internet connection by looking up `dns.google` and
-  `www.microsoft.com`, and compares your clock with `time.windows.com`.
+  `www.microsoft.com`, and compares your clock with `time.windows.com`. It
+  asks the DNS servers and proxies set on your PC whether they answer, and
+  when names do not resolve it pings `1.1.1.1` by address, to tell a DNS
+  fault from no connection at all.
 - **Repair:** DISM takes intact system files from Windows Update, and the
   clock is set from `time.windows.com`.
 
