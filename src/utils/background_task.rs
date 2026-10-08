@@ -72,7 +72,7 @@ fn current_exe() -> Result<std::path::PathBuf, String> {
 fn schtasks(args: &[&str]) -> Result<std::process::Output, String> {
     use std::os::windows::process::CommandExt;
 
-    std::process::Command::new("schtasks.exe")
+    std::process::Command::new(crate::utils::cmd::system_program("schtasks.exe")?)
         .args(args)
         .creation_flags(CREATE_NO_WINDOW)
         .output()

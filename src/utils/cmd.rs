@@ -1,5 +1,6 @@
 use crate::utils::decode::{CodePage, LineDecoder, decode_output_in};
 use crate::utils::pnp::PnpDevice;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -465,13 +466,91 @@ fn describe_spawn_failure(program: &str, err: &std::io::Error) -> String {
     }
 }
 
+/// The full path of a Windows tool WinMedic starts by name, such as
+/// `reg.exe`, `powershell` or `explorer.exe`. A name with a folder in it is
+/// taken as it is.
+///
+/// Given a bare name, Rust looks in the folder of the running executable
+/// before System32, and winmedic.exe usually sits in Downloads or in WinGet's
+/// package folder under %LOCALAPPDATA%, both writable without Administrator
+/// rights: a `reg.exe` put next to it would run in the elevated WinMedic
+/// process. So every tool is started from the Windows folders, as Windows
+/// reports them, never as the environment (`%SystemRoot%`, `PATH`) says.
+pub fn system_program(program: &str) -> Result<PathBuf, String> {
+    if program.contains(['\\', '/']) {
+        return Ok(PathBuf::from(program));
+    }
+    let file = if Path::new(program).extension().is_some() {
+        program.to_string()
+    } else {
+        format!("{program}.exe")
+    };
+    let folder = |dir: Option<&'static Path>| {
+        dir.ok_or_else(|| {
+            format!("'{program}' was not started: Windows did not say where its system folder is")
+        })
+    };
+    Ok(match file.to_ascii_lowercase().as_str() {
+        "powershell.exe" => folder(system_dir())?.join(r"WindowsPowerShell\v1.0\powershell.exe"),
+        "winmgmt.exe" => folder(system_dir())?.join(r"wbem\winmgmt.exe"),
+        "explorer.exe" => folder(windows_dir())?.join(file),
+        _ => folder(system_dir())?.join(file),
+    })
+}
+
+/// System32, from `GetSystemDirectoryW`.
+fn system_dir() -> Option<&'static Path> {
+    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    #[cfg(windows)]
+    let dir = DIR.get_or_init(|| {
+        windows_folder(windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW)
+    });
+    #[cfg(not(windows))]
+    let dir = DIR.get_or_init(|| None);
+    dir.as_deref()
+}
+
+/// The Windows folder, from `GetSystemWindowsDirectoryW`, which unlike
+/// `GetWindowsDirectoryW` is the shared one on a terminal server too.
+fn windows_dir() -> Option<&'static Path> {
+    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    #[cfg(windows)]
+    let dir = DIR.get_or_init(|| {
+        windows_folder(windows_sys::Win32::System::SystemInformation::GetSystemWindowsDirectoryW)
+    });
+    #[cfg(not(windows))]
+    let dir = DIR.get_or_init(|| None);
+    dir.as_deref()
+}
+
+/// Ask one of the `Get...DirectoryW` functions for its folder. They return
+/// the length without the terminating null, or the size needed with it when
+/// the buffer was too small, or 0 on failure.
+#[cfg(windows)]
+fn windows_folder(get: unsafe extern "system" fn(*mut u16, u32) -> u32) -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+
+    let mut buffer = vec![0u16; 260];
+    loop {
+        let len = unsafe { get(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+        if len == 0 {
+            return None;
+        }
+        if len < buffer.len() {
+            buffer.truncate(len);
+            return Some(PathBuf::from(std::ffi::OsString::from_wide(&buffer)));
+        }
+        buffer.resize(len, 0);
+    }
+}
+
 /// Execute a system command with timeout and return the complete output.
 pub async fn run_cmd(
     program: &str,
     args: &[&str],
     timeout_duration: Duration,
 ) -> Result<CmdOutput, String> {
-    let mut cmd = TokioCommand::new(program);
+    let mut cmd = TokioCommand::new(system_program(program)?);
     cmd.args(args);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -535,7 +614,7 @@ pub async fn run_cmd_streaming(
     log_tx: Option<Sender<String>>,
     timeout_duration: Duration,
 ) -> Result<CmdOutput, String> {
-    let mut cmd = TokioCommand::new(program);
+    let mut cmd = TokioCommand::new(system_program(program)?);
     cmd.args(args);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -867,6 +946,48 @@ mod tests {
             "returned after {:?}",
             started.elapsed()
         );
+    }
+
+    #[test]
+    fn system_tools_are_started_by_their_full_path() {
+        let system32 = system_dir().expect("Windows names its system folder");
+        assert!(system32.is_absolute());
+        assert_eq!(system_program("reg.exe").unwrap(), system32.join("reg.exe"));
+        assert_eq!(system_program("reg").unwrap(), system32.join("reg.exe"));
+        assert_eq!(
+            system_program("powershell").unwrap(),
+            system32.join(r"WindowsPowerShell\v1.0\powershell.exe")
+        );
+        assert_eq!(
+            system_program("WINMGMT.EXE").unwrap(),
+            system32.join(r"wbem\winmgmt.exe")
+        );
+        let windows = windows_dir().expect("Windows names its own folder");
+        assert_eq!(
+            system_program("explorer.exe").unwrap(),
+            windows.join("explorer.exe")
+        );
+        // A path is the caller's choice: the updater starts the new winmedic.exe.
+        assert_eq!(
+            system_program(r"C:\Tools\winmedic.exe").unwrap(),
+            PathBuf::from(r"C:\Tools\winmedic.exe")
+        );
+    }
+
+    /// The tools that live outside System32 itself are where this Windows
+    /// keeps them. Only looks, starts nothing.
+    #[test]
+    fn the_tools_are_where_they_are_started_from() {
+        for tool in [
+            "powershell",
+            "winmgmt.exe",
+            "explorer.exe",
+            "reg.exe",
+            "sc.exe",
+        ] {
+            let path = system_program(tool).unwrap();
+            assert!(path.is_file(), "{tool}: no {}", path.display());
+        }
     }
 
     const QUERY_TIMEOUT: Duration = Duration::from_secs(20);

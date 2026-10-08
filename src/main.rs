@@ -92,6 +92,7 @@ impl CliArgs {
 }
 
 fn main() -> ExitCode {
+    load_dlls_from_system32_only();
     let args = CliArgs::parse();
 
     match run(args) {
@@ -100,6 +101,26 @@ fn main() -> ExitCode {
             eprintln!("WinMedic: {}", err);
             ExitCode::from(exit_code::INTERNAL_ERROR)
         }
+    }
+}
+
+/// Have Windows look for a DLL in System32 only, before anything loads one.
+///
+/// winmedic.exe usually runs from Downloads or from WinGet's package folder,
+/// which the signed-in user can write to without Administrator rights, and
+/// Windows looks for a DLL next to the executable first: one put there would
+/// run inside the elevated process. WinMedic brings no DLLs of its own, and
+/// the ones it uses are Windows' own. The DLLs the executable imports are
+/// loaded before `main`, so the linker sets the same rule for them
+/// (`/DEPENDENTLOADFLAG`, build.rs).
+fn load_dlls_from_system32_only() {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::LibraryLoader::{
+            LOAD_LIBRARY_SEARCH_SYSTEM32, SetDefaultDllDirectories,
+        };
+        // Only Windows 7 without KB2533623 lacks it, and WinMedic needs 10.
+        unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) };
     }
 }
 

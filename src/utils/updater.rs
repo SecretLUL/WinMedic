@@ -398,7 +398,7 @@ pub fn launch_browser(url: &str) -> Result<(), String> {
         use std::process::Command;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-        let mut cmd = Command::new("explorer.exe");
+        let mut cmd = Command::new(crate::utils::cmd::system_program("explorer.exe")?);
         cmd.arg(url);
         cmd.creation_flags(CREATE_NO_WINDOW);
 

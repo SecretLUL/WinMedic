@@ -85,7 +85,7 @@ fn real_reports_dir() -> std::path::PathBuf {
 }
 
 fn real_restart_system() -> Result<(), String> {
-    std::process::Command::new("shutdown.exe")
+    std::process::Command::new(crate::utils::cmd::system_program("shutdown.exe")?)
         .args([
             "/r",
             "/t",
