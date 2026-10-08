@@ -503,7 +503,8 @@ fn test_tier3_reporter_markdown_with_system_cleaner_issues() {
 
     let md = DiagnosticReporter::to_markdown(&issues, health, &audit_entries);
     assert!(md.contains("Installer package cache"));
-    assert!(md.contains("system_cleaner"));
+    // The module id is escaped for Markdown: `_` is a special character there.
+    assert!(md.contains(r"system\_cleaner"));
 }
 
 #[test]

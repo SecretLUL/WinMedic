@@ -16,6 +16,58 @@ fn escape_html(s: &str) -> String {
         .replace('\'', "&#39;")
 }
 
+/// The ASCII punctuation that CommonMark or GFM gives a meaning somewhere in a
+/// line: escapes, code spans, emphasis, links and images, raw HTML, entities,
+/// table cells, strikethrough, and the markers that open a block at the start
+/// of a line (headings, lists, quotes, rules, fences, setext underlines). `$`
+/// is here too, because GitHub reads a pair of them as math.
+const MD_SPECIAL: &[char] = &[
+    '\\', '`', '*', '_', '{', '}', '[', ']', '(', ')', '#', '+', '-', '.', '!', '|', '<', '>', '&',
+    '~', '=', '$',
+];
+
+/// The line breaks a value must not carry into a table row, heading or list item.
+fn is_line_break(c: char) -> bool {
+    matches!(
+        c,
+        '\n' | '\r' | '\u{0b}' | '\u{0c}' | '\u{85}' | '\u{2028}' | '\u{2029}'
+    )
+}
+
+/// Escape a value for Markdown text outside a code block: a heading, a list
+/// item, a paragraph or a table cell. Every character in `MD_SPECIAL` is
+/// backslash-escaped, so the value stays text, and each run of line breaks
+/// becomes one space, so the value stays on the line it was written on.
+fn escape_md(value: &str) -> String {
+    let flat = value
+        .split(is_line_break)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut escaped = String::with_capacity(flat.len());
+    for c in flat.chars() {
+        if MD_SPECIAL.contains(&c) {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    escaped
+}
+
+/// A fenced code block holding `content`. The fence is one backtick longer
+/// than the longest run inside the content (and never shorter than three), so
+/// no line of the content can close the block early.
+fn md_code_block(content: &str) -> String {
+    let mut longest = 0;
+    let mut run = 0;
+    for c in content.chars() {
+        run = if c == '`' { run + 1 } else { 0 };
+        longest = longest.max(run);
+    }
+    let fence = "`".repeat((longest + 1).max(3));
+    format!("{fence}\n{content}\n{fence}")
+}
+
 impl DiagnosticReporter {
     /// Print a styled banner in CLI mode
     pub fn print_banner() {
@@ -119,7 +171,11 @@ impl DiagnosticReporter {
         serde_json::to_string_pretty(&rep).unwrap_or_else(|_| "{}".to_string())
     }
 
-    /// Export report as Markdown.
+    /// Export report as Markdown. Every value that does not come from WinMedic
+    /// itself is escaped for Markdown text, and the technical details are
+    /// fenced, so no value can break a table, a heading or a list, or put
+    /// markup into the page. The labels, counts and dates WinMedic writes stay
+    /// readable as they are.
     pub fn to_markdown(issues: &[Issue], health_score: u8, audit_entries: &[AuditEntry]) -> String {
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let hostname = std::env::var("COMPUTERNAME")
@@ -150,7 +206,7 @@ impl DiagnosticReporter {
             - **Status:** {} fixed, {} open\n\n\
             ---\n\n\
             ## Findings\n\n",
-            hostname,
+            escape_md(&hostname),
             timestamp,
             health_score,
             issues.len(),
@@ -184,29 +240,29 @@ impl DiagnosticReporter {
                     - **Risk level:** {}\n\
                     - **Status:** {}\n\
                     - **Description:** {}\n\n\
-                    **Technical details:**\n```\n{}\n```\n\n\
+                    **Technical details:**\n{}\n\n\
                     **Recommended fix:** {}\n\n",
                     idx + 1,
                     sev_str,
                     status_str,
-                    issue.title,
-                    issue.category,
-                    issue.module_id,
+                    escape_md(&issue.title),
+                    escape_md(&issue.category),
+                    escape_md(&issue.module_id),
                     issue.risk_score.badge(),
                     status_str,
-                    issue.description,
-                    issue.technical_details,
-                    issue.recommended_fix
+                    escape_md(&issue.description),
+                    md_code_block(&issue.technical_details),
+                    escape_md(&issue.recommended_fix)
                 ));
 
                 if let Some(ref err) = issue.fix_error {
-                    md.push_str(&format!("> **Repair error:** {}\n\n", err));
+                    md.push_str(&format!("> **Repair error:** {}\n\n", escape_md(err)));
                 }
 
                 if !issue.fix_steps.is_empty() {
                     md.push_str("**Planned steps:**\n");
                     for (s_idx, step) in issue.fix_steps.iter().enumerate() {
-                        md.push_str(&format!("{}. {}\n", s_idx + 1, step));
+                        md.push_str(&format!("{}. {}\n", s_idx + 1, escape_md(step)));
                     }
                     md.push('\n');
                 }
@@ -220,12 +276,12 @@ impl DiagnosticReporter {
             for entry in audit_entries {
                 md.push_str(&format!(
                     "| {} | {} | {} | {} | {} | {} |\n",
-                    entry.timestamp,
-                    entry.action_type,
-                    entry.module_id,
-                    entry.title,
-                    entry.status,
-                    entry.details
+                    escape_md(&entry.timestamp),
+                    escape_md(&entry.action_type),
+                    escape_md(&entry.module_id),
+                    escape_md(&entry.title),
+                    escape_md(&entry.status),
+                    escape_md(&entry.details)
                 ));
             }
             md.push('\n');
@@ -924,5 +980,164 @@ mod tests {
         ];
         let run = DiagnosticReporter::audit_since(&history, "2026-09-26 12:00:00");
         assert_eq!(run, history[2..]);
+    }
+
+    /// One finding with the given title and technical details; the rest is fixed.
+    fn finding(title: &str, technical_details: &str) -> Issue {
+        Issue::new(
+            "test_finding",
+            "test_module",
+            title,
+            "Test category",
+            Severity::Warning,
+            RiskScore::Low,
+            "A description.",
+            technical_details,
+            "A fix.",
+            vec!["A step.".to_string()],
+        )
+    }
+
+    fn audit_entry(title: &str, details: &str) -> AuditEntry {
+        AuditEntry {
+            timestamp: "2026-09-26 12:00:00".to_string(),
+            action_type: "FIX".to_string(),
+            module_id: "test_module".to_string(),
+            title: title.to_string(),
+            status: "FAILED".to_string(),
+            details: details.to_string(),
+        }
+    }
+
+    /// Splits `md` into the text outside its fenced code blocks and the blocks
+    /// as (fence length, body). A block opens on a line of backticks and closes
+    /// on the next line that is at least as long and holds nothing else, the
+    /// way CommonMark reads a backtick fence.
+    fn outside_and_blocks(md: &str) -> (String, Vec<(usize, String)>) {
+        let mut outside = String::new();
+        let mut blocks = Vec::new();
+        let mut open: Option<(usize, Vec<&str>)> = None;
+        for line in md.lines() {
+            let only_backticks = !line.is_empty() && line.bytes().all(|b| b == b'`');
+            match open.take() {
+                Some((fence, body)) if only_backticks && line.len() >= fence => {
+                    blocks.push((fence, body.join("\n")));
+                }
+                Some((fence, mut body)) => {
+                    body.push(line);
+                    open = Some((fence, body));
+                }
+                None if only_backticks && line.len() >= 3 => {
+                    open = Some((line.len(), Vec::new()));
+                }
+                None => {
+                    outside.push_str(line);
+                    outside.push('\n');
+                }
+            }
+        }
+        assert!(open.is_none(), "a fenced code block is never closed");
+        (outside, blocks)
+    }
+
+    /// How many `target` characters in `line` are not backslash-escaped.
+    fn unescaped_count(line: &str, target: char) -> usize {
+        let mut count = 0;
+        let mut chars = line.chars();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                chars.next();
+            } else if c == target {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Every table row outside the code blocks keeps the audit table's six
+    /// columns: seven pipes that are not escaped.
+    fn assert_table_rows_keep_their_columns(outside: &str) {
+        for row in outside.lines().filter(|line| line.starts_with('|')) {
+            assert_eq!(
+                unescaped_count(row, '|'),
+                7,
+                "a table row changed its columns: {row}"
+            );
+        }
+    }
+
+    #[test]
+    fn escape_md_escapes_markup_and_flattens_line_breaks() {
+        assert_eq!(
+            escape_md(r"a|b<c>&d*e_f`g[h](i)#j+k-l.m!n~o\p=q$r"),
+            r"a\|b\<c\>\&d\*e\_f\`g\[h\]\(i\)\#j\+k\-l\.m\!n\~o\\p\=q\$r"
+        );
+        assert_eq!(escape_md("one\r\ntwo\n\n\u{2028}three"), "one two three");
+        assert_eq!(escape_md("Plain text, 1 of 2"), "Plain text, 1 of 2");
+    }
+
+    #[test]
+    fn md_code_block_fences_are_longer_than_any_backtick_run() {
+        assert_eq!(md_code_block("plain"), "```\nplain\n```");
+        assert_eq!(md_code_block("a ``` b"), "````\na ``` b\n````");
+        assert_eq!(md_code_block("a ```` b ``"), "`````\na ```` b ``\n`````");
+    }
+
+    #[test]
+    fn a_pipe_in_a_title_or_a_cell_does_not_add_a_column() {
+        let md = DiagnosticReporter::to_markdown(
+            &[finding("Cache | stale", "details")],
+            60,
+            &[audit_entry("Repair | retry", "two | cells")],
+        );
+        let (outside, _) = outside_and_blocks(&md);
+        assert_eq!(outside.lines().filter(|l| l.starts_with('|')).count(), 3);
+        assert_table_rows_keep_their_columns(&outside);
+        assert!(md.contains(r"### 1. [!] WARNING [[OPEN]] Cache \| stale"));
+        assert!(md.contains(r"| Repair \| retry | FAILED | two \| cells |"));
+    }
+
+    #[test]
+    fn a_fence_longer_than_any_backtick_run_in_the_details_holds_them() {
+        let details = "before\n```\nmiddle\n````\nafter";
+        let md = DiagnosticReporter::to_markdown(&[finding("Title", details)], 60, &[]);
+        let (outside, blocks) = outside_and_blocks(&md);
+        assert_eq!(blocks, vec![(5, details.to_string())]);
+        assert!(outside.contains(r"**Recommended fix:** A fix\."));
+    }
+
+    #[test]
+    fn a_tag_in_a_name_is_shown_as_text_not_markup() {
+        let tag = "<img src=x onerror=alert(1)>";
+        let md = DiagnosticReporter::to_markdown(
+            &[finding(tag, "details")],
+            60,
+            &[audit_entry(tag, "details")],
+        );
+        let (outside, _) = outside_and_blocks(&md);
+        for line in outside.lines() {
+            assert_eq!(
+                unescaped_count(line, '<'),
+                0,
+                "a raw `<img` survives outside a code block: {line}"
+            );
+        }
+        assert!(outside.contains(r"\<img src\=x onerror\=alert\(1\)\>"));
+        assert_table_rows_keep_their_columns(&outside);
+    }
+
+    #[test]
+    fn a_line_break_in_a_value_stays_on_its_line() {
+        let mut issue = finding("Title", "details");
+        issue.description = "first\n# not a heading\n| not a cell |".to_string();
+        let md =
+            DiagnosticReporter::to_markdown(&[issue], 60, &[audit_entry("Title", "one\r\ntwo")]);
+        let (outside, _) = outside_and_blocks(&md);
+        assert!(
+            outside.contains("- **Description:** first \\# not a heading \\| not a cell \\|\n")
+        );
+        assert!(!outside.lines().any(|line| line.starts_with("# not")));
+        assert!(outside.contains("| one two |"));
+        assert_table_rows_keep_their_columns(&outside);
     }
 }
