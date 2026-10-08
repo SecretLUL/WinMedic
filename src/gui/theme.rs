@@ -33,7 +33,12 @@ const LIGHT: Palette = Palette {
 };
 
 pub fn palette(ui: &egui::Ui) -> Palette {
-    if ui.visuals().dark_mode { DARK } else { LIGHT }
+    palette_of(ui.visuals())
+}
+
+/// The status colours for `visuals`, the dark or the light theme.
+pub fn palette_of(visuals: &egui::Visuals) -> Palette {
+    if visuals.dark_mode { DARK } else { LIGHT }
 }
 
 pub fn apply(ctx: &egui::Context) {
