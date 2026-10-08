@@ -72,7 +72,7 @@ struct CliArgs {
     #[arg(long)]
     uninstall: bool,
 
-    /// With --uninstall: also delete %APPDATA%\WinMedic - settings, logs, reports and the registry backups a rollback needs
+    /// With --uninstall: also delete %APPDATA%\WinMedic (settings, logs, reports) and %ProgramData%\WinMedic (the registry backups a rollback needs)
     #[arg(long, requires = "uninstall")]
     purge: bool,
 }
@@ -181,6 +181,7 @@ fn run(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
 /// the kind of leftover WinMedic reports on other people's software.
 fn run_uninstall(purge: bool) -> u8 {
     let data_dir = AppConfig::config_path().parent().map(|d| d.to_path_buf());
+    let backup_dir = safety::reg_backup::default_backup_dir();
     let mut failures = 0;
     let mut report = |what: &str, result: Result<(), String>| match result {
         Ok(()) => println!("[OK]   {what}"),
@@ -200,8 +201,10 @@ fn run_uninstall(purge: bool) -> u8 {
         Err(e) => report("Removed the old \"Start with Windows\" entry", Err(e)),
     }
 
-    match data_dir {
-        Some(dir) if purge => {
+    if purge {
+        // The backups have a folder of their own, %ProgramData%\WinMedic.
+        let shared_dir = backup_dir.parent().map(|d| d.to_path_buf());
+        for dir in data_dir.into_iter().chain(shared_dir) {
             if dir.exists() {
                 report(
                     &format!("Deleted {}", dir.display()),
@@ -211,21 +214,21 @@ fn run_uninstall(purge: bool) -> u8 {
                 println!("[OK]   Nothing to delete in {}", dir.display());
             }
         }
-        dir => {
-            // Leave the settings saying what is now true; otherwise the next
-            // start of the window registers the task again.
-            let (mut config, _) = AppConfig::load_reporting();
-            config.helper_enabled = false;
-            report(
-                "Turned the background scan off",
-                config.save().map_err(|e| e.to_string()),
+    } else {
+        // Leave the settings saying what is now true; otherwise the next
+        // start of the window registers the task again.
+        let (mut config, _) = AppConfig::load_reporting();
+        config.helper_enabled = false;
+        report(
+            "Turned the background scan off",
+            config.save().map_err(|e| e.to_string()),
+        );
+        if let Some(dir) = data_dir {
+            println!(
+                "       Settings and logs stay in {}, registry backups in {} (--purge deletes them).",
+                dir.display(),
+                backup_dir.display()
             );
-            if let Some(dir) = dir {
-                println!(
-                    "       Settings, logs and registry backups stay in {} (--purge deletes them).",
-                    dir.display()
-                );
-            }
         }
     }
 
