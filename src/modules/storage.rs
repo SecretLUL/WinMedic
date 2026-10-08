@@ -115,19 +115,53 @@ pub fn storage_errors_finding(module_id: &str, events: &[EventRecord]) -> Option
     )
 }
 
+/// Keeps the first spelling of each folder in `paths` and drops the others.
+///
+/// For a service account `%TEMP%` is `%SystemRoot%\Temp`, so both entries name
+/// one folder. Measured twice, its size was counted twice in the threshold, the
+/// issue and the reclaimable bytes, and its locked files were swept twice.
+fn distinct_folders(paths: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
+    let mut kept: Vec<PathBuf> = Vec::new();
+    for path in paths {
+        if !kept.iter().any(|known| same_folder(known, &path)) {
+            kept.push(path);
+        }
+    }
+    kept
+}
+
+/// Whether `a` and `b` name the same folder.
+///
+/// When both exist, their canonical paths decide, which also sees through a
+/// junction and through a different case on disk. Otherwise the two are compared
+/// component by component, case-insensitively and with Unicode lowercasing, so a
+/// trailing separator makes no difference.
+fn same_folder(a: &Path, b: &Path) -> bool {
+    if let (Ok(a), Ok(b)) = (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        return a == b;
+    }
+    let spelling = |path: &Path| -> Vec<String> {
+        path.components()
+            .map(|part| part.as_os_str().to_string_lossy().to_lowercase())
+            .collect()
+    };
+    spelling(a) == spelling(b)
+}
+
 impl StorageModule {
     pub fn new(config: ModuleConfig) -> Self {
         Self::with_runner(config, Arc::new(SystemCommandRunner::new()))
     }
 
     pub fn with_runner(config: ModuleConfig, runner: Arc<dyn CommandRunner>) -> Self {
-        let temp_dirs = [
-            std::env::var_os("TEMP").map(PathBuf::from),
-            std::env::var_os("SystemRoot").map(|root| PathBuf::from(root).join("Temp")),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
+        let temp_dirs = distinct_folders(
+            [
+                std::env::var_os("TEMP").map(PathBuf::from),
+                std::env::var_os("SystemRoot").map(|root| PathBuf::from(root).join("Temp")),
+            ]
+            .into_iter()
+            .flatten(),
+        );
         let explorer_dir = std::env::var_os("LOCALAPPDATA")
             .map(|local| PathBuf::from(local).join(r"Microsoft\Windows\Explorer"));
         Self::with_paths(config, runner, temp_dirs, explorer_dir)
@@ -1055,6 +1089,87 @@ mod tests {
         let msg = module.fix("storage_temp_bloat", None).await.unwrap();
         assert!(msg.contains("3 files deleted (300.0 KB freed"), "{msg}");
         assert_eq!(std::fs::read_dir(&temp.0).unwrap().count(), 0);
+    }
+
+    /// A folder under a base that does not exist, so only its spelling counts.
+    fn missing_folder(name: &str) -> PathBuf {
+        std::env::temp_dir()
+            .join("winmedic_no_such_storage_folder")
+            .join(name)
+    }
+
+    /// One folder under two spellings: a different case, a trailing separator,
+    /// or a `..` that comes back to the same place.
+    #[test]
+    fn the_same_folder_is_recognised_whatever_its_spelling() {
+        let upper = PathBuf::from(format!("{}\\", missing_folder("TEMP").display()));
+        assert!(same_folder(&missing_folder("Temp"), &upper));
+        assert!(
+            same_folder(&missing_folder("Ärger"), &missing_folder("ärger")),
+            "non-ASCII letters fold too"
+        );
+
+        let root = Sandbox::new("same_folder");
+        let sub = root.0.join("Sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert!(same_folder(
+            &sub,
+            &root.0.join("Sub").join("..").join("Sub")
+        ));
+    }
+
+    #[test]
+    fn two_different_folders_are_not_the_same() {
+        assert!(!same_folder(
+            &missing_folder("Temp"),
+            &missing_folder("Other")
+        ));
+
+        let root = Sandbox::new("different_folders");
+        std::fs::create_dir_all(root.0.join("a")).unwrap();
+        std::fs::create_dir_all(root.0.join("b")).unwrap();
+        assert!(!same_folder(&root.0.join("a"), &root.0.join("b")));
+        assert!(!same_folder(&root.0.join("a"), &root.0));
+    }
+
+    /// The second spelling of a folder is dropped and the first is kept; a
+    /// folder that is really different stays in the list.
+    #[test]
+    fn a_folder_listed_twice_is_listed_once() {
+        let kept = distinct_folders([
+            missing_folder("Temp"),
+            PathBuf::from(format!("{}\\", missing_folder("temp").display())),
+            missing_folder("Other"),
+        ]);
+        assert_eq!(kept, vec![missing_folder("Temp"), missing_folder("Other")]);
+    }
+
+    /// `%TEMP%` and `%SystemRoot%\Temp` naming one real folder, as they do for
+    /// a service account: its bytes are reported once, not twice.
+    #[tokio::test]
+    async fn a_temp_folder_listed_twice_is_measured_once() {
+        let temp = Sandbox::new("temp_twice");
+        std::fs::write(temp.0.join("a.tmp"), vec![0u8; 1000]).unwrap();
+        std::fs::write(temp.0.join("b.tmp"), vec![0u8; 2000]).unwrap();
+        let again = PathBuf::from(format!("{}\\", temp.0.display()));
+        let config = ModuleConfig {
+            temp_clean_threshold_mb: 0,
+            ..ModuleConfig::default()
+        };
+        let module = StorageModule::with_paths(
+            config,
+            Arc::new(MockCommandRunner::with_default_success()),
+            distinct_folders([temp.0.clone(), again]),
+            None,
+        );
+
+        let issues = module.scan(None).await.unwrap();
+        let issue = issues
+            .iter()
+            .find(|i| i.id == "storage_temp_bloat")
+            .unwrap();
+        assert_eq!(issue.reclaimable_bytes, Some(3000));
+        assert!(issue.title.contains("(2 files)"), "{}", issue.title);
     }
 
     #[tokio::test]
