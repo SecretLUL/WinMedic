@@ -118,8 +118,7 @@ fn navigation(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         for (index, title) in TABS.iter().enumerate() {
             let selected = app.active_tab == index;
-            if ui
-                .selectable_label(selected, *title)
+            if tab(ui, selected, title)
                 .on_hover_text(format!("Shortcut: {}", index + 1))
                 .clicked()
             {
@@ -154,6 +153,35 @@ fn navigation(ui: &mut egui::Ui, app: &mut App) {
             }
         });
     });
+}
+
+/// A navigation entry, marked the way Windows 11 marks the current page: its
+/// title in the strong text colour over a short accent bar, where egui would
+/// fill the whole entry with its selection blue.
+fn tab(ui: &mut egui::Ui, selected: bool, title: &str) -> egui::Response {
+    let response = ui
+        .scope(|ui| {
+            let strong = ui.visuals().strong_text_color();
+            let visuals = ui.visuals_mut();
+            visuals.selection.bg_fill = egui::Color32::TRANSPARENT;
+            visuals.selection.stroke.color = strong;
+            visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+            ui.selectable_label(selected, title)
+        })
+        .inner;
+    if selected {
+        let rect = response.rect;
+        ui.painter().rect_filled(
+            // Just below the entry, in the room the panel leaves under it.
+            egui::Rect::from_center_size(
+                egui::pos2(rect.center().x, rect.bottom() + 1.0),
+                egui::vec2(16.0, 3.0),
+            ),
+            1.5,
+            theme::palette(ui).accent,
+        );
+    }
+    response
 }
 
 /// What the update banner says to get the update installed, one at a time.

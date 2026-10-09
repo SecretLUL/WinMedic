@@ -47,7 +47,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
 }
 
 fn headline(ui: &mut egui::Ui, text: &str, color: Option<egui::Color32>) {
-    let mut text = RichText::new(text).size(26.0).strong();
+    let mut text = theme::heading(ui, text, 26.0);
     if let Some(color) = color {
         text = text.color(color);
     }
@@ -63,10 +63,12 @@ fn note(ui: &mut egui::Ui, text: impl Into<String>) {
 }
 
 fn progress(ui: &mut egui::Ui, fraction: f32) {
+    let fill = theme::palette(ui).accent;
     ui.add(
         egui::ProgressBar::new(fraction)
             .desired_height(16.0)
-            .corner_radius(3),
+            .corner_radius(3)
+            .fill(fill),
     );
 }
 
@@ -330,7 +332,7 @@ fn forecast(ui: &mut egui::Ui, app: &App) {
         .inner_margin(14)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new("What Repair does").strong().size(15.0));
+            ui.label(theme::heading(ui, "What Repair does", 15.0));
             ui.add_space(6.0);
             for text in lines {
                 ui.horizontal(|ui| {

@@ -44,7 +44,7 @@ fn confirm(ctx: &egui::Context, app: &mut App) {
 
     modal_window(title).show(ctx, |ui| {
         ui.set_max_width(560.0);
-        ui.label(RichText::new(title).size(15.0).strong());
+        ui.label(theme::heading(ui, title, 15.0));
         ui.add_space(8.0);
 
         ui.spacing_mut().item_spacing.y = 2.0;
@@ -64,7 +64,7 @@ fn confirm(ctx: &egui::Context, app: &mut App) {
             let confirm = if removes {
                 theme::danger_button(ui, confirm_label)
             } else {
-                ui.button(confirm_label)
+                theme::primary_button(ui, true, RichText::new(confirm_label), egui::Vec2::ZERO)
             };
             if confirm.clicked() {
                 confirmed = true;
@@ -99,7 +99,7 @@ fn setting_input(ctx: &egui::Context, app: &mut App) {
 
     modal_window("Edit setting").show(ctx, |ui| {
         ui.set_max_width(420.0);
-        ui.label(RichText::new(&title).size(15.0).strong());
+        ui.label(theme::heading(ui, &title, 15.0));
         ui.label(theme::muted(format!("Allowed: {min}–{max} {unit}")));
         ui.add_space(6.0);
 
@@ -123,7 +123,8 @@ fn setting_input(ctx: &egui::Context, app: &mut App) {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if ui.button("Save").clicked() || enter_pressed {
+            let save = theme::primary_button(ui, true, RichText::new("Save"), egui::Vec2::ZERO);
+            if save.clicked() || enter_pressed {
                 submitted = true;
             }
             if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -144,7 +145,7 @@ fn help(ctx: &egui::Context, app: &mut App) {
 
     modal_window("Keyboard shortcuts").show(ctx, |ui| {
         ui.set_max_width(520.0);
-        ui.label(RichText::new("Keyboard shortcuts").size(15.0).strong());
+        ui.label(theme::heading(ui, "Keyboard shortcuts", 15.0));
         ui.label(theme::muted(
             "Every action below is also a button in the window; these are the shortcuts.",
         ));

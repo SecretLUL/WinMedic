@@ -340,7 +340,7 @@ fn detail(ui: &mut egui::Ui, app: &mut App, indices: &[usize]) {
                 issue.category, issue.module_id
             )));
             ui.add_space(6.0);
-            ui.label(RichText::new(&issue.title).strong().size(15.0));
+            ui.label(theme::heading(ui, &issue.title, 15.0));
             ui.add_space(4.0);
             ui.label(&issue.description);
 

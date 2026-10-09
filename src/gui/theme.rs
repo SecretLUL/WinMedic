@@ -2,9 +2,11 @@
 //!
 //! Deliberately plain. The window uses egui's stock light and dark visuals,
 //! follows the Windows app theme, and draws in Segoe UI at the density of a
-//! regular Windows tool. Colour is kept for what it means — severity, the
-//! outcome of a check or repair, what is ticked and the one button that takes
-//! something away — and not spent on decoration.
+//! regular Windows tool, with Windows 11's rounded corners and semibold
+//! headings. Colour is kept for what it means — severity, the outcome of a
+//! check or repair, what is ticked, the one button that moves the user
+//! forward and the one that takes something away — and not spent on
+//! decoration.
 
 use crate::engine::issue::Severity;
 use eframe::egui::{self, Color32, RichText, Stroke};
@@ -16,9 +18,10 @@ pub struct Palette {
     pub amber: Color32,
     pub green: Color32,
     pub blue: Color32,
-    /// What Windows 11 fills a ticked box with: its default accent colour.
+    /// What Windows 11 fills a ticked box, a progress bar and the default
+    /// button of a page with: its default accent colour.
     pub accent: Color32,
-    /// The tick on [`Palette::accent`].
+    /// Text and ticks on [`Palette::accent`].
     pub on_accent: Color32,
 }
 
@@ -45,6 +48,10 @@ const LIGHT: Palette = Palette {
 /// 11's critical red, which carries white text at 5.7:1.
 const DANGER: Color32 = Color32::from_rgb(196, 43, 28);
 
+/// The font family headings are set in; [`apply`] binds it to Segoe UI
+/// Semibold.
+const SEMIBOLD: &str = "Segoe UI Semibold";
+
 pub fn palette(ui: &egui::Ui) -> Palette {
     palette_of(ui.visuals())
 }
@@ -56,18 +63,31 @@ pub fn palette_of(visuals: &egui::Visuals) -> Palette {
 
 pub fn apply(ctx: &egui::Context) {
     // Use the Windows UI font when available, retaining the bundled fallbacks.
-    if let Some(windows) = std::env::var_os("SystemRoot")
-        && let Ok(data) = std::fs::read(std::path::PathBuf::from(windows).join("Fonts/segoeui.ttf"))
-    {
+    if let Some(windows) = std::env::var_os("SystemRoot") {
+        let folder = std::path::PathBuf::from(windows).join("Fonts");
         let mut fonts = egui::FontDefinitions::default();
-        fonts
-            .font_data
-            .insert("Segoe UI".into(), egui::FontData::from_owned(data).into());
-        fonts
-            .families
-            .entry(egui::FontFamily::Proportional)
-            .or_default()
-            .insert(0, "Segoe UI".into());
+        if let Ok(data) = std::fs::read(folder.join("segoeui.ttf")) {
+            fonts
+                .font_data
+                .insert("Segoe UI".into(), egui::FontData::from_owned(data).into());
+            fonts
+                .families
+                .entry(egui::FontFamily::Proportional)
+                .or_default()
+                .insert(0, "Segoe UI".into());
+        }
+        // egui has no font weights, only families. Headings get their own,
+        // which falls back on the body face for anything Semibold lacks.
+        if let Ok(data) = std::fs::read(folder.join("seguisb.ttf")) {
+            fonts
+                .font_data
+                .insert(SEMIBOLD.into(), egui::FontData::from_owned(data).into());
+            let mut family = vec![SEMIBOLD.to_string()];
+            family.extend(fonts.families[&egui::FontFamily::Proportional].clone());
+            fonts
+                .families
+                .insert(egui::FontFamily::Name(SEMIBOLD.into()), family);
+        }
         ctx.set_fonts(fonts);
     }
 
@@ -92,8 +112,9 @@ pub fn apply(ctx: &egui::Context) {
                 egui::Theme::Light => Color32::from_gray(165),
             },
         );
-        visuals.window_corner_radius = 4.into();
-        visuals.menu_corner_radius = 4.into();
+        // Windows 11 rounds a control by 4 and a dialog or a menu by 8.
+        visuals.window_corner_radius = 8.into();
+        visuals.menu_corner_radius = 8.into();
         for widget in [
             &mut visuals.widgets.noninteractive,
             &mut visuals.widgets.inactive,
@@ -101,7 +122,7 @@ pub fn apply(ctx: &egui::Context) {
             &mut visuals.widgets.active,
             &mut visuals.widgets.open,
         ] {
-            widget.corner_radius = 3.into();
+            widget.corner_radius = 4.into();
         }
         ctx.set_visuals_of(theme, visuals);
     }
@@ -159,9 +180,23 @@ pub fn muted(text: impl Into<String>) -> RichText {
     RichText::new(text.into()).weak()
 }
 
+/// Heading text: Segoe UI Semibold at `size`.
+pub fn heading(ui: &egui::Ui, text: impl Into<String>, size: f32) -> RichText {
+    let text = RichText::new(text).size(size).strong();
+    let family = egui::FontFamily::Name(SEMIBOLD.into());
+    // Fonts arrive a frame after `apply` asks for them, and a family egui has
+    // not been given is a panic: a test harness draws its first frame before
+    // it applies the theme, and a Windows without the font never has it.
+    if ui.fonts(|fonts| fonts.definitions().families.contains_key(&family)) {
+        text.family(family)
+    } else {
+        text
+    }
+}
+
 /// A section heading inside a tab.
 pub fn section(ui: &mut egui::Ui, title: &str) {
-    ui.label(RichText::new(title).strong().size(14.5));
+    ui.label(heading(ui, title, 14.5));
     ui.add_space(2.0);
 }
 
@@ -277,21 +312,44 @@ pub fn severity_mark(ui: &mut egui::Ui, severity: Severity, size: f32) -> egui::
 /// A large button for Easy mode, where the next step should be impossible to
 /// miss. `primary` fills it with the accent colour.
 pub fn big_button(ui: &mut egui::Ui, text: &str, primary: bool, enabled: bool) -> egui::Response {
-    let visuals = ui.visuals();
-    let mut label = RichText::new(text).size(17.0).strong();
+    let label = RichText::new(text).size(17.0);
+    let size = egui::vec2(210.0, 46.0);
     if primary {
-        label = label.color(visuals.strong_text_color());
+        primary_button(ui, enabled, label, size)
+    } else {
+        ui.add_enabled(enabled, egui::Button::new(label.strong()).min_size(size))
     }
-    let mut button = egui::Button::new(label).min_size(egui::vec2(210.0, 46.0));
-    if primary {
-        button = button.fill(visuals.selection.bg_fill);
-    }
-    ui.add_enabled(enabled, button)
+}
+
+/// The one button on a page that moves the user forward, filled with the
+/// accent colour so the eye finds it first.
+pub fn primary_button(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    label: RichText,
+    min_size: egui::Vec2,
+) -> egui::Response {
+    let palette = palette(ui);
+    filled_button(
+        ui,
+        enabled,
+        label,
+        min_size,
+        palette.accent,
+        palette.on_accent,
+    )
 }
 
 /// A button that takes something away, filled red.
 pub fn danger_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    filled_button(ui, RichText::new(text), DANGER, Color32::WHITE)
+    filled_button(
+        ui,
+        true,
+        RichText::new(text),
+        egui::Vec2::ZERO,
+        DANGER,
+        Color32::WHITE,
+    )
 }
 
 /// How much of a filled control's colour still shows over the panel under
@@ -305,10 +363,17 @@ const PRESSED: f32 = 0.85;
 /// under the pointer the way a Windows accent button does.
 fn filled_button(
     ui: &mut egui::Ui,
+    enabled: bool,
     label: RichText,
+    min_size: egui::Vec2,
     fill: Color32,
     text: Color32,
 ) -> egui::Response {
+    // Disabled, it is a plain grey button: Windows greys its accent buttons
+    // out too, where a faded fill would look washed out rather than off.
+    if !enabled {
+        return ui.add_enabled(false, egui::Button::new(label).min_size(min_size));
+    }
     ui.scope(|ui| {
         let panel = ui.visuals().panel_fill;
         let widgets = &mut ui.visuals_mut().widgets;
@@ -320,7 +385,7 @@ fn filled_button(
             state.weak_bg_fill = panel.lerp_to_gamma(fill, share);
             state.bg_stroke = Stroke::NONE;
         }
-        ui.add(egui::Button::new(label.color(text)))
+        ui.add(egui::Button::new(label.color(text)).min_size(min_size))
     })
     .inner
 }
@@ -488,10 +553,9 @@ pub(crate) mod tests {
         (a.max(b) + 0.05) / (a.min(b) + 0.05)
     }
 
-    /// In both themes a ticked box stands out from the panel and its tick
-    /// from the box, and a clear one keeps its outline, at WCAG's 3:1 for a
-    /// control; the text on the red button stays at 4.5:1. Both at rest,
-    /// under the pointer and pressed.
+    /// In both themes a ticked box stands out from the panel and a clear one
+    /// keeps its outline, at WCAG's 3:1 for a control, and the text on a
+    /// filled button stays at 4.5:1 at rest, under the pointer and pressed.
     #[test]
     fn checkboxes_and_filled_buttons_stay_legible() {
         let ctx = egui::Context::default();
@@ -519,13 +583,16 @@ pub(crate) mod tests {
             }
 
             for share in [1.0, HOVERED, PRESSED] {
-                let tick = contrast(
-                    palette.on_accent,
-                    panel.lerp_to_gamma(palette.accent, share),
-                );
-                assert!(tick >= 3.0, "{theme:?}: tick at {share}: {tick:.2}:1");
-                let text = contrast(Color32::WHITE, panel.lerp_to_gamma(DANGER, share));
-                assert!(text >= 4.5, "{theme:?}: red button at {share}: {text:.2}:1");
+                for (name, fill, text) in [
+                    ("accent", palette.accent, palette.on_accent),
+                    ("red", DANGER, Color32::WHITE),
+                ] {
+                    let ratio = contrast(text, panel.lerp_to_gamma(fill, share));
+                    assert!(
+                        ratio >= 4.5,
+                        "{theme:?}: {name} button at {share}: {ratio:.2}:1"
+                    );
+                }
             }
         }
     }
