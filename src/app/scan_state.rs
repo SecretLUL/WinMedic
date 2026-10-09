@@ -7,8 +7,9 @@ use chrono::Local;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use crate::engine::issue::Issue;
+use crate::engine::issue::{Issue, Severity};
 use crate::modules::ModuleStatus;
+use crate::modules::clock_restart::RESTART_OVERDUE;
 use crate::modules::windows_updates::REBOOT_PENDING;
 
 pub const SCAN_STATE_FILE_NAME: &str = "last_scan.json";
@@ -111,11 +112,8 @@ impl ScanState {
         let mut state: Self = serde_json::from_str(&data)
             .ok()
             .filter(|state: &Self| state.format == FORMAT)?;
-        // Up to 0.8.0 the restart Windows waits for was a repair. It is advice
-        // now, and its repair is gone: a ticked one would fail.
-        for issue in state.issues.iter_mut().filter(|i| i.id == REBOOT_PENDING) {
-            issue.advice_only = true;
-            issue.is_selected = false;
+        for issue in state.issues.iter_mut().chain(&mut state.archived_issues) {
+            upgrade(issue);
         }
         Some(state)
     }
@@ -145,10 +143,29 @@ impl ScanState {
     }
 }
 
+/// A finding as an older WinMedic saved it, made to read as this one's.
+fn upgrade(issue: &mut Issue) {
+    // Up to 0.8.0 the restart Windows waits for was a repair. It is advice
+    // now, and its repair is gone: a ticked one would fail.
+    if issue.id == REBOOT_PENDING {
+        issue.advice_only = true;
+        issue.is_selected = false;
+    }
+    // So was an overdue restart with Fast Startup off: its repair changed
+    // nothing, then waited for the restart as if it had. Advice now, and one
+    // "repaired" waits for nothing.
+    if issue.id == RESTART_OVERDUE && issue.severity == Severity::Info {
+        issue.advice_only = true;
+        issue.is_selected = false;
+        issue.requires_reboot = false;
+        issue.is_reboot_pending = false;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::issue::{RiskScore, Severity};
+    use crate::engine::issue::RiskScore;
 
     #[test]
     fn test_scan_state_serialization_round_trip() {
@@ -238,6 +255,60 @@ mod tests {
             assert!(loaded.advice_only && !loaded.will_repair());
             assert_eq!(loaded.is_reboot_pending, waits);
         }
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// The overdue restart as 0.8.0 saved it, with Fast Startup off (`Info`)
+    /// or on (`Warning`): a repair either way.
+    fn restart_overdue_saved_by_0_8_0(severity: Severity) -> Issue {
+        Issue::new(
+            RESTART_OVERDUE,
+            "clock_restart",
+            "Windows has not restarted in 20 days",
+            "Clock & Restart",
+            severity,
+            RiskScore::Low,
+            "Desc",
+            "Details",
+            "Restart Windows (nothing is changed)",
+            vec!["Restart Windows".to_string()],
+        )
+        .with_requires_reboot(true)
+    }
+
+    /// With Fast Startup off, 0.8.0 offered the overdue restart as a repair
+    /// that changed nothing: ticked, or "repaired" and waiting for the
+    /// restart, shown or archived. It loads as advice that waits for nothing.
+    /// With Fast Startup on it stays the repair that turns Fast Startup off.
+    #[test]
+    fn an_overdue_restart_saved_as_a_repair_loads_as_advice() {
+        let tmp = std::env::temp_dir().join(format!(
+            "winmedic_scan_state_overdue_{}.json",
+            std::process::id()
+        ));
+        let mut ticked = restart_overdue_saved_by_0_8_0(Severity::Info);
+        ticked.is_selected = true;
+        let mut waiting = ticked.clone();
+        waiting.is_selected = false;
+        waiting.is_reboot_pending = true;
+
+        for saved in [ticked, waiting] {
+            ScanState::new(90, vec![saved.clone()], Vec::new(), None)
+                .with_archived(vec![saved])
+                .save_to(&tmp)
+                .unwrap();
+            let loaded = ScanState::load_from(&tmp).unwrap();
+            for issue in loaded.issues.iter().chain(&loaded.archived_issues) {
+                assert!(issue.advice_only && !issue.will_repair());
+                assert!(!issue.requires_reboot && !issue.is_reboot_pending);
+            }
+        }
+
+        let warning = restart_overdue_saved_by_0_8_0(Severity::Warning);
+        ScanState::new(90, vec![warning.clone()], Vec::new(), None)
+            .save_to(&tmp)
+            .unwrap();
+        assert_eq!(ScanState::load_from(&tmp).unwrap().issues, [warning]);
         let _ = std::fs::remove_file(&tmp);
     }
 

@@ -1257,13 +1257,9 @@ mod tests {
         issue
     }
 
-    /// Windows' own pending restart as 0.8.0 saved it once it had "repaired"
-    /// it, read back the way the window reads its last scan.
-    fn windows_restart_saved_by_0_8_0() -> Issue {
+    /// `old` written and read back the way the window reads its last scan.
+    fn saved_and_loaded(old: Issue) -> Issue {
         static FILES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let mut old = windows_restart();
-        old.advice_only = false;
-        old.is_reboot_pending = true;
         let path = std::env::temp_dir().join(format!(
             "winmedic_gui_restart_{}_{}.json",
             std::process::id(),
@@ -1275,6 +1271,36 @@ mod tests {
         let loaded = crate::app::ScanState::load_from(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         loaded.issues.into_iter().next().unwrap()
+    }
+
+    /// Windows' own pending restart as 0.8.0 saved it once it had "repaired"
+    /// it, read back the way the window reads its last scan.
+    fn windows_restart_saved_by_0_8_0() -> Issue {
+        let mut old = windows_restart();
+        old.advice_only = false;
+        old.is_reboot_pending = true;
+        saved_and_loaded(old)
+    }
+
+    /// An overdue restart with Fast Startup off that 0.8.0 "repaired" - its
+    /// repair changed nothing - reads back as advice: no banner asks to
+    /// finish a repair, and its row has no tick box.
+    #[test]
+    fn an_overdue_restart_saved_as_repaired_asks_for_nothing() {
+        let mut old = issue(
+            crate::modules::clock_restart::RESTART_OVERDUE,
+            "Windows has not restarted in 20 days",
+            Severity::Info,
+        )
+        .with_requires_reboot(true);
+        old.is_reboot_pending = true;
+        old.is_selected = false;
+        let mut app = scanned_app();
+        app.issues.push(saved_and_loaded(old));
+
+        let harness = window(app);
+        assert!(harness.query_by_label("Restart now").is_none());
+        assert!(harness.query_by_label("Advice").is_some());
     }
 
     const WINDOWS_WAITS: &str = "Windows is waiting for a restart to finish its updates.";
