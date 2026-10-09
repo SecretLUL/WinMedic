@@ -1405,18 +1405,14 @@ impl TweaksModule {
             return Ok("The hosts file no longer blocks any Windows endpoint.".to_string());
         }
 
-        RegBackupManager::with_dir(self.backup_dir.clone())
-            .ensure_backup_dir()
-            .map_err(|e| format!("Aborted: {e}. Nothing was changed."))?;
-        let backup = self.backup_dir.join(format!(
-            "hosts_{}.bak",
-            chrono::Local::now().format("%Y%m%d_%H%M%S")
-        ));
-        std::fs::copy(&self.hosts_path, &backup).map_err(|e| {
-            // A partial copy is not a backup.
-            let _ = std::fs::remove_file(&backup);
-            format!("Aborted: the hosts file could not be backed up ({e}). Nothing was changed.")
-        })?;
+        let name = format!("hosts_{}.bak", chrono::Local::now().format("%Y%m%d_%H%M%S"));
+        let backup = RegBackupManager::with_dir(self.backup_dir.clone())
+            .save_copy(&name, &original)
+            .map_err(|e| {
+                format!(
+                    "Aborted: the hosts file could not be backed up ({e}). Nothing was changed."
+                )
+            })?;
 
         let fixed = unblock_hosts(&original);
         if let Err(e) = replace_file(&self.hosts_path, &fixed) {

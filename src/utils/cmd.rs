@@ -237,10 +237,15 @@ pub struct MockCommandRunner {
     executed_commands: Arc<Mutex<Vec<String>>>,
     devices: Arc<Mutex<Vec<PnpDevice>>>,
     devices_after: Arc<Mutex<Vec<DevicesAfter>>>,
+    written_files: Arc<Mutex<Vec<WrittenFile>>>,
 }
 
 /// `(trigger, devices)`, see [`MockCommandRunner::set_devices_after`].
 type DevicesAfter = (String, Vec<PnpDevice>);
+
+/// `(match_substring, argument, bytes)`, see
+/// [`MockCommandRunner::add_written_file`].
+type WrittenFile = (String, usize, Vec<u8>);
 
 impl MockCommandRunner {
     pub fn new() -> Self {
@@ -298,6 +303,22 @@ impl MockCommandRunner {
             .unwrap()
             .push((trigger.into(), devices));
     }
+
+    /// For a command that writes a file, such as `reg export`: whenever a
+    /// command matching `match_substring` runs, `bytes` are written to the
+    /// file its argument number `argument` names. What it answers is set
+    /// with [`Self::add_response`] as for any other command.
+    pub fn add_written_file(
+        &self,
+        match_substring: impl Into<String>,
+        argument: usize,
+        bytes: impl Into<Vec<u8>>,
+    ) {
+        self.written_files
+            .lock()
+            .unwrap()
+            .push((match_substring.into(), argument, bytes.into()));
+    }
 }
 
 #[async_trait::async_trait]
@@ -323,6 +344,11 @@ impl CommandRunner for MockCommandRunner {
             .map(|(_, _, output)| output.clone());
         executed.push(full_cmd.clone());
         drop(executed);
+        for (pattern, argument, bytes) in self.written_files.lock().unwrap().iter() {
+            if let Some(path) = args.get(*argument).filter(|_| matches(pattern)) {
+                std::fs::write(path, bytes).map_err(|e| format!("{path}: {e}"))?;
+            }
+        }
         if let Some(output) = after {
             return Ok(output);
         }

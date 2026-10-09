@@ -60,9 +60,8 @@ impl ConfigStatus {
 
 /// Move an unusable config file aside, returning where it was preserved.
 ///
-/// Mirrors what `safety::reg_backup` does with a malformed backup index: the
-/// file is renamed rather than deleted, so whatever the user had in there is
-/// still recoverable by hand.
+/// The file is renamed rather than deleted, so whatever the user had in there
+/// is still recoverable by hand.
 fn quarantine(path: &Path) -> Result<PathBuf, std::io::Error> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let file_name = path

@@ -1,15 +1,18 @@
-//! Who besides the administrators can change a file or a folder.
+//! Who besides the administrators can change a file, a folder or a registry
+//! key.
 //!
-//! WinMedic runs elevated, and in a few places it acts on a file that a
+//! WinMedic runs elevated, and in a few places it acts on something that a
 //! standard account could have put there or swapped: the program the
-//! background task starts with the highest rights, and the registry backups a
-//! rollback imports. Such a file must be changeable by Administrators, SYSTEM
-//! and TrustedInstaller only, like everything under Program Files, or acting
-//! on it hands their rights to whoever can change it.
+//! background task starts with the highest rights, the folder registry
+//! backups are written into, and the key that records each backup. These
+//! must be changeable by Administrators, SYSTEM and TrustedInstaller only,
+//! like everything under Program Files, or acting on them hands their rights
+//! to whoever can change them.
 
 use std::path::{Path, PathBuf};
 
-/// What a path component is, which decides the rights that let someone change it.
+/// What a path component or a registry key is, which decides the rights that
+/// let someone change it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Part {
     /// The file itself: whoever can write it, or remove it so that another
@@ -21,6 +24,12 @@ pub enum Part {
     /// The drive's root. Everyone signed in may create folders in `C:\`,
     /// which replaces nothing that is there.
     Root,
+    /// A folder WinMedic writes files into: whoever can add an entry to it
+    /// can also put one in place before WinMedic writes there.
+    Store,
+    /// A registry key: whoever can set a value in it, add a key below it or
+    /// remove it decides what WinMedic reads from it.
+    Key,
 }
 
 /// An account, as its string SID and, for messages, its name.
@@ -46,9 +55,14 @@ const WRITE_DAC: u32 = 0x0004_0000;
 const WRITE_OWNER: u32 = 0x0008_0000;
 const GENERIC_ALL: u32 = 0x1000_0000;
 const GENERIC_WRITE: u32 = 0x4000_0000;
+/// On a folder: `FILE_ADD_FILE`.
 const FILE_WRITE_DATA: u32 = 0x0002;
+/// On a folder: `FILE_ADD_SUBDIRECTORY`.
 const FILE_APPEND_DATA: u32 = 0x0004;
 const FILE_DELETE_CHILD: u32 = 0x0040;
+const KEY_SET_VALUE: u32 = 0x0002;
+const KEY_CREATE_SUB_KEY: u32 = 0x0004;
+const KEY_CREATE_LINK: u32 = 0x0020;
 
 /// The rights that let someone change what `part` is: rewrite the file,
 /// remove or rename it or a folder on its path so that another takes its
@@ -59,6 +73,17 @@ fn change_rights(part: Part) -> u32 {
         Part::File => anything | DELETE | FILE_WRITE_DATA | FILE_APPEND_DATA | GENERIC_WRITE,
         Part::Folder => anything | DELETE | FILE_DELETE_CHILD,
         Part::Root => anything | FILE_DELETE_CHILD,
+        Part::Store => {
+            anything
+                | DELETE
+                | FILE_WRITE_DATA
+                | FILE_APPEND_DATA
+                | FILE_DELETE_CHILD
+                | GENERIC_WRITE
+        }
+        Part::Key => {
+            anything | DELETE | KEY_SET_VALUE | KEY_CREATE_SUB_KEY | KEY_CREATE_LINK | GENERIC_WRITE
+        }
     }
 }
 
@@ -118,7 +143,7 @@ fn path_chain(path: &Path) -> Vec<(PathBuf, Part)> {
 
 /// `path` without the `\\?\` that `canonicalize` puts in front, for messages
 /// and for the functions that do not take it.
-fn plain(path: &Path) -> PathBuf {
+pub(crate) fn plain(path: &Path) -> PathBuf {
     let text = path.as_os_str().to_string_lossy();
     if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
         PathBuf::from(format!(r"\\{unc}"))
@@ -169,9 +194,9 @@ pub fn admin_only_problem(path: &Path) -> Option<String> {
 }
 
 /// Create `dir`, and the folders missing above it, owned by Administrators
-/// and changeable by Administrators and SYSTEM only; then check that nobody
-/// else can change `dir` or a folder above it, since a folder of that name
-/// may have been there already, made by someone else.
+/// and changeable by Administrators and SYSTEM only. A folder that is there
+/// already is left as it is: someone else may have made it, so the caller
+/// checks it.
 pub fn create_admin_only_dir(dir: &Path) -> Result<(), String> {
     let mut missing = Vec::new();
     let mut at = Some(dir);
@@ -183,10 +208,70 @@ pub fn create_admin_only_dir(dir: &Path) -> Result<(), String> {
         create_admin_only(folder)
             .map_err(|e| format!("{} could not be created: {e}", folder.display()))?;
     }
-    match admin_only_problem(dir) {
-        None => Ok(()),
-        Some(problem) => Err(problem),
+    Ok(())
+}
+
+/// Who besides Administrators, SYSTEM and TrustedInstaller can change the
+/// file or folder `file` is open on, a `part` of the file system; `None` when
+/// nobody can.
+///
+/// Read through the handle, so it is about what WinMedic holds, not whatever
+/// a path names by the time it is looked up.
+#[cfg(windows)]
+pub fn who_else_can_change_file(
+    file: &std::fs::File,
+    part: Part,
+) -> Result<Option<String>, String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Security::Authorization::SE_FILE_OBJECT;
+
+    who_else_can_change_object(file.as_raw_handle(), SE_FILE_OBJECT, part)
+}
+
+/// [`who_else_can_change_file`] for the registry key `key`.
+#[cfg(windows)]
+pub fn who_else_can_change_key(key: &winreg::RegKey) -> Result<Option<String>, String> {
+    use windows_sys::Win32::Security::Authorization::SE_REGISTRY_KEY;
+
+    who_else_can_change_object(key.raw_handle(), SE_REGISTRY_KEY, Part::Key)
+}
+
+/// Who besides Administrators, SYSTEM and TrustedInstaller can change the
+/// `object` that `handle`, an open handle, is open on.
+#[cfg(windows)]
+fn who_else_can_change_object(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    object: windows_sys::Win32::Security::Authorization::SE_OBJECT_TYPE,
+    part: Part,
+) -> Result<Option<String>, String> {
+    use windows_sys::Win32::Foundation::{ERROR_SUCCESS, LocalFree};
+    use windows_sys::Win32::Security::Authorization::GetSecurityInfo;
+    use windows_sys::Win32::Security::{
+        ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+    };
+
+    let mut owner: PSID = std::ptr::null_mut();
+    let mut dacl: *mut ACL = std::ptr::null_mut();
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    let status = unsafe {
+        GetSecurityInfo(
+            handle,
+            object,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            &mut owner,
+            std::ptr::null_mut(),
+            &mut dacl,
+            std::ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(std::io::Error::from_raw_os_error(status as i32).to_string());
     }
+    let read = unsafe { read_descriptor(owner, dacl) };
+    unsafe { LocalFree(descriptor) };
+    let (owner, grants) = read.ok_or("the permission list is not readable")?;
+    Ok(who_else_can_change(part, &owner, grants.as_deref()))
 }
 
 /// Whether the drive whose root is `root` is a fixed drive of this PC.
@@ -221,14 +306,8 @@ fn permissions(path: &Path) -> Result<(Account, Option<Vec<Grant>>), String> {
     use windows_sys::Win32::Foundation::{ERROR_SUCCESS, LocalFree};
     use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{
-        ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, DACL_SECURITY_INFORMATION, GetAce, INHERIT_ONLY_ACE,
-        OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+        ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
     };
-
-    // ACCESS_ALLOWED_CALLBACK_ACE starts like ACCESS_ALLOWED_ACE; the object
-    // variants are for directory objects, not files.
-    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
-    const ACCESS_ALLOWED_CALLBACK_ACE_TYPE: u8 = 9;
 
     let name = wide(path.as_os_str());
     let mut owner: PSID = std::ptr::null_mut();
@@ -249,38 +328,54 @@ fn permissions(path: &Path) -> Result<(Account, Option<Vec<Grant>>), String> {
     if status != ERROR_SUCCESS {
         return Err(std::io::Error::from_raw_os_error(status as i32).to_string());
     }
-
-    let read = || -> Option<(Account, Option<Vec<Grant>>)> {
-        let owner = account(owner)?;
-        if dacl.is_null() {
-            return Some((owner, None));
-        }
-        let mut grants = Vec::new();
-        for index in 0..u32::from(unsafe { (*dacl).AceCount }) {
-            let mut ace = std::ptr::null_mut();
-            if unsafe { GetAce(dacl, index, &mut ace) } == 0 {
-                return None;
-            }
-            let header = unsafe { &*(ace as *const ACE_HEADER) };
-            if !matches!(
-                header.AceType,
-                ACCESS_ALLOWED_ACE_TYPE | ACCESS_ALLOWED_CALLBACK_ACE_TYPE
-            ) {
-                continue;
-            }
-            let allowed = ace as *const ACCESS_ALLOWED_ACE;
-            let sid = unsafe { std::ptr::addr_of!((*allowed).SidStart) } as PSID;
-            grants.push(Grant {
-                account: account(sid)?,
-                mask: unsafe { (*allowed).Mask },
-                inherit_only: u32::from(header.AceFlags) & INHERIT_ONLY_ACE != 0,
-            });
-        }
-        Some((owner, Some(grants)))
-    };
-    let result = read();
+    let result = unsafe { read_descriptor(owner, dacl) };
     unsafe { LocalFree(descriptor) };
     result.ok_or_else(|| "the permission list is not readable".to_string())
+}
+
+/// The account `owner` and the entries of the permission list `dacl` that
+/// allow something, `None` for a missing list; both from a security
+/// descriptor that is still allocated.
+#[cfg(windows)]
+unsafe fn read_descriptor(
+    owner: windows_sys::Win32::Security::PSID,
+    dacl: *mut windows_sys::Win32::Security::ACL,
+) -> Option<(Account, Option<Vec<Grant>>)> {
+    use windows_sys::Win32::Security::{
+        ACCESS_ALLOWED_ACE, ACE_HEADER, GetAce, INHERIT_ONLY_ACE, PSID,
+    };
+
+    // ACCESS_ALLOWED_CALLBACK_ACE starts like ACCESS_ALLOWED_ACE; the object
+    // variants are for directory objects, not files.
+    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+    const ACCESS_ALLOWED_CALLBACK_ACE_TYPE: u8 = 9;
+
+    let owner = account(owner)?;
+    if dacl.is_null() {
+        return Some((owner, None));
+    }
+    let mut grants = Vec::new();
+    for index in 0..u32::from(unsafe { (*dacl).AceCount }) {
+        let mut ace = std::ptr::null_mut();
+        if unsafe { GetAce(dacl, index, &mut ace) } == 0 {
+            return None;
+        }
+        let header = unsafe { &*(ace as *const ACE_HEADER) };
+        if !matches!(
+            header.AceType,
+            ACCESS_ALLOWED_ACE_TYPE | ACCESS_ALLOWED_CALLBACK_ACE_TYPE
+        ) {
+            continue;
+        }
+        let allowed = ace as *const ACCESS_ALLOWED_ACE;
+        let sid = unsafe { std::ptr::addr_of!((*allowed).SidStart) } as PSID;
+        grants.push(Grant {
+            account: account(sid)?,
+            mask: unsafe { (*allowed).Mask },
+            inherit_only: u32::from(header.AceFlags) & INHERIT_ONLY_ACE != 0,
+        });
+    }
+    Some((owner, Some(grants)))
 }
 
 #[cfg(not(windows))]
@@ -337,71 +432,19 @@ fn account(sid: windows_sys::Win32::Security::PSID) -> Option<Account> {
     })
 }
 
-/// Make Administrators the owner of `path`.
-///
-/// A new file belongs to the default owner of the program that wrote it:
-/// Administrators for a program elevated under UAC, but it can be the
-/// account itself, for instance with UAC switched off. An owner can always
-/// rewrite the permissions, so [`admin_only_problem`] counts such a file as
-/// changeable by that account.
+/// `sddl` as security attributes for `create`, freed after it ran.
 #[cfg(windows)]
-pub fn hand_to_administrators(path: &Path) -> Result<(), String> {
-    use windows_sys::Win32::Foundation::{ERROR_SUCCESS, LocalFree};
-    use windows_sys::Win32::Security::Authorization::{
-        ConvertStringSidToSidW, SE_FILE_OBJECT, SetNamedSecurityInfoW,
-    };
-    use windows_sys::Win32::Security::{OWNER_SECURITY_INFORMATION, PSID};
-
-    let mut administrators: PSID = std::ptr::null_mut();
-    if unsafe {
-        ConvertStringSidToSidW(
-            wide(std::ffi::OsStr::new(ADMINISTRATORS)).as_ptr(),
-            &mut administrators,
-        )
-    } == 0
-    {
-        return Err(std::io::Error::last_os_error().to_string());
-    }
-    let status = unsafe {
-        SetNamedSecurityInfoW(
-            wide(path.as_os_str()).as_ptr(),
-            SE_FILE_OBJECT,
-            OWNER_SECURITY_INFORMATION,
-            administrators,
-            std::ptr::null_mut(),
-            std::ptr::null(),
-            std::ptr::null(),
-        )
-    };
-    unsafe { LocalFree(administrators) };
-    if status == ERROR_SUCCESS {
-        Ok(())
-    } else {
-        Err(std::io::Error::from_raw_os_error(status as i32).to_string())
-    }
-}
-
-#[cfg(not(windows))]
-pub fn hand_to_administrators(_path: &Path) -> Result<(), String> {
-    Err("owners are only set on Windows".to_string())
-}
-
-/// Create one folder owned by Administrators, whose permissions let only
-/// SYSTEM and Administrators in, inherited by everything created inside, and
-/// not inherited from above.
-#[cfg(windows)]
-fn create_admin_only(folder: &Path) -> std::io::Result<()> {
+fn with_attributes<T>(
+    sddl: &str,
+    create: impl FnOnce(&windows_sys::Win32::Security::SECURITY_ATTRIBUTES) -> std::io::Result<T>,
+) -> std::io::Result<T> {
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::{
         ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
     };
     use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
-    use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
 
-    // The owner, for the reason given at `hand_to_administrators`.
-    const ADMINS_AND_SYSTEM_ONLY: &str = "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
-
-    let sddl = wide(std::ffi::OsStr::new(ADMINS_AND_SYSTEM_ONLY));
+    let sddl = wide(std::ffi::OsStr::new(sddl));
     let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
     if unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -414,31 +457,80 @@ fn create_admin_only(folder: &Path) -> std::io::Result<()> {
     {
         return Err(std::io::Error::last_os_error());
     }
-    let attributes = SECURITY_ATTRIBUTES {
+    let result = create(&SECURITY_ATTRIBUTES {
         nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: descriptor,
         bInheritHandle: 0,
-    };
-    let created = unsafe { CreateDirectoryW(wide(folder.as_os_str()).as_ptr(), &attributes) } != 0;
-    let result = if created {
-        Ok(())
-    } else {
+    });
+    unsafe { LocalFree(descriptor) };
+    result
+}
+
+/// Create one folder owned by Administrators, whose permissions let only
+/// SYSTEM and Administrators in, inherited by everything created inside, and
+/// not inherited from above.
+#[cfg(windows)]
+fn create_admin_only(folder: &Path) -> std::io::Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
+
+    // An owner can always rewrite the permissions, so it is set too: the
+    // account that runs WinMedic must not become it.
+    const ADMINS_AND_SYSTEM_ONLY: &str = "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
+
+    with_attributes(ADMINS_AND_SYSTEM_ONLY, |attributes| {
+        if unsafe { CreateDirectoryW(wide(folder.as_os_str()).as_ptr(), attributes) } != 0 {
+            return Ok(());
+        }
         let err = std::io::Error::last_os_error();
-        // Made in the meantime, by WinMedic or by someone else: the check
-        // that follows tells which.
+        // Made in the meantime, by WinMedic or by someone else: the caller
+        // checks which.
         if err.kind() == std::io::ErrorKind::AlreadyExists {
             Ok(())
         } else {
             Err(err)
         }
-    };
-    unsafe { LocalFree(descriptor) };
-    result
+    })
 }
 
 #[cfg(not(windows))]
 fn create_admin_only(folder: &Path) -> std::io::Result<()> {
     std::fs::create_dir(folder)
+}
+
+/// Open `HKEY_LOCAL_MACHINE\<path>`, creating it, if it is missing, owned by
+/// Administrators and with permissions that let only SYSTEM and
+/// Administrators in, inherited by the keys below and not from above. A key
+/// that is there already keeps its own permissions; the caller checks them.
+#[cfg(windows)]
+pub fn create_admin_only_key(path: &str) -> std::io::Result<winreg::RegKey> {
+    use windows_sys::Win32::System::Registry::{
+        HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS, REG_OPTION_NON_VOLATILE, RegCreateKeyExW,
+    };
+
+    const ADMINS_AND_SYSTEM_ONLY: &str = "O:BAD:P(A;CI;KA;;;SY)(A;CI;KA;;;BA)";
+
+    with_attributes(ADMINS_AND_SYSTEM_ONLY, |attributes| {
+        let mut key = std::ptr::null_mut();
+        let status = unsafe {
+            RegCreateKeyExW(
+                HKEY_LOCAL_MACHINE,
+                wide(std::ffi::OsStr::new(path)).as_ptr(),
+                0,
+                std::ptr::null(),
+                REG_OPTION_NON_VOLATILE,
+                KEY_ALL_ACCESS,
+                attributes,
+                &mut key,
+                std::ptr::null_mut(),
+            )
+        };
+        if status == 0 {
+            // Closed when it is dropped, as any key `RegKey` opened itself.
+            Ok(winreg::RegKey::predef(key))
+        } else {
+            Err(std::io::Error::from_raw_os_error(status as i32))
+        }
+    })
 }
 
 #[cfg(test)]
@@ -562,6 +654,45 @@ mod tests {
             },
         ];
         assert_eq!(who_else_can_change(Part::Root, &owner, Some(&grants)), None);
+    }
+
+    /// What C:\ProgramData lets Users do, create files and folders, replaces
+    /// nothing on the way to a file, but in the folder WinMedic writes into
+    /// it lets them put a file in place first.
+    #[test]
+    fn a_folder_others_may_add_files_to_is_no_place_to_write() {
+        let (owner, mut grants) = program_files();
+        // icacls: BUILTIN\Users:(CI)(WD,AD,WEA,WA)
+        grants.push(grant(USERS, r"BUILTIN\Users", 0x0116));
+        assert_eq!(
+            who_else_can_change(Part::Folder, &owner, Some(&grants)),
+            None
+        );
+        assert_eq!(
+            who_else_can_change(Part::Store, &owner, Some(&grants)).as_deref(),
+            Some(r"BUILTIN\Users")
+        );
+    }
+
+    /// HKLM\SOFTWARE lets Users read its keys, which changes nothing; setting
+    /// a value does.
+    #[test]
+    fn a_key_others_can_set_values_in_is_changeable_by_them() {
+        const KEY_READ: u32 = 0x0002_0019;
+        const KEY_ALL_ACCESS: u32 = 0x000F_003F;
+        let owner = named(ADMINISTRATORS, r"BUILTIN\Administrators");
+        let mut grants = vec![
+            grant(SYSTEM, r"NT AUTHORITY\SYSTEM", KEY_ALL_ACCESS),
+            grant(ADMINISTRATORS, r"BUILTIN\Administrators", KEY_ALL_ACCESS),
+            grant(USERS, r"BUILTIN\Users", KEY_READ),
+        ];
+        assert_eq!(who_else_can_change(Part::Key, &owner, Some(&grants)), None);
+
+        grants.push(grant(USERS, r"BUILTIN\Users", KEY_SET_VALUE));
+        assert_eq!(
+            who_else_can_change(Part::Key, &owner, Some(&grants)).as_deref(),
+            Some(r"BUILTIN\Users")
+        );
     }
 
     #[test]
