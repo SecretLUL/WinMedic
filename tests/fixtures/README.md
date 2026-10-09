@@ -77,6 +77,25 @@ Captured on 2026-09-27 on the same machine, unelevated, read-only commands:
 | `sc_qc_spooler.bin` | `sc qc spooler` | CP850 | `START_TYPE : 2 AUTO_START`; the display name is translated ("Druckwarteschlange"), the numbers are not. |
 | `sc_query_spooler.bin` | `sc query spooler` | CP850 | `STATE : 4 RUNNING`. The tests switch it to `1 STOPPED`. The print jobs in `spool\PRINTERS` need elevation to list; the tests write job files with an old modification time into a temp folder. |
 
+Captured elevated on 2026-10-09 on the same machine, read-only commands:
+
+| File | Command | Encoding | Notes |
+| --- | --- | --- | --- |
+| `reg_query_svchost_split_threshold.bin` | `reg query HKLM\SYSTEM\CurrentControlSet\Control /v SvcHostSplitThresholdInKB` | CP850 | `0x380000` (3670016 KB, 3.5 GB), the value since 2026-10-08. A tuning tool had set it to 32 GB (`0x2000000`); the tests put that back. |
+| `reg_query_enum_configflags_disabled.bin` | `reg query "HKLM\SYSTEM\CurrentControlSet\Enum\ACPI\PNP0103\2&daba3ff&0" /v ConfigFlags` | CP850 | The High Precision Event Timer, disabled in Device Manager by a tuning tool: `ConfigFlags` 0x1. `reg` spells the instance ID as the registry does (`daba3ff`), SetupAPI in capitals. |
+| `powershell_enable_pnpdevice_not_found_de.bin` | The tweaks module's enable script (`Enable-PnpDevice -InstanceId '…' -Confirm:$false -ErrorAction Stop`) for an instance ID that does not exist, stderr | UTF-8 | Exit 1. The message is German, the `FullyQualifiedErrorId` (`CmdletizationQuery_NotFound_DeviceID`) is not. It changed nothing. |
+
+The device lists in the tweaks tests are what SetupAPI listed on that day
+(`SetupDiGetClassDevs` with `DIGCF_PRESENT`, `CM_Get_DevNode_Status`): HPET
+and the NDIS enumerator with problem code 22, two devices without a driver.
+
+Captured in Windows Sandbox on 2026-10-09 (Windows 11 24H2, 26100.9550,
+German, the account the sandbox signs in with, an Administrator):
+
+| File | Command | Encoding | Notes |
+| --- | --- | --- | --- |
+| `pnputil_enable_device_disabled_since_boot_de.bin` | `pnputil /enable-device "ROOT\NDISVIRTUALBUS\0000"` after the device had been disabled with `Disable-PnpDevice` and the sandbox restarted | Windows-1252 | Exit 1167 (`ERROR_DEVICE_NOT_CONNECTED`), "Das Gerät ist nicht angeschlossen." pnputil takes a device's state from its `DEVPKEY_Device_DevNodeStatus` property, which Windows does not report for a device that has been disabled since it started (`CM_Get_DevNode_PropertyW`: `CR_NO_SUCH_VALUE`, while `CM_Get_DevNode_Status` reports problem 22). `pnputil /enum-devices` lists it as "Getrennt", and the enable is refused. Disabled without a restart in between, pnputil enabled it. `Enable-PnpDevice` enabled it in both states, without a restart. The development PC's `ROOT\HVSERVICE\0000` was refused the same way on 2026-10-08. |
+
 Captured elevated on 2026-09-25, read-only commands, with the time each piece
 of the pipe arrived:
 

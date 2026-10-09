@@ -103,6 +103,31 @@ pub async fn query(
     }
 }
 
+/// The value `name` of `key`, or `None` when the key or the value does not
+/// exist.
+pub async fn query_value(
+    runner: &dyn CommandRunner,
+    key: &str,
+    name: &str,
+) -> Result<Option<RegValue>, String> {
+    let out = runner
+        .run(
+            "reg.exe",
+            &["query", key, "/v", name],
+            Duration::from_secs(10),
+        )
+        .await?;
+    match out.exit_code {
+        Some(0) => Ok(find(&parse_reg_query(&out.stdout), key, name).cloned()),
+        // "The system was unable to find the specified registry key or value."
+        Some(1) => Ok(None),
+        code => Err(format!(
+            "reg query {key} /v {name} failed (exit code {code:?}): {}",
+            out.stderr.trim()
+        )),
+    }
+}
+
 /// The value `name` under exactly `key` among `keys`.
 pub fn find<'a>(keys: &'a [RegKeyValues], key: &str, name: &str) -> Option<&'a RegValue> {
     let wanted = expand_hive(key);
@@ -112,7 +137,7 @@ pub fn find<'a>(keys: &'a [RegKeyValues], key: &str, name: &str) -> Option<&'a R
 }
 
 /// `reg` accepts `HKLM\...` but prints `HKEY_LOCAL_MACHINE\...`.
-fn expand_hive(key: &str) -> String {
+pub(crate) fn expand_hive(key: &str) -> String {
     for (short, long) in [
         ("HKLM\\", "HKEY_LOCAL_MACHINE\\"),
         ("HKCU\\", "HKEY_CURRENT_USER\\"),
@@ -186,6 +211,46 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    /// `reg query ... /v` of one value on a German Windows 11.
+    const SPLIT_THRESHOLD: &[u8] =
+        include_bytes!("../../tests/fixtures/console/reg_query_svchost_split_threshold.bin");
+    const CONTROL_KEY: &str = r"HKLM\SYSTEM\CurrentControlSet\Control";
+
+    #[tokio::test]
+    async fn one_value_is_read_by_its_name() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "/v SvcHostSplitThresholdInKB",
+            CmdOutput::ok(decode_output(SPLIT_THRESHOLD)),
+        );
+        let value = query_value(&mock, CONTROL_KEY, "SvcHostSplitThresholdInKB")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(value.kind, "REG_DWORD");
+        assert_eq!(value.number(), Some(3_670_016));
+        assert_eq!(
+            mock.executed(),
+            [format!(
+                "reg.exe query {CONTROL_KEY} /v SvcHostSplitThresholdInKB"
+            )]
+        );
+    }
+
+    /// A value that does not exist gets the same answer as a missing key:
+    /// exit code 1 and the message on stderr.
+    #[tokio::test]
+    async fn a_missing_value_is_none_and_a_runner_failure_an_error() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "/v Missing",
+            CmdOutput::with_output(1, "\r\n\r\n", decode_output(MISSING_DE)),
+        );
+        assert_eq!(query_value(&mock, CONTROL_KEY, "Missing").await, Ok(None));
+        // No answer configured: the command could not be run at all.
+        assert!(query_value(&mock, CONTROL_KEY, "Other").await.is_err());
     }
 
     #[tokio::test]

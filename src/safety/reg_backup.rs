@@ -1,5 +1,6 @@
 use crate::utils::acl;
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
+use crate::utils::registry::{self, RegValue};
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -183,6 +184,54 @@ impl RegBackupManager {
                 output.stderr, output.stdout
             ));
         }
+        self.keep(file_path, timestamp_slug, key_path, description)
+    }
+
+    /// Back up one `REG_DWORD` value of `key_path` into a `.reg` file that
+    /// holds that value alone.
+    ///
+    /// Some values sit in keys far too large to export:
+    /// `SvcHostSplitThresholdInKB` is directly in
+    /// `HKLM\SYSTEM\CurrentControlSet\Control`, and importing that whole key
+    /// would turn back every other change made in it since. The file is
+    /// written the way `reg export` writes one - UTF-16 with a byte order
+    /// mark, the signature line, the key, the value - so a rollback imports
+    /// it like any other backup, and it sets this value and nothing else.
+    pub async fn export_value_with(
+        &self,
+        runner: &dyn CommandRunner,
+        key_path: &str,
+        value_name: &str,
+        description: &str,
+    ) -> Result<BackupRecord, String> {
+        let value = registry::query_value(runner, key_path, value_name)
+            .await?
+            .ok_or_else(|| format!("{key_path}\\{value_name} does not exist"))?;
+        let export = value_export(key_path, &value)?;
+
+        let timestamp_slug = Local::now().format("%Y%m%d_%H%M%S").to_string();
+        let safe_key = key_path.replace(['\\', '/'], "_");
+        let safe_value = value_name.replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+        let file_name = format!("reg_{timestamp_slug}_{safe_key}_{safe_value}.reg");
+        let file_path = self.backup_dir.join(file_name);
+        self.ensure_backup_dir()?;
+        if let Err(e) = std::fs::write(&file_path, export) {
+            // A partial file is not a backup.
+            let _ = std::fs::remove_file(&file_path);
+            return Err(format!("{} could not be written: {e}", file_path.display()));
+        }
+        self.keep(file_path, timestamp_slug, key_path, description)
+    }
+
+    /// A backup file just written to `file_path`: protected in the real
+    /// folder and recorded in the index.
+    fn keep(
+        &self,
+        file_path: PathBuf,
+        timestamp_slug: String,
+        key_path: &str,
+        description: &str,
+    ) -> Result<BackupRecord, String> {
         if let Err(problem) = self.protect(&file_path) {
             let _ = std::fs::remove_file(&file_path);
             return Err(format!(
@@ -471,6 +520,29 @@ fn check_contents(bytes: &[u8], key_path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// What `reg export` would write for `key_path` if `value` were all it held:
+/// UTF-16 with a byte order mark, the signature, the key and the value.
+/// Only for `REG_DWORD`, the one kind a repair backs up on its own.
+fn value_export(key_path: &str, value: &RegValue) -> Result<Vec<u8>, String> {
+    let number = (value.kind == "REG_DWORD")
+        .then(|| value.number())
+        .flatten()
+        .and_then(|number| u32::try_from(number).ok())
+        .ok_or_else(|| {
+            format!(
+                "{} is {} {}, not a number a REG_DWORD holds",
+                value.name, value.kind, value.data
+            )
+        })?;
+    let key = registry::expand_hive(key_path.trim_end_matches('\\'));
+    let name = value.name.replace('\\', r"\\").replace('"', "\\\"");
+    let text =
+        format!("{REG_EXPORT_SIGNATURE}\r\n\r\n[{key}]\r\n\"{name}\"=dword:{number:08x}\r\n\r\n");
+    let mut bytes = vec![0xFF, 0xFE];
+    bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+    Ok(bytes)
+}
+
 /// `path` with its root key spelt out, without a trailing backslash and in
 /// lower case: the form in which two names of one key are equal.
 fn key_name(path: &str) -> String {
@@ -737,6 +809,127 @@ mod tests {
             .unwrap_err();
         assert!(refused.contains("cannot be used"), "{refused}");
         assert!(runner.executed().is_empty());
+    }
+
+    /// `reg query` of the Fast Startup key on Windows 11, the key the export
+    /// above was taken of.
+    const POWER_QUERY: &[u8] =
+        include_bytes!("../../tests/fixtures/console/reg_query_session_manager_power.bin");
+
+    #[test]
+    fn a_value_is_written_as_reg_export_writes_it() {
+        let export = text_of(POWER_EXPORT);
+        let keys = registry::parse_reg_query(&crate::utils::decode::decode_output(POWER_QUERY));
+        // Values both captures agree on; the boot times changed in between.
+        for name in [
+            "HBFlagsSwitch",
+            "HiberbootEnabled",
+            "SleepStudyDeviceAccountingLevel",
+            "WatchdogResumeTimeout",
+            "WatchdogSleepTimeout",
+            "TotalResumeTime",
+        ] {
+            let value = registry::find(&keys, POWER_KEY, name).unwrap();
+            let written = text_of(&value_export(POWER_KEY, value).unwrap());
+            let mut lines = written.lines().filter(|line| !line.is_empty());
+            assert_eq!(lines.next(), Some(REG_EXPORT_SIGNATURE));
+            for line in lines {
+                assert!(export.lines().any(|real| real == line), "{name}: {line}");
+            }
+        }
+    }
+
+    /// `reg query ... /v SvcHostSplitThresholdInKB` on Windows 11, with the
+    /// value a tuning tool had left on 2026-10-08: 32 GB.
+    fn split_threshold_query() -> String {
+        crate::utils::decode::decode_output(include_bytes!(
+            "../../tests/fixtures/console/reg_query_svchost_split_threshold.bin"
+        ))
+        .replace("0x380000", "0x2000000")
+    }
+
+    const CONTROL_KEY: &str = r"HKLM\SYSTEM\CurrentControlSet\Control";
+
+    #[tokio::test]
+    async fn a_value_backup_holds_that_value_alone_and_is_imported() {
+        let dir = TempDir::new("value");
+        let mgr = RegBackupManager::with_dir(dir.path.clone());
+        let runner = MockCommandRunner::new();
+        runner.add_response(
+            "query HKLM\\SYSTEM\\CurrentControlSet\\Control /v SvcHostSplitThresholdInKB",
+            crate::utils::cmd::CmdOutput::ok(split_threshold_query()),
+        );
+        runner.add_response("reg.exe import", crate::utils::cmd::CmdOutput::ok(""));
+
+        let record = mgr
+            .export_value_with(
+                &runner,
+                CONTROL_KEY,
+                "SvcHostSplitThresholdInKB",
+                "Before resetting SvcHostSplitThresholdInKB",
+            )
+            .await
+            .unwrap();
+        let bytes = std::fs::read(&record.file_path).unwrap();
+        assert_eq!(
+            text_of(&bytes),
+            "Windows Registry Editor Version 5.00\r\n\r\n[HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control]\r\n\"SvcHostSplitThresholdInKB\"=dword:02000000\r\n\r\n"
+        );
+        assert_eq!(record.key_path, CONTROL_KEY);
+        assert_eq!(mgr.list_backups(), std::slice::from_ref(&record));
+
+        mgr.restore_key_with(&runner, &record.file_path)
+            .await
+            .unwrap();
+        assert!(
+            runner
+                .executed()
+                .contains(&format!("reg.exe import {}", record.file_path))
+        );
+    }
+
+    #[tokio::test]
+    async fn no_value_backup_is_kept_when_there_is_nothing_to_keep() {
+        let dir = TempDir::new("value_refused");
+        let mgr = RegBackupManager::with_dir(dir.path.clone());
+        let runner = MockCommandRunner::new();
+        runner.add_response(
+            "/v Missing",
+            crate::utils::cmd::CmdOutput::with_output(1, "\r\n\r\n", "FEHLER"),
+        );
+        runner.add_response(
+            "/v Text",
+            crate::utils::cmd::CmdOutput::ok(
+                "\r\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\r\n    Text    REG_SZ    x\r\n\r\n",
+            ),
+        );
+
+        for name in ["Missing", "Text", "Unanswered"] {
+            let refused = mgr
+                .export_value_with(&runner, CONTROL_KEY, name, "test")
+                .await
+                .unwrap_err();
+            assert!(refused.contains(name), "{refused}");
+        }
+        assert!(mgr.list_backups().is_empty());
+        assert_eq!(std::fs::read_dir(&dir.path).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_value_backup_into_a_folder_others_can_change_is_not_kept() {
+        let dir = TempDir::new("value_protected");
+        let mgr = RegBackupManager::protected_at(dir.path.clone());
+        let runner = MockCommandRunner::new();
+        runner.add_response(
+            "/v SvcHostSplitThresholdInKB",
+            crate::utils::cmd::CmdOutput::ok(split_threshold_query()),
+        );
+        let refused = mgr
+            .export_value_with(&runner, CONTROL_KEY, "SvcHostSplitThresholdInKB", "test")
+            .await
+            .unwrap_err();
+        assert!(refused.contains("cannot be used"), "{refused}");
+        assert_eq!(std::fs::read_dir(&dir.path).unwrap().count(), 0);
     }
 
     #[test]

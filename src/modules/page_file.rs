@@ -36,7 +36,7 @@ pub type RamSource = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 /// `GlobalMemoryStatusEx`, the same number `Win32_ComputerSystem` reports as
 /// `TotalPhysicalMemory`.
-fn real_ram() -> RamSource {
+pub fn real_ram() -> RamSource {
     Arc::new(|| {
         let mut system = sysinfo::System::new();
         system.refresh_memory_specifics(sysinfo::MemoryRefreshKind::nothing().with_ram());
