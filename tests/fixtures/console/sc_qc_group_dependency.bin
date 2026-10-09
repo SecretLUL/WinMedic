@@ -1,0 +1,12 @@
+[SC] QueryServiceConfig ERFOLG
+
+SERVICE_NAME: cdfs
+        TYPE               : 2  FILE_SYSTEM_DRIVER 
+        START_TYPE         : 4   DISABLED
+        ERROR_CONTROL      : 1   NORMAL
+        BINARY_PATH_NAME   : system32\DRIVERS\cdfs.sys
+        LOAD_ORDER_GROUP   : Boot File System
+        TAG                : 0
+        DISPLAY_NAME       : CD/DVD File System Reader
+        DEPENDENCIES       : +SCSI CDROM Class
+        SERVICE_START_NAME : 

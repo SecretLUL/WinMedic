@@ -13,8 +13,9 @@
 //! network, no sound, no updates — are ticked by default.
 
 use crate::engine::issue::{Issue, RiskScore, Severity};
-use crate::modules::devices::meaning;
+use crate::modules::devices::{Remedy, meaning, remedy};
 use crate::modules::page_file::{RamSource, real_ram};
+use crate::modules::service_chain::{self, Chain};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
 use crate::safety::reg_backup::RegBackupManager;
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner, ps_single_quoted};
@@ -339,9 +340,11 @@ fn core_device(instance_id: &str) -> Option<&'static CoreDevice> {
 }
 
 const DEVICE_ID_PREFIX: &str = "tweak_dev_";
+const CHAIN_ID_PREFIX: &str = "tweak_chain_";
 
-fn device_issue_id(instance_id: &str) -> String {
-    let slug: String = instance_id
+/// `instance_id` as a part of a finding's id.
+fn slug(instance_id: &str) -> String {
+    instance_id
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() {
@@ -350,8 +353,43 @@ fn device_issue_id(instance_id: &str) -> String {
                 '_'
             }
         })
-        .collect();
-    format!("{DEVICE_ID_PREFIX}{slug}")
+        .collect()
+}
+
+fn device_issue_id(instance_id: &str) -> String {
+    format!("{DEVICE_ID_PREFIX}{}", slug(instance_id))
+}
+
+/// What a finding calls `device`: its entry's name, else its own.
+fn device_name(device: &PnpDevice) -> String {
+    match core_device(&device.instance_id) {
+        Some(entry) => entry.display.to_string(),
+        None if device.name.trim().is_empty() => device.instance_id.clone(),
+        None => device.name.trim().to_string(),
+    }
+}
+
+/// The chains in technical details: each service with its exit code, the
+/// driver and the device.
+fn chain_details(chains: &[&Chain]) -> String {
+    chains
+        .iter()
+        .map(|chain| {
+            let services: Vec<String> = chain
+                .services
+                .iter()
+                .map(|link| format!("{} (exit code {})", link.name, link.exit_code))
+                .collect();
+            format!(
+                "Service chain: {} -> driver {} -> device {} (problem code {})",
+                services.join(" -> "),
+                chain.driver,
+                chain.device.instance_id,
+                chain.device.problem
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Device Manager's "Enable device" for one device, through PowerShell's
@@ -1036,12 +1074,15 @@ impl TweaksModule {
     }
 
     /// The finding for `device`, if it is a Windows system device that is
-    /// disabled.
-    fn device_issue(&self, device: &PnpDevice) -> Option<Issue> {
+    /// disabled. `chains` are the services it stops on this PC: they lead
+    /// the description, and they make a hint a ticked warning, since they
+    /// show what it breaks here.
+    fn device_issue(&self, device: &PnpDevice, chains: &[&Chain]) -> Option<Issue> {
         if device.problem != DEVICE_DISABLED {
             return None;
         }
         let entry = core_device(&device.instance_id)?;
+        let breaks_here = !chains.is_empty();
         let mut steps = Vec::new();
         if self.config.auto_backup_registry {
             steps.push(format!(
@@ -1059,25 +1100,119 @@ impl TweaksModule {
             self.id(),
             format!("'{}' is disabled", entry.display),
             "Tweaks & Policies",
-            if entry.known_fault {
+            if entry.known_fault || breaks_here {
                 Severity::Warning
             } else {
                 Severity::Info
             },
             RiskScore::Medium,
+            if breaks_here {
+                let sentences: Vec<String> = chains
+                    .iter()
+                    .map(|chain| chain.sentence(entry.display))
+                    .collect();
+                let known = if entry.known_fault { entry.breaks } else { "" };
+                format!(
+                    "{} This Windows device is disabled in Device Manager, which tuning tools do. {known}",
+                    sentences.join(" ")
+                )
+                .trim_end()
+                .to_string()
+            } else {
+                format!(
+                    "This Windows device is disabled in Device Manager, which tuning tools do. {}",
+                    entry.breaks
+                )
+            },
             format!(
-                "This Windows device is disabled in Device Manager, which tuning tools do. {}",
-                entry.breaks
-            ),
-            format!(
-                "Device: {}\nInstance ID: {}\nProblem code: {} (disabled)",
-                device.name, device.instance_id, device.problem
+                "Device: {}\nInstance ID: {}\nProblem code: {} (disabled){}",
+                device.name,
+                device.instance_id,
+                device.problem,
+                if breaks_here {
+                    format!("\n{}", chain_details(chains))
+                } else {
+                    String::new()
+                }
             ),
             format!("Enable '{}' again", entry.display),
             steps,
         );
-        issue.is_selected = entry.known_fault;
+        issue.is_selected = entry.known_fault || breaks_here;
         Some(issue)
+    }
+
+    /// The finding for services that cannot start because of a device that
+    /// has no finding of its own here. Advice: whatever repairs the device
+    /// is somewhere else, or is Device Manager's to do.
+    fn chain_issue(&self, device: &PnpDevice, chains: &[&Chain]) -> Issue {
+        let name = device_name(device);
+        let sentences: Vec<String> = chains.iter().map(|chain| chain.sentence(&name)).collect();
+        let head = chains[0].head();
+        let (recommendation, step) = match (device.problem, remedy(device.problem)) {
+            (DEVICE_DISABLED, _) => (
+                format!("Enable '{name}' again"),
+                format!(
+                    "Device Manager -> right-click '{name}' ({}) -> Enable device, then restart Windows",
+                    device.instance_id
+                ),
+            ),
+            (_, Remedy::None) => (
+                format!("Fix '{name}' first: it {}", meaning(device.problem)),
+                format!(
+                    "Device Manager -> '{name}' ({}) -> Properties -> Device status",
+                    device.instance_id
+                ),
+            ),
+            _ => (
+                format!("Repair '{name}' under Devices & Drivers"),
+                format!(
+                    "Run the repair of the finding about '{name}' under Devices & Drivers, then restart Windows"
+                ),
+            ),
+        };
+        Issue::new(
+            format!("{CHAIN_ID_PREFIX}{}", slug(&device.instance_id)),
+            self.id(),
+            format!(
+                "'{}' cannot start",
+                if head.display_name.is_empty() {
+                    &head.name
+                } else {
+                    &head.display_name
+                }
+            ),
+            "Tweaks & Policies",
+            Severity::Warning,
+            RiskScore::Low,
+            sentences.join(" "),
+            chain_details(chains),
+            recommendation,
+            vec![step],
+        )
+        .with_advice_only()
+    }
+
+    /// The findings about Windows system devices and the services that
+    /// cannot start because of a device: one finding per device, never one
+    /// for each, so no device is repaired twice.
+    fn device_findings(&self, devices: &[PnpDevice], chains: &[Chain]) -> Vec<Issue> {
+        let chains_of = |device: &PnpDevice| -> Vec<&Chain> {
+            chains
+                .iter()
+                .filter(|chain| chain.device.instance_id == device.instance_id)
+                .collect()
+        };
+        let mut issues = Vec::new();
+        for device in devices {
+            let its_chains = chains_of(device);
+            if let Some(issue) = self.device_issue(device, &its_chains) {
+                issues.push(issue);
+            } else if !its_chains.is_empty() {
+                issues.push(self.chain_issue(device, &its_chains));
+            }
+        }
+        issues
     }
 
     /// Back up the device's `ConfigFlags`, enable it, and read its problem
@@ -1417,18 +1552,35 @@ impl DiagnosticModule for TweaksModule {
         .await;
         match self.runner.connected_devices().await {
             Ok(devices) => {
-                let found: Vec<Issue> = devices
-                    .iter()
-                    .filter_map(|device| self.device_issue(device))
-                    .collect();
+                Self::send_progress(
+                    &progress_tx,
+                    43,
+                    "Following stopped services to their devices...",
+                    Some("sc query, sc qc: services that stopped with an error and what they depend on"),
+                )
+                .await;
+                let chains = match service_chain::failing_chains(&*self.runner, &devices).await {
+                    Ok(chains) => chains,
+                    Err(e) => {
+                        Self::send_progress(
+                            &progress_tx,
+                            44,
+                            "Service chains not checked",
+                            Some(&e),
+                        )
+                        .await;
+                        Vec::new()
+                    }
+                };
+                let found = self.device_findings(&devices, &chains);
                 Self::send_progress(
                     &progress_tx,
                     45,
                     "Windows system devices checked",
                     Some(&format!(
-                        "{} of {} Windows system devices disabled.",
+                        "{} finding(s) about devices, {} service chain(s) to a device with a problem.",
                         found.len(),
-                        CORE_DEVICES.len()
+                        chains.len()
                     )),
                 )
                 .await;
@@ -1620,6 +1772,9 @@ impl DiagnosticModule for TweaksModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::service_chain::test_support::{
+        QC_HVSERVICE, depends_on, dev_pc_services, listing,
+    };
     use crate::utils::cmd::{CmdOutput, MockCommandRunner};
     use crate::utils::decode::decode_output;
     use crate::utils::service::test_support::sc_qc_output;
@@ -2262,12 +2417,13 @@ mod tests {
     const HVSERVICE: &str = r"ROOT\HVSERVICE\0000";
     const NDIS_BUS: &str = r"ROOT\NDISVIRTUALBUS\0000";
 
-    fn pnp(problem: u32, instance_id: &str, name: &str) -> PnpDevice {
+    fn pnp(problem: u32, instance_id: &str, name: &str, service: &str) -> PnpDevice {
         PnpDevice {
             problem,
             class: "System".to_string(),
             instance_id: instance_id.to_string(),
             name: name.to_string(),
+            service: service.to_string(),
         }
     }
 
@@ -2277,19 +2433,26 @@ mod tests {
     /// `hvservice`: 22 until it was enabled on 2026-10-08, 0 since.
     fn dev_pc(hvservice: u32) -> Vec<PnpDevice> {
         vec![
-            pnp(22, HPET, "Hochpräzisionsereigniszeitgeber"),
-            pnp(hvservice, HVSERVICE, "Microsoft-Hypervisor-Dienst"),
+            pnp(22, HPET, "Hochpräzisionsereigniszeitgeber", ""),
+            pnp(
+                hvservice,
+                HVSERVICE,
+                "Microsoft-Hypervisor-Dienst",
+                "hvservice",
+            ),
             pnp(
                 28,
                 r"USB\VID_046D&PID_0943&MI_05\9&B24F85A&0&0005",
                 "Brio 500",
+                "",
             ),
             pnp(
                 22,
                 NDIS_BUS,
                 "Enumerator für virtuelle NDIS-Netzwerkadapter",
+                "NdisVirtualBus",
             ),
-            pnp(28, r"ACPI\AMDI0204\2&DABA3FF&0", ""),
+            pnp(28, r"ACPI\AMDI0204\2&DABA3FF&0", "", ""),
         ]
     }
 
@@ -2335,11 +2498,15 @@ mod tests {
         let module = module(MockCommandRunner::new(), &dir, b"");
         for entry in CORE_DEVICES {
             let id = format!("{}\\0000", entry.hardware_id);
-            let issue = module.device_issue(&pnp(22, &id, "x")).unwrap();
+            let issue = module.device_issue(&pnp(22, &id, "x", ""), &[]).unwrap();
             assert_eq!(issue.title, format!("'{}' is disabled", entry.display));
             assert_eq!(issue.is_selected, entry.known_fault, "{id}");
             for problem in [0, 10, 28, 45] {
-                assert!(module.device_issue(&pnp(problem, &id, "x")).is_none());
+                assert!(
+                    module
+                        .device_issue(&pnp(problem, &id, "x", ""), &[])
+                        .is_none()
+                );
             }
         }
     }
@@ -2430,9 +2597,9 @@ mod tests {
     #[test]
     fn the_dry_run_lists_the_backup_the_enable_and_the_check() {
         let dir = sandbox("device_steps");
-        let hv = pnp(22, HVSERVICE, "Microsoft-Hypervisor-Dienst");
+        let hv = pnp(22, HVSERVICE, "Microsoft-Hypervisor-Dienst", "hvservice");
         let steps = module(MockCommandRunner::new(), &dir, b"")
-            .device_issue(&hv)
+            .device_issue(&hv, &[])
             .unwrap()
             .fix_steps;
         assert_eq!(
@@ -2445,7 +2612,7 @@ mod tests {
             ]
         );
         let steps = backing_up(MockCommandRunner::new(), &dir)
-            .device_issue(&hv)
+            .device_issue(&hv, &[])
             .unwrap()
             .fix_steps;
         assert_eq!(
@@ -2507,7 +2674,7 @@ mod tests {
             .into_iter()
             .map(|d| {
                 if d.instance_id == HPET {
-                    pnp(after, HPET, &d.name)
+                    pnp(after, HPET, &d.name, "")
                 } else {
                     d
                 }
@@ -2798,5 +2965,147 @@ mod tests {
             .await
             .unwrap();
         assert!(!mock.executed().iter().any(|c| c.contains("pnputil")));
+    }
+
+    /// A scan of `services` on top of a healthy PC with these `devices`.
+    async fn scan_chains(services: MockCommandRunner, devices: Vec<PnpDevice>) -> Vec<Issue> {
+        let dir = sandbox("chain_scan");
+        healthy(&services);
+        services.set_devices(devices);
+        module(services, &dir, b"").scan(None).await.unwrap()
+    }
+
+    /// The development PC on 2026-10-08: CmService could not start because
+    /// HvHost stopped with error 31, because the device its driver serves
+    /// was disabled. One finding names the chain and repairs the device.
+    #[tokio::test]
+    async fn the_chain_leads_the_device_finding_and_nothing_is_reported_twice() {
+        let issues = scan_chains(dev_pc_services(31), dev_pc(22)).await;
+        let hv: Vec<&Issue> = issues
+            .iter()
+            .filter(|i| i.id.ends_with(&slug(HVSERVICE)))
+            .collect();
+        assert_eq!(hv.len(), 1, "{issues:?}");
+        let hv = hv[0];
+        assert_eq!(hv.id, device_issue_id(HVSERVICE));
+        assert!(
+            hv.description.starts_with(
+                "Container-Manager-Dienst (CmService) cannot start: HV-Hostdienst (HvHost) failed (exit code 31) because the device 'Microsoft Hypervisor Service' is disabled. This Windows device is disabled"
+            ),
+            "{}",
+            hv.description
+        );
+        assert!(
+            hv.technical_details.contains(
+                r"Service chain: CmService (exit code 1068) -> HvHost (exit code 31) -> driver hvservice -> device ROOT\HVSERVICE\0000 (problem code 22)"
+            ),
+            "{}",
+            hv.technical_details
+        );
+        assert!(hv.is_selected && !hv.advice_only);
+        assert!(!issues.iter().any(|i| i.id.starts_with(CHAIN_ID_PREFIX)));
+    }
+
+    /// The same services once the device works: no chain, no finding.
+    #[tokio::test]
+    async fn without_a_device_behind_it_a_stopped_service_is_not_reported_here() {
+        let issues = scan_chains(dev_pc_services(31), dev_pc(0)).await;
+        assert!(
+            !issues
+                .iter()
+                .any(|i| i.id.ends_with(&slug(HVSERVICE)) || i.id.starts_with(CHAIN_ID_PREFIX)),
+            "{issues:?}"
+        );
+    }
+
+    /// A hint claims nothing, but a service on this PC that stops because of
+    /// its device is a fault seen here: the hint becomes a ticked warning.
+    #[tokio::test]
+    async fn a_hint_that_stops_a_service_here_becomes_a_ticked_warning() {
+        let services = listing(&[("VpnClient", "VPN Client", 1, 1068)]);
+        services.add_response("qc VpnClient", depends_on("VpnClient", &["NdisVirtualBus"]));
+        services.add_response(
+            "qc NdisVirtualBus",
+            CmdOutput::ok(decode_output(QC_HVSERVICE).replace("hvservice", "NdisVirtualBus")),
+        );
+        let issues = scan_chains(services, dev_pc(0)).await;
+        let ndis = issues
+            .iter()
+            .find(|i| i.id == device_issue_id(NDIS_BUS))
+            .unwrap();
+        assert_eq!(ndis.severity, Severity::Warning);
+        assert!(ndis.is_selected);
+        assert!(
+            ndis.description.starts_with(
+                "VPN Client (VpnClient) cannot start because the device 'NDIS Virtual Network Adapter Enumerator' is disabled."
+            ),
+            "{}",
+            ndis.description
+        );
+        assert!(!ndis.description.contains(NO_KNOWN_FAULT));
+        // HPET stops nothing and stays a hint.
+        let hpet = issues
+            .iter()
+            .find(|i| i.id == device_issue_id(HPET))
+            .unwrap();
+        assert!(!hpet.is_selected);
+    }
+
+    /// A service stopped by a device that is no Windows system device: the
+    /// finding names the chain and leaves the repair to where it belongs.
+    #[tokio::test]
+    async fn a_chain_to_another_device_is_advice() {
+        const CAMERA: &str = r"USB\VID_046D&PID_0943&MI_00\9&B24F85A&0&0000";
+        let camera = |problem| PnpDevice {
+            problem,
+            class: "Camera".to_string(),
+            instance_id: CAMERA.to_string(),
+            name: "Brio 500".to_string(),
+            service: "usbvideo".to_string(),
+        };
+        for (problem, advice) in [
+            (43, "Repair 'Brio 500' under Devices & Drivers"),
+            (22, "Enable 'Brio 500' again"),
+        ] {
+            let services = listing(&[("CameraHost", "Camera Host", 1, 1068)]);
+            services.add_response("qc CameraHost", depends_on("CameraHost", &["usbvideo"]));
+            services.add_response(
+                "qc usbvideo",
+                CmdOutput::ok(decode_output(QC_HVSERVICE).replace("hvservice", "usbvideo")),
+            );
+            let mut devices = dev_pc(0);
+            devices.push(camera(problem));
+            let issues = scan_chains(services, devices).await;
+            let chain = issues
+                .iter()
+                .find(|i| i.id.starts_with(CHAIN_ID_PREFIX))
+                .unwrap_or_else(|| panic!("{problem}: {issues:?}"));
+            assert_eq!(chain.title, "'Camera Host' cannot start");
+            assert!(chain.advice_only && !chain.is_selected);
+            assert_eq!(chain.recommended_fix, advice);
+            assert!(
+                chain.description.starts_with(
+                    "Camera Host (CameraHost) cannot start because the device 'Brio 500'"
+                ),
+                "{}",
+                chain.description
+            );
+        }
+    }
+
+    /// A PC that may not list its services still gets its device findings.
+    #[tokio::test]
+    async fn devices_are_reported_when_the_services_cannot_be_listed() {
+        let services = MockCommandRunner::new();
+        services.add_response("query type= service", CmdOutput::failed(5, "FEHLER"));
+        let issues = scan_chains(services, dev_pc(22)).await;
+        let hv = issues
+            .iter()
+            .find(|i| i.id == device_issue_id(HVSERVICE))
+            .unwrap();
+        assert!(
+            hv.description
+                .starts_with("This Windows device is disabled")
+        );
     }
 }

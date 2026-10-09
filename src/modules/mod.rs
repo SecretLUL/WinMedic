@@ -10,6 +10,8 @@ pub mod network;
 pub mod page_file;
 pub mod registry_startup;
 pub mod scheduled_tasks;
+/// Why a service cannot start, down to the device, for the tweaks check.
+pub mod service_chain;
 /// Explorer crashing in a program's add-on, for the crash analysis.
 pub mod shell_extensions;
 pub mod storage;
