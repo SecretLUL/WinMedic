@@ -514,7 +514,8 @@ impl RegBackupManager {
     }
 
     /// Write `bytes` into the backup folder as `name`, for a copy that
-    /// WinMedic never reads back, such as the hosts file's; where it went.
+    /// WinMedic never reads back, such as the hosts file's. Its path is
+    /// named like a backup's, from the folder as this manager was given it.
     pub fn save_copy(&self, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
         let (_folder, real) = self.open_folder_to_write()?;
         let path = real.join(name);
@@ -523,7 +524,7 @@ impl RegBackupManager {
             let _ = std::fs::remove_file(&path);
             format!("{} could not be written ({e})", path.display())
         })?;
-        Ok(path)
+        Ok(self.backup_dir.join(name))
     }
 }
 
