@@ -384,7 +384,9 @@ fn log_panel(ui: &mut egui::Ui, app: &mut App) {
     let open_id = egui::Id::new("log_panel_open");
     let kind_id = egui::Id::new("log_panel_kind");
     let mut open = ui.data_mut(|d| *d.get_persisted_mut_or(open_id, false));
-    // Until the user picks one, show whichever run happened last.
+    // Until the user picks one, show whichever run happened last. Only a pick
+    // is stored: stored on every frame, the default of the first frame, before
+    // any repair, would stick.
     let default_kind = if app.is_fixing || app.total_to_fix > 0 {
         LogKind::Repair
     } else {
@@ -431,6 +433,7 @@ fn log_panel(ui: &mut egui::Ui, app: &mut App) {
                 ] {
                     if ui.selectable_label(kind == choice, label).clicked() {
                         kind = choice;
+                        ui.data_mut(|d| d.insert_temp(kind_id, choice));
                     }
                 }
             }
@@ -461,10 +464,7 @@ fn log_panel(ui: &mut egui::Ui, app: &mut App) {
         }
     });
 
-    ui.data_mut(|d| {
-        d.insert_persisted(open_id, open);
-        d.insert_temp(kind_id, kind);
-    });
+    ui.data_mut(|d| d.insert_persisted(open_id, open));
 }
 
 /// A monospace log that keeps up with a 2000-line buffer.
