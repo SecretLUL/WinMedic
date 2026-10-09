@@ -96,6 +96,23 @@ impl Chain {
     pub fn head(&self) -> &Link {
         &self.services[0]
     }
+
+    /// The chain for technical details: each service with its exit code,
+    /// the driver and the device.
+    pub fn details(&self) -> String {
+        let services: Vec<String> = self
+            .services
+            .iter()
+            .map(|link| format!("{} (exit code {})", link.name, link.exit_code))
+            .collect();
+        format!(
+            "Service chain: {} -> driver {} -> device {} (problem code {})",
+            services.join(" -> "),
+            self.driver,
+            self.device.instance_id,
+            self.device.problem
+        )
+    }
 }
 
 /// The services Windows lists, by state, and each one's configuration once

@@ -1,0 +1,40 @@
+2026-10-08 23:01:28, Info                  CBS    Startup: Processing advanced operation queue, startupPhase: 0
+2026-10-08 23:01:28, Info                  CSI    00000038 Begin executing advanced installer phase 39 index 11 (sequence 51)
+    Old component: (null)
+    New component: Microsoft-Windows-Containers-DisposableClientVM, version 10.0.26100.9549, arch amd64
+    Install mode: delta
+    Smart installer: false
+    Installer ID: {9edf0f01-ef44-4c87-ac5a-8aad730137ab}
+    Installer name: 'Container Installer'
+2026-10-08 23:01:28, Info                  CSI    0000003c Container AI invoked with operation flags Install
+2026-10-08 23:01:28, Info                  CSI    0000003d@2026/10/8:21:01:28.825 CSI Advanced installer perf trace:
+CSIPERF:AIDONE;{9edf0f01-ef44-4c87-ac5a-8aad730137ab};Microsoft-Windows-Containers-DisposableClientVM, version 10.0.26100.9549, arch amd64, nonSxS, pkt {l:8 b:31bf3856ad364e35};5035us
+2026-10-08 23:01:28, Info                  CSI    0000003e End executing advanced installer (sequence 51)
+    Completion status: S_OK 
+2026-10-08 23:01:28, Info                  CSI    0000003f Begin executing advanced installer phase 39 index 12 (sequence 52)
+    Old component: (null)
+    New component: Microsoft-Windows-Professional-Config, version 10.0.26100.9550, arch amd64
+    Install mode: delta
+    Smart installer: false
+    Installer ID: {9edf0f01-ef44-4c87-ac5a-8aad730137ab}
+    Installer name: 'Container Installer'
+2026-10-08 23:01:28, Info                  CSI    00000041 Container AI invoked with operation flags Install
+2026-10-08 23:01:28, Info                  CSI    00000042@2026/10/8:21:01:28.826 CSI Advanced installer perf trace:
+CSIPERF:AIDONE;{9edf0f01-ef44-4c87-ac5a-8aad730137ab};Microsoft-Windows-Professional-Config, version 10.0.26100.9550, arch amd64, nonSxS, pkt {l:8 b:31bf3856ad364e35};1213us
+2026-10-08 23:01:28, Info                  CSI    00000043 End executing advanced installer (sequence 52)
+    Completion status: S_OK 
+2026-10-08 23:01:28, Info                  CSI    00000044 Begin executing advanced installer phase 39 index 0 (sequence 0)
+    Old component: (null)
+    New component: (null)
+    Install mode: delta
+    Smart installer: true
+    Installer ID: {9edf0f01-ef44-4c87-ac5a-8aad730137ab}
+    Installer name: 'Container Installer'
+2026-10-08 23:01:28, Info                  CSI    00000045 Container feature enable.
+2026-10-08 23:04:56, Info                  CSI    00006d0f@2026/10/8:21:04:56.490 Finished running all AIs.
+2026-10-08 23:06:56, Info                  CSI    00000061@2026/10/8:21:06:56.522 CSI Advanced installer perf trace:
+CSIPERF:AIDONE;{9edf0f01-ef44-4c87-ac5a-8aad730137ab};(null);327696030us
+2026-10-08 23:06:56, Info                  CSI    00000062 End executing advanced installer (sequence 0)
+    Completion status: S_OK 
+2026-10-08 23:06:56, Info                  CSI    00000073@2026/10/8:21:06:56.532 Finished running all AIs.
+2026-10-08 23:06:57, Info                  CBS    Startup: Processing complete. [HRESULT = 0x00000000 - S_OK]

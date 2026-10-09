@@ -4,6 +4,9 @@ pub mod crash_analysis;
 pub mod crash_timeline;
 pub mod devices;
 pub mod event_log;
+/// Windows features whose installation was rolled back, for System
+/// Integrity.
+pub mod feature_rollback;
 /// Windows installation media as the repair source for DISM.
 pub mod install_media;
 pub mod network;
