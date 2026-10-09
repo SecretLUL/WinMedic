@@ -21,7 +21,10 @@ with its `.sha256`, pushes the version bump to `main`, and calls `winget.yml`.
   merged before the run. Without it the notes are generated from the commit
   list.
 - The run stops unless CI passed on the commit it releases; wait for CI on
-  `main` to finish first. A `dry_run` skips that check.
+  `main` to finish first. CI does not run on a push that changes
+  documentation only, such as the release notes: then it has to have passed
+  on the newest commit before it that CI ran on. A `dry_run` skips that
+  check.
 - The bump reaches `main` through the repository secret `RELEASE_TOKEN`: a
   fine-grained personal access token for this repository only, with
   **Contents: Read and write**. `main` takes changes only through pull requests

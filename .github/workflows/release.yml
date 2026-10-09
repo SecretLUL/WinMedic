@@ -76,15 +76,36 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           $ErrorActionPreference = 'Stop'
-          # A run that has not finished has no conclusion yet, only a status.
-          $runs = @(gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$env:SHA&event=push&per_page=20" --jq '.workflow_runs[] | if .status == "completed" then .conclusion else "running" end')
+          # CI does not run on a push that changes documentation only, such
+          # as the release notes merged right before a release, so the newest
+          # commit it ran on can be one before this.
+          $tested = $null
+          foreach ($commit in @(git rev-list --first-parent --max-count=50 $env:SHA)) {
+            # A run that has not finished has no conclusion yet, only a status.
+            $runs = @(gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$commit&event=push&per_page=20" --jq '.workflow_runs[] | if .status == "completed" then .conclusion else "running" end')
+            if ($LASTEXITCODE) { throw "Could not read the CI runs of $commit." }
+            if ($runs) { $tested = $commit; break }
+          }
+          if (-not $tested) {
+            throw "CI has not run on $env:SHA or on the 49 commits before it. Fix main first."
+          }
           if ($runs -notcontains 'success') {
             if ($runs -contains 'running') {
-              throw "CI is still running on $env:SHA. Start the release again once it is green."
+              throw "CI is still running on $tested. Start the release again once it is green."
             }
-            throw "CI has not passed on $env:SHA (runs: $(if ($runs) { $runs -join ', ' } else { 'none' })). Fix main first."
+            throw "CI has not passed on $tested (runs: $($runs -join ', ')). Fix main first."
           }
-          Write-Host "CI passed on $env:SHA."
+          if ($tested -ne $env:SHA) {
+            # The files ci.yml's push trigger ignores, as labels.yml lists them.
+            $code = @(git diff --name-only --no-renames $tested $env:SHA |
+              Where-Object { $_ -cnotmatch '^(.*\.md|docs/.*|LICENSE|\.github/ISSUE_TEMPLATE/.*)$' })
+            if ($code) {
+              throw "CI has not run on $env:SHA, and more than documentation changed since $tested, the newest commit it passed:`n$($code -join "`n")"
+            }
+            Write-Host "CI passed on $tested, and only documentation changed since."
+          } else {
+            Write-Host "CI passed on $env:SHA."
+          }
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable

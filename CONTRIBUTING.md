@@ -91,6 +91,7 @@ check "Pull Request Label" fails without one.
 A pull request labelled `documentation` skips the build and the tests, so
 the label check fails when such a pull request changes anything else. Set the
 label when you open the pull request: added later, it no longer stops CI.
+Merged, such a change runs no CI on `main` either.
 
 ## AI agents
 
