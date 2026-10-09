@@ -769,7 +769,7 @@ impl DiagnosticReporter {
 
         <div class="stats-grid">
             <div class="stat-card">
-                <div class="stat-label">Gesamte Befunde</div>
+                <div class="stat-label">Findings</div>
                 <div class="stat-val val-cyan">{total_issues}</div>
             </div>
             <div class="stat-card">
@@ -918,6 +918,7 @@ mod tests {
         assert!(html.contains("WinMedic Diagnostic Report"));
         assert!(html.contains("CRITICAL"));
         assert!(html.contains("Corrupted system files found"));
+        assert!(!html.contains("Gesamte"), "a German label in the report");
     }
 
     /// The header carries the app icon itself, not a text stand-in for it.
