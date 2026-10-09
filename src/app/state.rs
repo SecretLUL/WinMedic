@@ -8,6 +8,7 @@ use crate::engine::issue::{Issue, Severity};
 use crate::engine::reporter::DiagnosticReporter;
 use crate::engine::runner::{DiagnosticEngine, RepairEvent, ScanEvent};
 use crate::modules::ModuleStatus;
+use crate::modules::clock_restart::RESTART_OVERDUE;
 use crate::modules::windows_updates::REBOOT_PENDING;
 use crate::safety::audit::{AuditEntry, AuditLogger};
 use crate::safety::reg_backup::{BackupRecord, RegBackupManager};
@@ -816,9 +817,18 @@ pub(crate) fn keep_waiting(fresh: &mut Vec<Issue>, known: &[Issue]) {
     fresh.extend(gone);
 }
 
+/// Whether restarting Windows settles `issue`: what waits for the restart,
+/// and the advice to restart after weeks without one (Fast Startup off). With
+/// Fast Startup on, the overdue restart is left for the next scan: whether a
+/// "shut down" and start, which does not reset the uptime, counts up the boot
+/// id is not known.
+fn settled_by_restart(issue: &Issue) -> bool {
+    waits_for_restart(issue) || (issue.id == RESTART_OVERDUE && issue.advice_only)
+}
+
 /// Windows has restarted since the saved scan: what waited for it is done.
 fn settle_after_restart(issues: &mut [Issue]) {
-    for issue in issues.iter_mut().filter(|i| waits_for_restart(i)) {
+    for issue in issues.iter_mut().filter(|i| settled_by_restart(i)) {
         issue.is_reboot_pending = false;
         issue.is_fixed = true;
     }
@@ -898,6 +908,95 @@ mod tests {
         assert_eq!(ids, ["storage_dirty_bit", "dns", "pagefile_disabled"]);
         assert_eq!(app.repairs_waiting_for_restart(), 2);
         assert!(!app.issues[0].is_selected);
+    }
+
+    /// `issues` saved before Windows last started.
+    fn saved_before_a_restart(issues: Vec<Issue>) -> ScanState {
+        ScanState {
+            boot_id: crate::app::scan_state::current_boot_id().map(|id| id.wrapping_add(1)),
+            boot_time_secs: Some(0),
+            ..ScanState::new(90, issues, Vec::new(), None)
+        }
+    }
+
+    fn still_open(saved: ScanState) -> Vec<String> {
+        let app = App::build(
+            AppConfig::default(),
+            ConfigStatus::Missing,
+            Some(saved),
+            false,
+        );
+        assert!(app.archived_issues.is_empty());
+        app.issues
+            .iter()
+            .filter(|i| !i.is_fixed)
+            .map(|i| i.id.clone())
+            .collect()
+    }
+
+    /// The overdue restart as the clock module reports it: advice with Fast
+    /// Startup off, the repair that turns it off with Fast Startup on.
+    fn restart_overdue(severity: Severity) -> Issue {
+        Issue::new(
+            RESTART_OVERDUE,
+            "clock_restart",
+            "Windows has not restarted in 20 days",
+            "Clock & Restart",
+            severity,
+            RiskScore::Low,
+            "",
+            "",
+            "Restart Windows (Start -> Power -> Restart)",
+            vec![],
+        )
+    }
+
+    /// #159: told to restart, the user restarted. The advice is settled
+    /// with Windows' own pending restart, not open until the next scan.
+    #[test]
+    fn a_restart_settles_the_advice_to_restart() {
+        let advice = restart_overdue(Severity::Info).with_advice_only();
+        let windows =
+            crate::modules::windows_updates::reboot_pending_finding("windows_updates", "e");
+
+        let open = still_open(saved_before_a_restart(vec![advice, windows]));
+
+        assert!(open.is_empty(), "still open after the restart: {open:?}");
+    }
+
+    /// 0.8.0 offered it as a repair: "repaired", it waited for the restart.
+    /// It loads as advice, and the restart settles it all the same.
+    #[test]
+    fn a_restart_settles_the_overdue_restart_0_8_0_repaired() {
+        let mut old = restart_overdue(Severity::Info).with_requires_reboot(true);
+        old.is_reboot_pending = true;
+        old.is_selected = false;
+        let path = std::env::temp_dir().join(format!(
+            "winmedic_state_overdue_0_8_0_{}.json",
+            std::process::id()
+        ));
+        ScanState::new(90, vec![old], Vec::new(), None)
+            .save_to(&path)
+            .unwrap();
+        let loaded = ScanState::load_from(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(loaded.issues[0].advice_only && !loaded.issues[0].is_reboot_pending);
+
+        let open = still_open(saved_before_a_restart(loaded.issues));
+
+        assert!(open.is_empty(), "still open after the restart: {open:?}");
+    }
+
+    /// With Fast Startup on, a "shut down" and start does not reset the
+    /// uptime; the next scan tells whether Windows really restarted.
+    #[test]
+    fn a_restart_leaves_the_overdue_restart_with_fast_startup_to_the_scan() {
+        let mut fast = restart_overdue(Severity::Warning).with_requires_reboot(true);
+        fast.is_selected = false;
+
+        let open = still_open(saved_before_a_restart(vec![fast]));
+
+        assert_eq!(open, [RESTART_OVERDUE]);
     }
 
     #[test]
