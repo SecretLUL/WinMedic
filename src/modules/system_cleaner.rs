@@ -696,10 +696,27 @@ pub struct CleanerPaths {
     pub app_data: PathBuf,
     pub user_profile: PathBuf,
     pub recycle_bins: Vec<PathBuf>,
+    /// The folder WinMedic remembers the last component store cleanup in;
+    /// `None` remembers nothing. See [`WINSXS_PACKAGES_LEFT_FILE`].
+    pub data_dir: Option<PathBuf>,
 }
+
+/// How many reclaimable packages the last `StartComponentCleanup` left, as a
+/// decimal number, in [`CleanerPaths::data_dir`].
+///
+/// DISM counts packages as reclaimable that the cleanup never removes. On a
+/// Windows 11 25H2 PC these were the 24H2 checkpoint cumulative update
+/// (26100.1742, KB5043080), which later updates are built on, and its FoD
+/// metadata package. Without this note every scan raised the same finding and
+/// every repair changed nothing.
+pub const WINSXS_PACKAGES_LEFT_FILE: &str = "winsxs_packages_left.txt";
 
 impl CleanerPaths {
     /// The real Windows locations, resolved from the environment.
+    ///
+    /// Remembers nothing: modules built around a test's command runner use
+    /// these paths too, and DISM's canned answers must never reach the
+    /// machine's own data folder. See [`Self::from_env_remembering`].
     pub fn from_env() -> Self {
         Self {
             sys_root: get_system_root(),
@@ -708,6 +725,17 @@ impl CleanerPaths {
             app_data: get_app_data(),
             user_profile: get_user_profile(),
             recycle_bins: discover_recycle_bin_dirs(),
+            data_dir: None,
+        }
+    }
+
+    /// [`Self::from_env`], remembering in `%APPDATA%\WinMedic`, where the
+    /// settings and logs are. Only for a module that runs the machine's own
+    /// DISM.
+    pub fn from_env_remembering() -> Self {
+        Self {
+            data_dir: dirs::data_dir().map(|dir| dir.join("WinMedic")),
+            ..Self::from_env()
         }
     }
 
@@ -723,6 +751,36 @@ impl CleanerPaths {
             app_data: base.join("AppData").join("Roaming"),
             user_profile: base.join("UserProfile"),
             recycle_bins: vec![base.join("$Recycle.Bin")],
+            data_dir: Some(base.join("AppData").join("Roaming").join("WinMedic")),
+        }
+    }
+
+    /// How many reclaimable packages the last cleanup left, if remembered.
+    ///
+    /// A missing or damaged note is no note: the finding is raised as it was
+    /// before anything was remembered.
+    fn packages_left_by_last_cleanup(&self) -> Option<u32> {
+        let file = self.data_dir.as_ref()?.join(WINSXS_PACKAGES_LEFT_FILE);
+        std::fs::read_to_string(file).ok()?.trim().parse().ok()
+    }
+
+    /// Remember how many packages a cleanup left, or forget with `None`.
+    ///
+    /// Best effort: a note that cannot be written only means the finding comes
+    /// back on the next scan.
+    fn remember_packages_left(&self, left: Option<u32>) {
+        let Some(dir) = &self.data_dir else {
+            return;
+        };
+        let file = dir.join(WINSXS_PACKAGES_LEFT_FILE);
+        match left {
+            Some(left) => {
+                let _ = std::fs::create_dir_all(dir);
+                let _ = std::fs::write(file, left.to_string());
+            }
+            None => {
+                let _ = std::fs::remove_file(file);
+            }
         }
     }
 }
@@ -847,43 +905,23 @@ impl SystemCleanerModule {
         total
     }
 
-    /// Read the component store back after a cleanup and say what is left.
+    /// How many reclaimable packages DISM counts, or `None` when the store
+    /// could not be read.
     ///
-    /// DISM answers "The operation completed successfully" whether it removed
-    /// twelve packages or none at all, so reporting its exit status alone told
-    /// the user the store had been cleaned in exactly the cases where nothing
-    /// had happened. Windows also keeps superseded components for a 30-day
-    /// grace period so an installed update can still be uninstalled, which is a
-    /// legitimate reason for packages to survive the run — but the user has to
-    /// be told, or the finding coming back on the next scan looks like a repair
-    /// that silently failed.
-    ///
-    /// Returns a sentence to append to the repair result, or an empty string
-    /// when the store could not be re-read; a failed verification must never
-    /// turn a successful cleanup into a failed repair.
-    async fn recount_reclaimable_packages(&self, dbg: &DebugTrace) -> String {
-        let verified = dbg
-            .run(
-                &self.runner,
-                "dism.exe",
-                DISM_ANALYZE_ARGS,
-                Duration::from_secs(120),
-            )
-            .await
-            .ok()
-            .filter(|out| out.success);
-
-        let Some(out) = verified else {
-            return String::new();
-        };
-
-        match parse_winsxs_analysis(&out.stdout).reclaimable_packages {
-            0 => " The store now reports 0 reclaimable packages.".to_string(),
-            left => format!(
-                " The store still reports {} reclaimable package(s): Windows holds superseded components for a 30-day grace period so installed updates can still be uninstalled, and drops them once it expires.",
-                left
-            ),
-        }
+    /// DISM answers "The operation completed successfully" whether the cleanup
+    /// removed twelve packages or none at all, so the repair counts before and
+    /// after it.
+    async fn count_reclaimable_packages(&self, dbg: &DebugTrace) -> Option<u32> {
+        dbg.run(
+            &self.runner,
+            "dism.exe",
+            DISM_ANALYZE_ARGS,
+            Duration::from_secs(120),
+        )
+        .await
+        .ok()
+        .filter(|out| out.success)
+        .map(|out| parse_winsxs_analysis(&out.stdout).reclaimable_packages)
     }
 
     async fn send_progress(
@@ -1244,7 +1282,27 @@ impl DiagnosticModule for SystemCleanerModule {
             // "Yes" however often the repair runs: DISM reported success, the
             // audit log recorded a clean WinSxS store, and the next scan raised
             // the identical finding. Report only what the repair can reclaim.
-            if analysis.reclaimable_packages > 0 {
+            //
+            // Nor what the last cleanup left: StartComponentCleanup does not
+            // remove those (see WINSXS_PACKAGES_LEFT_FILE). That note holds
+            // only while DISM reports the same number; any other number means
+            // the store changed since, and the note is dropped.
+            let found = analysis.reclaimable_packages;
+            let left_by_last_cleanup = self.paths.packages_left_by_last_cleanup();
+            if left_by_last_cleanup.is_some_and(|left| left != found) {
+                self.paths.remember_packages_left(None);
+            }
+            if found > 0 && left_by_last_cleanup == Some(found) {
+                Self::send_progress(
+                    &progress_tx,
+                    99,
+                    "Component store cleanup has nothing to reclaim",
+                    Some(&format!(
+                        "DISM reports {found} reclaimable packages, as many as the last StartComponentCleanup left: it does not remove them. No finding raised until DISM reports a different number."
+                    )),
+                )
+                .await;
+            } else if found > 0 {
                 let title = format!(
                     "WinSxS component store cleanup recommended ({} reclaimable packages)",
                     analysis.reclaimable_packages
@@ -1276,7 +1334,11 @@ impl DiagnosticModule for SystemCleanerModule {
                     "The Windows component store (WinSxS) holds superseded update packages and backup data that can safely be reclaimed.",
                     details_str,
                     "Clean the WinSxS component store via DISM (dism.exe /Online /Cleanup-Image /StartComponentCleanup)",
-                    vec!["Run dism.exe /Online /Cleanup-Image /StartComponentCleanup (may take several minutes)".to_string()],
+                    vec![
+                        "Count the reclaimable packages (dism.exe /Online /Cleanup-Image /AnalyzeComponentStore)".to_string(),
+                        "Run dism.exe /Online /Cleanup-Image /StartComponentCleanup (may take several minutes)".to_string(),
+                        "Count them again and remember how many the cleanup left".to_string(),
+                    ],
                 ));
             } else if analysis.cleanup_recommended {
                 Self::send_progress(
@@ -1319,6 +1381,7 @@ impl DiagnosticModule for SystemCleanerModule {
                 dbg.section("WinSxS component store cleanup").await;
                 dbg.hint("DISM refuses to touch the component store without Administrator rights")
                     .await;
+                let before = self.count_reclaimable_packages(&dbg).await;
                 // Streamed for its progress bar: the cleanup takes minutes.
                 let out = dbg
                     .run_streaming(
@@ -1330,10 +1393,29 @@ impl DiagnosticModule for SystemCleanerModule {
                     )
                     .await?;
                 if out.success {
-                    Ok(format!(
-                        "WinSxS component store cleaned successfully (StartComponentCleanup finished).{}",
-                        self.recount_reclaimable_packages(&dbg).await
-                    ))
+                    let left = self.count_reclaimable_packages(&dbg).await;
+                    if let Some(left) = left {
+                        self.paths
+                            .remember_packages_left(Some(left).filter(|&n| n > 0));
+                    }
+                    match (before, left) {
+                        // A failed verification must never turn a finished
+                        // cleanup into a failed repair.
+                        (_, None) => Ok(
+                            "WinSxS component store cleaned successfully (StartComponentCleanup finished)."
+                                .to_string(),
+                        ),
+                        (_, Some(0)) => Ok(
+                            "WinSxS component store cleaned successfully (StartComponentCleanup finished). The store now reports 0 reclaimable packages."
+                                .to_string(),
+                        ),
+                        (Some(before), Some(left)) if left >= before => Err(format!(
+                            "StartComponentCleanup finished but removed nothing: DISM still reports {left} reclaimable package(s), which the cleanup leaves in place (for example a checkpoint cumulative update that later updates are built on). This is raised again only when DISM reports a different number."
+                        )),
+                        (_, Some(left)) => Ok(format!(
+                            "WinSxS component store cleaned (StartComponentCleanup finished). DISM still reports {left} reclaimable package(s), which the cleanup leaves in place; this is raised again only when DISM reports a different number."
+                        )),
+                    }
                 } else {
                     let err = if out.stderr.trim().is_empty() {
                         out.stdout
@@ -2036,6 +2118,11 @@ The operation completed successfully.";
             "StartComponentCleanup",
             CmdOutput::ok("The operation completed successfully."),
         );
+        mock.add_response_after(
+            "StartComponentCleanup",
+            "AnalyzeComponentStore",
+            CmdOutput::ok("Number of Reclaimable Packages : 0\n"),
+        );
 
         let td = TestDir::new("winsxs_scan_fix");
         let module = sandboxed(&td, Arc::new(mock.clone()));
@@ -2090,31 +2177,134 @@ The operation completed successfully.";
         assert!(issues.iter().all(|i| i.id != "sys_clean_winsxs"));
     }
 
-    /// DISM says "the operation completed successfully" whether it removed
-    /// twelve packages or none, so the repair reads the store back before it
-    /// claims anything.
+    /// What `AnalyzeComponentStore` prints, in the lines the tests above use,
+    /// with `packages` reclaimable.
+    fn store_with_reclaimable(packages: u32) -> CmdOutput {
+        CmdOutput::ok(format!(
+            "Explorer Reported Size of Component Store : 12.86 GB\n\
+             Number of Reclaimable Packages : {packages}\n\
+             Component Store Cleanup Recommended : Yes\n"
+        ))
+    }
+
+    /// A scan with a fresh mock whose DISM reports `packages` reclaimable.
+    async fn winsxs_finding(td: &TestDir, packages: u32) -> Option<Issue> {
+        let mock = MockCommandRunner::new();
+        mock.add_response("AnalyzeComponentStore", store_with_reclaimable(packages));
+        sandboxed(td, Arc::new(mock))
+            .scan(None)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|i| i.id == "sys_clean_winsxs")
+    }
+
+    /// The development PC: DISM counts the 24H2 checkpoint cumulative update
+    /// and its FoD metadata package as reclaimable, and StartComponentCleanup
+    /// leaves both. DISM says "the operation completed successfully" whether
+    /// it removed twelve packages or none; every repair reported success, and
+    /// every scan raised the finding again.
     #[tokio::test]
-    async fn a_cleanup_that_reclaimed_nothing_says_so() {
+    async fn a_cleanup_that_removes_nothing_is_no_success_and_is_not_raised_again() {
         let mock = MockCommandRunner::new();
         mock.add_response(
             "StartComponentCleanup",
             CmdOutput::ok("The operation completed successfully."),
         );
-        mock.add_response(
-            "AnalyzeComponentStore",
-            CmdOutput::ok("Number of Reclaimable Packages : 4\n"),
+        mock.add_response("AnalyzeComponentStore", store_with_reclaimable(2));
+
+        let td = TestDir::new("winsxs_removes_nothing");
+        let module = sandboxed(&td, Arc::new(mock.clone()));
+        let issues = module.scan(None).await.unwrap();
+        assert!(issues.iter().any(|i| i.id == "sys_clean_winsxs"));
+
+        let err = module
+            .fix("sys_clean_winsxs", None)
+            .await
+            .expect_err("a cleanup that removed nothing is no successful repair");
+        assert!(err.contains("removed nothing"), "{err}");
+        assert!(err.contains("still reports 2 reclaimable"), "{err}");
+        assert!(!err.contains("grace period"), "{err}");
+        let dism: Vec<String> = mock
+            .executed()
+            .into_iter()
+            .filter(|cmd| cmd.contains("dism.exe"))
+            .collect();
+        assert_eq!(dism.len(), 4, "scan, count, cleanup, count: {dism:?}");
+        assert!(dism[2].contains("StartComponentCleanup"), "{dism:?}");
+
+        assert!(
+            winsxs_finding(&td, 2).await.is_none(),
+            "what the cleanup leaves is not raised again"
+        );
+    }
+
+    /// A new update makes more packages reclaimable than the last cleanup
+    /// left, and the store has changed: the finding is back.
+    #[tokio::test]
+    async fn more_packages_than_the_last_cleanup_left_are_raised_again() {
+        let td = TestDir::new("winsxs_more_than_left");
+        CleanerPaths::rooted_at(&td.path).remember_packages_left(Some(2));
+
+        let issue = winsxs_finding(&td, 3).await.expect("a new update");
+        assert!(issue.title.contains("3 reclaimable packages"));
+    }
+
+    /// The note holds only while DISM reports the number it holds. Once the
+    /// store reports another one, the note is gone, so the same number
+    /// coming back later is a finding again rather than hidden for good.
+    #[tokio::test]
+    async fn the_note_is_dropped_once_the_store_reports_another_number() {
+        let td = TestDir::new("winsxs_note_dropped");
+        let paths = CleanerPaths::rooted_at(&td.path);
+        paths.remember_packages_left(Some(2));
+
+        assert!(winsxs_finding(&td, 0).await.is_none());
+        assert_eq!(paths.packages_left_by_last_cleanup(), None);
+        assert!(winsxs_finding(&td, 2).await.is_some());
+    }
+
+    /// A damaged note is no note: the finding is raised as before.
+    #[tokio::test]
+    async fn a_damaged_note_hides_nothing() {
+        let td = TestDir::new("winsxs_note_damaged");
+        td.create_file(
+            &format!("AppData/Roaming/WinMedic/{WINSXS_PACKAGES_LEFT_FILE}"),
+            b"\xff\xfe2",
         );
 
-        let td = TestDir::new("winsxs_recount_unchanged");
-        let module = sandboxed(&td, Arc::new(mock));
-        let message = module.fix("sys_clean_winsxs", None).await.unwrap();
+        assert!(winsxs_finding(&td, 2).await.is_some());
+    }
+
+    /// The cleanup removed some packages and left others: a repair that
+    /// changed something, and what it left is remembered.
+    #[tokio::test]
+    async fn a_cleanup_that_removed_some_says_what_it_left() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "StartComponentCleanup",
+            CmdOutput::ok("The operation completed successfully."),
+        );
+        mock.add_response("AnalyzeComponentStore", store_with_reclaimable(4));
+        mock.add_response_after(
+            "StartComponentCleanup",
+            "AnalyzeComponentStore",
+            store_with_reclaimable(2),
+        );
+
+        let td = TestDir::new("winsxs_removed_some");
+        let message = sandboxed(&td, Arc::new(mock))
+            .fix("sys_clean_winsxs", None)
+            .await
+            .unwrap();
 
         assert!(message.contains("StartComponentCleanup finished"));
         assert!(
-            message.contains("still reports 4 reclaimable package"),
+            message.contains("still reports 2 reclaimable package"),
             "the result must not read as a clean store: {}",
             message
         );
+        assert!(winsxs_finding(&td, 2).await.is_none());
     }
 
     /// The cleanup runs for minutes; its progress bar goes to the repair log.
@@ -2589,6 +2779,15 @@ The operation completed successfully.";
             assert!(p.starts_with(base), "{:?} escaped the sandbox", p);
         }
         assert!(paths.recycle_bins.iter().all(|p| p.starts_with(base)));
+        assert!(paths.data_dir.is_some_and(|p| p.starts_with(base)));
+    }
+
+    /// Modules built around a test's runner use these paths: DISM's canned
+    /// answers must never be remembered in the machine's own data folder.
+    #[test]
+    fn the_real_paths_remember_nothing_unless_asked() {
+        assert_eq!(CleanerPaths::from_env().data_dir, None);
+        assert_eq!(CleanerPaths::default().data_dir, None);
     }
 
     #[tokio::test]

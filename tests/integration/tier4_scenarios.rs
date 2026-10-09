@@ -330,10 +330,16 @@ async fn test_scenario_6_dism_german_locale_pipeline() {
     assert!(issue.title.contains("5 reclaimable packages"));
     assert!(issue.technical_details.contains("9.45 GB"));
 
-    // 2. Fix executes StartComponentCleanup successfully
+    // 2. Fix executes StartComponentCleanup. DISM still reports the same 5
+    // packages afterwards, so the repair says it removed nothing.
     let fix_res = module.fix("sys_clean_winsxs", None).await;
-    assert!(fix_res.is_ok());
-    assert!(fix_res.unwrap().contains("StartComponentCleanup finished"));
+    assert!(fix_res.unwrap_err().contains("removed nothing"));
+    assert!(
+        runner
+            .calls_for("dism.exe")
+            .iter()
+            .any(|args| args.iter().any(|arg| arg == "/StartComponentCleanup"))
+    );
 
     // 3. Post-repair exit code calculation
     let mut fixed_issues = issues.clone();
