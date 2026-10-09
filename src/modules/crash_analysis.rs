@@ -10,7 +10,7 @@ use crate::utils::event_xml::{
     EventRecord, event_query, parse_events, read_events, system_log_query,
 };
 use chrono::{DateTime, Local, Utc};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,10 +18,6 @@ use tokio::sync::mpsc::Sender;
 use tokio::time::sleep;
 
 const DEFAULT_DUMP_DIR: &str = r"C:\Windows\Minidump";
-/// Kernel dump payloads above this size are treated as full/memory dumps; only
-/// the header is parsed for them because scanning megabytes of raw memory for
-/// driver names would dominate the scan time.
-const DRIVER_SCAN_MAX_BYTES: usize = 16 * 1024 * 1024;
 /// Above this many old dump files the triage suggests cleaning up.
 const STALE_DUMP_THRESHOLD: usize = 5;
 /// Dumps younger than this are the crash analysis' evidence and are kept;
@@ -34,11 +30,6 @@ const DUMP_EVIDENCE_DAYS: u64 = crash_timeline::SERIES_DAYS as u64;
 pub struct MinidumpInfo {
     pub bugcheck_code: u32,
     pub bugcheck_params: [u64; 4],
-    /// Best-effort faulting driver (e.g. `nvlddmkm.sys`), if a known
-    /// third-party driver name is embedded in the dump.
-    pub faulting_driver: Option<String>,
-    /// All `.sys` module names found in the dump payload.
-    pub drivers_seen: Vec<String>,
 }
 
 /// A crash instance reconstructed from a dump file or a BugCheck event.
@@ -257,42 +248,6 @@ impl CrashAnalysisModule {
         .unwrap_or_default()
     }
 
-    /// The faulting driver each dump in `dump_dir` names, keyed by file name.
-    ///
-    /// Read on a blocking thread, for the same reason as
-    /// [`Self::collect_dump_crashes`].
-    async fn faulting_drivers(&self) -> BTreeMap<String, String> {
-        let dir = self.dump_dir.clone();
-        tokio::task::spawn_blocking(move || {
-            // We need owned copies of driver names for map keys; the dump payload
-            // scan already produced them per crash, so re-derive via the dump files
-            // referenced by each instance.
-            let mut driver_by_source: BTreeMap<String, String> = BTreeMap::new();
-            for path in dump_dir_dmp_files(&dir) {
-                if std::fs::metadata(&path)
-                    .and_then(|m| m.modified())
-                    .is_ok_and(is_stale)
-                {
-                    continue;
-                }
-                let file_name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown.dmp")
-                    .to_string();
-                if let Ok(bytes) = std::fs::read(&path)
-                    && let Some(info) = parse_minidump_header(&bytes)
-                    && let Some(driver) = info.faulting_driver
-                {
-                    driver_by_source.insert(file_name, driver);
-                }
-            }
-            driver_by_source
-        })
-        .await
-        .unwrap_or_default()
-    }
-
     /// The events a `wevtutil` query returns, or `None` when it failed.
     async fn events(&self, dbg: &DebugTrace, query: Vec<String>) -> Option<Vec<EventRecord>> {
         let query: Vec<&str> = query.iter().map(String::as_str).collect();
@@ -412,7 +367,7 @@ impl DiagnosticModule for CrashAnalysisModule {
     }
 
     fn description(&self) -> &'static str {
-        "Parses kernel minidumps and BugCheck events to identify stop codes, faulting drivers and crash frequency, and finds program add-ons that crash Explorer"
+        "Parses kernel minidumps and BugCheck events to identify stop codes and crash frequency, and finds program add-ons that crash Explorer"
     }
 
     fn icon(&self) -> &'static str {
@@ -442,7 +397,7 @@ impl DiagnosticModule for CrashAnalysisModule {
             &progress_tx,
             15,
             &format!("Reading kernel minidumps from {}...", DEFAULT_DUMP_DIR),
-            Some("Parsing dump headers for stop codes and drivers..."),
+            Some("Parsing dump headers for stop codes..."),
         )
         .await;
         sleep(Duration::from_millis(150)).await;
@@ -564,19 +519,18 @@ impl DiagnosticModule for CrashAnalysisModule {
         Self::send_progress(
             &progress_tx,
             80,
-            "Classifying stop codes, faulting drivers & crash frequency...",
+            "Classifying stop codes & crash frequency...",
             Some("Mapping bugcheck codes to root-cause categories..."),
         )
         .await;
         sleep(Duration::from_millis(150)).await;
 
-        // Driver attribution: prefer the faulting driver parsed from each dump,
-        // fall back to the video stack for TDR stop codes.
-        let mut per_driver: BTreeMap<String, Vec<&CrashInstance>> = BTreeMap::new();
+        // Crashes are told apart by their stop code alone. A minidump lists
+        // every driver that was loaded, so a driver name found in it says
+        // nothing about which one crashed: picking a well-known one from that
+        // list blamed the graphics driver of every PC that has one.
         let memory_codes = [0x1A, 0x50, 0x2E, 0x77, 0xC2, 0x19];
         let video_codes = [0x116, 0x117];
-
-        let driver_by_source = self.faulting_drivers().await;
 
         let mut memory_crashes = Vec::new();
         let mut video_crashes = Vec::new();
@@ -587,67 +541,14 @@ impl DiagnosticModule for CrashAnalysisModule {
                 video_crashes.push(crash);
             } else if memory_codes.contains(&crash.bugcheck_code) {
                 memory_crashes.push(crash);
-            } else if let Some(driver) = driver_by_source.get(&crash.source_file) {
-                per_driver.entry(driver.clone()).or_default().push(crash);
             } else {
                 generic_crashes.push(crash);
             }
         }
 
-        // 1. Faulting driver identified (e.g. nvlddmkm.sys)
-        for (driver, instances) in &per_driver {
-            let count = instances.len();
-            let severity = if count >= 2 {
-                Severity::Critical
-            } else {
-                Severity::Warning
-            };
-            let stop_codes: BTreeSet<String> = instances
-                .iter()
-                .map(|c| format!("0x{:08X}", c.bugcheck_code))
-                .collect();
-            let dates: Vec<&str> = instances.iter().filter_map(|c| c.when.as_deref()).collect();
-            let component = describe_driver_component(driver);
-
-            issues.push(Issue::new(
-                driver_fault_id(driver),
-                self.id(),
-                format!("BSOD caused by driver {} ({} crash(es))", driver, count),
-                "Hardware & Stability",
-                severity,
-                RiskScore::Medium,
-                format!(
-                    "Crash dumps directly implicate the {} driver {}. Repeated stop codes of this class typically follow a driver update gone wrong, a vendor-package conflict (e.g. GeForce/Adrenalin clean-install leftovers) or failing hardware behind the driver.",
-                    component, driver
-                ),
-                format!(
-                    "Faulting driver: {}\nStop code(s): {}\nCrashes: {}\nMost recent: {}\nDump files: {}",
-                    driver,
-                    stop_codes.into_iter().collect::<Vec<_>>().join(", "),
-                    count,
-                    dates.last().copied().unwrap_or("unknown"),
-                    instances.iter().map(|c| c.source_file.as_str()).take(4).collect::<Vec<_>>().join(", "),
-                ),
-                "Roll back or clean-reinstall the implicated driver (DDU + latest vendor package)",
-                vec![
-                    format!("Open Device Manager and roll back the {} driver", driver),
-                    format!(
-                        "Perform a clean reinstall of the {} driver with DDU, then install the latest stable vendor package",
-                        component
-                    ),
-                    "Verify the crash frequency drops in the days after the swap".to_string(),
-                ],
-            ).with_advice_only());
-        }
-
-        // 2. GPU / TDR crashes
+        // 1. GPU / TDR crashes
         if !video_crashes.is_empty() {
             let count = video_crashes.len();
-            let video_driver = video_crashes
-                .iter()
-                .find_map(|c| driver_by_source.get(&c.source_file).cloned())
-                .or_else(|| per_driver.keys().next().cloned())
-                .unwrap_or_else(|| "unknown".to_string());
             issues.push(Issue::new(
                 "crash_video_tdr",
                 self.id(),
@@ -657,9 +558,8 @@ impl DiagnosticModule for CrashAnalysisModule {
                 RiskScore::Medium,
                 "VIDEO_TDR_FAILURE / VIDEO_TDR_TIMEOUT_DETECTED stop codes: the GPU stopped responding and the display driver was reset. Typical causes are an unstable GPU driver, aggressive factory overclock, overheating or an undersized PSU under load spikes.",
                 format!(
-                    "Stop code(s): 0x116 / 0x117\nCrashes: {}\nImplicated display driver: {}\nDump files: {}",
+                    "Stop code(s): 0x116 / 0x117\nCrashes: {}\nDump files: {}",
                     count,
-                    video_driver,
                     video_crashes.iter().map(|c| c.source_file.as_str()).take(4).collect::<Vec<_>>().join(", "),
                 ),
                 "Clean-reinstall the GPU driver and check GPU thermals",
@@ -671,7 +571,7 @@ impl DiagnosticModule for CrashAnalysisModule {
             ).with_advice_only());
         }
 
-        // 3. Memory-class stop codes without a clear driver
+        // 2. Memory-class stop codes
         if !memory_crashes.is_empty() {
             let count = memory_crashes.len();
             issues.push(memory_test_finding(Issue::new(
@@ -696,7 +596,7 @@ impl DiagnosticModule for CrashAnalysisModule {
             )));
         }
 
-        // 4. Remaining crashes without driver attribution
+        // 3. Every other stop code
         if !generic_crashes.is_empty() {
             let count = generic_crashes.len();
             let severity = if count >= 3 {
@@ -704,45 +604,50 @@ impl DiagnosticModule for CrashAnalysisModule {
             } else {
                 Severity::Warning
             };
-            let code_counts: BTreeMap<String, usize> = generic_crashes
-                .iter()
-                .map(|c| (format!("0x{:08X}", c.bugcheck_code), ()))
-                .fold(BTreeMap::new(), |mut acc, (code, ())| {
-                    *acc.entry(code).or_insert(0) += 1;
-                    acc
-                });
+            let mut code_counts: BTreeMap<u32, usize> = BTreeMap::new();
+            for crash in &generic_crashes {
+                *code_counts.entry(crash.bugcheck_code).or_insert(0) += 1;
+            }
             let details = code_counts
                 .iter()
-                .map(|(code, cnt)| {
-                    let info = bugcheck_info(
-                        u32::from_str_radix(code.trim_start_matches("0x"), 16).unwrap_or(0),
-                    );
-                    match info {
-                        Some(i) => format!("{} x{} ({})", code, cnt, i.name),
-                        None => format!("{} x{}", code, cnt),
-                    }
+                .map(|(&code, cnt)| match bugcheck_info(code) {
+                    Some(i) => format!("0x{code:08X} x{cnt} ({})", i.name),
+                    None => format!("0x{code:08X} x{cnt}"),
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
+            // One crash is no history.
+            let title = match code_counts.keys().next() {
+                Some(&code) if count == 1 => {
+                    format!("BSOD with stop code {}", stop_code_label(code))
+                }
+                _ => format!("Recurring BSOD history ({count} crashes)"),
+            };
 
             issues.push(Issue::new(
                 "crash_bugcheck_history",
                 self.id(),
-                format!("Recurring BSOD history ({} crashes)", count),
+                title,
                 "Hardware & Stability",
                 severity,
                 RiskScore::Low,
-                "Bugchecks were recorded whose stop codes do not isolate a single driver or memory subsystem. Driver conflicts after Windows/driver updates are the most common root cause of this pattern.",
-                format!("Stop code distribution:\n{}", details),
-                "Review recently updated drivers and run system file verification (sfc /scannow)",
+                "Windows stopped with a blue screen. A stop code says what kind of fault it was, not which driver caused it; a debugger can tell that from the dump.",
+                format!(
+                    "Stop code distribution:\n{}\nMost recent: {}\nDump files: {}",
+                    details,
+                    generic_crashes.iter().filter_map(|c| c.when.as_deref()).max().unwrap_or("unknown"),
+                    generic_crashes.iter().map(|c| c.source_file.as_str()).take(4).collect::<Vec<_>>().join(", "),
+                ),
+                "Find the module the crash happened in and review recent driver updates",
                 vec![
+                    "Open the dump in WinDbg and run !analyze -v: it names the module the crash happened in".to_string(),
                     "Review drivers updated shortly before the first crash and roll suspect updates back".to_string(),
                     "Run 'sfc /scannow' and 'DISM /Online /Cleanup-Image /RestoreHealth'".to_string(),
                 ],
             ).with_advice_only());
         }
 
-        // 5. Kernel-Power 41 events beyond explainable bugchecks
+        // 4. Kernel-Power 41 events beyond explainable bugchecks
         let bugcheck_total = crashes.len();
         if kernel_power_41 > bugcheck_total {
             let unexplained = kernel_power_41 - bugcheck_total;
@@ -770,7 +675,7 @@ impl DiagnosticModule for CrashAnalysisModule {
             ).with_advice_only());
         }
 
-        // 6. What changed before the crashes began
+        // 5. What changed before the crashes began
         Self::send_progress(
             &progress_tx,
             90,
@@ -826,9 +731,9 @@ impl DiagnosticModule for CrashAnalysisModule {
                     )),
                 }
             }
-            // The driver, video, unexpected-shutdown and bugcheck-history
-            // findings are advice: a repair run never asks. Opening Device
-            // Manager and calling that a repair counted them as fixed.
+            // The video, unexpected-shutdown and bugcheck-history findings
+            // are advice: a repair run never asks. Opening Device Manager
+            // and calling that a repair counted them as fixed.
             id if id.starts_with(shell_extensions::ID_PREFIX) => {
                 shell_extensions::block(&*self.runner, id, &self.windows_dir, &self.backup_dir)
                     .await
@@ -838,20 +743,13 @@ impl DiagnosticModule for CrashAnalysisModule {
     }
 }
 
-/// `crash_driver_fault_nvlddmkm_sys`: one finding per driver, each with its
-/// own id. With one id for all of them, a repair run marked only the first.
-fn driver_fault_id(driver: &str) -> String {
-    let slug: String = driver
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    format!("crash_driver_fault_{slug}")
+/// `0x0000009F (DRIVER_POWER_STATE_FAILURE)`, or the bare code when
+/// [`bugcheck_info`] does not know it.
+fn stop_code_label(code: u32) -> String {
+    match bugcheck_info(code) {
+        Some(info) => format!("0x{code:08X} ({})", info.name),
+        None => format!("0x{code:08X}"),
+    }
 }
 
 /// The `deleted|left` line the stale-dump cleanup prints.
@@ -881,7 +779,7 @@ fn dump_dir_dmp_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Parses the kernel dump header (`PAGEDUMP` / `PAGEDU64` signatures) to
-/// extract the bugcheck code, its four parameters and embedded driver names.
+/// extract the bugcheck code and its four parameters.
 ///
 /// Header layout (documented `DUMP_HEADER` / `DUMP_HEADER64`):
 /// 32-bit: signature `PAGE`+`DUMP`, BugCheckCode at 0x28, params (u32) at 0x2C.
@@ -916,124 +814,7 @@ pub fn parse_minidump_header(bytes: &[u8]) -> Option<MinidumpInfo> {
         };
     }
 
-    if bytes.len() <= DRIVER_SCAN_MAX_BYTES {
-        let drivers = extract_driver_names(bytes);
-        info.faulting_driver = pick_faulting_driver(&drivers);
-        info.drivers_seen = drivers;
-    }
-
     Some(info)
-}
-
-/// Collects `.sys` module names embedded in the dump payload, both as ASCII
-/// and as UTF-16LE (the format the kernel module list uses).
-pub fn extract_driver_names(bytes: &[u8]) -> Vec<String> {
-    let mut found: BTreeSet<String> = BTreeSet::new();
-
-    // ASCII runs
-    let mut current = String::new();
-    for &b in bytes {
-        if b.is_ascii_graphic() {
-            current.push(b as char);
-        } else {
-            flush_driver_token(&current, &mut found);
-            current.clear();
-        }
-    }
-    flush_driver_token(&current, &mut found);
-
-    // UTF-16LE runs. Manual stepping instead of chunks_exact(2): the exact
-    // API differs between toolchain versions and index pairs sidestep that.
-    let mut current = String::new();
-    let pairs = bytes.len() / 2 * 2;
-    for i in (0..pairs).step_by(2) {
-        let unit = u16::from_le_bytes([bytes[i], bytes[i + 1]]);
-        let c = u32::from(unit);
-        if (0x20..=0x7E).contains(&c) {
-            current.push(char::from_u32(c).unwrap_or('?'));
-        } else {
-            flush_driver_token(&current, &mut found);
-            current.clear();
-        }
-    }
-    flush_driver_token(&current, &mut found);
-
-    found.into_iter().collect()
-}
-
-fn flush_driver_token(token: &str, out: &mut BTreeSet<String>) {
-    if token.len() >= 6 && token.len() <= 48 && token.to_ascii_lowercase().ends_with(".sys") {
-        out.insert(token.to_ascii_lowercase());
-    }
-}
-
-/// Drivers with a strong track record of causing BSODs; if one of these is
-/// embedded in the dump we name it as the faulting module.
-const KNOWN_TROUBLE_DRIVERS: &[&str] = &[
-    "nvlddmkm.sys",
-    "amdkmdag.sys",
-    "amdkmdap.sys",
-    "atikmdag.sys",
-    "atikmpag.sys",
-    "igdkmd64.sys",
-    "igdkmd32.sys",
-    "nvme.sys",
-    "storahci.sys",
-    "stornvme.sys",
-    "rt640x64.sys",
-    "rt640x86.sys",
-    "e1d.sys",
-    "e1g6032e.sys",
-    "netwtw06.sys",
-    "netwtw04.sys",
-    "athw8x.sys",
-    "athwnx.sys",
-    "bcmwl63a.sys",
-    "wdiwifi.sys",
-    "dxgkrnl.sys",
-    "dxgmms2.sys",
-    "tcpip.sys",
-    "ntfs.sys",
-    "fltmgr.sys",
-    "aswndsys.sys",
-    "aswsp.sys",
-];
-
-fn pick_faulting_driver(drivers: &[String]) -> Option<String> {
-    for known in KNOWN_TROUBLE_DRIVERS {
-        if let Some(hit) = drivers.iter().find(|d| d == known || d.ends_with(known)) {
-            return Some(hit.clone());
-        }
-    }
-    None
-}
-
-fn describe_driver_component(driver: &str) -> &'static str {
-    let d = driver.to_ascii_lowercase();
-    if d.starts_with("nvlddmkm") {
-        "NVIDIA display"
-    } else if d.starts_with("amd") || d.starts_with("atik") {
-        "AMD display"
-    } else if d.starts_with("igdkmd") {
-        "Intel graphics"
-    } else if d.contains("nvme")
-        || d.contains("storahci")
-        || d.contains("stornvme")
-        || d.contains("ntfs")
-    {
-        "storage"
-    } else if d.contains("rt640")
-        || d.starts_with("e1")
-        || d.contains("netwtw")
-        || d.contains("athw")
-        || d.contains("wifi")
-    {
-        "network"
-    } else if d.contains("dxg") {
-        "DirectX graphics kernel"
-    } else {
-        "kernel"
-    }
 }
 
 /// Human-readable information for the most common bugcheck codes.
@@ -1461,32 +1242,6 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_driver_names_ascii_and_utf16() {
-        let payload = b"\x00\x00nvlddmkm.sys\x00\x00ntoskrnl.exe\x00rt640x64.sys".to_vec();
-        let mut utf16 = Vec::new();
-        for c in "amdkmdag.sys".chars() {
-            utf16.extend_from_slice(&(c as u16).to_le_bytes());
-        }
-        let mut bytes = payload;
-        bytes.push(0);
-        if bytes.len() % 2 == 1 {
-            bytes.push(0); // keep the UTF-16LE run 2-byte aligned
-        }
-        bytes.extend_from_slice(&utf16);
-
-        let drivers = extract_driver_names(&bytes);
-        assert!(drivers.contains(&"nvlddmkm.sys".to_string()));
-        assert!(drivers.contains(&"rt640x64.sys".to_string()));
-        // Unaligned UTF-16LE runs can absorb a stray preceding byte; the
-        // suffix must match so driver attribution still works.
-        assert!(drivers.iter().any(|d| d.ends_with("amdkmdag.sys")));
-        assert!(!drivers.iter().any(|d| d.ends_with(".exe")));
-
-        let faulting = pick_faulting_driver(&drivers);
-        assert_eq!(faulting.as_deref(), Some("nvlddmkm.sys"));
-    }
-
-    #[test]
     fn test_bugcheck_info_known_and_unknown() {
         let mm = bugcheck_info(0x1A).expect("0x1A must be known");
         assert_eq!(mm.name, "MEMORY_MANAGEMENT");
@@ -1569,8 +1324,93 @@ mod tests {
         assert!(BUGCHECK_PROVIDERS.contains(&"Microsoft-Windows-WER-SystemErrorReporting"));
     }
 
+    /// Scans `dir` with no events in the log.
+    async fn scan_dumps(dir: &Path) -> Vec<Issue> {
+        let mock = MockCommandRunner::new();
+        empty_event_response(&mock);
+        CrashAnalysisModule::with_runner_and_dump_dir(ModuleConfig::default(), Arc::new(mock), dir)
+            .scan(None)
+            .await
+            .expect("scan failed")
+    }
+
+    /// Module names the way a dump's module list holds them: UTF-16LE.
+    fn module_list(names: &[&str]) -> Vec<u8> {
+        names
+            .iter()
+            .flat_map(|name| name.encode_utf16().chain([0]))
+            .flat_map(u16::to_le_bytes)
+            .collect()
+    }
+
+    /// A dump lists every driver that was loaded. On the development PC
+    /// these were all running, each one on the old list of "known trouble
+    /// drivers", and the first of them on that list was named the culprit.
     #[tokio::test]
-    async fn test_scan_detects_driver_fault_from_dump() {
+    async fn a_dump_names_no_driver_from_its_module_list() {
+        let dir = temp_dump_dir("module_list");
+        let modules = module_list(&[
+            "amdkmdag.sys",
+            "dxgkrnl.sys",
+            "fltmgr.sys",
+            "Ntfs.sys",
+            "storahci.sys",
+            "stornvme.sys",
+            "tcpip.sys",
+            "BEDaisy.sys",
+        ]);
+        write_dump(&dir, "100626-1234-01.dmp", &synth_dump64(0x9F, &modules));
+        let issues = scan_dumps(&dir).await;
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let ids: Vec<&str> = issues.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["crash_bugcheck_history"]);
+        let history = &issues[0];
+        assert!(history.advice_only);
+        assert!(
+            history
+                .technical_details
+                .contains("0x0000009F x1 (DRIVER_POWER_STATE_FAILURE)"),
+            "{}",
+            history.technical_details
+        );
+        let text = format!(
+            "{} {} {} {:?}",
+            history.title, history.description, history.technical_details, history.fix_steps
+        );
+        assert!(!text.to_ascii_lowercase().contains("amdkmdag"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn one_crash_is_no_recurring_history() {
+        let dir = temp_dump_dir("one_crash");
+        write_dump(&dir, "a.dmp", &synth_dump64(0x9F, b""));
+        let one = scan_dumps(&dir).await;
+        write_dump(&dir, "b.dmp", &synth_dump64(0x9F, b""));
+        let two = scan_dumps(&dir).await;
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let title = |issues: &[Issue]| {
+            issues
+                .iter()
+                .find(|i| i.id == "crash_bugcheck_history")
+                .map(|i| i.title.clone())
+        };
+        assert_eq!(
+            title(&one).as_deref(),
+            Some("BSOD with stop code 0x0000009F (DRIVER_POWER_STATE_FAILURE)")
+        );
+        assert_eq!(
+            title(&two).as_deref(),
+            Some("Recurring BSOD history (2 crashes)")
+        );
+    }
+
+    /// The driver names in these dumps once made findings of their own,
+    /// "BSOD caused by driver nvlddmkm.sys"; their stop code is what they
+    /// tell.
+    #[tokio::test]
+    async fn test_scan_reports_the_stop_code_of_dumps() {
         let dir = temp_dump_dir("drv");
         write_dump(
             &dir,
@@ -1580,32 +1420,32 @@ mod tests {
         write_dump(
             &dir,
             "dump02.dmp",
-            &synth_dump64(0xD1, b"\x00nvlddmkm.sys\x00"),
+            &synth_dump64(0xD1, b"\x00rt640x64.sys\x00"),
         );
+        let issues = scan_dumps(&dir).await;
+        let _ = std::fs::remove_dir_all(&dir);
 
-        let mock = MockCommandRunner::new();
-        empty_event_response(&mock);
-
-        let module = CrashAnalysisModule::with_runner_and_dump_dir(
-            ModuleConfig::default(),
-            Arc::new(mock),
-            &dir,
-        );
-        let issues = module.scan(None).await.expect("scan failed");
-
-        let driver_issue = issues
-            .iter()
-            .find(|i| i.id == "crash_driver_fault_nvlddmkm_sys")
-            .expect("driver issue");
+        let ids: Vec<&str> = issues.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["crash_bugcheck_history"]);
+        let history = &issues[0];
         assert!(
-            driver_issue.advice_only,
+            history.advice_only,
             "opening Device Manager repairs nothing"
         );
-        assert_eq!(driver_issue.severity, Severity::Critical); // 2 crashes escalate
-        assert!(driver_issue.title.contains("nvlddmkm.sys"));
-        assert!(driver_issue.technical_details.contains("0x000000D1"));
-
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(history.severity, Severity::Warning);
+        assert!(
+            history
+                .technical_details
+                .contains("0x000000D1 x2 (DRIVER_IRQL_NOT_LESS_OR_EQUAL)"),
+            "{}",
+            history.technical_details
+        );
+        assert!(
+            history.technical_details.contains("dump01.dmp, dump02.dmp"),
+            "{}",
+            history.technical_details
+        );
+        assert!(!history.technical_details.contains("nvlddmkm"));
     }
 
     #[tokio::test]
@@ -1754,38 +1594,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn every_driver_gets_a_finding_of_its_own() {
-        let dir = temp_dump_dir("two_drivers");
-        write_dump(&dir, "a.dmp", &synth_dump64(0xD1, b"\x00nvlddmkm.sys\x00"));
-        write_dump(&dir, "b.dmp", &synth_dump64(0xD1, b"\x00rt640x64.sys\x00"));
-        let mock = MockCommandRunner::new();
-        empty_event_response(&mock);
-        let issues = CrashAnalysisModule::with_runner_and_dump_dir(
-            ModuleConfig::default(),
-            Arc::new(mock),
-            &dir,
-        )
-        .scan(None)
-        .await
-        .unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
-
-        let mut ids: Vec<&str> = issues
-            .iter()
-            .map(|i| i.id.as_str())
-            .filter(|id| id.starts_with("crash_driver_fault"))
-            .collect();
-        ids.sort_unstable();
-        assert_eq!(
-            ids,
-            [
-                "crash_driver_fault_nvlddmkm_sys",
-                "crash_driver_fault_rt640x64_sys"
-            ]
-        );
-    }
-
-    #[tokio::test]
     async fn test_scan_flags_stale_dump_accumulation() {
         let dir = temp_dump_dir("stale");
         for i in 0..6 {
@@ -1819,15 +1627,20 @@ mod tests {
             stale.title
         );
         assert!(stale.reclaimable_bytes.is_some_and(|b| b > 0));
+        let history = issues
+            .iter()
+            .find(|i| i.id == "crash_bugcheck_history")
+            .expect("the fresh dump is evidence of a crash now");
+        let details = &history.technical_details;
         assert!(
-            !issues
-                .iter()
-                .any(|i| i.id.starts_with("crash_driver_fault")),
-            "an old dump is no evidence of a crash now"
+            details.starts_with(
+                "Stop code distribution:\n0x000000D1 x1 (DRIVER_IRQL_NOT_LESS_OR_EQUAL)\n"
+            ),
+            "{details}"
         );
         assert!(
-            issues.iter().any(|i| i.id == "crash_bugcheck_history"),
-            "the fresh one is"
+            details.ends_with("\nDump files: fresh.dmp"),
+            "an old dump is no evidence of a crash now: {details}"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1896,7 +1709,6 @@ mod tests {
         for id in [
             "crash_unexpected_shutdown",
             "crash_bugcheck_history",
-            "crash_driver_fault_nvlddmkm_sys",
             "crash_video_tdr",
         ] {
             assert!(module.fix(id, None).await.is_err(), "{id}");
