@@ -40,12 +40,33 @@ fn is_icon_cache_file(name: &str) -> bool {
 /// events would come along. Named errors only: a generic check of the
 /// System log fires on every PC.
 const STORAGE_ERRORS: &str = "((Provider[@Name='disk'] and (EventID=7 or EventID=51 or EventID=153)) or (Provider[@Name='Ntfs'] and EventID=55) or ((Provider[@Name='stornvme'] or Provider[@Name='storahci']) and EventID=129)) and Level<=3";
+/// The ones among [`STORAGE_ERRORS`] that mean data is being lost: a bad
+/// block, a paging error, file system corruption.
+const DATA_LOSS_ERRORS: &str = "((Provider[@Name='disk'] and (EventID=7 or EventID=51)) or (Provider[@Name='Ntfs'] and EventID=55)) and Level<=3";
 /// How far back storage errors are looked for.
 const STORAGE_ERROR_DAYS: u64 = 30;
+/// How many events each query reads at most (`wevtutil /c`).
+const STORAGE_ERROR_LIMIT: usize = 20;
 
 /// The storage error events of the last [`STORAGE_ERROR_DAYS`], newest first.
 pub fn storage_errors_query() -> Vec<String> {
-    system_log_query(STORAGE_ERRORS, STORAGE_ERROR_DAYS * 24 * 3_600_000, 20)
+    system_log_query(
+        STORAGE_ERRORS,
+        STORAGE_ERROR_DAYS * 24 * 3_600_000,
+        STORAGE_ERROR_LIMIT,
+    )
+}
+
+/// The data-loss events among them, newest first. A disk or controller that
+/// keeps resetting logs bursts of 129 and 153, which fill the
+/// [`STORAGE_ERROR_LIMIT`] of the first query and push an older bad block out
+/// of it; asked for on their own, they still make the finding critical.
+pub fn data_loss_errors_query() -> Vec<String> {
+    system_log_query(
+        DATA_LOSS_ERRORS,
+        STORAGE_ERROR_DAYS * 24 * 3_600_000,
+        STORAGE_ERROR_LIMIT,
+    )
 }
 
 /// What a storage error event says, and whether it means data is being lost.
@@ -62,14 +83,31 @@ fn storage_error_kind(event: &EventRecord) -> Option<(&'static str, bool)> {
 
 /// The finding for storage errors in the event log, or `None` without any.
 /// Advice: nothing WinMedic runs repairs a failing disk.
-pub fn storage_errors_finding(module_id: &str, events: &[EventRecord]) -> Option<Issue> {
+///
+/// `events` is what [`storage_errors_query`] returned, `data_loss` what
+/// [`data_loss_errors_query`] did; those already among `events` count once.
+pub fn storage_errors_finding(
+    module_id: &str,
+    events: &[EventRecord],
+    data_loss: &[EventRecord],
+) -> Option<Issue> {
+    // The others are older than every one in `events`, so they come last.
+    let older = data_loss.iter().filter(|e| !events.contains(e));
     let errors: Vec<(&EventRecord, &'static str, bool)> = events
         .iter()
+        .chain(older)
         .filter_map(|e| storage_error_kind(e).map(|(kind, loses)| (e, kind, loses)))
         .collect();
     if errors.is_empty() {
         return None;
     }
+    // A full first query means wevtutil stopped reading, not that the log
+    // held no more.
+    let count = if events.len() >= STORAGE_ERROR_LIMIT {
+        format!("{} or more", errors.len())
+    } else {
+        errors.len().to_string()
+    };
     let data_lost = errors.iter().any(|(_, _, loses)| *loses);
     let details = errors
         .iter()
@@ -92,8 +130,7 @@ pub fn storage_errors_finding(module_id: &str, events: &[EventRecord]) -> Option
             "storage_disk_errors",
             module_id,
             format!(
-                "Windows logged {} storage error(s) in the last {STORAGE_ERROR_DAYS} days",
-                errors.len()
+                "Windows logged {count} storage error(s) in the last {STORAGE_ERROR_DAYS} days"
             ),
             "Storage & File System",
             if data_lost {
@@ -368,7 +405,11 @@ impl DiagnosticModule for StorageModule {
                 .run("wevtutil.exe", &query, Duration::from_secs(15))
                 .await,
         ) {
-            Ok(events) => match storage_errors_finding(self.id(), &events) {
+            Ok(events) => match storage_errors_finding(
+                self.id(),
+                &events,
+                &self.older_data_loss_errors(&events).await,
+            ) {
                 Some(issue) => issues.push(issue),
                 None => {
                     Self::send_progress(
@@ -622,6 +663,23 @@ impl DiagnosticModule for StorageModule {
 }
 
 impl StorageModule {
+    /// The data-loss events, read on their own when the storage error query
+    /// stopped at its limit: below it, every one of them is among `events`
+    /// already. Unread, the finding decides on `events` alone.
+    async fn older_data_loss_errors(&self, events: &[EventRecord]) -> Vec<EventRecord> {
+        if events.len() < STORAGE_ERROR_LIMIT {
+            return Vec::new();
+        }
+        let query = data_loss_errors_query();
+        let query: Vec<&str> = query.iter().map(String::as_str).collect();
+        read_events(
+            self.runner
+                .run("wevtutil.exe", &query, Duration::from_secs(15))
+                .await,
+        )
+        .unwrap_or_default()
+    }
+
     /// Whether C:'s dirty bit is set, and what said so; `None` when neither
     /// WMI nor fsutil would tell.
     ///
@@ -746,7 +804,7 @@ mod tests {
 
     #[test]
     fn named_storage_errors_are_listed_with_their_device() {
-        let issue = storage_errors_finding("storage", &storage_errors()).unwrap();
+        let issue = storage_errors_finding("storage", &storage_errors(), &[]).unwrap();
         assert!(
             issue.title.contains("4 storage error(s)"),
             "{}",
@@ -772,18 +830,108 @@ mod tests {
             .into_iter()
             .filter(|e| matches!(e.event_id, 129 | 153))
             .collect();
-        let issue = storage_errors_finding("storage", &events).unwrap();
+        let issue = storage_errors_finding("storage", &events, &[]).unwrap();
         assert_eq!(issue.severity, Severity::Warning);
+    }
+
+    /// The one `<Event>` of the constructed fixture that contains `needle`.
+    fn fixture_event(needle: &str) -> &'static str {
+        STORAGE_ERRORS_XML
+            .split_inclusive("</Event>")
+            .find(|event| event.contains(needle))
+            .unwrap()
+    }
+
+    /// A burst of resets fills the 20 events the query reads (`/c:20`), so
+    /// there may have been more: the title must not claim exactly 20. The
+    /// fixture's reset event, repeated.
+    #[test]
+    fn a_full_query_is_not_an_exact_count() {
+        let reset = fixture_event(">129</EventID>");
+        let resets = crate::utils::event_xml::parse_events(&reset.repeat(STORAGE_ERROR_LIMIT));
+        let issue = storage_errors_finding("storage", &resets, &[]).unwrap();
+        assert!(
+            issue.title.contains("logged 20 or more storage error(s)"),
+            "{}",
+            issue.title
+        );
+        assert_eq!(issue.severity, Severity::Warning);
+
+        let issue = storage_errors_finding("storage", &resets[1..], &[]).unwrap();
+        assert!(
+            issue.title.contains("logged 19 storage error(s)"),
+            "{}",
+            issue.title
+        );
+
+        // A bad block among the 20 that the second query finds again counts
+        // once.
+        let mut events = resets.clone();
+        let bad_block = crate::utils::event_xml::parse_events(fixture_event(">7</EventID>"));
+        events[STORAGE_ERROR_LIMIT - 1] = bad_block[0].clone();
+        let issue = storage_errors_finding("storage", &events, &bad_block).unwrap();
+        assert!(issue.title.contains("logged 20 or more"), "{}", issue.title);
+        assert_eq!(issue.severity, Severity::Critical);
+    }
+
+    /// 20 resets, newer than a bad block: the storage error query stops at
+    /// the resets, and only the query for data loss still sees the bad block.
+    /// Before, the finding said Warning.
+    #[tokio::test]
+    async fn a_bad_block_behind_a_burst_of_resets_is_still_critical() {
+        let mock = MockCommandRunner::new();
+        // Only the storage error query asks for 129; the data-loss one does
+        // not, and gets the fixture's bad block.
+        mock.add_response(
+            "EventID=129",
+            CmdOutput::ok(fixture_event(">129</EventID>").repeat(STORAGE_ERROR_LIMIT)),
+        );
+        mock.add_response("wevtutil.exe", CmdOutput::ok(fixture_event(">7</EventID>")));
+        let issues = StorageModule::with_paths(
+            ModuleConfig::default(),
+            Arc::new(mock.clone()),
+            Vec::new(),
+            None,
+        )
+        .scan(None)
+        .await
+        .unwrap();
+        let issue = issues
+            .iter()
+            .find(|i| i.id == "storage_disk_errors")
+            .unwrap();
+        assert_eq!(issue.severity, Severity::Critical);
+        assert!(issue.title.contains("logged 21 or more"), "{}", issue.title);
+        assert!(
+            issue
+                .technical_details
+                .ends_with("disk  Event 7  bad block  \\Device\\Harddisk1\\DR1"),
+            "{}",
+            issue.technical_details
+        );
+
+        let queries: Vec<String> = mock
+            .executed()
+            .into_iter()
+            .filter(|c| c.starts_with("wevtutil.exe"))
+            .collect();
+        assert_eq!(queries.len(), 2, "{queries:?}");
+        assert!(
+            !queries[1].contains("EventID=129") && !queries[1].contains("EventID=153"),
+            "{}",
+            queries[1]
+        );
+        assert!(queries[1].contains("and Level<=3"), "{}", queries[1]);
     }
 
     #[test]
     fn no_storage_error_is_no_finding() {
-        assert!(storage_errors_finding("storage", &[]).is_none());
+        assert!(storage_errors_finding("storage", &[], &[]).is_none());
         // Anything else the query might return is not named here.
         let other = crate::utils::event_xml::parse_events(include_str!(
             "../../tests/fixtures/events/system_errors.xml"
         ));
-        assert!(storage_errors_finding("storage", &other).is_none());
+        assert!(storage_errors_finding("storage", &other, &[]).is_none());
     }
 
     #[tokio::test]
