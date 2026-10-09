@@ -77,6 +77,12 @@ Captured on 2026-09-27 on the same machine, unelevated, read-only commands:
 | `sc_qc_spooler.bin` | `sc qc spooler` | CP850 | `START_TYPE : 2 AUTO_START`; the display name is translated ("Druckwarteschlange"), the numbers are not. |
 | `sc_query_spooler.bin` | `sc query spooler` | CP850 | `STATE : 4 RUNNING`. The tests switch it to `1 STOPPED`. The print jobs in `spool\PRINTERS` need elevation to list; the tests write job files with an old modification time into a temp folder. |
 
+Captured elevated on 2026-10-09 on the same machine, read-only commands:
+
+| File | Command | Encoding | Notes |
+| --- | --- | --- | --- |
+| `reg_query_svchost_split_threshold.bin` | `reg query HKLM\SYSTEM\CurrentControlSet\Control /v SvcHostSplitThresholdInKB` | CP850 | `0x380000` (3670016 KB, 3.5 GB), the value since 2026-10-08. A tuning tool had set it to 32 GB (`0x2000000`); the tests put that back. |
+
 Captured elevated on 2026-09-25, read-only commands, with the time each piece
 of the pipe arrived:
 
