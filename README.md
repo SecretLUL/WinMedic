@@ -124,7 +124,8 @@ Then delete `winmedic.exe`, or run `winget uninstall SecretLUL.WinMedic` if you
 installed it with WinGet.
 
 Your settings and logs stay in `%APPDATA%\WinMedic`, the registry backups in
-`%ProgramData%\WinMedic`; `winmedic --uninstall --purge` deletes them too.
+`%ProgramData%\WinMedic` and `HKLM\SOFTWARE\WinMedic`;
+`winmedic --uninstall --purge` deletes them too.
 
 ## For developers
 

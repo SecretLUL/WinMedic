@@ -2445,6 +2445,9 @@ mod tests {
             "reg.exe query",
             CmdOutput::ok(after),
         );
+        if export.success {
+            mock.add_written_file("reg.exe export", 2, "(what reg export wrote)");
+        }
         mock.add_response("reg.exe export", export);
         mock.add_response("ResetServerAddresses", CmdOutput::ok(""));
         mock.add_response(PROBE, resolved());
@@ -2476,7 +2479,12 @@ mod tests {
         assert!(export < reset, "{executed:?}");
         assert!(executed[export].contains(&format!(r"Interfaces\{ETHERNET_GUID}")));
         assert!(executed[reset].contains(&format!("InterfaceGuid -eq '{ETHERNET_GUID}'")));
-        assert!(backups.0.join("index.json").exists());
+        assert_eq!(
+            RegBackupManager::with_dir(backups.0.clone())
+                .list_backups()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]

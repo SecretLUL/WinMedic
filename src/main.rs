@@ -72,7 +72,7 @@ struct CliArgs {
     #[arg(long)]
     uninstall: bool,
 
-    /// With --uninstall: also delete %APPDATA%\WinMedic (settings, logs, reports) and %ProgramData%\WinMedic (the registry backups a rollback needs)
+    /// With --uninstall: also delete %APPDATA%\WinMedic (settings, logs, reports), %ProgramData%\WinMedic and HKLM\SOFTWARE\WinMedic (the registry backups a rollback needs)
     #[arg(long, requires = "uninstall")]
     purge: bool,
 }
@@ -202,7 +202,8 @@ fn run_uninstall(purge: bool) -> u8 {
     }
 
     if purge {
-        // The backups have a folder of their own, %ProgramData%\WinMedic.
+        // The backups have a folder of their own, %ProgramData%\WinMedic,
+        // and their anchors a key, HKLM\SOFTWARE\WinMedic.
         let shared_dir = backup_dir.parent().map(|d| d.to_path_buf());
         for dir in data_dir.into_iter().chain(shared_dir) {
             if dir.exists() {
@@ -213,6 +214,12 @@ fn run_uninstall(purge: bool) -> u8 {
             } else {
                 println!("[OK]   Nothing to delete in {}", dir.display());
             }
+        }
+        let anchors = format!(r"HKLM\{}", safety::reg_backup::MACHINE_KEY);
+        match safety::reg_backup::delete_machine_anchors() {
+            Ok(true) => println!("[OK]   Deleted {anchors}"),
+            Ok(false) => println!("[OK]   Nothing to delete in {anchors}"),
+            Err(e) => report(&format!("Deleted {anchors}"), Err(e)),
         }
     } else {
         // Leave the settings saying what is now true; otherwise the next

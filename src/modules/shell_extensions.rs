@@ -465,6 +465,7 @@ mod tests {
             "reg.exe query HKLM\\SOFTWARE\\Microsoft",
             CmdOutput::ok(decode_output(BLOCKED)),
         );
+        mock.add_written_file("reg.exe export", 2, "(what reg export wrote)");
         mock.add_response("reg.exe export", CmdOutput::ok(""));
         mock.add_response("reg.exe add", CmdOutput::ok(""));
         mock
