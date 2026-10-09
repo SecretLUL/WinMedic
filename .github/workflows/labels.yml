@@ -38,7 +38,8 @@ jobs:
 
           if jq -e 'index("documentation")' <<<"$LABELS" >/dev/null; then
             # A renamed file counts with its old name too: moving code into
-            # docs/ changes code.
+            # docs/ changes code. ci.yml's push trigger and release.yml list
+            # the same files.
             other=$(gh api "repos/$REPO/pulls/$PR/files" --paginate \
               --jq '.[] | .filename, (.previous_filename // empty)' \
               | grep -Ev '^(.*\.md|docs/.*|LICENSE|\.github/ISSUE_TEMPLATE/.*)$' || true)

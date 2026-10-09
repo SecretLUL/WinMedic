@@ -1,8 +1,18 @@
 name: CI
 
 on:
+  # Not for a push that changes documentation only, the files below: merging
+  # release notes ran every job, a release build included, on code CI had
+  # already passed. labels.yml (what a `documentation` pull request may
+  # change) and release.yml (which then accepts the commit CI passed before)
+  # list the same files; a change here goes there too.
   push:
     branches: [ "main" ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.github/ISSUE_TEMPLATE/**'
   # Deliberately unfiltered: a `branches:` filter here matches the PR's *target*
   # branch, so restricting it to main means pull requests into any other branch
   # (long-lived feature branches, release branches) merge without ever being
