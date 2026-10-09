@@ -1076,6 +1076,52 @@ mod tests {
         assert!(harness.query_by_label_contains(GONE).is_none());
     }
 
+    /// #218: a simulation changes nothing, so it creates no restore point and
+    /// needs no restart, whatever Settings say about restore points.
+    #[test]
+    fn a_simulation_promises_no_restore_point() {
+        const SIMULATION: &str = "A simulation changes nothing and creates no restore point.";
+        for restore_points in [true, false] {
+            let mut app = scanned_app();
+            app.config.create_vss_before_repair = restore_points;
+            app.dry_run = true;
+            let harness = window(app);
+            assert!(
+                harness
+                    .query_by_label_contains("A restore point is created first")
+                    .is_none()
+            );
+            assert!(harness.query_by_label_contains(SIMULATION).is_some());
+        }
+
+        let simulated = |dry_run: bool| {
+            let mut app = easy_forecast_app();
+            app.config.create_vss_before_repair = true;
+            app.issues[0].requires_reboot = true;
+            app.dry_run = dry_run;
+            window(app)
+        };
+        let harness = simulated(true);
+        assert!(harness.query_by_label(SIMULATION).is_some());
+        assert!(
+            harness
+                .query_by_label_contains("restart afterwards")
+                .is_none()
+        );
+        // A real repair of the same findings still says both.
+        let harness = simulated(false);
+        assert!(
+            harness
+                .query_by_label_contains("A restore point is created first")
+                .is_some()
+        );
+        assert!(
+            harness
+                .query_by_label_contains("Windows needs a restart afterwards.")
+                .is_some()
+        );
+    }
+
     /// Every finding whose repair deletes files counts as one, and a repair
     /// of the registry or a setting does not.
     #[test]
