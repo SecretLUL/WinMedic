@@ -421,6 +421,26 @@ pub fn keeps_services_grouped(threshold_kb: u64, ram_bytes: u64) -> bool {
 pub const WU_POLICY_KEY: &str = r"HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate";
 const WU_AU_POLICY_KEY: &str = r"HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU";
 const STORE_POLICY_KEY: &str = r"HKLM\SOFTWARE\Policies\Microsoft\WindowsStore";
+/// Holds `EditionID`: `Professional`, `Enterprise`, `Education`, ...
+const CURRENT_VERSION_KEY: &str = r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion";
+
+/// Whether Windows of the edition `edition_id` (`EditionID`) reads the Store
+/// policies `RemoveWindowsStore` and `DisableStoreApps`. Microsoft documents
+/// both for Enterprise and Education only, IoT Enterprise among the
+/// Enterprise editions, and calls their lack of effect on Pro by design
+/// (Policy CSP ADMX_WindowsStore and ApplicationManagement, "Can't disable
+/// Microsoft Store in Windows Pro"). Pro Education (`ProfessionalEducation`)
+/// is not named there, so it is left out.
+pub fn store_policies_apply(edition_id: &str) -> bool {
+    let edition_id = edition_id.trim();
+    ["Enterprise", "Education", "IoTEnterprise"]
+        .iter()
+        .any(|prefix| {
+            edition_id
+                .get(..prefix.len())
+                .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+        })
+}
 
 /// A policy setting that stops part of Windows from working.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -453,8 +473,13 @@ pub fn drivers_excluded_from_updates(wu: &[RegKeyValues]) -> bool {
 }
 
 /// The harmful policies among `wu` (the WindowsUpdate key, read with `/s`)
-/// and `store`.
-pub fn policy_hits(wu: &[RegKeyValues], store: &[RegKeyValues]) -> Vec<PolicyHit> {
+/// and `store`, on Windows of the edition `edition` (`EditionID`, `None` when
+/// it was not read).
+pub fn policy_hits(
+    wu: &[RegKeyValues],
+    store: &[RegKeyValues],
+    edition: Option<&str>,
+) -> Vec<PolicyHit> {
     let mut hits = Vec::new();
 
     if is_on(wu, WU_AU_POLICY_KEY, "UseWUServer") && has_text(wu, WU_POLICY_KEY, "WUServer") {
@@ -505,21 +530,43 @@ pub fn policy_hits(wu: &[RegKeyValues], store: &[RegKeyValues]) -> Vec<PolicyHit
         });
     }
 
-    let store_off: Vec<(&'static str, &'static str)> = [
-        (STORE_POLICY_KEY, "RemoveWindowsStore"),
-        (STORE_POLICY_KEY, "DisableStoreApps"),
-    ]
-    .into_iter()
-    .filter(|(key, name)| is_on(store, key, name))
-    .collect();
-    if !store_off.is_empty() {
-        hits.push(PolicyHit {
-            id: "tweak_policy_store_off",
-            title: "The Microsoft Store is switched off by policy",
-            severity: Severity::Warning,
-            description: "A policy disables the Microsoft Store. Store apps cannot be installed or updated, and some built-in apps that update through the Store stop working.",
-            values: store_off,
-        });
+    // Home and Pro, where debloat tools set these, do not read them, and an
+    // edition that was not read raises nothing.
+    if edition.is_some_and(store_policies_apply) {
+        let remove = is_on(store, STORE_POLICY_KEY, "RemoveWindowsStore");
+        let apps = is_on(store, STORE_POLICY_KEY, "DisableStoreApps");
+        // Whether Store apps still update with the Store app turned off is
+        // contested between Microsoft's own pages, so nothing is said of it.
+        let found = match (remove, apps) {
+            (false, false) => None,
+            (true, false) => Some((
+                "The Microsoft Store is switched off by policy",
+                "A policy turns the Microsoft Store app off, so apps cannot be installed from it.",
+            )),
+            (false, true) => Some((
+                "Microsoft Store apps are switched off by policy",
+                "A policy keeps every app from the Microsoft Store from starting, the ones Windows came with included.",
+            )),
+            (true, true) => Some((
+                "The Microsoft Store is switched off by policy",
+                "A policy turns the Microsoft Store app off, so apps cannot be installed from it, and another keeps every app from the Store from starting, the ones Windows came with included.",
+            )),
+        };
+        if let Some((title, description)) = found {
+            hits.push(PolicyHit {
+                id: "tweak_policy_store_off",
+                title,
+                severity: Severity::Warning,
+                description,
+                values: [
+                    (remove, (STORE_POLICY_KEY, "RemoveWindowsStore")),
+                    (apps, (STORE_POLICY_KEY, "DisableStoreApps")),
+                ]
+                .into_iter()
+                .filter_map(|(on, value)| on.then_some(value))
+                .collect(),
+            });
+        }
     }
 
     hits
@@ -911,7 +958,18 @@ impl TweaksModule {
         let defender = registry::query(&*self.runner, DEFENDER_POLICY_KEY, true)
             .await?
             .unwrap_or_default();
-        let mut hits = policy_hits(&wu, &store);
+        // Only asked when there is a Store policy to judge. Not read, it is
+        // `None`, which judges none.
+        let edition = if store.is_empty() {
+            None
+        } else {
+            registry::query_value(&*self.runner, CURRENT_VERSION_KEY, "EditionID")
+                .await
+                .ok()
+                .flatten()
+                .map(|value| value.data)
+        };
+        let mut hits = policy_hits(&wu, &store, edition.as_deref());
         hits.extend(defender_policy_hit(&defender));
         Ok(hits)
     }
@@ -1967,7 +2025,7 @@ mod tests {
         let wu = registry::parse_reg_query(
             "HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\r\n    WUServer    REG_SZ    http://wsus.example:8530\r\n    ExcludeWUDriversInQualityUpdate    REG_DWORD    0x1\r\n    SetDisableUXWUAccess    REG_DWORD    0x0\r\n\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU\r\n    UseWUServer    REG_DWORD    0x1\r\n    NoAutoUpdate    REG_DWORD    0x1\r\n",
         );
-        let hits = policy_hits(&wu, &[]);
+        let hits = policy_hits(&wu, &[], None);
         let ids: Vec<&str> = hits.iter().map(|h| h.id).collect();
         // SetDisableUXWUAccess is 0 and excluding drivers from updates is a
         // legitimate preference: neither is a finding.
@@ -1979,14 +2037,14 @@ mod tests {
         let wu = registry::parse_reg_query(
             "HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\r\n    WUServer    REG_SZ    http://wsus.example:8530\r\n",
         );
-        assert!(policy_hits(&wu, &[]).is_empty());
+        assert!(policy_hits(&wu, &[], None).is_empty());
     }
 
     #[test]
     fn the_real_wu_policy_key_raises_nothing() {
         // The capture machine excludes drivers from quality updates, nothing more.
         let wu = registry::parse_reg_query(&decode_output(WU_POLICY));
-        assert!(policy_hits(&wu, &[]).is_empty());
+        assert!(policy_hits(&wu, &[], None).is_empty());
         assert!(drivers_excluded_from_updates(&wu));
     }
 
@@ -2000,6 +2058,185 @@ mod tests {
         assert!(drivers_excluded_from_updates(&key("0x1")));
         assert!(!drivers_excluded_from_updates(&key("0x0")));
         assert!(!drivers_excluded_from_updates(&[]));
+    }
+
+    /// `reg query` of the Store policy key with `RemoveWindowsStore` 1 and,
+    /// with `apps`, `DisableStoreApps` 1: the captured WindowsUpdate policy
+    /// key, its key and value renamed, the second value added in the same
+    /// shape.
+    fn store_policy(apps: bool) -> String {
+        let key = decode_output(WU_POLICY)
+            .replace(r"Windows\WindowsUpdate", "WindowsStore")
+            .replace("ExcludeWUDriversInQualityUpdate", "RemoveWindowsStore");
+        if apps {
+            key.replace(
+                "0x1\r\n",
+                "0x1\r\n    DisableStoreApps    REG_DWORD    0x1\r\n",
+            )
+        } else {
+            key
+        }
+    }
+
+    /// `reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion" /v
+    /// EditionID` answering `edition`. **Constructed** from the capture of
+    /// `/v CurrentBuild` of the same key, a `REG_SZ` like `EditionID`: the
+    /// capture machine is Professional, and no PC of the editions that read
+    /// the Store policies was at hand (tests/fixtures/README.md).
+    fn edition_output(edition: &str) -> CmdOutput {
+        CmdOutput::ok(
+            decode_output(include_bytes!(
+                "../../tests/fixtures/console/reg_query_current_build.bin"
+            ))
+            .replace("CurrentBuild", "EditionID")
+            .replace("26200", edition),
+        )
+    }
+
+    #[test]
+    fn the_constructed_edition_answer_reads_like_the_capture() {
+        let out = edition_output("Enterprise");
+        let keys = registry::parse_reg_query(&out.stdout);
+        let value = registry::find(&keys, CURRENT_VERSION_KEY, "EditionID").unwrap();
+        assert_eq!(
+            (value.kind.as_str(), value.data.as_str()),
+            ("REG_SZ", "Enterprise")
+        );
+        let store = registry::parse_reg_query(&store_policy(true));
+        assert!(is_on(&store, STORE_POLICY_KEY, "RemoveWindowsStore"));
+        assert!(is_on(&store, STORE_POLICY_KEY, "DisableStoreApps"));
+    }
+
+    /// Microsoft documents the Store policies for Enterprise and Education
+    /// only; on Home and Pro Windows does not read them.
+    #[test]
+    fn store_policies_count_only_on_editions_that_read_them() {
+        let store = registry::parse_reg_query(&store_policy(false));
+        // The editions of the German Windows 11 ISO
+        // (powershell_install_media_mount.bin), and LTSC and IoT ones.
+        for edition in [
+            "Core",
+            "CoreN",
+            "Professional",
+            "ProfessionalN",
+            "ProfessionalEducation",
+            "ProfessionalWorkstation",
+        ] {
+            assert!(
+                policy_hits(&[], &store, Some(edition)).is_empty(),
+                "{edition}"
+            );
+        }
+        assert!(
+            policy_hits(&[], &store, None).is_empty(),
+            "edition not read"
+        );
+        for edition in [
+            "Enterprise",
+            "EnterpriseS",
+            "Education",
+            "EducationN",
+            "IoTEnterprise",
+            "IoTEnterpriseS",
+        ] {
+            let ids: Vec<&str> = policy_hits(&[], &store, Some(edition))
+                .iter()
+                .map(|hit| hit.id)
+                .collect();
+            assert_eq!(ids, ["tweak_policy_store_off"], "{edition}");
+        }
+    }
+
+    #[test]
+    fn a_removed_store_says_apps_cannot_be_installed_and_nothing_about_updates() {
+        let store = registry::parse_reg_query(&store_policy(false));
+        let hit = &policy_hits(&[], &store, Some("Enterprise"))[0];
+        assert_eq!(hit.values, [(STORE_POLICY_KEY, "RemoveWindowsStore")]);
+        assert!(hit.description.contains("cannot be installed"));
+        assert!(!hit.description.contains("update"), "{}", hit.description);
+
+        let store = registry::parse_reg_query(&store_policy(true));
+        let hit = &policy_hits(&[], &store, Some("Education"))[0];
+        assert_eq!(
+            hit.values,
+            [
+                (STORE_POLICY_KEY, "RemoveWindowsStore"),
+                (STORE_POLICY_KEY, "DisableStoreApps"),
+            ]
+        );
+        assert!(!hit.description.contains("update"), "{}", hit.description);
+    }
+
+    /// A standalone PC with `RemoveWindowsStore` set, every service fine;
+    /// `edition` is what `reg query ... /v EditionID` answers, `None` when it
+    /// fails.
+    async fn store_scan(name: &str, edition: Option<&str>) -> (Vec<Issue>, Vec<String>) {
+        let dir = sandbox(name);
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            format!("query {STORE_POLICY_KEY}"),
+            CmdOutput::ok(store_policy(false)),
+        );
+        if let Some(edition) = edition {
+            mock.add_response("/v EditionID", edition_output(edition));
+        }
+        healthy(&mock);
+        let issues = module(mock.clone(), &dir, b"").scan(None).await.unwrap();
+        (issues, mock.executed())
+    }
+
+    #[tokio::test]
+    async fn the_store_policy_on_pro_is_not_a_finding() {
+        let (issues, executed) = store_scan("store_pro", Some("Professional")).await;
+        assert!(issues.is_empty(), "{issues:?}");
+        assert!(
+            executed.contains(&format!(
+                r"reg.exe query {CURRENT_VERSION_KEY} /v EditionID"
+            )),
+            "{executed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_store_policy_on_an_unknown_edition_is_not_a_finding() {
+        let (issues, _) = store_scan("store_unknown", None).await;
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[tokio::test]
+    async fn the_store_policy_on_enterprise_is_a_finding() {
+        let (issues, _) = store_scan("store_enterprise", Some("Enterprise")).await;
+        let ids: Vec<&str> = issues.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["tweak_policy_store_off"]);
+        assert!(!issues[0].is_selected);
+    }
+
+    /// The repair judges the edition as the scan did: on Enterprise it
+    /// finds the policy, deletes it and reads the key back.
+    #[tokio::test]
+    async fn the_store_policy_repair_reads_the_edition_too() {
+        let dir = sandbox("store_fix");
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            format!("query {STORE_POLICY_KEY}"),
+            CmdOutput::ok(store_policy(false)),
+        );
+        mock.add_response_after(
+            "reg.exe delete",
+            format!("query {STORE_POLICY_KEY}"),
+            CmdOutput::with_output(1, "", "FEHLER"),
+        );
+        mock.add_response("/v EditionID", edition_output("Enterprise"));
+        mock.add_response("reg.exe delete", CmdOutput::ok(""));
+        mock.add_response("reg.exe", CmdOutput::with_output(1, "", "FEHLER"));
+        let msg = module(mock.clone(), &dir, b"")
+            .fix("tweak_policy_store_off", None)
+            .await
+            .unwrap();
+        assert!(msg.contains("RemoveWindowsStore"), "{msg}");
+        assert!(mock.executed().contains(&format!(
+            "reg.exe delete {STORE_POLICY_KEY} /v RemoveWindowsStore /f"
+        )));
     }
 
     /// A PC pointed at a WSUS server, with every service healthy and no

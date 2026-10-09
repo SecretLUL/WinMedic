@@ -58,7 +58,7 @@ Captured on 2026-09-26 on the same machine, read-only commands:
 | `powercfg_setacvalueindex_missing_setting_de.bin` | `powercfg /setacvalueindex SCHEME_CURRENT SUB_PCIEXPRESS 0` (stderr) | CP850 | Exit 1, "Ungültige Parameter": the command the ASPM repair used to run, without the setting, and still counted as a success. |
 | `reg_query_internet_settings.bin` | `reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings"` | CP850 | `ProxyEnable` 0 and no `ProxyServer`. The tests with a proxy switch it on and add the server. |
 | `reg_query_run_hklm.bin` | `reg query HKLM\Software\Microsoft\Windows\CurrentVersion\Run` | CP850 | Three autostart entries, one `REG_EXPAND_SZ` with `%windir%`, one name with a space. The tests add a value whose program is gone. |
-| `reg_query_current_build.bin` | `reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion" /v CurrentBuild` | CP850 | `26200`. The tests replace it with a build from before Windows 10 2004. |
+| `reg_query_current_build.bin` | `reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion" /v CurrentBuild` | CP850 | `26200`. The tests replace it with a build from before Windows 10 2004. The tweaks tests **construct** the answer for `/v EditionID` from it, also a `REG_SZ` of that key, with the value name and the data replaced (`Professional`, `Enterprise`): this machine is Professional, and no Enterprise or Education PC, the editions that read the Store policies, was at hand. |
 
 Captured on 2026-09-27 on the same machine, unelevated, read-only commands:
 
