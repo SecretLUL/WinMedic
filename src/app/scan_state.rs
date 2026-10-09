@@ -25,8 +25,13 @@ pub struct ScanState {
     #[serde(default)]
     pub format: u32,
     pub timestamp: String,
+    /// Of the findings shown, without the archived ones.
     pub health_score: u8,
     pub issues: Vec<Issue>,
+    /// The findings the user archived, kept so that one brought back is
+    /// shown at once rather than after the next scan.
+    #[serde(default)]
+    pub archived_issues: Vec<Issue>,
     pub module_statuses: Vec<(String, String, String, ModuleStatus)>,
     #[serde(default)]
     pub scan_duration_secs: Option<u64>,
@@ -78,11 +83,18 @@ impl ScanState {
             timestamp: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             health_score,
             issues,
+            archived_issues: Vec::new(),
             module_statuses,
             scan_duration_secs,
             boot_time_secs: Some(sysinfo::System::boot_time()),
             boot_id: current_boot_id(),
         }
+    }
+
+    /// The findings of the same scan that the user archived.
+    pub fn with_archived(mut self, archived_issues: Vec<Issue>) -> Self {
+        self.archived_issues = archived_issues;
+        self
     }
 
     pub fn file_path() -> PathBuf {
@@ -163,13 +175,18 @@ mod tests {
             ModuleStatus::Critical(1),
         )];
 
-        let state = ScanState::new(75, vec![issue], statuses, Some(12));
+        let mut archived = issue.clone();
+        archived.id = "archived_iss".to_string();
+        let state =
+            ScanState::new(75, vec![issue], statuses, Some(12)).with_archived(vec![archived]);
         state.save_to(&tmp).unwrap();
 
         let loaded = ScanState::load_from(&tmp).expect("should load saved scan state");
         assert_eq!(loaded.health_score, 75);
         assert_eq!(loaded.issues.len(), 1);
         assert_eq!(loaded.issues[0].id, "test_iss");
+        assert_eq!(loaded.archived_issues.len(), 1);
+        assert_eq!(loaded.archived_issues[0].id, "archived_iss");
         assert_eq!(loaded.module_statuses.len(), 1);
         assert_eq!(loaded.scan_duration_secs, Some(12));
 

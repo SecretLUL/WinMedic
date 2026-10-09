@@ -81,7 +81,39 @@ fn settings(ui: &mut egui::Ui, app: &mut App) {
                     }
                 });
             }
+            ui.add_space(14.0);
+            archived(ui, app);
         });
+}
+
+/// The findings the user archived, each with the way back.
+fn archived(ui: &mut egui::Ui, app: &mut App) {
+    theme::section(ui, "Archived findings");
+    if app.config.archived_findings.is_empty() {
+        ui.label(theme::muted("Nothing archived."));
+        return;
+    }
+    let busy = app.is_busy();
+    let mut show_again = None;
+    for entry in &app.config.archived_findings {
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add_enabled(!busy, egui::Button::new("Show again"))
+                    .clicked()
+                {
+                    show_again = Some(entry.id.clone());
+                }
+                ui.label(theme::muted(&entry.archived_at));
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(egui::Label::new(&entry.title).truncate());
+                });
+            });
+        });
+    }
+    if let Some(id) = show_again {
+        app.show_archived_again(&id);
+    }
 }
 
 fn safety(ui: &mut egui::Ui, app: &mut App) {

@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver, UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
+use super::archive::split as split_archived;
 use super::confirm::{ConfirmRequest, SystemActions};
 
 /// One module's dashboard row: id, name, icon and status.
@@ -118,7 +119,12 @@ pub struct App {
 
     // Diagnostic & Engine
     pub engine: Arc<DiagnosticEngine>,
+    /// The findings shown. Archived ones are sorted out as they come in, see
+    /// [`crate::app::archive`].
     pub issues: Vec<Issue>,
+    /// The findings of the last scan the user archived, kept so that one
+    /// brought back in Settings is shown at once.
+    pub archived_issues: Vec<Issue>,
     pub selected_issue_index: usize,
     pub health_score: u8,
 
@@ -237,7 +243,7 @@ impl App {
         Self::build(config, config_status, ScanState::load(), true)
     }
 
-    fn build(
+    pub(super) fn build(
         config: AppConfig,
         config_status: ConfigStatus,
         saved: Option<ScanState>,
@@ -262,6 +268,7 @@ impl App {
         let (module_progress_list, default_module_statuses) = Self::module_lists(&engine);
         let (
             saved_issues,
+            archived_issues,
             saved_health,
             module_statuses,
             saved_duration,
@@ -273,11 +280,14 @@ impl App {
                 super::scan_state::current_boot_id(),
                 sysinfo::System::boot_time(),
             );
+            let mut all = std::mem::take(&mut saved.issues);
+            all.append(&mut saved.archived_issues);
             if rebooted {
-                settle_after_restart(&mut saved.issues);
+                settle_after_restart(&mut all);
             }
-            let health = DiagnosticEngine::calculate_health_score(&saved.issues);
-            let open_count = saved.issues.iter().filter(|i| !i.is_fixed).count();
+            let (shown, archived) = split_archived(all, &config.archived_findings);
+            let health = DiagnosticEngine::calculate_health_score(&shown);
+            let open_count = shown.iter().filter(|i| !i.is_fixed).count();
             let msg = format!(
                 "WinMedic initialised. Loaded previous scan from {} ({} open issues, health: {}/100).",
                 saved.timestamp, open_count, health
@@ -287,7 +297,8 @@ impl App {
                 Self::reconcile_module_statuses(&default_module_statuses, &saved.module_statuses);
 
             (
-                saved.issues,
+                shown,
+                archived,
                 health,
                 reconciled_statuses,
                 saved.scan_duration_secs.map(Duration::from_secs),
@@ -297,6 +308,7 @@ impl App {
         } else {
             (
                 Vec::new(),
+                Vec::new(),
                 100,
                 default_module_statuses,
                 None,
@@ -305,11 +317,12 @@ impl App {
             )
         };
 
-        Self {
+        let mut app = Self {
             active_tab: TAB_HOME,
             config,
             engine,
             issues: saved_issues,
+            archived_issues,
             selected_issue_index: 0,
             health_score: saved_health,
             severity_filter: None,
@@ -368,7 +381,11 @@ impl App {
             cancel_token: None,
             bg_tx,
             bg_rx,
-        }
+        };
+        // The badges were counted when the scan was saved; something may
+        // have been archived or brought back since.
+        app.recount_module_statuses();
+        app
     }
 
     /// Hand this app the real machine.
@@ -635,9 +652,15 @@ impl App {
             None => Vec::new(),
         };
 
-        DiagnosticReporter::save_report(&path, &self.issues, health, &entries)
-            .map(|_| path)
-            .map_err(|e| format!("Export failed: {}", e))
+        DiagnosticReporter::save_report(
+            &path,
+            &self.issues,
+            health,
+            &entries,
+            self.archived_issues.len(),
+        )
+        .map(|_| path)
+        .map_err(|e| format!("Export failed: {}", e))
     }
 
     /// Persist the latest scan results, health score, and module statuses to disk.
@@ -647,21 +670,28 @@ impl App {
         if !self.system_actions.persist_scan_state {
             return;
         }
+        if let Some(state) = self.scan_to_save() {
+            let _ = state.save();
+        }
+    }
+
+    /// What [`Self::save_scan_state`] writes: the findings shown and the
+    /// archived ones.
+    pub(super) fn scan_to_save(&self) -> Option<ScanState> {
         // Stamped with the scan's time, not the save's. A tick in triage is not
         // a new scan, and [`Self::poll_external_scan_updates`] tells a scan from
         // another process apart by exactly this timestamp. Nothing scanned,
         // nothing to save — and nothing to overwrite a helper's results with.
-        let Some(timestamp) = self.last_scan_timestamp.clone() else {
-            return;
-        };
+        let timestamp = self.last_scan_timestamp.clone()?;
         let mut state = ScanState::new(
             self.health_score,
             self.issues.clone(),
             self.module_statuses.clone(),
             self.scan_duration.map(|d| d.as_secs()),
-        );
+        )
+        .with_archived(self.archived_issues.clone());
         state.timestamp = timestamp;
-        let _ = state.save();
+        Some(state)
     }
 
     /// Check if an external background scan (e.g. from WinMedicHelper) saved newer results.
@@ -669,12 +699,21 @@ impl App {
         if self.is_busy() || !self.system_actions.persist_scan_state {
             return;
         }
-        let Some(mut saved) = ScanState::load() else {
+        let Some(saved) = ScanState::load() else {
             return;
         };
         if self.last_scan_timestamp.as_deref() == Some(saved.timestamp.as_str()) {
             return;
         }
+        self.take_in_background_scan(saved);
+    }
+
+    /// Show the results a background scan saved, the archived ones sorted
+    /// out.
+    pub(super) fn take_in_background_scan(&mut self, mut saved: ScanState) {
+        let mut all = std::mem::take(&mut saved.issues);
+        all.append(&mut saved.archived_issues);
+        let (mut shown, archived) = split_archived(all, &self.config.archived_findings);
 
         // A fresh scan knows nothing of the decisions made against the last
         // one: which findings the user unticked, which repairs wait on a
@@ -682,7 +721,7 @@ impl App {
         // still reported, or the next [F] repairs what was deliberately left
         // out. No reboot can have happened in between — it would have ended
         // this process — so a pending restart is still pending.
-        for issue in &mut saved.issues {
+        for issue in &mut shown {
             let Some(known) = self.issues.iter().find(|i| i.id == issue.id) else {
                 continue;
             };
@@ -700,8 +739,10 @@ impl App {
         let (_, default_statuses) = Self::module_lists(&self.engine);
         self.module_statuses =
             Self::reconcile_module_statuses(&default_statuses, &saved.module_statuses);
-        self.health_score = DiagnosticEngine::calculate_health_score(&saved.issues);
-        self.issues = saved.issues;
+        self.health_score = DiagnosticEngine::calculate_health_score(&shown);
+        self.issues = shown;
+        self.archived_issues = archived;
+        self.recount_module_statuses();
         self.scan_duration = saved.scan_duration_secs.map(Duration::from_secs);
         self.clamp_filtered_selection();
 

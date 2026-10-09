@@ -5,6 +5,7 @@
 //! stall when it is minimised. Everything here is non-blocking: `try_recv`
 //! until empty, never awaiting, so a slow producer cannot stall rendering.
 
+use super::archive::split as split_archived;
 use super::state::{App, ModuleScanProgress};
 use super::{BackgroundEvent, ConfirmRequest, push_bounded_log};
 use crate::engine::runner::{DiagnosticEngine, RepairEvent, ScanEvent};
@@ -76,6 +77,7 @@ impl App {
                     self.recalculate_scan_progress();
                 }
                 ScanEvent::ModuleFinished { module_id, issues } => {
+                    let (issues, archived) = split_archived(issues, &self.config.archived_findings);
                     if let Some(module) = self.module_progress_mut(&module_id) {
                         module.percent = 100;
                         module.is_done = true;
@@ -92,6 +94,7 @@ impl App {
                         self.module_statuses[pos].3 = ModuleStatus::from_findings(&issues);
                     }
                     self.issues.extend(issues);
+                    self.archived_issues.extend(archived);
                     self.recalculate_scan_progress();
                     push_bounded_log(
                         &mut self.scan_log_messages,
@@ -146,17 +149,16 @@ impl App {
                     push_bounded_log(&mut self.scan_log_messages, format!("[STOP] {}", msg));
                     self.status_message = Some(msg);
                 }
-                ScanEvent::ScanCompleted {
-                    total_issues,
-                    health_score,
-                } => {
-                    self.health_score = health_score;
+                // The engine counted the archived findings too.
+                ScanEvent::ScanCompleted { .. } => {
+                    self.health_score = DiagnosticEngine::calculate_health_score(&self.issues);
                     self.scan_overall_progress = 100;
                     self.is_scanning = false;
                     scan_ended = true;
                     self.status_message = Some(format!(
                         "Scan finished: {} issues found (health: {}/100)",
-                        total_issues, health_score
+                        self.issues.len(),
+                        self.health_score
                     ));
                 }
             }
