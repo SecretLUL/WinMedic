@@ -14,6 +14,7 @@
 
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::devices::meaning;
+use crate::modules::page_file::{RamSource, real_ram};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
 use crate::safety::reg_backup::RegBackupManager;
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner, ps_single_quoted};
@@ -369,6 +370,28 @@ fn enable_device_script(instance_id: &str) -> String {
         "Enable-PnpDevice -InstanceId {} -Confirm:$false -ErrorAction Stop",
         ps_single_quoted(instance_id)
     )
+}
+
+/// Holds `SvcHostSplitThresholdInKB`.
+const CONTROL_KEY: &str = r"HKLM\SYSTEM\CurrentControlSet\Control";
+const SPLIT_THRESHOLD: &str = "SvcHostSplitThresholdInKB";
+pub const SPLIT_THRESHOLD_ID: &str = "tweak_svchost_split_threshold";
+/// 3.5 GB in KB, the value the repair writes. On PCs with more memory than
+/// 3.5 GB Windows runs most services in a process of their own, and groups
+/// them on PCs with less (Microsoft Learn, "Service host grouping in
+/// Windows 10").
+const DEFAULT_SPLIT_THRESHOLD_KB: u64 = 3_670_016;
+
+/// Whether `threshold_kb` keeps Windows from splitting its services on a PC
+/// whose memory Windows reports as `ram_bytes`: it gives each service a
+/// process of its own only while it has more memory than that.
+///
+/// Measured against the memory Windows has (`GlobalMemoryStatusEx`), not
+/// against what is installed. On the development PC the tuning tool had
+/// set exactly the installed 32 GB, 33554432 KB, above the 33119136 KB
+/// Windows has, and the services ran grouped.
+pub fn keeps_services_grouped(threshold_kb: u64, ram_bytes: u64) -> bool {
+    threshold_kb > ram_bytes / 1024
 }
 
 pub const WU_POLICY_KEY: &str = r"HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate";
@@ -737,6 +760,7 @@ pub struct TweaksModule {
     /// How long Defender gets to switch its protection on after the policy
     /// is gone, before each of three looks.
     defender_wait: Duration,
+    ram: RamSource,
 }
 
 fn system_root() -> PathBuf {
@@ -777,12 +801,19 @@ impl TweaksModule {
             local_policy_path,
             backup_dir,
             defender_wait: Duration::from_secs(5),
+            ram: real_ram(),
         }
     }
 
     /// For tests: do not wait for Defender.
     pub fn with_defender_wait(mut self, wait: Duration) -> Self {
         self.defender_wait = wait;
+        self
+    }
+
+    /// For tests: a PC with this much memory.
+    pub fn with_ram(mut self, ram: RamSource) -> Self {
+        self.ram = ram;
         self
     }
 
@@ -1129,6 +1160,114 @@ impl TweaksModule {
         }
     }
 
+    /// `SvcHostSplitThresholdInKB` in KB, or `None` when it is not set and
+    /// Windows uses its own.
+    async fn split_threshold(&self) -> Result<Option<u64>, String> {
+        Ok(
+            registry::query_value(&*self.runner, CONTROL_KEY, SPLIT_THRESHOLD)
+                .await?
+                .filter(|value| value.kind == "REG_DWORD")
+                .and_then(|value| value.number()),
+        )
+    }
+
+    fn split_threshold_issue(&self, threshold_kb: u64, ram_bytes: u64) -> Issue {
+        let gb = |kb: u64| kb as f64 / (1024.0 * 1024.0);
+        let mut steps = Vec::new();
+        if self.config.auto_backup_registry {
+            steps.push(format!(
+                "Back up {SPLIT_THRESHOLD} ({CONTROL_KEY}) to the registry backups"
+            ));
+        }
+        steps.push(format!(
+            "reg add {CONTROL_KEY} /v {SPLIT_THRESHOLD} /t REG_DWORD /d {DEFAULT_SPLIT_THRESHOLD_KB} /f"
+        ));
+        steps.push("Read the value back".to_string());
+        steps.push("Restart Windows".to_string());
+        let mut issue = Issue::new(
+            SPLIT_THRESHOLD_ID,
+            self.id(),
+            "Windows services share their processes",
+            "Tweaks & Policies",
+            Severity::Warning,
+            RiskScore::High,
+            format!(
+                "{SPLIT_THRESHOLD} is {:.1} GB, more than the {:.1} GB of memory Windows has, so services run grouped in shared processes, as on PCs with under 3.5 GB. One failing service can then take others with it, and report the wrong error. Tuning tools set it.",
+                gb(threshold_kb),
+                gb(ram_bytes / 1024)
+            ),
+            format!(
+                "{CONTROL_KEY}\\{SPLIT_THRESHOLD} = {threshold_kb} KB\nMemory Windows has: {} KB",
+                ram_bytes / 1024
+            ),
+            "Set it back to 3.5 GB, Windows' default, and restart Windows",
+            steps,
+        )
+        .with_requires_reboot(true);
+        // Takes effect only after a restart.
+        issue.is_selected = false;
+        issue
+    }
+
+    /// Back the value up, set it back to 3.5 GB and read it back.
+    async fn fix_split_threshold(&self) -> Result<String, String> {
+        match self.split_threshold().await? {
+            Some(kb) if keeps_services_grouped(kb, (self.ram)()) => {}
+            _ => {
+                return Ok(format!(
+                    "{SPLIT_THRESHOLD} no longer keeps services together - nothing to change."
+                ));
+            }
+        }
+        if self.config.auto_backup_registry {
+            RegBackupManager::with_dir(self.backup_dir.clone())
+                .export_value_with(
+                    &*self.runner,
+                    CONTROL_KEY,
+                    SPLIT_THRESHOLD,
+                    &format!("Before setting {SPLIT_THRESHOLD} back to 3.5 GB"),
+                )
+                .await
+                .map_err(|e| {
+                    format!("Aborted: the registry backup failed ({e}). Nothing was changed.")
+                })?;
+        }
+        let out = self
+            .runner
+            .run(
+                "reg.exe",
+                &[
+                    "add",
+                    CONTROL_KEY,
+                    "/v",
+                    SPLIT_THRESHOLD,
+                    "/t",
+                    "REG_DWORD",
+                    "/d",
+                    &DEFAULT_SPLIT_THRESHOLD_KB.to_string(),
+                    "/f",
+                ],
+                Duration::from_secs(10),
+            )
+            .await?;
+        if !out.success {
+            return Err(format!(
+                "Could not set {SPLIT_THRESHOLD} (exit code {:?}): {}",
+                out.exit_code,
+                out.stderr.trim()
+            ));
+        }
+        match self.split_threshold().await? {
+            Some(DEFAULT_SPLIT_THRESHOLD_KB) => Ok(format!(
+                "{SPLIT_THRESHOLD} is back at 3.5 GB. Restart Windows so that services run in processes of their own again."
+            )),
+            other => Err(format!(
+                "{SPLIT_THRESHOLD} was set to {DEFAULT_SPLIT_THRESHOLD_KB} but reads {}.",
+                other.map_or("nothing".to_string(), |kb| kb.to_string())
+            )),
+        }
+    }
+
     /// Backs the hosts file up, then replaces it with the unblocked bytes. The
     /// result is read back and checked; if the check fails, the backup is
     /// copied back over the hosts file.
@@ -1208,7 +1347,7 @@ impl DiagnosticModule for TweaksModule {
     }
 
     fn description(&self) -> &'static str {
-        "Finds what tweak and debloat tools leave behind: disabled core services and system devices, update, Store and Defender policies, and hosts entries that block Windows"
+        "Finds what tweak and debloat tools leave behind: disabled core services and system devices, services kept in shared processes, update, Store and Defender policies, and hosts entries that block Windows"
     }
 
     fn icon(&self) -> &'static str {
@@ -1297,6 +1436,20 @@ impl DiagnosticModule for TweaksModule {
             }
             Err(e) => {
                 Self::send_progress(&progress_tx, 45, "System devices not checked", Some(&e)).await;
+            }
+        }
+        match self.split_threshold().await {
+            Ok(Some(kb)) => {
+                let ram = (self.ram)();
+                if keeps_services_grouped(kb, ram) {
+                    issues.push(self.split_threshold_issue(kb, ram));
+                }
+            }
+            // Not set: Windows uses its own.
+            Ok(None) => {}
+            Err(e) => {
+                Self::send_progress(&progress_tx, 47, "Service grouping not checked", Some(&e))
+                    .await;
             }
         }
 
@@ -1448,6 +1601,9 @@ impl DiagnosticModule for TweaksModule {
         }
         if issue_id.starts_with(DEVICE_ID_PREFIX) {
             return self.fix_device(issue_id).await;
+        }
+        if issue_id == SPLIT_THRESHOLD_ID {
+            return self.fix_split_threshold().await;
         }
         if issue_id == "tweak_hosts_blocks_windows" {
             let message = self.fix_hosts()?;
@@ -2467,6 +2623,164 @@ mod tests {
         let msg = module.fix(&device_issue_id(HVSERVICE), None).await.unwrap();
         assert!(msg.contains("no longer connected"), "{msg}");
         assert!(mock.executed().is_empty(), "{:?}", mock.executed());
+    }
+
+    /// The memory Windows reported on the development PC on 2026-10-09
+    /// (`TotalPhysicalMemory`): 33119136 KB of the 32 GB installed.
+    const DEV_PC_RAM: u64 = 33_913_995_264;
+    /// The value the tuning tool had left there: exactly the installed 32 GB.
+    const TUNED_THRESHOLD: u64 = 33_554_432;
+
+    #[test]
+    fn services_stay_grouped_only_above_the_memory_windows_has() {
+        assert!(keeps_services_grouped(TUNED_THRESHOLD, DEV_PC_RAM));
+        assert!(!keeps_services_grouped(
+            DEFAULT_SPLIT_THRESHOLD_KB,
+            DEV_PC_RAM
+        ));
+        // Windows Sandbox has 0 there and 4 GB: every service on its own.
+        assert!(!keeps_services_grouped(0, 4_293_857_280));
+        assert!(!keeps_services_grouped(DEV_PC_RAM / 1024, DEV_PC_RAM));
+    }
+
+    /// `reg query` of the threshold as captured (3.5 GB), or with `kb`.
+    fn split_threshold_output(kb: u64) -> CmdOutput {
+        CmdOutput::ok(
+            decode_output(include_bytes!(
+                "../../tests/fixtures/console/reg_query_svchost_split_threshold.bin"
+            ))
+            .replace("0x380000", &format!("{kb:#x}")),
+        )
+    }
+
+    async fn scan_split_threshold(answer: CmdOutput) -> Vec<Issue> {
+        let dir = sandbox("split_scan");
+        let mock = MockCommandRunner::new();
+        mock.add_response("/v SvcHostSplitThresholdInKB", answer);
+        healthy(&mock);
+        module(mock, &dir, b"")
+            .with_ram(Arc::new(|| DEV_PC_RAM))
+            .scan(None)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_threshold_above_the_memory_is_an_unticked_finding_that_needs_a_restart() {
+        let issues = scan_split_threshold(split_threshold_output(TUNED_THRESHOLD)).await;
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        let issue = &issues[0];
+        assert_eq!(issue.id, SPLIT_THRESHOLD_ID);
+        assert_eq!(issue.risk_score, RiskScore::High);
+        assert!(issue.requires_reboot && !issue.is_selected);
+        assert!(
+            issue
+                .description
+                .starts_with("SvcHostSplitThresholdInKB is 32.0 GB, more than the 31.6 GB"),
+            "{}",
+            issue.description
+        );
+    }
+
+    #[tokio::test]
+    async fn the_default_threshold_or_none_is_not_a_finding() {
+        for answer in [
+            split_threshold_output(DEFAULT_SPLIT_THRESHOLD_KB),
+            split_threshold_output(0),
+            // Not set: the captured answer for a missing value.
+            CmdOutput::with_output(1, "\r\n\r\n", "FEHLER"),
+        ] {
+            let issues = scan_split_threshold(answer).await;
+            assert!(issues.is_empty(), "{issues:?}");
+        }
+    }
+
+    const QUERY_THRESHOLD: &str =
+        r"reg.exe query HKLM\SYSTEM\CurrentControlSet\Control /v SvcHostSplitThresholdInKB";
+
+    /// Tuned until `reg add` ran, which answers `add`, then `after`.
+    fn split_repair(add: CmdOutput, after: u64) -> MockCommandRunner {
+        let mock = MockCommandRunner::new();
+        mock.add_response("reg.exe add", add);
+        mock.add_response(QUERY_THRESHOLD, split_threshold_output(TUNED_THRESHOLD));
+        mock.add_response_after(
+            "reg.exe add",
+            QUERY_THRESHOLD,
+            split_threshold_output(after),
+        );
+        mock
+    }
+
+    #[tokio::test]
+    async fn the_threshold_is_backed_up_reset_and_read_back() {
+        let dir = sandbox("split_fix");
+        let mock = split_repair(CmdOutput::ok(""), DEFAULT_SPLIT_THRESHOLD_KB);
+        let msg = backing_up(mock.clone(), &dir)
+            .with_ram(Arc::new(|| DEV_PC_RAM))
+            .fix(SPLIT_THRESHOLD_ID, None)
+            .await
+            .unwrap();
+        assert!(msg.contains("Restart Windows"), "{msg}");
+        assert!(mock.executed().contains(&format!(
+            r"reg.exe add {CONTROL_KEY} /v SvcHostSplitThresholdInKB /t REG_DWORD /d 3670016 /f"
+        )));
+        let backups = RegBackupManager::with_dir(dir.join("backups")).list_backups();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(backups[0].key_path, CONTROL_KEY);
+    }
+
+    #[tokio::test]
+    async fn a_threshold_that_does_not_change_is_a_failure() {
+        let dir = sandbox("split_refused");
+        let refused = CmdOutput::with_output(1, "", "FEHLER: Zugriff verweigert");
+        let err = module(split_repair(refused, TUNED_THRESHOLD), &dir, b"")
+            .with_ram(Arc::new(|| DEV_PC_RAM))
+            .fix(SPLIT_THRESHOLD_ID, None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("Zugriff verweigert"), "{err}");
+
+        let err = module(split_repair(CmdOutput::ok(""), TUNED_THRESHOLD), &dir, b"")
+            .with_ram(Arc::new(|| DEV_PC_RAM))
+            .fix(SPLIT_THRESHOLD_ID, None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("reads 33554432"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_threshold_reset_meanwhile_is_left_alone_and_a_failed_backup_changes_nothing() {
+        let dir = sandbox("split_left");
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "/v SvcHostSplitThresholdInKB",
+            split_threshold_output(DEFAULT_SPLIT_THRESHOLD_KB),
+        );
+        let msg = module(mock.clone(), &dir, b"")
+            .with_ram(Arc::new(|| DEV_PC_RAM))
+            .fix(SPLIT_THRESHOLD_ID, None)
+            .await
+            .unwrap();
+        assert!(msg.contains("nothing to change"), "{msg}");
+
+        // The backup reads the value again; this time nobody answers.
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "/v SvcHostSplitThresholdInKB",
+            split_threshold_output(TUNED_THRESHOLD),
+        );
+        mock.add_response_after(
+            "/v SvcHostSplitThresholdInKB",
+            "/v SvcHostSplitThresholdInKB",
+            CmdOutput::failed(1, "FEHLER"),
+        );
+        let err = backing_up(mock.clone(), &dir)
+            .with_ram(Arc::new(|| DEV_PC_RAM))
+            .fix(SPLIT_THRESHOLD_ID, None)
+            .await
+            .unwrap_err();
+        assert!(err.starts_with("Aborted:"), "{err}");
+        assert!(!mock.executed().iter().any(|c| c.contains("reg.exe add")));
     }
 
     /// pnputil refused the development PC's Microsoft Hypervisor Service on
