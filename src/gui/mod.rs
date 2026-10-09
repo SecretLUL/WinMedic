@@ -14,9 +14,11 @@
 //! | [`modals`] | Confirmation, setting entry and help overlays |
 //! | [`views`] | The two views, the findings list and Easy mode's short list |
 //! | [`window`] | Locking the window's size in Easy mode, and handing it back |
+//! | [`taskbar`] | A scan's or a repair run's progress on the taskbar button |
 
 pub mod keys;
 pub mod modals;
+pub mod taskbar;
 pub mod theme;
 pub mod views;
 pub mod window;
@@ -50,6 +52,7 @@ pub struct WinMedicApp {
     app: App,
     last_poll: Instant,
     window: window::WindowLock,
+    taskbar: taskbar::Taskbar,
 }
 
 /// Draw the navigation, the current view, the status bar and overlays.
@@ -110,6 +113,7 @@ impl WinMedicApp {
             app,
             last_poll: Instant::now(),
             window: window::WindowLock::default(),
+            taskbar: taskbar::Taskbar::of(cc),
         }
     }
 }
@@ -118,8 +122,7 @@ fn navigation(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         for (index, title) in TABS.iter().enumerate() {
             let selected = app.active_tab == index;
-            if ui
-                .selectable_label(selected, *title)
+            if tab(ui, selected, title)
                 .on_hover_text(format!("Shortcut: {}", index + 1))
                 .clicked()
             {
@@ -154,6 +157,35 @@ fn navigation(ui: &mut egui::Ui, app: &mut App) {
             }
         });
     });
+}
+
+/// A navigation entry, marked the way Windows 11 marks the current page: its
+/// title in the strong text colour over a short accent bar, where egui would
+/// fill the whole entry with its selection blue.
+fn tab(ui: &mut egui::Ui, selected: bool, title: &str) -> egui::Response {
+    let response = ui
+        .scope(|ui| {
+            let strong = ui.visuals().strong_text_color();
+            let visuals = ui.visuals_mut();
+            visuals.selection.bg_fill = egui::Color32::TRANSPARENT;
+            visuals.selection.stroke.color = strong;
+            visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+            ui.selectable_label(selected, title)
+        })
+        .inner;
+    if selected {
+        let rect = response.rect;
+        ui.painter().rect_filled(
+            // Just below the entry, in the room the panel leaves under it.
+            egui::Rect::from_center_size(
+                egui::pos2(rect.center().x, rect.bottom() + 1.0),
+                egui::vec2(16.0, 3.0),
+            ),
+            1.5,
+            theme::palette(ui).accent,
+        );
+    }
+    response
 }
 
 /// What the update banner says to get the update installed, one at a time.
@@ -296,6 +328,10 @@ impl eframe::App for WinMedicApp {
             self.app.poll_external_scan_updates();
             self.last_poll = Instant::now();
         }
+
+        // Here rather than in `ui`, because a minimised window is the one
+        // whose taskbar button is being watched.
+        self.taskbar.show(taskbar::Progress::of(&self.app));
 
         // egui only repaints in response to input, and almost nothing this
         // window shows is driven by input: progress bars and log lines come
@@ -741,6 +777,21 @@ mod tests {
                 "the safety surface lost: {expected}"
             );
         }
+    }
+
+    /// The red button only asks; removing happens in the dialog.
+    #[test]
+    fn the_remove_button_asks_first() {
+        let mut app = fresh_app();
+        app.active_tab = TAB_SETTINGS;
+        let mut harness = window(app);
+
+        harness.get_by_label("Remove WinMedic from Windows").click();
+        harness.run();
+        assert!(matches!(
+            harness.state().pending_confirm,
+            Some(ConfirmRequest::Unregister)
+        ));
     }
 
     /// A confirmation is a question about the machine, and it has to be visible

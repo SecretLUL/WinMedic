@@ -66,7 +66,7 @@ fn settings(ui: &mut egui::Ui, app: &mut App) {
                         .inner
                     } else {
                         let mut on = value == "ON";
-                        ui.checkbox(&mut on, label).changed()
+                        theme::checkbox(ui, &mut on, label).changed()
                     };
                     ui.label(theme::muted(description));
 
@@ -113,8 +113,7 @@ fn safety(ui: &mut egui::Ui, app: &mut App) {
                  its setting off.",
             ));
             ui.add_space(4.0);
-            if ui
-                .button("Remove WinMedic from Windows")
+            if theme::danger_button(ui, "Remove WinMedic from Windows")
                 .on_hover_text("Asks for confirmation first")
                 .clicked()
             {

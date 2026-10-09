@@ -63,15 +63,7 @@ pub(super) fn has_scanned(app: &App) -> bool {
 /// Filled, so the eye finds it first. Every other control on the page is a
 /// plain button and can wait.
 fn primary(ui: &mut egui::Ui, enabled: bool, text: &str) -> egui::Response {
-    let visuals = ui.visuals();
-    let button = egui::Button::new(
-        RichText::new(text)
-            .strong()
-            .color(visuals.strong_text_color()),
-    )
-    .fill(visuals.selection.bg_fill)
-    .min_size(egui::vec2(0.0, 28.0));
-    ui.add_enabled(enabled, button)
+    theme::primary_button(ui, enabled, RichText::new(text), egui::vec2(0.0, 28.0))
 }
 
 fn header(ui: &mut egui::Ui, app: &mut App) {
@@ -174,7 +166,7 @@ fn header(ui: &mut egui::Ui, app: &mut App) {
 }
 
 fn headline(ui: &mut egui::Ui, text: &str, color: Option<egui::Color32>) {
-    let mut text = RichText::new(text).size(18.0).strong();
+    let mut text = theme::heading(ui, text, 18.0);
     if let Some(color) = color {
         text = text.color(color);
     }
@@ -182,13 +174,13 @@ fn headline(ui: &mut egui::Ui, text: &str, color: Option<egui::Color32>) {
 }
 
 fn progress(ui: &mut egui::Ui, fraction: f32, fill: Option<egui::Color32>) {
-    let mut bar = egui::ProgressBar::new(fraction)
-        .desired_height(12.0)
-        .corner_radius(2);
-    if let Some(fill) = fill {
-        bar = bar.fill(fill);
-    }
-    ui.add(bar);
+    let fill = fill.unwrap_or(theme::palette(ui).accent);
+    ui.add(
+        egui::ProgressBar::new(fraction)
+            .desired_height(12.0)
+            .corner_radius(2)
+            .fill(fill),
+    );
 }
 
 /// When the machine was last scanned and, if a repair ran, how it went.
@@ -246,8 +238,7 @@ fn actions(ui: &mut egui::Ui, app: &mut App, open: usize) {
         }
 
         let mut dry_run = app.dry_run;
-        if ui
-            .checkbox(&mut dry_run, "Simulate only (change nothing)")
+        if theme::checkbox(ui, &mut dry_run, "Simulate only (change nothing)")
             .on_hover_text("D - list the steps each repair would run, without running them")
             .changed()
         {
@@ -293,16 +284,20 @@ fn checks(ui: &mut egui::Ui, app: &mut App) {
                         ui.label(&module.name).on_hover_text(&module.id);
 
                         if app.is_scanning {
-                            let mut bar = egui::ProgressBar::new(module.percent as f32 / 100.0)
-                                .desired_width(120.0)
-                                .desired_height(10.0)
-                                .corner_radius(2);
-                            if module.failure.is_some() {
-                                bar = bar.fill(palette.red);
+                            let fill = if module.failure.is_some() {
+                                palette.red
                             } else if module.is_done {
-                                bar = bar.fill(palette.green);
-                            }
-                            ui.add(bar);
+                                palette.green
+                            } else {
+                                palette.accent
+                            };
+                            ui.add(
+                                egui::ProgressBar::new(module.percent as f32 / 100.0)
+                                    .desired_width(120.0)
+                                    .desired_height(10.0)
+                                    .corner_radius(2)
+                                    .fill(fill),
+                            );
 
                             ui.horizontal(|ui| {
                                 let (text, color) = if module.step.is_empty() {
