@@ -218,6 +218,16 @@ pub async fn findings(
 ) -> Result<Vec<Issue>, String> {
     let mut issues = Vec::new();
     for crash in crashes(runner, windows_dir).await? {
+        // The crashes stay in the log for 30 days after the add-on was
+        // blocked or its program uninstalled, while Explorer no longer loads
+        // it and neither repair can do more. A registry that cannot be read
+        // leaves the crashes standing; the repair reads it again.
+        if left_to_block(runner, crash.file_name())
+            .await
+            .is_ok_and(|left| left.is_empty())
+        {
+            continue;
+        }
         let program = program_of(runner, &crash.module_path).await;
         issues.push(finding(module_id, &crash, &program));
     }
@@ -263,8 +273,15 @@ async fn registered_clsids(runner: &dyn CommandRunner, dll: &str) -> Result<Vec<
             )
             .await?;
         // Exit 1: nothing found. Its message is translated; not read.
-        if out.exit_code == Some(0) {
-            clsids.extend(clsids_of(&registry::parse_reg_query(&out.stdout), dll));
+        match out.exit_code {
+            Some(0) => clsids.extend(clsids_of(&registry::parse_reg_query(&out.stdout), dll)),
+            Some(1) => {}
+            code => {
+                return Err(format!(
+                    "reg query {root} /f {dll} failed (exit code {code:?}): {}",
+                    out.stderr.trim()
+                ));
+            }
         }
     }
     clsids.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
@@ -283,6 +300,17 @@ async fn not_blocked(runner: &dyn CommandRunner, clsids: &[String]) -> Result<Ve
         .collect())
 }
 
+/// What blocking `dll` would still change: the CLSIDs it is registered
+/// under that the Blocked key does not hold. Empty when every one is
+/// blocked, and when the DLL is no longer registered.
+async fn left_to_block(runner: &dyn CommandRunner, dll: &str) -> Result<Vec<String>, String> {
+    let clsids = registered_clsids(runner, dll).await?;
+    if clsids.is_empty() {
+        return Ok(clsids);
+    }
+    not_blocked(runner, &clsids).await
+}
+
 /// Block every extension the crashing DLL is registered as: back the
 /// Blocked key up, add a value per CLSID, read the key back.
 pub async fn block(
@@ -296,7 +324,10 @@ pub async fn block(
         .into_iter()
         .find(|c| c.issue_id() == issue_id)
     else {
-        return Ok("Explorer no longer crashes in that module - nothing to block.".to_string());
+        // Here and below: a repair that changed nothing is not one.
+        return Err(
+            "Explorer no longer keeps crashing in that module - nothing was changed.".to_string(),
+        );
     };
     let dll = crash.file_name().to_string();
     let clsids = registered_clsids(runner, &dll).await?;
@@ -307,8 +338,8 @@ pub async fn block(
     }
     let to_block = not_blocked(runner, &clsids).await?;
     if to_block.is_empty() {
-        return Ok(format!(
-            "{dll} is blocked already. Sign out or restart for Explorer to leave it out."
+        return Err(format!(
+            "{dll} is blocked already - nothing was changed. Sign out or restart for Explorer to leave it out."
         ));
     }
     if registry::query(runner, BLOCKED_KEY, false).await?.is_some() {
@@ -443,9 +474,9 @@ mod tests {
         assert!(clsids_of(&keys, "other.dll").is_empty());
     }
 
-    /// Explorer crashing in the Visio extension; the Blocked key answers
-    /// `blocked_after` once a value was added.
-    fn block_mock(blocked_after: String) -> MockCommandRunner {
+    /// Explorer crashing in the Visio extension, registered as captured,
+    /// and the Blocked key answering `blocked`.
+    fn scan_mock(blocked: String) -> MockCommandRunner {
         let mock = MockCommandRunner::new();
         mock.add_response("wevtutil.exe", CmdOutput::ok(explorer_crashing()));
         mock.add_response(
@@ -460,11 +491,19 @@ mod tests {
                 "",
             ),
         );
-        mock.add_response_after("reg.exe add", "Blocked", CmdOutput::ok(blocked_after));
         mock.add_response(
             "reg.exe query HKLM\\SOFTWARE\\Microsoft",
-            CmdOutput::ok(decode_output(BLOCKED)),
+            CmdOutput::ok(blocked),
         );
+        mock.add_response("VersionInfo", CmdOutput::ok(decode_output(VERSION_INFO)));
+        mock
+    }
+
+    /// [`scan_mock`] with the captured Blocked key, which answers
+    /// `blocked_after` once a value was added.
+    fn block_mock(blocked_after: String) -> MockCommandRunner {
+        let mock = scan_mock(decode_output(BLOCKED));
+        mock.add_response_after("reg.exe add", "Blocked", CmdOutput::ok(blocked_after));
         mock.add_written_file("reg.exe export", 2, "(what reg export wrote)");
         mock.add_response("reg.exe export", CmdOutput::ok(""));
         mock.add_response("reg.exe add", CmdOutput::ok(""));
@@ -557,8 +596,93 @@ mod tests {
         );
     }
 
+    const ALL_VISSHE: [&str; 3] = [
+        "{506F4668-F13E-4AA1-BB04-B43203AB3CC0}",
+        "{A394DCA9-3727-11D4-BD85-00C04F6B93A4}",
+        "{D66DC78C-4F61-447F-942B-3FB6980118CF}",
+    ];
+
+    // The crashes stay in the log for 30 days. The finding came back on
+    // every scan, and every repair "succeeded" without changing anything.
+    #[tokio::test]
+    async fn a_blocked_add_on_is_not_reported_again() {
+        let backups = backups("blocked_again");
+        let mock = block_mock(blocked_with(&ALL_VISSHE));
+        let issues = findings(&mock, "crash_analysis", r"C:\Windows")
+            .await
+            .unwrap();
+        assert_eq!(issues.len(), 1, "only the Epson add-on is blocked yet");
+
+        block(
+            &mock,
+            "crash_shellext_visshe_dll",
+            r"C:\Windows",
+            &backups.0,
+        )
+        .await
+        .unwrap();
+        let issues = findings(&mock, "crash_analysis", r"C:\Windows")
+            .await
+            .unwrap();
+        assert!(
+            !issues.iter().any(|i| i.id == "crash_shellext_visshe_dll"),
+            "{issues:?}"
+        );
+
+        let err = block(
+            &mock,
+            "crash_shellext_visshe_dll",
+            r"C:\Windows",
+            &backups.0,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("nothing was changed"), "{err}");
+        assert_eq!(
+            mock.executed()
+                .iter()
+                .filter(|c| c.starts_with("reg.exe add"))
+                .count(),
+            3,
+            "the second repair added nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_add_on_blocked_in_part_is_still_reported() {
+        let mock = scan_mock(blocked_with(&ALL_VISSHE[..1]));
+        let issues = findings(&mock, "crash_analysis", r"C:\Windows")
+            .await
+            .unwrap();
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].id, "crash_shellext_visshe_dll");
+    }
+
+    // Uninstalling the program, as the finding advises, did not clear it,
+    // and its repair then failed: "not registered".
+    #[tokio::test]
+    async fn an_add_on_that_is_no_longer_registered_is_not_reported() {
+        let mock = MockCommandRunner::new();
+        mock.add_response("wevtutil.exe", CmdOutput::ok(explorer_crashing()));
+        mock.add_response(
+            r"\Classes\CLSID",
+            CmdOutput::with_output(
+                1,
+                "Suchvorgang abgeschlossen: 0 übereinstimmende Zeichenfolge(n) gefunden.",
+                "",
+            ),
+        );
+        mock.add_response("VersionInfo", CmdOutput::ok(decode_output(VERSION_INFO)));
+        let issues = findings(&mock, "crash_analysis", r"C:\Windows")
+            .await
+            .unwrap();
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
     #[tokio::test]
     async fn the_finding_names_the_program_and_waits_to_be_ticked() {
+        // The registry is not answered, as when reg times out: the crashes
+        // still stand.
         let mock = MockCommandRunner::new();
         mock.add_response("wevtutil.exe", CmdOutput::ok(explorer_crashing()));
         mock.add_response("VersionInfo", CmdOutput::ok(decode_output(VERSION_INFO)));
