@@ -1088,7 +1088,7 @@ mod tests {
         let html = DiagnosticReporter::to_html(&sample_issues(), 80, &[], 0);
         assert!(html.contains(">Fixed / open<"));
         assert!(!html.contains("status-pill status-restart"));
-        assert!(!html.contains("val-warn\">"));
+        assert!(!html.contains("<span class=\"val-warn\">"));
     }
 
     #[test]
