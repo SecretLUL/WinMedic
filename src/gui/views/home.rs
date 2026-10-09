@@ -233,12 +233,18 @@ fn last_runs(ui: &mut egui::Ui, app: &App) {
             (None, None) => {}
         }
         ui.label(theme::muted(format!("· Health {} / 100", app.health_score)));
-        if app.total_to_fix > 0 {
+        if let Some((repaired, failed)) = app.last_repair {
             ui.label(theme::muted("· Last repair:"));
-            ui.colored_label(palette.green, format!("{} repaired", app.fixed_count));
-            if app.failed_count > 0 {
-                ui.colored_label(palette.red, format!("{} failed", app.failed_count));
+            ui.colored_label(palette.green, format!("{repaired} repaired"));
+            if failed > 0 {
+                ui.colored_label(palette.red, format!("{failed} failed"));
             }
+        }
+        // A simulation repairs nothing; while simulating, what it planned.
+        if let Some(planned) = app.last_simulation.filter(|_| app.dry_run) {
+            ui.label(theme::muted(format!(
+                "· Last simulation: {planned} planned"
+            )));
         }
     });
 }

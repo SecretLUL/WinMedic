@@ -338,6 +338,7 @@ impl App {
                         repair_ended = true;
                         self.fixed_count = fixed_count;
                         self.failed_count = failed_count;
+                        self.record_repair_run();
                         self.health_score = DiagnosticEngine::calculate_health_score(&self.issues);
                         let msg = format!(
                             "Repairs cancelled: {} done, {} failed, {} never attempted.",
@@ -354,6 +355,7 @@ impl App {
                         repair_ended = true;
                         self.fixed_count = fixed_count;
                         self.failed_count = failed_count;
+                        self.record_repair_run();
                         self.health_score = DiagnosticEngine::calculate_health_score(&self.issues);
                         self.status_message = Some(if self.dry_run {
                             format!(
@@ -386,6 +388,16 @@ impl App {
             self.backup_records = self.reg_backup_mgr.list_backups();
             self.clamp_backup_selection();
             self.save_scan_state();
+        }
+    }
+
+    /// Keep how the run that just ended went, for the header: a simulation
+    /// repaired nothing, so it leaves the last real run's counts alone.
+    fn record_repair_run(&mut self) {
+        if self.dry_run {
+            self.last_simulation = Some(self.fixed_count);
+        } else {
+            self.last_repair = Some((self.fixed_count, self.failed_count));
         }
     }
 
@@ -963,6 +975,51 @@ mod tests {
         app.is_fixing = true;
         app.total_to_fix = total;
         (app, tx)
+    }
+
+    /// #181: a simulation, finished or cancelled, records what it planned
+    /// and leaves the last real run's counts alone.
+    #[tokio::test]
+    async fn a_simulation_leaves_the_last_real_runs_counts_alone() {
+        let (mut app, tx) = repairing_app(3);
+        tx.send(RepairEvent::AllRepairsCompleted {
+            fixed_count: 2,
+            failed_count: 1,
+        })
+        .await
+        .unwrap();
+        app.process_background_events();
+        assert_eq!(app.last_repair, Some((2, 1)));
+        assert_eq!(app.last_simulation, None);
+
+        for (end, planned) in [
+            (
+                RepairEvent::AllRepairsCompleted {
+                    fixed_count: 3,
+                    failed_count: 0,
+                },
+                3,
+            ),
+            (
+                RepairEvent::RepairsCancelled {
+                    fixed_count: 1,
+                    failed_count: 0,
+                    remaining: 2,
+                },
+                1,
+            ),
+        ] {
+            let (tx, rx) = channel::<RepairEvent>(4);
+            app.repair_event_rx = Some(rx);
+            app.is_fixing = true;
+            app.dry_run = true;
+            tx.send(end).await.unwrap();
+            app.process_background_events();
+
+            assert!(!app.is_fixing);
+            assert_eq!(app.last_repair, Some((2, 1)));
+            assert_eq!(app.last_simulation, Some(planned));
+        }
     }
 
     /// A run that stopped for want of a restore point asks before it repairs
