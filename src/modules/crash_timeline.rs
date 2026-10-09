@@ -3,13 +3,15 @@
 //! Crashes that start out of nowhere mostly start after something changed: an
 //! update, a new driver, a new program. Windows logs all three, so the week
 //! before the first crash can be laid out next to it. No log says which change
-//! is to blame; the list is where to start.
+//! is to blame; the list is where to start. A restore point from before the
+//! first crash takes back all of them at once, and what no log names.
 //!
 //! What decides is read from fields that are the same in every display
 //! language: event ids, GUIDs, paths, a status number. Update titles and
 //! program names are shown as Windows wrote them.
 
 use crate::engine::issue::{Issue, RiskScore, Severity};
+use crate::safety::restore_point::RestorePoint;
 use crate::utils::event_xml::EventRecord;
 use chrono::{DateTime, Local, TimeDelta, Utc};
 
@@ -217,36 +219,89 @@ pub fn new_programs(events: &[EventRecord]) -> Vec<Change> {
     programs
 }
 
-/// The finding that lays the week out. Advice: which change to undo is the
-/// user's call.
-pub fn finding(module_id: &str, first_crash: DateTime<Utc>, changes: &[Change]) -> Issue {
+/// The restore point the timeline names: the newest one made before the
+/// first crash. System Restore to it takes back every change since, the
+/// listed ones and those no log names. With no change listed, only a point
+/// from the week before the first crash is named: an older one would take
+/// back weeks of changes nothing points at.
+pub fn point_before(
+    first_crash: DateTime<Utc>,
+    points: Vec<RestorePoint>,
+    changes: &[Change],
+) -> Option<RestorePoint> {
+    let from = changes.is_empty().then(|| week_before(first_crash));
+    points
+        .into_iter()
+        .filter(|p| {
+            p.created
+                .is_some_and(|t| t < first_crash && from.is_none_or(|from| t >= from))
+        })
+        .max_by_key(|p| (p.created, p.sequence))
+}
+
+/// The finding that lays the week out, and names the restore point from
+/// before it. Advice: which change to undo, and whether to go back to the
+/// point, is the user's call.
+pub fn finding(
+    module_id: &str,
+    first_crash: DateTime<Utc>,
+    changes: &[Change],
+    point: Option<&RestorePoint>,
+) -> Issue {
     let mut kinds: Vec<ChangeKind> = changes.iter().map(|c| c.kind).collect();
     kinds.sort_unstable();
     kinds.dedup();
     let first = first_crash.with_timezone(&Local).format("%d %b %Y, %H:%M");
+    let (title, mut description, fix) = if changes.is_empty() {
+        (
+            "A restore point from before the crashes began".to_string(),
+            format!(
+                "The first crash of the last {SERIES_DAYS} days was on {first}. The event logs name no change in the week before it."
+            ),
+            "Go back to the restore point and see whether the crashes stop",
+        )
+    } else {
+        (
+            format!(
+                "{} change(s) in the week before the crashes began",
+                changes.len()
+            ),
+            format!(
+                "The first crash of the last {SERIES_DAYS} days was on {first}. In the week before it, Windows installed what the details list. Crashes that start after a change often come from it; undoing the change is the quickest test."
+            ),
+            "Undo the change that fits best and see whether the crashes stop",
+        )
+    };
+    let mut details = vec![format!("First crash: {first}")];
+    let mut steps: Vec<String> = kinds.into_iter().map(|k| k.undo().to_string()).collect();
+    if let Some(point) = point {
+        let when = point.time_in(&Local);
+        // Microsoft: System Restore reverts system files, registry settings
+        // and installed programs, without affecting personal files.
+        description.push_str(&format!(
+            " A restore point from {when} is older than the first crash. System Restore to it removes the programs, drivers and updates installed since, listed or not, and keeps personal files."
+        ));
+        details.push(format!(
+            "Restore point before it: {when}  {}",
+            point.description
+        ));
+        steps.push(format!(
+            "Go back to before the crashes: System Restore (rstrui.exe) -> choose the point of {when}, \"{}\"",
+            point.description
+        ));
+    }
+    details.extend(changes.iter().map(Change::line));
     Issue::new(
         "crash_what_changed",
         module_id,
-        format!(
-            "{} change(s) in the week before the crashes began",
-            changes.len()
-        ),
+        title,
         "Hardware & Stability",
         Severity::Info,
         RiskScore::Low,
-        format!(
-            "The first crash of the last {SERIES_DAYS} days was on {first}. In the week before it, Windows installed what the details list. Crashes that start after a change often come from it; undoing the change is the quickest test."
-        ),
-        format!(
-            "First crash: {first}\n{}",
-            changes
-                .iter()
-                .map(Change::line)
-                .collect::<Vec<_>>()
-                .join("\n")
-        ),
-        "Undo the change that fits best and see whether the crashes stop",
-        kinds.into_iter().map(|k| k.undo().to_string()).collect(),
+        description,
+        details.join("\n"),
+        fix,
+        steps,
     )
     .with_advice_only()
 }
@@ -401,5 +456,115 @@ mod tests {
         assert_eq!(kept.len(), MAX_CHANGES);
         assert_eq!(kept.first().unwrap().what, "program 9");
         assert_eq!(kept.last().unwrap().what, "program 0");
+    }
+
+    // The restore points of the development PC, 249 to 255 on 8 and 9
+    // October; see tests/fixtures/README.md.
+    const POINTS: &str = include_str!("../../tests/fixtures/console/powershell_restore_points.txt");
+
+    fn points() -> Vec<RestorePoint> {
+        crate::safety::restore_point::parse_restore_points(POINTS)
+    }
+
+    /// How the finding shows a time, in this machine's zone.
+    fn local(time: &str) -> String {
+        at(time)
+            .with_timezone(&Local)
+            .format("%d %b %Y, %H:%M")
+            .to_string()
+    }
+
+    fn a_change_before(crash: DateTime<Utc>) -> Vec<Change> {
+        vec![Change {
+            when: crash - TimeDelta::hours(30),
+            kind: ChangeKind::Program,
+            what: "Paint.NET 5.1.12".to_string(),
+        }]
+    }
+
+    /// A series that began between point 253 (11:33 UTC) and 254 (15:38
+    /// UTC) names 253, with its time converted from the WMI date.
+    #[test]
+    fn the_newest_point_before_the_first_crash_is_named() {
+        let crash = at("2026-10-09T14:02:01Z");
+        let changes = a_change_before(crash);
+        let point = point_before(crash, points(), &changes).expect("point 253");
+        assert_eq!(point.sequence, 253);
+
+        let issue = finding("crash_analysis", crash, &changes, Some(&point));
+        let when = local("2026-10-09T11:33:42.770309Z");
+        assert!(issue.advice_only && !issue.is_selected);
+        assert_eq!(
+            issue.title,
+            "1 change(s) in the week before the crashes began"
+        );
+        let details = &issue.technical_details;
+        assert!(
+            details.contains(&format!(
+                "Restore point before it: {when}  WinMedic Auto-Restore Point (before repairs)"
+            )),
+            "{details}"
+        );
+        assert!(
+            details.contains("Program installed: Paint.NET 5.1.12"),
+            "{details}"
+        );
+        assert!(!details.contains("20261009113342"), "{details}");
+        assert!(issue.description.contains("keeps personal files"));
+        assert_eq!(
+            issue.fix_steps,
+            [
+                ChangeKind::Program.undo().to_string(),
+                format!(
+                    "Go back to before the crashes: System Restore (rstrui.exe) -> choose the point of {when}, \"WinMedic Auto-Restore Point (before repairs)\""
+                ),
+            ]
+        );
+    }
+
+    /// Every point is younger than the first crash: none is named, and the
+    /// finding is the one without a point.
+    #[test]
+    fn no_point_before_the_first_crash_names_none() {
+        let crash = at("2026-10-08T12:00:00Z");
+        let changes = a_change_before(crash);
+        assert_eq!(point_before(crash, points(), &changes), None);
+        assert_eq!(point_before(crash, Vec::new(), &changes), None);
+
+        let issue = finding("crash_analysis", crash, &changes, None);
+        assert!(!issue.technical_details.contains("Restore point"));
+        assert!(!issue.description.contains("restore point"));
+        assert_eq!(issue.fix_steps, [ChangeKind::Program.undo().to_string()]);
+    }
+
+    /// With no change listed, a point from the week before the first crash
+    /// is still worth naming; an older one is not.
+    #[test]
+    fn without_changes_only_a_point_from_the_week_before_is_named() {
+        let crash = at("2026-10-09T14:02:01Z");
+        let point = point_before(crash, points(), &[]).expect("point 253");
+        assert_eq!(point.sequence, 253);
+        let issue = finding("crash_analysis", crash, &[], Some(&point));
+        assert_eq!(issue.title, "A restore point from before the crashes began");
+        assert!(issue.advice_only && !issue.is_selected);
+        assert_eq!(issue.fix_steps.len(), 1);
+        assert!(issue.fix_steps[0].contains("System Restore (rstrui.exe)"));
+
+        // Point 255 is eleven days older than this crash.
+        let later = at("2026-10-20T08:00:00Z");
+        assert_eq!(point_before(later, points(), &[]), None);
+        let named = point_before(later, points(), &a_change_before(later));
+        assert_eq!(named.map(|p| p.sequence), Some(255));
+    }
+
+    /// A point whose time is no WMI date has no place in the order.
+    #[test]
+    fn a_point_without_a_time_is_never_named() {
+        let mut all = points();
+        all.extend(RestorePoint::parse("256 | Manual point | not a date"));
+        assert_eq!(all.len(), 8);
+        let crash = at("2026-10-20T08:00:00Z");
+        let named = point_before(crash, all, &a_change_before(crash));
+        assert_eq!(named.map(|p| p.sequence), Some(255));
     }
 }
