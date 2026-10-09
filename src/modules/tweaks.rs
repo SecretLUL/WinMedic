@@ -44,6 +44,15 @@ impl StartMode {
         }
     }
 
+    /// The `Start` value Windows stores for it; a delayed start is 2 as well,
+    /// with `DelayedAutostart` 1 beside it.
+    fn start_value(self) -> u64 {
+        match self {
+            StartMode::Auto | StartMode::DelayedAuto => 2,
+            StartMode::Demand => 3,
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
             StartMode::Auto => "Automatic",
@@ -65,6 +74,13 @@ struct CoreService {
     severity: Severity,
     /// Commonly switched off on purpose, so the finding starts unticked.
     often_deliberate: bool,
+    /// Windows refuses `sc config` for it even to Administrators: its
+    /// security descriptor gives them no `SERVICE_CHANGE_CONFIG` right (no
+    /// `DC` in `sc sdshow`), and `OpenService` with that right fails with
+    /// error 5. They have full control of its registry key, where debloat
+    /// tools set `Start` to 4, so the repair writes `Start` there. The
+    /// service manager reads it when Windows starts.
+    start_in_registry: bool,
 }
 
 /// wuauserv, bits and cryptsvc are checked by the Windows Update module and
@@ -77,6 +93,7 @@ const CORE_SERVICES: &[CoreService] = &[
         breaks: "The PC asks the router for no IP address, so it has no network and no internet.",
         severity: Severity::Critical,
         often_deliberate: false,
+        start_in_registry: false,
     },
     CoreService {
         name: "Dnscache",
@@ -85,6 +102,7 @@ const CORE_SERVICES: &[CoreService] = &[
         breaks: "Names no longer resolve reliably: websites, updates and sign-ins fail while the network itself works.",
         severity: Severity::Critical,
         often_deliberate: false,
+        start_in_registry: true,
     },
     CoreService {
         name: "nsi",
@@ -93,6 +111,7 @@ const CORE_SERVICES: &[CoreService] = &[
         breaks: "Windows loses track of its network adapters; the network icon shows no connection.",
         severity: Severity::Critical,
         often_deliberate: false,
+        start_in_registry: false,
     },
     CoreService {
         name: "Wcmsvc",
@@ -101,6 +120,7 @@ const CORE_SERVICES: &[CoreService] = &[
         breaks: "Wi-Fi networks cannot be joined and connections drop between networks.",
         severity: Severity::Critical,
         often_deliberate: false,
+        start_in_registry: false,
     },
     CoreService {
         name: "BFE",
@@ -109,6 +129,7 @@ const CORE_SERVICES: &[CoreService] = &[
         breaks: "The firewall, IPsec and most VPN clients stop working.",
         severity: Severity::Critical,
         often_deliberate: false,
+        start_in_registry: true,
     },
     CoreService {
         name: "mpssvc",
@@ -117,6 +138,7 @@ const CORE_SERVICES: &[CoreService] = &[
         breaks: "The firewall is off, and Store apps that register firewall rules fail to install.",
         severity: Severity::Warning,
         often_deliberate: false,
+        start_in_registry: true,
     },
     CoreService {
         name: "EventLog",
@@ -125,6 +147,7 @@ const CORE_SERVICES: &[CoreService] = &[
         breaks: "Crashes, update failures and driver faults leave no trace, and services that depend on the log do not start.",
         severity: Severity::Critical,
         often_deliberate: false,
+        start_in_registry: false,
     },
     CoreService {
         name: "Winmgmt",
@@ -133,6 +156,7 @@ const CORE_SERVICES: &[CoreService] = &[
         breaks: "System information, many drivers' tools and several of WinMedic's own checks get no answers.",
         severity: Severity::Critical,
         often_deliberate: false,
+        start_in_registry: false,
     },
     CoreService {
         name: "AudioSrv",
@@ -141,6 +165,7 @@ const CORE_SERVICES: &[CoreService] = &[
         breaks: "There is no sound, and the volume icon shows a red cross.",
         severity: Severity::Warning,
         often_deliberate: false,
+        start_in_registry: false,
     },
     CoreService {
         name: "AudioEndpointBuilder",
@@ -149,6 +174,7 @@ const CORE_SERVICES: &[CoreService] = &[
         breaks: "Windows finds no playback or recording devices, so there is no sound.",
         severity: Severity::Warning,
         often_deliberate: false,
+        start_in_registry: false,
     },
     CoreService {
         name: "LanmanWorkstation",
@@ -157,6 +183,7 @@ const CORE_SERVICES: &[CoreService] = &[
         breaks: "Network shares, mapped drives and network printers are unreachable.",
         severity: Severity::Warning,
         often_deliberate: false,
+        start_in_registry: false,
     },
     CoreService {
         name: "UsoSvc",
@@ -165,6 +192,7 @@ const CORE_SERVICES: &[CoreService] = &[
         breaks: "Windows Update never scans, downloads or installs anything, without saying why.",
         severity: Severity::Critical,
         often_deliberate: false,
+        start_in_registry: false,
     },
     CoreService {
         name: "TrustedInstaller",
@@ -173,6 +201,7 @@ const CORE_SERVICES: &[CoreService] = &[
         breaks: "Updates cannot install and SFC cannot repair system files.",
         severity: Severity::Critical,
         often_deliberate: false,
+        start_in_registry: false,
     },
     CoreService {
         name: "msiserver",
@@ -181,6 +210,7 @@ const CORE_SERVICES: &[CoreService] = &[
         breaks: "Every .msi setup fails, including installers of drivers and runtimes.",
         severity: Severity::Warning,
         often_deliberate: false,
+        start_in_registry: true,
     },
     CoreService {
         name: "AppXSvc",
@@ -189,6 +219,7 @@ const CORE_SERVICES: &[CoreService] = &[
         breaks: "Store apps cannot install or update, and Settings, Start or the Store may not open.",
         severity: Severity::Warning,
         often_deliberate: false,
+        start_in_registry: true,
     },
     CoreService {
         name: "ClipSVC",
@@ -197,6 +228,7 @@ const CORE_SERVICES: &[CoreService] = &[
         breaks: "Store apps refuse to start with a licence error.",
         severity: Severity::Warning,
         often_deliberate: false,
+        start_in_registry: true,
     },
     CoreService {
         name: "InstallService",
@@ -205,6 +237,7 @@ const CORE_SERVICES: &[CoreService] = &[
         breaks: "Downloads from the Microsoft Store never start.",
         severity: Severity::Warning,
         often_deliberate: false,
+        start_in_registry: false,
     },
     CoreService {
         name: "wlidsvc",
@@ -213,6 +246,7 @@ const CORE_SERVICES: &[CoreService] = &[
         breaks: "Signing in with a Microsoft account fails in Windows, the Store and Office.",
         severity: Severity::Warning,
         often_deliberate: false,
+        start_in_registry: false,
     },
     CoreService {
         name: "TokenBroker",
@@ -221,6 +255,7 @@ const CORE_SERVICES: &[CoreService] = &[
         breaks: "The Store, Office and other apps cannot sign in and keep asking for credentials.",
         severity: Severity::Warning,
         often_deliberate: false,
+        start_in_registry: false,
     },
     CoreService {
         name: "NlaSvc",
@@ -229,6 +264,7 @@ const CORE_SERVICES: &[CoreService] = &[
         breaks: "Windows reports 'No internet' on a working connection, and apps that trust that report stay offline.",
         severity: Severity::Warning,
         often_deliberate: false,
+        start_in_registry: false,
     },
     CoreService {
         name: "netprofm",
@@ -237,6 +273,7 @@ const CORE_SERVICES: &[CoreService] = &[
         breaks: "The network icon and the network profile (public/private) stop working.",
         severity: Severity::Warning,
         often_deliberate: false,
+        start_in_registry: false,
     },
     CoreService {
         name: "W32Time",
@@ -245,6 +282,7 @@ const CORE_SERVICES: &[CoreService] = &[
         breaks: "The clock drifts, and a clock that is off by minutes breaks HTTPS, sign-ins and updates.",
         severity: Severity::Warning,
         often_deliberate: false,
+        start_in_registry: false,
     },
     CoreService {
         name: "WSearch",
@@ -253,6 +291,7 @@ const CORE_SERVICES: &[CoreService] = &[
         breaks: "Search in Start, Settings, Explorer and Outlook finds little or nothing.",
         severity: Severity::Info,
         often_deliberate: true,
+        start_in_registry: false,
     },
     CoreService {
         name: "DoSvc",
@@ -261,11 +300,19 @@ const CORE_SERVICES: &[CoreService] = &[
         breaks: "Windows Update and Store downloads can stall at 0 %.",
         severity: Severity::Info,
         often_deliberate: true,
+        start_in_registry: false,
     },
 ];
 
 fn service_issue_id(name: &str) -> String {
     format!("tweak_svc_{}", name.to_ascii_lowercase())
+}
+
+/// Where each service's settings are, `Start` among them.
+const SERVICES_KEY: &str = r"HKLM\SYSTEM\CurrentControlSet\Services";
+
+fn service_key(svc: &CoreService) -> String {
+    format!(r"{SERVICES_KEY}\{}", svc.name)
 }
 
 /// `CM_PROB_DISABLED`: the device is disabled in Device Manager.
@@ -1091,6 +1138,9 @@ impl TweaksModule {
     }
 
     async fn fix_service(&self, svc: &CoreService) -> Result<String, String> {
+        if svc.start_in_registry {
+            return self.fix_service_in_registry(svc).await;
+        }
         let out = self
             .runner
             .run(
@@ -1130,6 +1180,163 @@ impl TweaksModule {
             .run("net.exe", &["start", svc.name], Duration::from_secs(20))
             .await;
         Ok(set)
+    }
+
+    /// The service's `Start` in the registry, or `None` when it is not there
+    /// as a number.
+    async fn registry_start(&self, svc: &CoreService) -> Result<Option<u64>, String> {
+        Ok(
+            registry::query_value(&*self.runner, &service_key(svc), "Start")
+                .await?
+                .filter(|value| value.kind == "REG_DWORD")
+                .and_then(|value| value.number()),
+        )
+    }
+
+    /// Back up `Start` of a service `sc config` may not change, write the
+    /// start type into it and read it back.
+    ///
+    /// The service manager keeps the start type it read when Windows
+    /// started: `sc qc` goes on reporting the service disabled, and it cannot
+    /// be started, until Windows restarts. So the registry is what is read
+    /// back, and the finding waits for the restart.
+    async fn fix_service_in_registry(&self, svc: &CoreService) -> Result<String, String> {
+        let key = service_key(svc);
+        let wanted = svc.restore.start_value();
+        let label = svc.restore.label();
+        match self.registry_start(svc).await? {
+            Some(start) if start == wanted => {
+                return Ok(format!(
+                    "'{}' is already set to start {label} in the registry. Windows applies it when it restarts: restart Windows.",
+                    svc.display
+                ));
+            }
+            Some(_) => {}
+            None => {
+                return Err(format!(
+                    "{key}\\Start could not be read. Nothing was changed."
+                ));
+            }
+        }
+        if self.config.auto_backup_registry {
+            RegBackupManager::with_dir(self.backup_dir.clone())
+                .export_value_with(
+                    &*self.runner,
+                    &key,
+                    "Start",
+                    &format!(
+                        "Before setting '{}' back to {label}; restoring it disables the service again at the next restart",
+                        svc.display
+                    ),
+                )
+                .await
+                .map_err(|e| {
+                    format!("Aborted: the registry backup of {key}\\Start failed ({e}). Nothing was changed.")
+                })?;
+        }
+        let out = self
+            .runner
+            .run(
+                "reg.exe",
+                &[
+                    "add",
+                    &key,
+                    "/v",
+                    "Start",
+                    "/t",
+                    "REG_DWORD",
+                    "/d",
+                    &wanted.to_string(),
+                    "/f",
+                ],
+                Duration::from_secs(10),
+            )
+            .await?;
+        if !out.success {
+            return Err(format!(
+                "Could not set {key}\\Start (exit code {:?}): {}",
+                out.exit_code,
+                out.stderr.trim()
+            ));
+        }
+        match self.registry_start(svc).await? {
+            Some(start) if start == wanted => Ok(format!(
+                "'{}' is set to start {label} again in the registry. Windows applies it when it restarts: restart Windows.{}",
+                svc.display,
+                if self.config.auto_backup_registry {
+                    " Its old setting is in the registry backups."
+                } else {
+                    ""
+                }
+            )),
+            other => Err(format!(
+                "{key}\\Start was set to {wanted} but reads {}.",
+                other.map_or("nothing".to_string(), |start| start.to_string())
+            )),
+        }
+    }
+
+    /// The finding for the disabled service `svc`.
+    fn service_issue(&self, svc: &CoreService) -> Issue {
+        let issue = |risk, details: String, recommendation: String, steps| {
+            Issue::new(
+                service_issue_id(svc.name),
+                self.id(),
+                format!("Service '{}' is disabled", svc.display),
+                "Tweaks & Policies",
+                svc.severity,
+                risk,
+                format!(
+                    "The service '{}' ({}) is disabled. {} Tweak and debloat tools switch it off; Windows never does.",
+                    svc.display, svc.name, svc.breaks
+                ),
+                details,
+                recommendation,
+                steps,
+            )
+        };
+        let found = format!("sc qc {}: START_TYPE 4 (DISABLED)", svc.name);
+        if !svc.start_in_registry {
+            let mut issue = issue(
+                RiskScore::Medium,
+                found,
+                format!("Set '{}' back to {}", svc.display, svc.restore.label()),
+                vec![format!(
+                    "sc config {} start= {}",
+                    svc.name,
+                    svc.restore.sc_arg()
+                )],
+            );
+            issue.is_selected = !svc.often_deliberate;
+            return issue;
+        }
+        let key = service_key(svc);
+        let mut steps = Vec::new();
+        if self.config.auto_backup_registry {
+            steps.push(format!("Back up Start of {key} to the registry backups"));
+        }
+        steps.push(format!(
+            "reg add {key} /v Start /t REG_DWORD /d {} /f",
+            svc.restore.start_value()
+        ));
+        steps.push("Read Start back from the registry".to_string());
+        steps.push("Restart Windows: until then the service stays disabled".to_string());
+        let mut issue = issue(
+            // Takes effect only after a restart.
+            RiskScore::High,
+            format!(
+                "{found}\nWindows does not let Administrators change it with sc config; the repair sets {key}\\Start"
+            ),
+            format!(
+                "Set '{}' back to {} in the registry and restart Windows",
+                svc.display,
+                svc.restore.label()
+            ),
+            steps,
+        )
+        .with_requires_reboot(true);
+        issue.is_selected = false;
+        issue
     }
 
     /// The finding for `device`, if it is a Windows system device that is
@@ -1561,27 +1768,7 @@ impl DiagnosticModule for TweaksModule {
         for svc in CORE_SERVICES {
             if let Ok(Some(SERVICE_DISABLED)) = service::start_type(&*self.runner, svc.name).await {
                 disabled += 1;
-                let mut issue = Issue::new(
-                    service_issue_id(svc.name),
-                    self.id(),
-                    format!("Service '{}' is disabled", svc.display),
-                    "Tweaks & Policies",
-                    svc.severity,
-                    RiskScore::Medium,
-                    format!(
-                        "The service '{}' ({}) is disabled. {} Tweak and debloat tools switch it off; Windows never does.",
-                        svc.display, svc.name, svc.breaks
-                    ),
-                    format!("sc qc {}: START_TYPE 4 (DISABLED)", svc.name),
-                    format!("Set '{}' back to {}", svc.display, svc.restore.label()),
-                    vec![format!(
-                        "sc config {} start= {}",
-                        svc.name,
-                        svc.restore.sc_arg()
-                    )],
-                );
-                issue.is_selected = !svc.often_deliberate;
-                issues.push(issue);
+                issues.push(self.service_issue(svc));
             }
         }
         Self::send_progress(
@@ -2033,6 +2220,189 @@ mod tests {
         let msg = module.fix("tweak_svc_dhcp", None).await.unwrap();
         assert!(msg.contains("Starting it was skipped"), "{msg}");
         assert!(!mock.executed().iter().any(|c| c.starts_with("net.exe")));
+    }
+
+    /// Elevated, `OpenService` with `SERVICE_CHANGE_CONFIG` was refused for
+    /// these six on Windows 11 Pro 25H2 (26200) and granted for the other
+    /// 18 (#184).
+    #[test]
+    fn the_services_sc_config_may_not_change_are_repaired_in_the_registry() {
+        let in_registry: Vec<&CoreService> = CORE_SERVICES
+            .iter()
+            .filter(|svc| svc.start_in_registry)
+            .collect();
+        let names: Vec<&str> = in_registry.iter().map(|svc| svc.name).collect();
+        assert_eq!(
+            names,
+            [
+                "Dnscache",
+                "BFE",
+                "mpssvc",
+                "msiserver",
+                "AppXSvc",
+                "ClipSVC"
+            ]
+        );
+        // The repair writes Start alone; a delayed start needs
+        // DelayedAutostart as well.
+        assert!(
+            in_registry
+                .iter()
+                .all(|svc| svc.restore != StartMode::DelayedAuto)
+        );
+    }
+
+    /// `reg query HKLM\SYSTEM\CurrentControlSet\Services\<service> /v Start`
+    /// answering `start`. **Constructed** from the capture of
+    /// `SvcHostSplitThresholdInKB`, a `REG_DWORD` of the same hive, with the
+    /// key, the value name and the data replaced (tests/fixtures/README.md).
+    fn start_output(service: &str, start: u32) -> CmdOutput {
+        CmdOutput::ok(
+            decode_output(include_bytes!(
+                "../../tests/fixtures/console/reg_query_svchost_split_threshold.bin"
+            ))
+            .replace(
+                r"CurrentControlSet\Control",
+                &format!(r"CurrentControlSet\Services\{service}"),
+            )
+            .replace("SvcHostSplitThresholdInKB", "Start")
+            .replace("0x380000", &format!("{start:#x}")),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_service_sc_config_may_not_change_is_offered_unticked_until_a_restart() {
+        let dir = sandbox("svc_registry_scan");
+        let mock = MockCommandRunner::new();
+        mock.add_response("qc Dnscache", CmdOutput::ok(sc_qc_output("Dnscache", 4)));
+        mock.add_response("qc msiserver", CmdOutput::ok(sc_qc_output("msiserver", 4)));
+        healthy(&mock);
+        let issues = backing_up(mock, &dir).scan(None).await.unwrap();
+        let ids: Vec<&str> = issues.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["tweak_svc_dnscache", "tweak_svc_msiserver"]);
+
+        let dns = &issues[0];
+        assert_eq!(dns.severity, Severity::Critical);
+        assert_eq!(dns.risk_score, RiskScore::High);
+        assert!(dns.requires_reboot && !dns.is_selected && !dns.advice_only);
+        assert_eq!(
+            dns.fix_steps,
+            [
+                r"Back up Start of HKLM\SYSTEM\CurrentControlSet\Services\Dnscache to the registry backups",
+                r"reg add HKLM\SYSTEM\CurrentControlSet\Services\Dnscache /v Start /t REG_DWORD /d 2 /f",
+                "Read Start back from the registry",
+                "Restart Windows: until then the service stays disabled",
+            ]
+        );
+        assert!(
+            issues[1].fix_steps[1].ends_with(r"Services\msiserver /v Start /t REG_DWORD /d 3 /f"),
+            "Manual: {:?}",
+            issues[1].fix_steps
+        );
+    }
+
+    /// Dnscache disabled: `Start` 4 until `reg add` ran, which answers
+    /// `add`, then `after`.
+    fn dnscache_repair(add: CmdOutput, after: u32) -> MockCommandRunner {
+        let mock = MockCommandRunner::new();
+        mock.add_response("reg.exe add", add);
+        mock.add_response_after(
+            "reg.exe add",
+            r"Services\Dnscache /v Start",
+            start_output("Dnscache", after),
+        );
+        mock.add_response(r"Services\Dnscache /v Start", start_output("Dnscache", 4));
+        mock.add_response("qc Dnscache", CmdOutput::ok(sc_qc_output("Dnscache", 4)));
+        mock
+    }
+
+    #[tokio::test]
+    async fn a_service_sc_config_may_not_change_is_backed_up_set_in_the_registry_and_read_back() {
+        let dir = sandbox("svc_registry_fix");
+        let mock = dnscache_repair(CmdOutput::ok(""), 2);
+        let msg = backing_up(mock.clone(), &dir)
+            .fix("tweak_svc_dnscache", None)
+            .await
+            .unwrap();
+        assert!(
+            msg.starts_with("'DNS Client' is set to start Automatic again in the registry."),
+            "{msg}"
+        );
+        assert!(msg.contains("restart Windows"), "{msg}");
+
+        // Read, read again by the backup, written, read back; no sc config,
+        // which Windows refuses, and no net start, which fails while the
+        // service manager still has it disabled.
+        let query = format!(r"reg.exe query {SERVICES_KEY}\Dnscache /v Start");
+        assert_eq!(
+            mock.executed(),
+            [
+                query.clone(),
+                query.clone(),
+                format!(r"reg.exe add {SERVICES_KEY}\Dnscache /v Start /t REG_DWORD /d 2 /f"),
+                query,
+            ]
+        );
+
+        let backups = RegBackupManager::with_dir(dir.join("backups")).list_backups();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(backups[0].key_path, format!(r"{SERVICES_KEY}\Dnscache"));
+        let bytes = std::fs::read(&backups[0].file_path).unwrap();
+        let text = String::from_utf16(
+            &bytes[2..]
+                .chunks(2)
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        assert!(text.contains("\"Start\"=dword:00000004"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_start_value_that_does_not_change_is_a_failure() {
+        let dir = sandbox("svc_registry_refused");
+        let refused = CmdOutput::with_output(1, "", "FEHLER: Zugriff verweigert");
+        let err = module(dnscache_repair(refused, 4), &dir, b"")
+            .fix("tweak_svc_dnscache", None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("Zugriff verweigert"), "{err}");
+
+        let err = module(dnscache_repair(CmdOutput::ok(""), 4), &dir, b"")
+            .fix("tweak_svc_dnscache", None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("reads 4"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_backup_writes_nothing_and_a_value_already_set_waits_for_the_restart() {
+        let dir = sandbox("svc_registry_left");
+        // The backup reads the value again; this time nobody answers.
+        let mock = MockCommandRunner::new();
+        mock.add_response(r"Services\Dnscache /v Start", start_output("Dnscache", 4));
+        mock.add_response_after(
+            r"Services\Dnscache /v Start",
+            r"Services\Dnscache /v Start",
+            CmdOutput::failed(1, "FEHLER"),
+        );
+        let err = backing_up(mock.clone(), &dir)
+            .fix("tweak_svc_dnscache", None)
+            .await
+            .unwrap_err();
+        assert!(err.starts_with("Aborted:"), "{err}");
+        assert!(!mock.executed().iter().any(|c| c.contains("reg.exe add")));
+
+        // Repaired before Windows restarted: sc qc still reports it
+        // disabled, the registry has what Windows will apply.
+        let mock = MockCommandRunner::new();
+        mock.add_response(r"Services\Dnscache /v Start", start_output("Dnscache", 2));
+        let msg = module(mock.clone(), &dir, b"")
+            .fix("tweak_svc_dnscache", None)
+            .await
+            .unwrap();
+        assert!(msg.contains("already set to start Automatic"), "{msg}");
+        assert_eq!(mock.executed().len(), 1, "{:?}", mock.executed());
     }
 
     #[test]
