@@ -5,6 +5,7 @@
 //! During a run the same list shows each finding's outcome as it lands.
 
 use crate::app::App;
+use crate::app::state::waits_for_restart;
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::gui::theme;
 use eframe::egui::{self, RichText};
@@ -228,12 +229,13 @@ fn row(ui: &mut egui::Ui, app: &mut App, issue_index: usize, highlighted: bool, 
                         // One waiting on a restart is in the same position for
                         // the same reason, and so is advice, which no repair
                         // run touches; `toggle_select_all_issues` passes over
-                        // all three.
+                        // all three. Windows' own pending restart is advice,
+                        // but the restart settles it.
                         let start = ui.cursor().min.x;
                         let ticked = if issue.is_fixed {
                             ui.colored_label(palette.green, "Fixed");
                             false
-                        } else if issue.is_reboot_pending {
+                        } else if waits_for_restart(issue) {
                             ui.colored_label(palette.amber, "Restart");
                             false
                         } else if issue.advice_only {

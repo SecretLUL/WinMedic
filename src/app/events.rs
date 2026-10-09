@@ -1111,12 +1111,12 @@ mod tests {
         let mut app = App::new();
         app.issues.clear();
         let issue = crate::engine::issue::Issue::new(
-            "wu_reboot_pending",
-            "windows_updates",
-            "System reboot pending after updates",
-            "Windows Update & Services",
-            crate::engine::issue::Severity::Info,
-            crate::engine::issue::RiskScore::Low,
+            "pagefile_disabled",
+            "page_file",
+            "Page file disabled on every drive",
+            "Page File & Memory",
+            crate::engine::issue::Severity::Warning,
+            crate::engine::issue::RiskScore::High,
             "Description",
             "Details",
             "Fix",
@@ -1130,9 +1130,9 @@ mod tests {
         app.is_fixing = true;
 
         tx.send(RepairEvent::FixFinished {
-            issue_id: "wu_reboot_pending".to_string(),
+            issue_id: "pagefile_disabled".to_string(),
             success: true,
-            message: "Pending reboot recorded.".to_string(),
+            message: "Takes effect after a restart.".to_string(),
         })
         .await
         .unwrap();
@@ -1149,7 +1149,7 @@ mod tests {
         assert!(!app.is_fixing);
         assert!(app.issues[0].is_reboot_pending);
         assert!(!app.issues[0].is_fixed);
-        assert!(app.has_pending_reboot());
+        assert_eq!(app.repairs_waiting_for_restart(), 1);
         assert!(
             !matches!(
                 app.pending_confirm,

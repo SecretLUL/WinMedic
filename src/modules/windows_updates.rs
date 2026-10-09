@@ -34,8 +34,8 @@ const CACHE_SERVICES: [&str; 3] = ["wuauserv", "bits", "cryptsvc"];
 const CACHE_SERVICES_REVERSED: [&str; 3] =
     [CACHE_SERVICES[2], CACHE_SERVICES[1], CACHE_SERVICES[0]];
 
-/// The finding for restart work Windows has queued. The restart itself is
-/// what settles it, so the app treats it like a repair waiting on one.
+/// The finding for restart work Windows has queued. Only the restart settles
+/// it, so it is advice, and the window offers the restart.
 pub const REBOOT_PENDING: &str = "wu_reboot_pending";
 
 /// Where Component Based Servicing parks the work a restart has to finish.
@@ -146,6 +146,25 @@ fn read_reboot_signals() -> RebootSignals {
         wu_reboot_required,
         pending_file_renames,
     }
+}
+
+/// The finding for a restart Windows is waiting for. Advice: WinMedic has
+/// nothing to run for it. As a repair it only wrote a line into the report,
+/// and the window then counted it as a repair waiting for the restart.
+pub fn reboot_pending_finding(module_id: &str, evidence: &str) -> Issue {
+    Issue::new(
+        REBOOT_PENDING,
+        module_id,
+        "System reboot pending after updates",
+        "Windows Update & Services",
+        Severity::Info,
+        RiskScore::Low,
+        "Windows reports a reboot pending from a previously installed update or driver package. Some updates cannot continue until the machine restarts.",
+        format!("Found in the registry: {}", evidence),
+        "Restart Windows after the repairs to finish the pending installations",
+        Vec::new(),
+    )
+    .with_advice_only()
 }
 
 /// How far back failed installs are looked for.
@@ -738,21 +757,7 @@ impl DiagnosticModule for WindowsUpdatesModule {
 
         let signals = read_reboot_signals();
         match pending_reboot_reason(&signals) {
-            Some(evidence) => issues.push(
-                Issue::new(
-                    REBOOT_PENDING,
-                    self.id(),
-                    "System reboot pending after updates",
-                    "Windows Update & Services",
-                    Severity::Info,
-                    RiskScore::Low,
-                    "Windows reports a reboot pending from a previously installed update or driver package. Some updates cannot continue until the machine restarts.",
-                    format!("Found in the registry: {}", evidence),
-                    "Restart Windows after the repairs to finish the pending installations",
-                    vec!["Record the pending reboot in the repair report".to_string()],
-                )
-                .with_requires_reboot(true),
-            ),
+            Some(evidence) => issues.push(reboot_pending_finding(self.id(), &evidence)),
             None => {
                 Self::send_progress(
                     &progress_tx,
@@ -922,10 +927,6 @@ impl DiagnosticModule for WindowsUpdatesModule {
                 }
                 self.reset_components(log_tx.as_ref()).await
             }
-            REBOOT_PENDING => Ok(
-                "Pending reboot recorded. Please restart the system once the run has finished."
-                    .to_string(),
-            ),
             _ => Err(format!("Unknown issue ID: {}", issue_id)),
         }
     }
@@ -1046,6 +1047,53 @@ mod tests {
     #[test]
     fn a_machine_with_nothing_queued_reports_nothing() {
         assert_eq!(pending_reboot_reason(&RebootSignals::default()), None);
+    }
+
+    /// Windows' own pending restart is advice: nothing to tick, no steps to
+    /// run, only what to do.
+    #[test]
+    fn a_pending_restart_is_advice() {
+        let issue = reboot_pending_finding("windows_updates", "evidence");
+        assert!(issue.advice_only && !issue.is_selected && !issue.will_repair());
+        assert!(issue.fix_steps.is_empty());
+        assert!(issue.recommended_fix.starts_with("Restart Windows"));
+    }
+
+    /// A repair run neither runs it nor counts it.
+    #[tokio::test]
+    async fn a_repair_run_does_not_count_the_pending_restart() {
+        use crate::engine::runner::{DiagnosticEngine, RepairEvent, RepairOptions};
+
+        let module = WindowsUpdatesModule::with_runner(
+            ModuleConfig::default(),
+            Arc::new(MockCommandRunner::new()),
+        );
+        let engine = DiagnosticEngine::with_modules(vec![Arc::new(module)]);
+        let mut issues = vec![reboot_pending_finding("windows_updates", "evidence")];
+        let (tx, mut rx) = tokio::sync::mpsc::channel(100);
+        let options = RepairOptions {
+            create_vss: false,
+            dry_run: false,
+            verbose_logging: false,
+        };
+
+        let counted = engine
+            .run_repairs(
+                &mut issues,
+                options,
+                tx,
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await;
+
+        assert_eq!(counted, (0, 0));
+        assert!(!issues[0].is_fixed && !issues[0].is_reboot_pending);
+        while let Ok(event) = rx.try_recv() {
+            assert!(
+                !matches!(event, RepairEvent::FixStarted { .. }),
+                "{event:?}"
+            );
+        }
     }
 
     /// Reading the live registry must work on any machine and say something

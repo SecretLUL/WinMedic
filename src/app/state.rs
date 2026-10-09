@@ -442,9 +442,14 @@ impl App {
         }
     }
 
-    /// Whether any repaired issue currently requires a system restart.
-    pub fn has_pending_reboot(&self) -> bool {
-        self.issues.iter().any(|i| i.is_reboot_pending)
+    /// How many repairs wait for a restart to finish. Windows' own pending
+    /// restart is none of them, even as a scan from 0.8.0 saved it: "repaired"
+    /// and waiting.
+    pub fn repairs_waiting_for_restart(&self) -> usize {
+        self.issues
+            .iter()
+            .filter(|i| i.is_reboot_pending && i.id != REBOOT_PENDING)
+            .count()
     }
 
     /// Whether Windows waits for a restart: a repair needs one, or the scan
@@ -728,7 +733,7 @@ fn time_left(elapsed: Duration, percent: f32) -> Option<Duration> {
 /// Whether `issue` is settled by restarting Windows: a repair that needs the
 /// restart to finish, or Windows' own queued restart work. A restart settles
 /// both; if Windows queued more, the next scan finds it again.
-fn waits_for_restart(issue: &Issue) -> bool {
+pub(crate) fn waits_for_restart(issue: &Issue) -> bool {
     issue.is_reboot_pending || (issue.id == REBOOT_PENDING && !issue.is_fixed)
 }
 

@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::engine::issue::Issue;
 use crate::modules::ModuleStatus;
+use crate::modules::windows_updates::REBOOT_PENDING;
 
 pub const SCAN_STATE_FILE_NAME: &str = "last_scan.json";
 
@@ -95,9 +96,16 @@ impl ScanState {
 
     pub fn load_from(path: &Path) -> Option<Self> {
         let data = std::fs::read_to_string(path).ok()?;
-        serde_json::from_str(&data)
+        let mut state: Self = serde_json::from_str(&data)
             .ok()
-            .filter(|state: &Self| state.format == FORMAT)
+            .filter(|state: &Self| state.format == FORMAT)?;
+        // Up to 0.8.0 the restart Windows waits for was a repair. It is advice
+        // now, and its repair is gone: a ticked one would fail.
+        for issue in state.issues.iter_mut().filter(|i| i.id == REBOOT_PENDING) {
+            issue.advice_only = true;
+            issue.is_selected = false;
+        }
+        Some(state)
     }
 
     pub fn save(&self) -> Result<(), std::io::Error> {
@@ -186,6 +194,33 @@ mod tests {
         std::fs::write(&tmp, old.to_string()).unwrap();
 
         assert!(ScanState::load_from(&tmp).is_none());
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// A scan saved by 0.8.0 offered Windows' pending restart as a repair:
+    /// ticked, or "repaired" and waiting for the restart. It loads as advice,
+    /// and one that waits keeps waiting.
+    #[test]
+    fn a_pending_restart_saved_as_a_repair_loads_as_advice() {
+        let tmp = std::env::temp_dir().join(format!(
+            "winmedic_scan_state_reboot_{}.json",
+            std::process::id()
+        ));
+        let mut ticked = crate::modules::windows_updates::reboot_pending_finding("w", "e");
+        ticked.advice_only = false;
+        ticked.is_selected = true;
+        let mut waiting = ticked.clone();
+        waiting.is_selected = false;
+        waiting.is_reboot_pending = true;
+
+        for (saved, waits) in [(ticked, false), (waiting, true)] {
+            ScanState::new(90, vec![saved], Vec::new(), None)
+                .save_to(&tmp)
+                .unwrap();
+            let loaded = ScanState::load_from(&tmp).unwrap().issues.remove(0);
+            assert!(loaded.advice_only && !loaded.will_repair());
+            assert_eq!(loaded.is_reboot_pending, waits);
+        }
         let _ = std::fs::remove_file(&tmp);
     }
 

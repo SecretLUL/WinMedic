@@ -10,6 +10,7 @@
 
 use super::home::{format_duration, has_scanned, plural, repair_label, selected_for_repair};
 use crate::app::App;
+use crate::app::state::waits_for_restart;
 use crate::engine::issue::Severity;
 use crate::gui::theme;
 use crate::modules::ModuleStatus;
@@ -172,15 +173,18 @@ fn patience(ui: &mut egui::Ui, app: &App, elapsed: Duration) {
 }
 
 /// Whether the page is the restart prompt itself: after a scan or a repair,
-/// with a restart all that is left. The restart banner stays away then, or
-/// the window would ask twice.
+/// with a restart all that is left, for repairs or for Windows' own updates.
+/// The restart banner stays away then, or the window would ask twice.
 pub(crate) fn asks_for_restart(app: &App) -> bool {
     !app.config.advanced_mode
         && !app.is_scanning
         && !app.is_fixing
         && has_scanned(app)
-        && app.has_pending_reboot()
-        && app.issues.iter().all(|i| i.is_fixed || i.is_reboot_pending)
+        && app.restart_pending()
+        && app
+            .issues
+            .iter()
+            .all(|i| i.is_fixed || waits_for_restart(i))
 }
 
 /// After a scan or a repair: how the PC is doing, and the next step.
@@ -198,7 +202,14 @@ fn result(ui: &mut egui::Ui, app: &mut App) {
     if asks_for_restart(app) {
         headline(ui, "Almost done", Some(palette.amber));
         ui.add_space(4.0);
-        line(ui, "Restart Windows to finish the repair.");
+        line(
+            ui,
+            if app.repairs_waiting_for_restart() > 0 {
+                "Restart Windows to finish the repair."
+            } else {
+                "Windows is waiting for a restart to finish its updates."
+            },
+        );
         ui.add_space(20.0);
         ui.horizontal(|ui| {
             if theme::big_button(ui, "Restart now", true, true).clicked() {

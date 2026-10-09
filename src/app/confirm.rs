@@ -293,17 +293,14 @@ impl ConfirmRequest {
 
                 body
             }
+            // Not "repairs": Windows' own pending restart can be all there is.
             ConfirmRequest::RestartRequired { issues } => {
-                let mut body = vec![
-                    "One or more applied repairs require a system restart to take effect:"
-                        .to_string(),
-                    String::new(),
-                ];
+                let mut body = vec!["Restarting Windows finishes:".to_string(), String::new()];
                 for issue_title in issues {
                     body.push(format!("  • {}", issue_title));
                 }
                 body.push(String::new());
-                body.push("Restart the system now to complete these repairs?".to_string());
+                body.push("Restart Windows now?".to_string());
                 body
             }
             ConfirmRequest::Unregister => vec![
@@ -342,10 +339,7 @@ impl App {
                         Some("Update notice dismissed - [U] reopens it.".to_string());
                 }
                 ConfirmRequest::RestartRequired { .. } => {
-                    self.status_message = Some(
-                        "Restart postponed. A system restart is pending to finalize repairs."
-                            .to_string(),
-                    );
+                    self.status_message = Some("Restart postponed.".to_string());
                 }
                 ConfirmRequest::Unregister => {
                     self.status_message = Some("Cancelled - nothing was changed.".to_string());
@@ -860,7 +854,8 @@ mod tests {
         let body = req.body().join("\n");
         assert!(body.contains("System reboot pending after updates"));
         assert!(body.contains("Page file disabled on every drive"));
-        assert!(body.contains("Restart the system now"));
+        assert!(body.starts_with("Restarting Windows finishes:"));
+        assert!(body.ends_with("Restart Windows now?"));
     }
 
     #[test]
