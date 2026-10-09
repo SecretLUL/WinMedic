@@ -422,7 +422,11 @@ mod tests {
             key_path: r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run".to_string(),
             file_path: r"C:\backups\b1.reg".to_string(),
         }];
-        app.vss_restore_points = vec!["2026-01-01 11:59 - WinMedic pre-repair".to_string()];
+        // A line of the captured list (tests/fixtures/README.md), as Settings
+        // gets it.
+        app.vss_restore_points = crate::safety::restore_point::settings_lines(
+            "255 | WinMedic Auto-Restore Point (before repairs) | 20261009201051.313055-000",
+        );
         app.audit_entries = vec![AuditEntry {
             timestamp: "2026-01-01 12:00:00".to_string(),
             action_type: "FIX".to_string(),
@@ -856,12 +860,15 @@ mod tests {
             "Startup entry removed",
             "Restore the selected snapshot",
             "Disabled a startup entry",
+            "255 | WinMedic Auto-Restore Point (before repairs) | ",
         ] {
             assert!(
                 harness.query_by_label_contains(expected).is_some(),
                 "the safety surface lost: {expected}"
             );
         }
+        // The restore point's time is a date, not the WMI string (#183).
+        assert!(harness.query_by_label_contains("20261009201051").is_none());
     }
 
     /// The red button only asks; removing happens in the dialog.
