@@ -157,17 +157,21 @@ impl AuditLogger {
         // 2. Append-only JSONL log (history.jsonl)
         self.rotate_if_needed(dir, "history", "jsonl");
         let history_file = dir.join("history.jsonl");
-        if let Ok(json_line) = serde_json::to_string(&entry)
-            && let Ok(mut f) = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(history_file)
+        if let Ok(mut f) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(history_file)
         {
-            let _ = writeln!(f, "{}", json_line);
+            append_entry(&mut f, &entry);
         }
     }
 
     /// Read history from JSONL log files in chronological order.
+    ///
+    /// Each line is read as a stream of entries: up to 0.8.0, two writers
+    /// appending at the same moment could glue their entries onto one line
+    /// (see `append_entry`), and reading one entry per line skipped it whole.
+    /// A damaged entry costs the rest of its line.
     pub fn get_history(&self) -> Vec<AuditEntry> {
         let mut entries = Vec::new();
         let Some(dir) = self.log_dir.as_deref() else {
@@ -179,12 +183,11 @@ impl AuditLogger {
         if let Ok(file) = File::open(&history_file) {
             let reader = BufReader::new(file);
             for line in reader.lines().map_while(Result::ok) {
-                let trimmed = line.trim();
-                if !trimmed.is_empty()
-                    && let Ok(entry) = serde_json::from_str::<AuditEntry>(trimmed)
-                {
-                    entries.push(entry);
-                }
+                entries.extend(
+                    serde_json::Deserializer::from_str(&line)
+                        .into_iter::<AuditEntry>()
+                        .map_while(Result::ok),
+                );
             }
         }
 
@@ -204,10 +207,8 @@ impl AuditLogger {
                     .append(true)
                     .open(&jsonl_file)
             {
-                for entry in legacy_entries {
-                    if let Ok(line) = serde_json::to_string(&entry) {
-                        let _ = writeln!(f, "{}", line);
-                    }
+                for entry in &legacy_entries {
+                    append_entry(&mut f, entry);
                 }
             }
             let _ = std::fs::remove_file(legacy_file);
@@ -219,6 +220,16 @@ impl AuditLogger {
             .as_deref()
             .and_then(|dir| std::fs::read_to_string(dir.join("audit.log")).ok())
             .unwrap_or_default()
+    }
+}
+
+/// Append `entry` and its line break with one write. As two writes, another
+/// writer's entry could land in between: both on one line, an empty line
+/// after them.
+fn append_entry(file: &mut File, entry: &AuditEntry) {
+    if let Ok(mut line) = serde_json::to_string(entry) {
+        line.push('\n');
+        let _ = file.write_all(line.as_bytes());
     }
 }
 
@@ -306,6 +317,89 @@ mod tests {
         let raw = logger.get_raw_log();
         assert!(raw.contains("SFC Scan"));
         assert!(raw.contains("Temp Cleanup"));
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    /// Writers appending at the same moment, as the window and the scheduled
+    /// background scan can: every entry stays on a line of its own.
+    #[test]
+    fn writers_at_the_same_moment_keep_one_entry_per_line() {
+        let temp_dir = std::env::temp_dir().join("winmedic_audit_test_writers");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let logger = AuditLogger::with_dir_and_size(temp_dir.clone(), MAX_LOG_FILE_BYTES);
+
+        std::thread::scope(|s| {
+            for writer in 0..8 {
+                let logger = &logger;
+                s.spawn(move || {
+                    for entry in 0..100 {
+                        let title = format!("Writer {writer}, entry {entry}");
+                        logger.log("SCAN", "test_mod", &title, "SUCCESS", "");
+                    }
+                });
+            }
+        });
+
+        let text = std::fs::read_to_string(temp_dir.join("history.jsonl")).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 800);
+        for line in lines {
+            assert!(
+                serde_json::from_str::<AuditEntry>(line).is_ok(),
+                "not one entry: {line}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    /// The first 24 lines of the development PC's history.jsonl, written on
+    /// 14 August 2026 by tests running side by side: 25 entries, five lines
+    /// with two to four of them glued together, eight empty lines. One entry
+    /// per line read 11 of them.
+    const GLUED_LINES: &[u8] = include_bytes!("../../tests/fixtures/files/history_glued_lines.bin");
+
+    #[test]
+    fn entries_glued_onto_one_line_are_all_read() {
+        let temp_dir = std::env::temp_dir().join("winmedic_audit_test_glued");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("history.jsonl"), GLUED_LINES).unwrap();
+
+        let history =
+            AuditLogger::with_dir_and_size(temp_dir.clone(), MAX_LOG_FILE_BYTES).get_history();
+
+        assert_eq!(history.len(), 25);
+        // The first glued line, in the order it was written.
+        assert_eq!(history[4].module_id, "storage");
+        assert_eq!(history[5].module_id, "system_integrity");
+        assert_eq!(history[5].title, "System-Integrität (DISM / SFC / VSS)");
+        // The last line holds four.
+        let last = history.last().unwrap();
+        assert_eq!(
+            (last.module_id.as_str(), last.timestamp.as_str()),
+            ("windows_updates", "2026-08-14 17:06:39")
+        );
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    /// A damaged entry costs the rest of its line, not the entries after it.
+    #[test]
+    fn a_damaged_entry_costs_only_the_rest_of_its_line() {
+        let temp_dir = std::env::temp_dir().join("winmedic_audit_test_damaged");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let text = String::from_utf8(GLUED_LINES.to_vec()).unwrap();
+        let first = text.lines().next().unwrap();
+        let damaged = format!("{first}{{\"timestamp\":\"2026-08-14\n{first}\n");
+        std::fs::write(temp_dir.join("history.jsonl"), damaged).unwrap();
+
+        let history =
+            AuditLogger::with_dir_and_size(temp_dir.clone(), MAX_LOG_FILE_BYTES).get_history();
+
+        assert_eq!(history.len(), 2);
 
         let _ = std::fs::remove_dir_all(temp_dir);
     }
