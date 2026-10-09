@@ -5,7 +5,7 @@
 //! outranks a setting being edited, which in turn outranks the help sheet.
 //! [`crate::app::input`] enforces exactly the same order for the keyboard.
 
-use crate::app::App;
+use crate::app::{App, ConfirmRequest};
 use crate::gui::theme;
 use eframe::egui::{self, RichText};
 
@@ -35,6 +35,9 @@ fn confirm(ctx: &egui::Context, app: &mut App) {
     let body = request.body();
     let confirm_label = request.confirm_label();
     let dismiss_label = request.dismiss_label();
+    // Red like the button that asked, so the dialog does not make taking
+    // WinMedic out of Windows look like the step everyone takes.
+    let removes = matches!(request, ConfirmRequest::Unregister);
 
     let mut confirmed = false;
     let mut dismissed = false;
@@ -58,7 +61,12 @@ fn confirm(ctx: &egui::Context, app: &mut App) {
         ui.separator();
 
         ui.horizontal(|ui| {
-            if ui.button(confirm_label).clicked() {
+            let confirm = if removes {
+                theme::danger_button(ui, confirm_label)
+            } else {
+                ui.button(confirm_label)
+            };
+            if confirm.clicked() {
                 confirmed = true;
             }
             if ui.button(dismiss_label).clicked() {

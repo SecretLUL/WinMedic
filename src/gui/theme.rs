@@ -3,8 +3,8 @@
 //! Deliberately plain. The window uses egui's stock light and dark visuals,
 //! follows the Windows app theme, and draws in Segoe UI at the density of a
 //! regular Windows tool. Colour is kept for what it means — severity, the
-//! outcome of a check or repair, and what is ticked — and not spent on
-//! decoration.
+//! outcome of a check or repair, what is ticked and the one button that takes
+//! something away — and not spent on decoration.
 
 use crate::engine::issue::Severity;
 use eframe::egui::{self, Color32, RichText, Stroke};
@@ -40,6 +40,10 @@ const LIGHT: Palette = Palette {
     accent: Color32::from_rgb(0, 95, 184),
     on_accent: Color32::WHITE,
 };
+
+/// The fill of a button that takes something away, in either theme: Windows
+/// 11's critical red, which carries white text at 5.7:1.
+const DANGER: Color32 = Color32::from_rgb(196, 43, 28);
 
 pub fn palette(ui: &egui::Ui) -> Palette {
     palette_of(ui.visuals())
@@ -285,11 +289,41 @@ pub fn big_button(ui: &mut egui::Ui, text: &str, primary: bool, enabled: bool) -
     ui.add_enabled(enabled, button)
 }
 
-/// How much of a ticked box's accent still shows over the panel under the
-/// pointer, and while it is pressed: Windows fades its accent controls
-/// toward the background the same way.
+/// A button that takes something away, filled red.
+pub fn danger_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    filled_button(ui, RichText::new(text), DANGER, Color32::WHITE)
+}
+
+/// How much of a filled control's colour still shows over the panel under
+/// the pointer, and while it is pressed. Windows fades its accent controls
+/// the same way, by a tenth and a fifth; a little less here, so that the text
+/// on them keeps 4.5:1 in every state.
 const HOVERED: f32 = 0.92;
 const PRESSED: f32 = 0.85;
+
+/// A button in `fill` with its label in `text`, fading toward the panel
+/// under the pointer the way a Windows accent button does.
+fn filled_button(
+    ui: &mut egui::Ui,
+    label: RichText,
+    fill: Color32,
+    text: Color32,
+) -> egui::Response {
+    ui.scope(|ui| {
+        let panel = ui.visuals().panel_fill;
+        let widgets = &mut ui.visuals_mut().widgets;
+        for (state, share) in [
+            (&mut widgets.inactive, 1.0),
+            (&mut widgets.hovered, HOVERED),
+            (&mut widgets.active, PRESSED),
+        ] {
+            state.weak_bg_fill = panel.lerp_to_gamma(fill, share);
+            state.bg_stroke = Stroke::NONE;
+        }
+        ui.add(egui::Button::new(label.color(text)))
+    })
+    .inner
+}
 
 /// The side of a checkbox, in points.
 const CHECKBOX: f32 = 16.0;
@@ -455,10 +489,11 @@ pub(crate) mod tests {
     }
 
     /// In both themes a ticked box stands out from the panel and its tick
-    /// from the box, at rest, under the pointer and pressed, and a clear one
-    /// keeps its outline: WCAG's 3:1 for a control.
+    /// from the box, and a clear one keeps its outline, at WCAG's 3:1 for a
+    /// control; the text on the red button stays at 4.5:1. Both at rest,
+    /// under the pointer and pressed.
     #[test]
-    fn checkboxes_stay_legible() {
+    fn checkboxes_and_filled_buttons_stay_legible() {
         let ctx = egui::Context::default();
         apply(&ctx);
         for theme in [egui::Theme::Dark, egui::Theme::Light] {
@@ -489,6 +524,8 @@ pub(crate) mod tests {
                     panel.lerp_to_gamma(palette.accent, share),
                 );
                 assert!(tick >= 3.0, "{theme:?}: tick at {share}: {tick:.2}:1");
+                let text = contrast(Color32::WHITE, panel.lerp_to_gamma(DANGER, share));
+                assert!(text >= 4.5, "{theme:?}: red button at {share}: {text:.2}:1");
             }
         }
     }

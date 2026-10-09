@@ -743,6 +743,21 @@ mod tests {
         }
     }
 
+    /// The red button only asks; removing happens in the dialog.
+    #[test]
+    fn the_remove_button_asks_first() {
+        let mut app = fresh_app();
+        app.active_tab = TAB_SETTINGS;
+        let mut harness = window(app);
+
+        harness.get_by_label("Remove WinMedic from Windows").click();
+        harness.run();
+        assert!(matches!(
+            harness.state().pending_confirm,
+            Some(ConfirmRequest::Unregister)
+        ));
+    }
+
     /// A confirmation is a question about the machine, and it has to be visible
     /// whichever view the user happened to be on when it was raised.
     #[test]
