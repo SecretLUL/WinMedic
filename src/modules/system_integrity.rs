@@ -1,10 +1,13 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
+use crate::modules::feature_rollback::{self, Rollback};
 use crate::modules::install_media::{self, Media};
+use crate::modules::service_chain;
+use crate::modules::tweaks::device_name;
 use crate::modules::{
     DiagnosticModule, FixProgress, ModuleProgress, SERVICING_TIMEOUT, console_lines,
 };
 use crate::utils::cmd::{CmdOutput, CommandRunner, SystemCommandRunner};
-use crate::utils::service::{self, SERVICE_DISABLED};
+use crate::utils::service::{self, SERVICE_DISABLED, SERVICE_RUNNING};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -638,6 +641,119 @@ impl SystemIntegrityModule {
         ))
     }
 
+    /// The feature installations Windows rolled back that no later one
+    /// made good, from the ends of the CBS logs.
+    /// Off the runtime: confirming a rollback reads the logs whole.
+    async fn feature_rollbacks(&self) -> Vec<Rollback> {
+        let logs = feature_rollback::cbs_logs(&self.cbs_log);
+        tokio::task::spawn_blocking(move || {
+            feature_rollback::rollbacks_in(&logs, feature_rollback::TAIL_BYTES)
+        })
+        .await
+        .unwrap_or_default()
+    }
+
+    /// Why the service an installer waits for does not run: the cause, the
+    /// recommendation, its steps, and lines for the technical details.
+    async fn why_not_running(&self, service: &str) -> (String, String, Vec<String>, Vec<String>) {
+        let devices = self.runner.connected_devices().await.unwrap_or_default();
+        let chains = service_chain::chains_from_service(&*self.runner, &devices, service)
+            .await
+            .unwrap_or_default();
+        if let Some(chain) = chains.first() {
+            let name = device_name(&chain.device);
+            let sentences: Vec<String> = chains
+                .iter()
+                .map(|chain| chain.sentence(&device_name(&chain.device)))
+                .collect();
+            return (
+                format!("The installer waits for {service}. {}", sentences.join(" ")),
+                format!("Repair '{name}' first, restart Windows, then install the feature again"),
+                vec![format!(
+                    "Repair '{name}' with its finding under Tweaks & Policies or Devices & Drivers, then restart Windows"
+                )],
+                chains.iter().map(service_chain::Chain::details).collect(),
+            );
+        }
+        match service::state(&*self.runner, service).await {
+            Ok(Some(SERVICE_RUNNING)) => (
+                format!(
+                    "The installer waits for {service}, which runs now, so installing the feature again should go through."
+                ),
+                "Install the feature again".to_string(),
+                Vec::new(),
+                Vec::new(),
+            ),
+            _ => (
+                format!("The installer waits for {service}, which is not running."),
+                format!("Find out why {service} does not start, then install the feature again"),
+                vec![format!(
+                    "Event Viewer -> Windows Logs -> System: the Service Control Manager's events about {service}"
+                )],
+                Vec::new(),
+            ),
+        }
+    }
+
+    /// The finding for a rolled-back installation. Advice: what the
+    /// installer waited for is repaired where it is reported, and only the
+    /// user can start the installation again.
+    async fn rollback_issue(&self, rollback: &Rollback) -> Issue {
+        let entry = feature_rollback::installer(&rollback.guid);
+        let what = entry.map_or("a Windows feature", |entry| entry.features);
+        let mut details = vec![
+            format!(
+                "CBS: Failed execution of queue item Installer: {} ({}) with HRESULT {}, then CBS_E_INSTALLERS_FAILED (0x800f0922)",
+                rollback.installer, rollback.guid, rollback.hresult
+            ),
+            format!("At: {}", rollback.at),
+        ];
+        if !rollback.components.is_empty() {
+            details.push(format!("Components: {}", rollback.components.join(", ")));
+        }
+        let (cause, recommendation, mut steps) = match entry {
+            Some(entry) => {
+                details.push(format!("Waits for: {}", entry.service));
+                let (cause, recommendation, steps, chains) =
+                    self.why_not_running(entry.service).await;
+                details.extend(chains);
+                (cause, recommendation, steps)
+            }
+            None => (
+                "WinMedic does not know what this installer waits for.".to_string(),
+                "Install the feature again; if it is rolled back again, look up the installer's error"
+                    .to_string(),
+                Vec::new(),
+            ),
+        };
+        steps.push(
+            "Install the feature again: Settings -> System -> Optional features -> More Windows features"
+                .to_string(),
+        );
+        let id: String = rollback
+            .guid
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .map(|c| if c == '-' { '_' } else { c })
+            .collect();
+        Issue::new(
+            format!("sys_feature_rolled_back_{id}"),
+            self.id(),
+            format!("Installing {what} was rolled back"),
+            "System Integrity",
+            Severity::Warning,
+            RiskScore::Low,
+            format!(
+                "On {} Windows rolled back installing {what}: its {} failed with {}. {cause}",
+                rollback.at, rollback.installer, rollback.hresult
+            ),
+            details.join("\n"),
+            recommendation,
+            steps,
+        )
+        .with_advice_only()
+    }
+
     fn cbs_log_len(&self) -> u64 {
         std::fs::metadata(&self.cbs_log).map_or(0, |m| m.len())
     }
@@ -1025,7 +1141,19 @@ impl DiagnosticModule for SystemIntegrityModule {
             }
         }
 
-        // 4. Windows Recovery Environment
+        // 4. Feature installations Windows rolled back
+        Self::send_progress(
+            &progress_tx,
+            96,
+            "Checking for feature installations Windows rolled back...",
+            Some("CBS.log and CbsPersist logs: failed advanced installers"),
+        )
+        .await;
+        for rollback in self.feature_rollbacks().await {
+            issues.push(self.rollback_issue(&rollback).await);
+        }
+
+        // 5. Windows Recovery Environment
         match self.winre_state() {
             Some(false) => issues.push(Issue::new(
                 "sys_winre_disabled",
@@ -2429,5 +2557,190 @@ mod tests {
         ] {
             assert_eq!(crate::utils::cmd::powershell_parse_errors(&script).await, 0);
         }
+    }
+
+    // Cut from the development PC's CBS logs of 2026-10-08: the Container
+    // Installer failing and the start that rolled it back, at 20:50 and at
+    // 21:14, and the start at 23:01 that installed Windows Sandbox. See
+    // tests/fixtures/README.md.
+    const CBS_ROLLED_BACK: &[u8] =
+        include_bytes!("../../tests/fixtures/files/cbs_container_installer_rolled_back.bin");
+    const CBS_ROLLED_BACK_AGAIN: &[u8] =
+        include_bytes!("../../tests/fixtures/files/cbs_container_installer_rolled_back_again.bin");
+    const CBS_INSTALLED: &[u8] =
+        include_bytes!("../../tests/fixtures/files/cbs_container_installer_installed.bin");
+
+    const ROLLED_BACK_ID: &str = "sys_feature_rolled_back_9edf0f01_ef44_4c87_ac5a_8aad730137ab";
+
+    /// A folder like `C:\Windows\Logs\CBS` with these logs and an empty
+    /// CBS.log, removed when the test ends.
+    struct CbsFolder(PathBuf);
+
+    impl CbsFolder {
+        fn new(tag: &str, logs: &[(&str, &[u8])]) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("winmedic_cbs_{tag}_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            for (name, bytes) in logs {
+                std::fs::write(dir.join(name), bytes).unwrap();
+            }
+            std::fs::write(dir.join("CBS.log"), b"").unwrap();
+            Self(dir)
+        }
+
+        fn module(&self, mock: MockCommandRunner) -> SystemIntegrityModule {
+            SystemIntegrityModule::with_runner_and_cbs_log(Arc::new(mock), self.0.join("CBS.log"))
+                .with_reagent_xml(std::env::temp_dir().join("winmedic-test-no-such-ReAgent.xml"))
+                .with_downloads(None)
+        }
+    }
+
+    impl Drop for CbsFolder {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The development PC's logs on the evening of 2026-10-08: two
+    /// rollbacks, and with `installed` the installation that followed.
+    fn dev_pc_cbs(tag: &str, installed: bool) -> CbsFolder {
+        let mut logs: Vec<(&str, &[u8])> = vec![
+            ("CbsPersist_20261008190827.log", CBS_ROLLED_BACK),
+            ("CbsPersist_20261008192300.log", CBS_ROLLED_BACK_AGAIN),
+        ];
+        if installed {
+            logs.push(("CbsPersist_20261008212907.log", CBS_INSTALLED));
+        }
+        CbsFolder::new(tag, &logs)
+    }
+
+    fn hypervisor_service(problem: u32) -> crate::utils::pnp::PnpDevice {
+        crate::utils::pnp::PnpDevice {
+            problem,
+            class: "System".to_string(),
+            instance_id: r"ROOT\HVSERVICE\0000".to_string(),
+            name: "Microsoft-Hypervisor-Dienst".to_string(),
+            service: "hvservice".to_string(),
+        }
+    }
+
+    async fn rollback_findings(folder: &CbsFolder, mock: MockCommandRunner) -> Vec<Issue> {
+        mock.add_response("dism.exe", dism_says(HEALTHY));
+        healthy_vss(&mock);
+        folder
+            .module(mock)
+            .scan(None)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|issue| issue.id.starts_with("sys_feature_rolled_back_"))
+            .collect()
+    }
+
+    /// The evening of 2026-10-08 before the fix: Windows Sandbox rolled
+    /// back, CmService not starting because HvHost stopped with 31, the
+    /// device behind it disabled.
+    #[tokio::test]
+    async fn a_rolled_back_installation_names_what_the_installer_waited_for() {
+        let folder = dev_pc_cbs("rolled_back", false);
+        let mock = crate::modules::service_chain::test_support::dev_pc_services(31);
+        mock.set_devices(vec![hypervisor_service(22)]);
+        let found = rollback_findings(&folder, mock).await;
+        assert_eq!(found.len(), 1, "{found:?}");
+        let issue = &found[0];
+        assert_eq!(issue.id, ROLLED_BACK_ID);
+        assert_eq!(
+            issue.title,
+            "Installing Windows Sandbox or another container feature was rolled back"
+        );
+        assert_eq!(
+            issue.description,
+            "On 2026-10-08 21:19:36 Windows rolled back installing Windows Sandbox or another container feature: its Container Installer failed with HRESULT_FROM_WIN32(1753). The installer waits for CmService. Container-Manager-Dienst (CmService) cannot start: HV-Hostdienst (HvHost) failed (exit code 31) because the device 'Microsoft Hypervisor Service' is disabled."
+        );
+        assert!(issue.advice_only && !issue.is_selected);
+        assert_eq!(
+            issue.recommended_fix,
+            "Repair 'Microsoft Hypervisor Service' first, restart Windows, then install the feature again"
+        );
+        for line in [
+            "Components: Microsoft-Windows-Containers-DisposableClientVM 10.0.26100.9549, Microsoft-Windows-Professional-Config 10.0.26100.9550",
+            "Waits for: CmService",
+            r"Service chain: CmService (exit code 1068) -> HvHost (exit code 31) -> driver hvservice -> device ROOT\HVSERVICE\0000 (problem code 22)",
+        ] {
+            assert!(
+                issue.technical_details.contains(line),
+                "{}",
+                issue.technical_details
+            );
+        }
+    }
+
+    /// The development PC today: Windows Sandbox installed at 23:01.
+    #[tokio::test]
+    async fn a_later_installation_of_the_same_feature_is_no_finding() {
+        let folder = dev_pc_cbs("installed", true);
+        let found = rollback_findings(&folder, MockCommandRunner::new()).await;
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    /// The device works again but the feature was not installed since: the
+    /// rollback stands, and the advice is to install again.
+    #[tokio::test]
+    async fn a_rollback_whose_service_runs_now_says_to_install_again() {
+        let folder = dev_pc_cbs("runs_now", false);
+        let mock = crate::modules::service_chain::test_support::listing(&[(
+            "CmService",
+            "Container-Manager-Dienst",
+            4,
+            0,
+        )]);
+        mock.add_response(
+            "query CmService",
+            CmdOutput::ok(crate::utils::service::test_support::sc_query_output(
+                "CmService",
+                4,
+            )),
+        );
+        mock.set_devices(vec![hypervisor_service(0)]);
+        let found = rollback_findings(&folder, mock).await;
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found[0]
+                .description
+                .ends_with("The installer waits for CmService, which runs now, so installing the feature again should go through."),
+            "{}",
+            found[0].description
+        );
+        assert_eq!(found[0].recommended_fix, "Install the feature again");
+    }
+
+    /// An installer the table does not know: the rollback is reported,
+    /// without a guess at what it waited for.
+    #[tokio::test]
+    async fn a_rollback_of_another_installer_is_reported_without_a_cause() {
+        let other = String::from_utf8_lossy(CBS_ROLLED_BACK)
+            .replace(
+                "{9edf0f01-ef44-4c87-ac5a-8aad730137ab}",
+                "{00000000-1111-2222-3333-444444444444}",
+            )
+            .replace("Container Installer", "Other Installer");
+        let folder = CbsFolder::new(
+            "other",
+            &[("CbsPersist_20261008190827.log", other.as_bytes())],
+        );
+        let found = rollback_findings(&folder, MockCommandRunner::new()).await;
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(
+            found[0].title,
+            "Installing a Windows feature was rolled back"
+        );
+        assert!(
+            found[0].description.contains(
+                "its Other Installer failed with HRESULT_FROM_WIN32(1753). WinMedic does not know"
+            ),
+            "{}",
+            found[0].description
+        );
     }
 }

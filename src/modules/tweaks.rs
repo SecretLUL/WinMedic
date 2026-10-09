@@ -361,7 +361,7 @@ fn device_issue_id(instance_id: &str) -> String {
 }
 
 /// What a finding calls `device`: its entry's name, else its own.
-fn device_name(device: &PnpDevice) -> String {
+pub(crate) fn device_name(device: &PnpDevice) -> String {
     match core_device(&device.instance_id) {
         Some(entry) => entry.display.to_string(),
         None if device.name.trim().is_empty() => device.instance_id.clone(),
@@ -369,25 +369,11 @@ fn device_name(device: &PnpDevice) -> String {
     }
 }
 
-/// The chains in technical details: each service with its exit code, the
-/// driver and the device.
+/// The chains for technical details, one a line.
 fn chain_details(chains: &[&Chain]) -> String {
     chains
         .iter()
-        .map(|chain| {
-            let services: Vec<String> = chain
-                .services
-                .iter()
-                .map(|link| format!("{} (exit code {})", link.name, link.exit_code))
-                .collect();
-            format!(
-                "Service chain: {} -> driver {} -> device {} (problem code {})",
-                services.join(" -> "),
-                chain.driver,
-                chain.device.instance_id,
-                chain.device.problem
-            )
-        })
+        .map(|chain| chain.details())
         .collect::<Vec<_>>()
         .join("\n")
 }
