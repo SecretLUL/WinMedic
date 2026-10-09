@@ -342,7 +342,7 @@ impl DiagnosticModule for WheaLoggerModule {
                 .collect::<Vec<_>>()
                 .join("\n---\n");
 
-            issues.push(Issue::new(
+            let mut issue = Issue::new(
                 "whea_pcie_bus_error",
                 self.id(),
                 format!("WHEA PCI Express Root Port error(s) on {}", bdf_str),
@@ -363,7 +363,32 @@ impl DiagnosticModule for WheaLoggerModule {
                     "Check GPU / NVMe physical seating and PCIe riser cable integrity".to_string(),
                     "Update motherboard chipset and NVMe / GPU driver firmware".to_string(),
                 ],
-            ));
+            );
+
+            // The events stay in the window for a week after ASPM is off.
+            // With it off already the repair has nothing left to change, so
+            // the finding is advice; offered again, it reported a repair that
+            // changed nothing on every run. When powercfg cannot tell, the
+            // repair stays on offer and reads the setting itself.
+            match self.aspm_indices().await {
+                Ok((0, 0)) => {
+                    issue.description = format!(
+                        "{count} corrected PCIe hardware error(s) logged by WHEA. PCIe Link State Power Management (ASPM) is already off on mains and battery. If it was switched off after these errors, see whether new ones are logged; if they keep coming, the device, its slot or riser cable, or its firmware is the likelier cause."
+                    );
+                    issue.technical_details = format!(
+                        "ASPM: off on mains and battery\n{}",
+                        issue.technical_details
+                    );
+                    issue.recommended_fix =
+                        "Check the device's seating and riser cable, and update its firmware"
+                            .to_string();
+                    issue.fix_steps.remove(0);
+                    issue = issue.with_advice_only();
+                }
+                Ok(_) => {}
+                Err(err) => dbg.warn(format!("PCIe ASPM not read: {err}")).await,
+            }
+            issues.push(issue);
         }
 
         // 3. Memory Integrity Errors (Event 47)
@@ -534,8 +559,13 @@ impl WheaLoggerModule {
     /// values it had, so they can be set again.
     async fn switch_aspm_off(&self) -> Result<String, String> {
         let (ac, dc) = self.aspm_indices().await?;
+        // Off since the scan: nothing to change is no repair, and counted as
+        // one it was recorded as a success on every run.
         if (ac, dc) == (0, 0) {
-            return Ok("PCIe Link State Power Management is already off.".to_string());
+            return Err(
+                "PCIe Link State Power Management is already off on mains and battery; nothing was changed."
+                    .to_string(),
+            );
         }
         for args in [
             &ASPM_OFF_AC[..],
@@ -784,7 +814,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_scan_detects_pcie_root_port_issue() {
-        let issues = scan_with(whea_event(
+        let issues = scan_with(pcie_event()).await;
+
+        assert_eq!(issues.len(), 1);
+        let issue = &issues[0];
+        assert_eq!(issue.id, "whea_pcie_bus_error");
+        assert_eq!(issue.category, "Hardware & Stability");
+        assert!(issue.title.contains("0x0:0x1:0x1"));
+        // powercfg did not answer: the repair stays on offer and reads
+        // ASPM itself.
+        assert!(issue.will_repair() && !issue.advice_only);
+    }
+
+    fn pcie_event() -> String {
+        whea_event(
             17,
             3,
             &[
@@ -793,14 +836,54 @@ mod tests {
                 ("Function", "0x1"),
                 ("PrimaryDeviceName", r"PCI\VEN_1022&amp;DEV_1453"),
             ],
-        ))
-        .await;
+        )
+    }
 
-        assert_eq!(issues.len(), 1);
-        let issue = &issues[0];
-        assert_eq!(issue.id, "whea_pcie_bus_error");
-        assert_eq!(issue.category, "Hardware & Stability");
-        assert!(issue.title.contains("0x0:0x1:0x1"));
+    /// The module over a PCIe event and what `powercfg /query` prints for ASPM.
+    fn pcie_module(aspm: String) -> (WheaLoggerModule, MockCommandRunner) {
+        let mock = MockCommandRunner::new();
+        mock.add_response("wevtutil.exe", CmdOutput::ok(pcie_event()));
+        mock.add_response("/query", CmdOutput::ok(aspm));
+        let module = WheaLoggerModule::with_runner(ModuleConfig::default(), Arc::new(mock.clone()));
+        (module, mock)
+    }
+
+    /// The events stay for a week after ASPM was switched off. With it off,
+    /// the finding is advice, and a repair that finds it off changed nothing
+    /// and says so instead of reporting a success.
+    #[tokio::test]
+    async fn pcie_errors_with_aspm_already_off_are_advice() {
+        let (module, mock) = pcie_module(aspm_off_query());
+
+        let issues = module.scan(None).await.unwrap();
+        let issue = issues
+            .iter()
+            .find(|i| i.id == "whea_pcie_bus_error")
+            .expect("the errors are still reported");
+        assert!(issue.advice_only && !issue.will_repair());
+        assert!(
+            issue.description.contains("already off"),
+            "{}",
+            issue.description
+        );
+        assert!(!issue.fix_steps.iter().any(|s| s.contains("ASPM")));
+
+        let err = module.fix("whea_pcie_bus_error", None).await.unwrap_err();
+        assert!(err.contains("nothing was changed"), "{err}");
+        assert!(!mock.executed().iter().any(|c| c.contains("/set")));
+    }
+
+    #[tokio::test]
+    async fn pcie_errors_with_aspm_on_offer_to_switch_it_off() {
+        let (module, _) = pcie_module(real_aspm_query());
+
+        let issues = module.scan(None).await.unwrap();
+        let issue = issues
+            .iter()
+            .find(|i| i.id == "whea_pcie_bus_error")
+            .unwrap();
+        assert!(issue.will_repair() && !issue.advice_only);
+        assert!(issue.fix_steps[0].contains("ASPM"));
     }
 
     #[tokio::test]
