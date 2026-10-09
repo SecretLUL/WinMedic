@@ -421,6 +421,8 @@ pub fn keeps_services_grouped(threshold_kb: u64, ram_bytes: u64) -> bool {
 pub const WU_POLICY_KEY: &str = r"HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate";
 const WU_AU_POLICY_KEY: &str = r"HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU";
 const STORE_POLICY_KEY: &str = r"HKLM\SOFTWARE\Policies\Microsoft\WindowsStore";
+const DO_NOT_CONNECT: &str = "DoNotConnectToWindowsUpdateInternetLocations";
+pub const WU_CHECK_HIDDEN: &str = "tweak_policy_wu_check_hidden";
 /// Holds `EditionID`: `Professional`, `Enterprise`, `Education`, ...
 const CURRENT_VERSION_KEY: &str = r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion";
 
@@ -490,6 +492,14 @@ pub fn policy_hits(
         if registry::find(wu, WU_POLICY_KEY, "WUStatusServer").is_some() {
             values.push((WU_POLICY_KEY, "WUStatusServer"));
         }
+        // Keeps Windows from Microsoft's update servers, but only while it is
+        // pointed at an intranet one: "This policy applies only when the
+        // device is configured to connect to an intranet update service"
+        // (Microsoft Learn, "Manage additional Windows Update settings").
+        // Alone it does nothing, so it is no finding of its own.
+        if is_on(wu, WU_POLICY_KEY, DO_NOT_CONNECT) {
+            values.push((WU_POLICY_KEY, DO_NOT_CONNECT));
+        }
         hits.push(PolicyHit {
             id: "tweak_policy_wsus",
             title: "Windows Update is pointed at a WSUS server",
@@ -499,24 +509,29 @@ pub fn policy_hits(
         });
     }
 
-    let blocking: Vec<(&'static str, &'static str)> = [
-        (WU_POLICY_KEY, "DisableWindowsUpdateAccess"),
-        (WU_POLICY_KEY, "SetDisableUXWUAccess"),
-        (
-            WU_POLICY_KEY,
-            "DoNotConnectToWindowsUpdateInternetLocations",
-        ),
-    ]
-    .into_iter()
-    .filter(|(key, name)| is_on(wu, key, name))
-    .collect();
-    if !blocking.is_empty() {
+    // "Turn off access to all Windows Update features": no updates at all.
+    if is_on(wu, WU_POLICY_KEY, "DisableWindowsUpdateAccess") {
         hits.push(PolicyHit {
             id: "tweak_policy_wu_blocked",
             title: "Windows Update is blocked by policy",
             severity: Severity::Critical,
-            description: "A policy hides or disables Windows Update. Security updates stop, and so do the repairs DISM downloads from Windows Update.",
-            values: blocking,
+            description: "A policy turns off access to all Windows Update features. Security updates stop, and so do the repairs DISM downloads from Windows Update.",
+            values: vec![(WU_POLICY_KEY, "DisableWindowsUpdateAccess")],
+        });
+    }
+
+    // "Remove access to use all Windows Update features" only switches the
+    // button off: "Any background update scans, downloads, and
+    // installations will continue to work as configured" (Microsoft Learn,
+    // "Manage additional Windows Update settings"). A hint, whose repair
+    // gives the button back.
+    if is_on(wu, WU_POLICY_KEY, "SetDisableUXWUAccess") {
+        hits.push(PolicyHit {
+            id: WU_CHECK_HIDDEN,
+            title: "'Check for updates' is switched off by policy",
+            severity: Severity::Info,
+            description: "A policy switches off 'Check for updates' in Settings, so updates cannot be looked for by hand. Windows still scans for, downloads and installs updates in the background.",
+            values: vec![(WU_POLICY_KEY, "SetDisableUXWUAccess")],
         });
     }
 
@@ -2058,6 +2073,132 @@ mod tests {
         assert!(drivers_excluded_from_updates(&key("0x1")));
         assert!(!drivers_excluded_from_updates(&key("0x0")));
         assert!(!drivers_excluded_from_updates(&[]));
+    }
+
+    /// `reg query /s` of the captured WindowsUpdate policy key with `values`
+    /// added to it and `au` to its `AU` subkey, in the captured shape.
+    fn wu_policy_with(values: &[&str], au: &[&str]) -> String {
+        let line = |name: &&str| format!("    {name}    REG_DWORD    0x1\r\n");
+        let mut out = decode_output(WU_POLICY).replace(
+            "0x1\r\n",
+            &format!("0x1\r\n{}", values.iter().map(line).collect::<String>()),
+        );
+        if !au.is_empty() {
+            out.push_str(&format!(
+                "HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU\r\n{}\r\n",
+                au.iter().map(line).collect::<String>()
+            ));
+        }
+        out
+    }
+
+    fn wu_hits(values: &[&str], au: &[&str]) -> Vec<PolicyHit> {
+        policy_hits(
+            &registry::parse_reg_query(&wu_policy_with(values, au)),
+            &[],
+            None,
+        )
+    }
+
+    /// "Remove access to use all Windows Update features" switches off the
+    /// button; Windows goes on updating in the background.
+    #[test]
+    fn check_for_updates_switched_off_is_a_hint_not_blocked_updates() {
+        let hits = wu_hits(&["SetDisableUXWUAccess"], &[]);
+        let ids: Vec<&str> = hits.iter().map(|hit| hit.id).collect();
+        assert_eq!(ids, [WU_CHECK_HIDDEN]);
+        let hit = &hits[0];
+        assert_eq!(hit.severity, Severity::Info);
+        assert_eq!(hit.values, [(WU_POLICY_KEY, "SetDisableUXWUAccess")]);
+        assert!(
+            !hit.description.contains("Security updates stop"),
+            "{}",
+            hit.description
+        );
+        assert!(hit.description.contains("still"), "{}", hit.description);
+    }
+
+    /// Without an intranet update server the value does nothing; with one,
+    /// it belongs to that finding, whose repair removes it too.
+    #[test]
+    fn do_not_connect_counts_only_with_an_intranet_server() {
+        assert!(wu_hits(&[DO_NOT_CONNECT], &[]).is_empty());
+
+        // The server's address added as the wsus tests type it.
+        let wu = wu_policy_with(&[DO_NOT_CONNECT], &["UseWUServer"]).replacen(
+            "0x1\r\n",
+            "0x1\r\n    WUServer    REG_SZ    http://wsus.corp:8530\r\n",
+            1,
+        );
+        let hits = policy_hits(&registry::parse_reg_query(&wu), &[], None);
+        let ids: Vec<&str> = hits.iter().map(|hit| hit.id).collect();
+        assert_eq!(ids, ["tweak_policy_wsus"]);
+        assert_eq!(
+            hits[0].values,
+            [
+                (WU_POLICY_KEY, "WUServer"),
+                (WU_AU_POLICY_KEY, "UseWUServer"),
+                (WU_POLICY_KEY, DO_NOT_CONNECT),
+            ]
+        );
+    }
+
+    #[test]
+    fn turning_off_all_of_windows_update_is_still_blocked() {
+        let hits = wu_hits(&["DisableWindowsUpdateAccess", "SetDisableUXWUAccess"], &[]);
+        let ids: Vec<&str> = hits.iter().map(|hit| hit.id).collect();
+        assert_eq!(ids, ["tweak_policy_wu_blocked", WU_CHECK_HIDDEN]);
+        assert_eq!(hits[0].severity, Severity::Critical);
+        assert_eq!(
+            hits[0].values,
+            [(WU_POLICY_KEY, "DisableWindowsUpdateAccess")]
+        );
+    }
+
+    /// The hint is offered unticked, and its repair removes the one value
+    /// and reads the key back.
+    #[tokio::test]
+    async fn the_check_for_updates_hint_is_cleared_by_removing_its_value() {
+        let dir = sandbox("wu_check_hidden");
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            format!("query {WU_POLICY_KEY}"),
+            CmdOutput::ok(wu_policy_with(&["SetDisableUXWUAccess"], &[])),
+        );
+        mock.add_response_after(
+            "reg.exe delete",
+            format!("query {WU_POLICY_KEY}"),
+            CmdOutput::ok(decode_output(WU_POLICY)),
+        );
+        mock.add_response("reg.exe delete", CmdOutput::ok(""));
+        healthy(&mock);
+        let module = module(mock.clone(), &dir, b"");
+
+        let issues = module.scan(None).await.unwrap();
+        let ids: Vec<&str> = issues.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, [WU_CHECK_HIDDEN]);
+        assert_eq!(issues[0].severity, Severity::Info);
+        assert!(!issues[0].is_selected && !issues[0].advice_only);
+        assert_eq!(
+            issues[0].fix_steps,
+            [format!(
+                "reg delete \"{WU_POLICY_KEY}\" /v SetDisableUXWUAccess /f"
+            )]
+        );
+
+        let msg = module.fix(WU_CHECK_HIDDEN, None).await.unwrap();
+        assert!(msg.contains("SetDisableUXWUAccess"), "{msg}");
+        let deletes: Vec<String> = mock
+            .executed()
+            .into_iter()
+            .filter(|c| c.starts_with("reg.exe delete"))
+            .collect();
+        assert_eq!(
+            deletes,
+            [format!(
+                "reg.exe delete {WU_POLICY_KEY} /v SetDisableUXWUAccess /f"
+            )]
+        );
     }
 
     /// `reg query` of the Store policy key with `RemoveWindowsStore` 1 and,

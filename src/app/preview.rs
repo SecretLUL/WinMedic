@@ -53,6 +53,9 @@ impl Benefit {
             "sys_wmi_broken" | "tweak_policy_store_off" | "tweak_hosts_blocks_windows" => {
                 Benefit::WindowsParts
             }
+            // Only a policy that stops updates. 'Check for updates' switched
+            // off by policy (`tweak_policy_wu_check_hidden`) stops none, so
+            // removing it promises nothing here.
             "tweak_policy_wu_blocked"
             | "tweak_policy_no_auto_update"
             | "tweak_policy_wsus"
@@ -298,6 +301,24 @@ mod tests {
             app.repair_preview().health_after,
             90,
             "only the unticked warning is left"
+        );
+    }
+
+    /// Windows goes on installing updates while 'Check for updates' is
+    /// switched off, so giving the button back does not make Windows Update
+    /// work again.
+    #[test]
+    fn only_a_policy_that_stops_updates_promises_working_updates() {
+        assert_eq!(
+            Benefit::of(&issue(
+                crate::modules::tweaks::WU_CHECK_HIDDEN,
+                Severity::Info
+            )),
+            None
+        );
+        assert_eq!(
+            Benefit::of(&issue("tweak_policy_wu_blocked", Severity::Critical)),
+            Some(Benefit::Updates)
         );
     }
 
