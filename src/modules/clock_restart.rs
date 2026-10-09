@@ -31,6 +31,11 @@ const CLOCK_CRITICAL_SECS: f64 = 3600.0;
 /// Running this long without a restart is worth a finding.
 const RESTART_OVERDUE_DAYS: u64 = 14;
 
+/// The finding for Windows running [`RESTART_OVERDUE_DAYS`] or longer. With
+/// Fast Startup on it is a warning whose repair turns Fast Startup off; with
+/// it off, information and advice: only the user can restart.
+pub const RESTART_OVERDUE: &str = "restart_overdue";
+
 const SESSION_POWER_KEY: &str = r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power";
 const POWER_KEY: &str = r"HKLM\SYSTEM\CurrentControlSet\Control\Power";
 /// "Require use of fast startup" (WinInit.admx): 1 forces it on, anything
@@ -222,8 +227,9 @@ impl ClockRestartModule {
 
     async fn fix_restart(&self) -> Result<String, String> {
         let state = self.fast_startup().await?;
+        // Turned off since the scan: the restart is what is left.
         if !state.active() {
-            return Ok("No change was made. Restart Windows (Start -> Power -> Restart) to start it fresh.".to_string());
+            return Ok("Fast Startup is already off: \"Shut down\" ends Windows completely. Restart once now to start fresh.".to_string());
         }
         if state.policy == Some(1) {
             return Err("A group policy (\"Require use of fast startup\") keeps Fast Startup on. Nothing was changed; restart Windows with Start -> Power -> Restart instead.".to_string());
@@ -389,8 +395,8 @@ impl DiagnosticModule for ClockRestartModule {
                 }
             );
             let issue = if fast {
-                Issue::new(
-                    "restart_overdue",
+                let mut issue = Issue::new(
+                    RESTART_OVERDUE,
                     self.id(),
                     format!("Windows has not restarted in {days} days"),
                     "Clock & Restart",
@@ -406,9 +412,16 @@ impl DiagnosticModule for ClockRestartModule {
                         "Restart Windows".to_string(),
                     ],
                 )
+                .with_requires_reboot(true);
+                // Turning Fast Startup off trades boot speed for it; that is
+                // the user's call, not an unattended repair's.
+                issue.is_selected = false;
+                issue
             } else {
+                // Advice: as a repair it changed nothing, and then waited for
+                // the restart as if it had.
                 Issue::new(
-                    "restart_overdue",
+                    RESTART_OVERDUE,
                     self.id(),
                     format!("Windows has not restarted in {days} days"),
                     "Clock & Restart",
@@ -418,14 +431,11 @@ impl DiagnosticModule for ClockRestartModule {
                         "Windows has been running for {days} days; sleep does not end it. Stuck drivers, leaked memory and half-installed updates are carried along until a restart, which is the first thing to try when the PC has become slow or unreliable."
                     ),
                     details,
-                    "Restart Windows (nothing is changed)",
-                    vec!["Restart Windows".to_string()],
+                    "Restart Windows (Start -> Power -> Restart)",
+                    Vec::new(),
                 )
+                .with_advice_only()
             };
-            let mut issue = issue.with_requires_reboot(true);
-            // Turning Fast Startup off trades boot speed for it; that is the
-            // user's call, not an unattended repair's.
-            issue.is_selected = false;
             issues.push(issue);
         }
 
@@ -440,7 +450,7 @@ impl DiagnosticModule for ClockRestartModule {
     ) -> Result<String, String> {
         match issue_id {
             "clock_offset" => self.fix_clock().await,
-            "restart_overdue" => self.fix_restart().await,
+            RESTART_OVERDUE => self.fix_restart().await,
             _ => Err(format!("Unknown clock & restart issue id: {issue_id}")),
         }
     }
@@ -650,12 +660,17 @@ mod tests {
         assert!(issue.technical_details.contains("HiberbootEnabled: 1"));
     }
 
+    /// With Fast Startup off there is nothing to change: advice, which a
+    /// repair run leaves alone and nothing counts as waiting for a restart.
     #[tokio::test]
-    async fn weeks_without_a_restart_otherwise_are_information() {
+    async fn weeks_without_a_restart_otherwise_are_advice() {
         let issues = module(&machine(false), 20).scan(None).await.unwrap();
-        let issue = issues.iter().find(|i| i.id == "restart_overdue").unwrap();
+        let issue = issues.iter().find(|i| i.id == RESTART_OVERDUE).unwrap();
         assert_eq!(issue.severity, Severity::Info);
-        assert!(issue.requires_reboot);
+        assert!(issue.advice_only && !issue.will_repair());
+        assert!(!issue.requires_reboot);
+        assert!(issue.fix_steps.is_empty());
+        assert!(issue.recommended_fix.starts_with("Restart Windows"));
     }
 
     #[tokio::test]
@@ -700,14 +715,13 @@ mod tests {
         assert!(!mock.executed().iter().any(|c| c.contains("reg.exe add")));
     }
 
+    /// Fast Startup turned off between the scan and the repair: nothing to
+    /// turn off, the restart is what is left.
     #[tokio::test]
-    async fn without_fast_startup_the_restart_repair_changes_nothing() {
+    async fn fast_startup_turned_off_since_the_scan_is_left_as_it_is() {
         let mock = machine(false);
-        let msg = module(&mock, 20)
-            .fix("restart_overdue", None)
-            .await
-            .unwrap();
-        assert!(msg.starts_with("No change was made."), "{msg}");
+        let msg = module(&mock, 20).fix(RESTART_OVERDUE, None).await.unwrap();
+        assert!(msg.starts_with("Fast Startup is already off"), "{msg}");
         assert!(!mock.executed().iter().any(|c| c.contains("reg.exe add")));
     }
 
