@@ -84,18 +84,40 @@ fn real_reports_dir() -> std::path::PathBuf {
         .join("reports")
 }
 
+/// shutdown.exe returns as soon as Windows has accepted the restart or refused
+/// it, so it is waited for: a refusal keeps the window open and says so.
+///
+/// Without a window, or it gets a console of its own that flashes up: this
+/// process gave its console back. Without stdio, because there is none to pass
+/// on.
 fn real_restart_system() -> Result<(), String> {
-    std::process::Command::new(crate::utils::cmd::system_program("shutdown.exe")?)
-        .args([
-            "/r",
-            "/t",
-            "0",
-            "/c",
-            "WinMedic: Restarting to apply system repairs",
-        ])
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("Could not initiate restart: {}", e))
+    use std::process::Stdio;
+
+    let mut cmd = std::process::Command::new(crate::utils::cmd::system_program("shutdown.exe")?);
+    cmd.args([
+        "/r",
+        "/t",
+        "0",
+        "/c",
+        "WinMedic: Restarting to apply system repairs",
+    ])
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let status = cmd
+        .status()
+        .map_err(|e| format!("Could not initiate restart: {}", e))?;
+    match status.code() {
+        Some(0) => Ok(()),
+        Some(code) => Err(format!("shutdown.exe exited with code {code}")),
+        None => Err("shutdown.exe ended without an exit code".to_string()),
+    }
 }
 
 impl SystemActions {
@@ -852,6 +874,25 @@ mod tests {
 
         assert!(app.pending_confirm.is_none());
         assert!(app.should_quit);
+    }
+
+    /// A restart Windows refused leaves the window open and says why.
+    #[test]
+    fn a_refused_restart_keeps_the_window_open() {
+        let mut app = App::new();
+        app.system_actions.restart_system =
+            || Err("shutdown.exe exited with code 1190".to_string());
+        app.pending_confirm = Some(ConfirmRequest::RestartRequired {
+            issues: vec!["Page file disabled on every drive".to_string()],
+        });
+
+        app.confirm_pending_action();
+
+        assert!(!app.should_quit);
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("System restart failed: shutdown.exe exited with code 1190")
+        );
     }
 
     #[test]

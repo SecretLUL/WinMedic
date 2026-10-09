@@ -631,6 +631,9 @@ pub async fn run_cmd(
 ) -> Result<CmdOutput, String> {
     let mut cmd = TokioCommand::new(system_program(program)?);
     cmd.args(args);
+    // No command reads its input. Inherited, a command run from the command
+    // line would read the terminal.
+    cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     // Dropping the future (e.g. when the user cancels a running scan) must take
@@ -680,6 +683,9 @@ pub async fn run_cmd_streaming(
 ) -> Result<CmdOutput, String> {
     let mut cmd = TokioCommand::new(system_program(program)?);
     cmd.args(args);
+    // No command reads its input. Inherited, a command run from the command
+    // line would read the terminal.
+    cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     // Dropping the future (e.g. when the user cancels a running scan) must take

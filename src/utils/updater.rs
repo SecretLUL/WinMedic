@@ -415,11 +415,15 @@ pub fn launch_browser(url: &str) -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        use std::process::Command;
+        use std::process::{Command, Stdio};
         const CREATE_NO_WINDOW: u32 = 0x08000000;
 
         let mut cmd = Command::new(crate::utils::cmd::system_program("explorer.exe")?);
         cmd.arg(url);
+        // The window gave its console back; there is no stdio to pass on.
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
         cmd.creation_flags(CREATE_NO_WINDOW);
 
         cmd.spawn()
