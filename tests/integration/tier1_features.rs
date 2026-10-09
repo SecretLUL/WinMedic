@@ -428,7 +428,7 @@ fn test_tier1_f06_setup_logs_scan_filters_matching_extensions() {
 fn test_tier1_f06_setup_logs_clean_preserves_non_logs() {
     let ws = TempWorkspace::new("logs_clean");
     let dir = ws.create_dir("Logs");
-    let log_file = ws.create_file("Logs/cbs.log", &[1; 1000]);
+    let log_file = ws.create_file("Logs/setupact.log", &[1; 1000]);
     let exe_file = ws.create_file("Logs/driver.sys", &[2; 5000]);
 
     let clean = clean_log_dir_files(&dir);
@@ -443,7 +443,8 @@ fn test_tier1_f06_setup_logs_clean_preserves_non_logs() {
 fn test_tier1_f06_setup_logs_cbs_dism_mosetup_discovery() {
     let ws = TempWorkspace::new("setup_dirs");
     let p = ws.populate_mock_windows_tree();
-    ws.create_file("Windows/Logs/CBS/CBS.log", &[0; 500]);
+    // CBS.log is kept for System Integrity; its compressed archives are not.
+    ws.create_file("Windows/Logs/CBS/CbsPersist_20261005062713.cab", &[0; 500]);
     ws.create_file("Windows/Logs/DISM/dism.log", &[0; 600]);
     ws.create_file("Windows/Logs/MoSetup/UpdateAgent.log", &[0; 700]);
 

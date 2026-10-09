@@ -159,13 +159,18 @@ fn has_log_extension(path: &Path) -> bool {
 /// requested here is fully permissive, so the probe never blocks the service
 /// that holds the log.
 ///
-/// This is what separates a reclaimable archive from a live one. The servicing
-/// stack keeps its own logs open for as long as it runs: `CBS.log` belongs to
-/// TrustedInstaller, `dism.log` to DISM — which WinMedic's own component store
-/// analysis writes to on every single scan — and MoSetup's `UpdateAgent.log` to
-/// the update stack. Counting those produced a finding of "13.2 MB, 2 files"
-/// whose repair reported success while both files were still sitting there, and
-/// the very next scan raised it again, unchanged.
+/// This is what separates a log a service is writing from one it is done with.
+/// `CBS.log` is held while TrustedInstaller services, `dism.log` while DISM
+/// runs — WinMedic's own component store analysis among them — and MoSetup's
+/// `UpdateAgent.log` while the update stack works. Counting those produced a
+/// finding of "13.2 MB, 2 files" whose repair reported success while both
+/// files were still sitting there, and the very next scan raised it again,
+/// unchanged.
+///
+/// The probe says nothing about whether a log is still needed. TrustedInstaller
+/// is demand-start and stops itself a few minutes after servicing; from then
+/// on nothing holds `CBS.log` or `dism.log`, and both pass. What System
+/// Integrity reads is kept by name, in [`is_read_by_system_integrity`].
 fn is_deletable(path: &Path) -> bool {
     use std::os::windows::fs::OpenOptionsExt;
     /// The access right `remove_file` asks for.
@@ -180,18 +185,36 @@ fn is_deletable(path: &Path) -> bool {
         .is_ok()
 }
 
+/// Whether System Integrity reads `path`: `CBS.log`, and the
+/// `CbsPersist_<time>.log` files Windows rotates it into, which
+/// [`crate::modules::feature_rollback::cbs_logs`] picks by the same names.
+///
+/// `sys_sfc_corrupt` reads CBS.log and `sys_feature_rolled_back_*` every one
+/// of them. A sweep that deleted them took that evidence with it, and those
+/// findings vanished on the next scan with nothing repaired. Their compressed
+/// `CbsPersist_*.cab` archives are read by nothing and stay reclaimable.
+fn is_read_by_system_integrity(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            let name = name.to_ascii_lowercase();
+            name == "cbs.log" || (name.starts_with("cbspersist_") && name.ends_with(".log"))
+        })
+}
+
 /// A log file the sweep can both count and actually remove.
 fn is_reclaimable_log(path: &Path) -> bool {
-    has_log_extension(path) && is_deletable(path)
+    has_log_extension(path) && !is_read_by_system_integrity(path) && is_deletable(path)
 }
 
 /// Scan a directory for reclaimable log and diagnostic archive files.
 ///
 /// Counts `.log`, `.cab`, `.bak`, `.etl` and `.txt` files that this process
-/// could delete. Logs a running service holds open are left out of the total
-/// on purpose: measuring them reports space the repair cannot free, which is a
-/// finding that survives its own repair forever. [`clean_log_dir_files`] skips
-/// exactly the same files, so what is measured is what gets removed.
+/// could delete, except the CBS logs System Integrity reads. Logs a running
+/// service holds open are left out of the total on purpose: measuring them
+/// reports space the repair cannot free, which is a finding that survives its
+/// own repair forever. [`clean_log_dir_files`] skips exactly the same files, so
+/// what is measured is what gets removed.
 pub fn scan_log_dir_files(path: &Path) -> DirStats {
     let mut stats = DirStats::default();
     if let Ok(entries) = std::fs::read_dir(path) {
@@ -214,8 +237,8 @@ pub fn scan_log_dir_files(path: &Path) -> DirStats {
     stats
 }
 
-/// Clean log and diagnostic archive files in a directory, leaving the active
-/// system logs alone.
+/// Clean log and diagnostic archive files in a directory, leaving alone the
+/// logs a service holds open and the CBS logs System Integrity reads.
 pub fn clean_log_dir_files(path: &Path) -> CleanStats {
     let mut stats = CleanStats::default();
     if let Ok(entries) = std::fs::read_dir(path) {
@@ -1024,8 +1047,8 @@ impl DiagnosticModule for SystemCleanerModule {
                     format_bytes(setup_log_stats.bytes),
                     setup_log_stats.files
                 ),
-                "Remove archived setup, CBS and DISM logs (active system logs are left alone)",
-                vec!["Clean the Panther, CBS, DISM and MoSetup log directories".to_string()],
+                "Remove old setup, CBS and DISM logs (CBS.log and the CbsPersist logs, which System Integrity reads, are kept)",
+                vec!["Clean the Panther, CBS, DISM and MoSetup log directories, keeping CBS.log and CbsPersist_*.log".to_string()],
             ).with_reclaimable_bytes(setup_log_stats.bytes));
         }
 
@@ -1782,28 +1805,28 @@ The operation completed successfully.";
         td.create_file("sub/test.etl", b"etl trace");
 
         let stats = scan_log_dir_files(&td.path);
-        assert_eq!(stats.files, 4); // .log, .cab, .log, .etl
+        assert_eq!(stats.files, 3); // .log, .cab, .etl; System Integrity reads the CbsPersist log
 
         let clean_res = clean_log_dir_files(&td.path);
-        assert_eq!(clean_res.deleted_files, 4);
+        assert_eq!(clean_res.deleted_files, 3);
 
         assert!(td.path.join("important.doc").exists());
+        assert!(td.path.join("sub/CbsPersist_1.log").exists());
         assert!(!td.path.join("setupact.log").exists());
     }
 
-    /// The finding that outlived every repair. `CBS.log` belongs to
-    /// TrustedInstaller and `dism.log` to DISM — which this module's own
-    /// component store analysis writes to on every scan — so both are open for
-    /// as long as Windows runs. Counting them reported megabytes the sweep
-    /// could never free, the repair announced success, and the next scan raised
-    /// the identical issue.
+    /// The finding that outlived every repair. `dism.log` is held by DISM
+    /// while it runs — this module's own component store analysis among
+    /// them — and the servicing stack holds its logs the same way. Counting
+    /// them reported megabytes the sweep could not free, the repair announced
+    /// success, and the next scan raised the identical issue.
     #[test]
     fn a_log_held_open_by_a_service_is_neither_counted_nor_swept() {
         use std::os::windows::fs::OpenOptionsExt;
 
         let td = TestDir::new("log_active_held");
-        let active = td.create_file("CBS.log", &[0u8; 4096]);
-        let archive = td.create_file("CbsPersist_2026.log", &[0u8; 2048]);
+        let active = td.create_file("dism.log", &[0u8; 4096]);
+        let archive = td.create_file("CbsPersist_20261005062713.cab", &[0u8; 2048]);
 
         // FILE_SHARE_NONE is how the servicing stack holds its live log: no
         // other process may delete it while that handle is open.
@@ -1811,10 +1834,10 @@ The operation completed successfully.";
             .read(true)
             .share_mode(0)
             .open(&active)
-            .expect("failed to hold CBS.log open");
+            .expect("failed to hold dism.log open");
 
         let stats = scan_log_dir_files(&td.path);
-        assert_eq!(stats.files, 1, "only the rotated archive is reclaimable");
+        assert_eq!(stats.files, 1, "only the compressed archive is reclaimable");
         assert_eq!(stats.bytes, 2048);
 
         let clean = clean_log_dir_files(&td.path);
@@ -1829,6 +1852,47 @@ The operation completed successfully.";
 
         // And the scan after the repair has nothing left to raise.
         assert_eq!(scan_log_dir_files(&td.path), DirStats::default());
+    }
+
+    /// TrustedInstaller is demand-start and stops itself a few minutes after
+    /// servicing; from then on nothing holds CBS.log, and the lock probe lets
+    /// it through. System Integrity reads it for `sys_sfc_corrupt` and every
+    /// CbsPersist log for `sys_feature_rolled_back_*`: a sweep that deleted
+    /// them removed the evidence, and those findings vanished with nothing
+    /// repaired.
+    #[tokio::test]
+    async fn the_cbs_logs_system_integrity_reads_are_kept_when_nothing_holds_them() {
+        let td = TestDir::new("cbs_logs_unheld");
+        let live = td.create_file("Windows/Logs/CBS/CBS.log", &reportable_payload());
+        let persisted = td.create_file(
+            "Windows/Logs/CBS/CbsPersist_20261008190827.log",
+            &reportable_payload(),
+        );
+        let archive = td.create_file(
+            "Windows/Logs/CBS/CbsPersist_20261005062713.cab",
+            &[0u8; 2048],
+        );
+
+        assert_eq!(
+            scan_log_dir_files(&td.path.join("Windows/Logs/CBS")),
+            DirStats {
+                bytes: 2048,
+                files: 1
+            },
+            "only the compressed archive counts"
+        );
+        let module = sandboxed(&td, Arc::new(MockCommandRunner::new()));
+        let issues = module.scan(None).await.unwrap();
+        assert!(
+            issues.iter().all(|i| i.id != "sys_clean_setup_logs"),
+            "the logs System Integrity reads are no reclaimable space"
+        );
+
+        let message = module.fix("sys_clean_setup_logs", None).await.unwrap();
+        assert!(live.exists(), "the sweep deleted CBS.log");
+        assert!(persisted.exists(), "the sweep deleted a CbsPersist log");
+        assert!(!archive.exists(), "the archive is still reclaimable");
+        assert!(message.contains("1 files deleted"), "{message}");
     }
 
     #[test]
