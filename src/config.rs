@@ -82,6 +82,21 @@ fn quarantine(path: &Path) -> Result<PathBuf, std::io::Error> {
     Ok(dest)
 }
 
+/// A finding the user archived. It stays out of the list, the counts, the
+/// health score and every repair run until Settings brings it back.
+///
+/// Keyed by the finding's id, which names the device, task or drive it is
+/// about and so stays the same from one scan to the next. The title is kept
+/// so Settings can name it without a scan.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ArchivedFinding {
+    pub id: String,
+    pub title: String,
+    /// The day it was archived, `YYYY-MM-DD`.
+    pub archived_at: String,
+}
+
 /// Persistent user configuration.
 ///
 /// Every field is `#[serde(default)]` so that config files written by older or
@@ -114,6 +129,8 @@ pub struct AppConfig {
     /// the logs, simulation — instead of Easy mode's short list. Switched with
     /// F7 or the button next to "Export report", not from the settings list.
     pub advanced_mode: bool,
+    /// Findings the user archived, oldest first.
+    pub archived_findings: Vec<ArchivedFinding>,
 }
 
 impl Default for AppConfig {
@@ -129,6 +146,7 @@ impl Default for AppConfig {
             helper_enabled: false,
             helper_frequency_hours: 24,
             advanced_mode: false,
+            archived_findings: Vec::new(),
         }
     }
 }
@@ -418,6 +436,40 @@ mod tests {
         assert_eq!(status.warning(), None);
         assert_eq!(loaded, cfg);
         assert!(!loaded.create_vss_before_repair);
+    }
+
+    #[test]
+    fn archived_findings_round_trip_through_disk() {
+        let dir = TempDir::new("archived");
+        let mut cfg = AppConfig::default();
+        cfg.archived_findings.push(ArchivedFinding {
+            id: "dev_problem_USB\\VID_046D".to_string(),
+            title: "Logitech BRIO has no driver".to_string(),
+            archived_at: "2026-10-09".to_string(),
+        });
+
+        cfg.save_to(&dir.config()).unwrap();
+        let (loaded, status) = AppConfig::load_from(&dir.config());
+
+        assert_eq!(status, ConfigStatus::Loaded);
+        assert_eq!(loaded.archived_findings, cfg.archived_findings);
+    }
+
+    /// Every config.json written before archiving existed.
+    #[test]
+    fn a_config_without_archived_findings_loads() {
+        let dir = TempDir::new("no_archive");
+        std::fs::write(
+            dir.config(),
+            r#"{ "create_vss_before_repair": false, "advanced_mode": true }"#,
+        )
+        .unwrap();
+
+        let (cfg, status) = AppConfig::load_from(&dir.config());
+
+        assert_eq!(status, ConfigStatus::Loaded);
+        assert!(cfg.archived_findings.is_empty());
+        assert!(!cfg.create_vss_before_repair && cfg.advanced_mode);
     }
 
     #[test]

@@ -26,7 +26,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
         return;
     }
 
-    egui::Panel::right("issue_detail")
+    let archive = egui::Panel::right("issue_detail")
         .resizable(true)
         .default_size(440.0)
         .size_range(280.0..=900.0)
@@ -34,9 +34,14 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
             left: 12,
             ..Default::default()
         }))
-        .show(ui, |ui| detail(ui, app, &indices));
+        .show(ui, |ui| detail(ui, app, &indices))
+        .inner;
 
     list(ui, app, &indices);
+    // Only now: the list was drawn from the findings as they were.
+    if let Some(issue_index) = archive {
+        app.archive_issue(issue_index);
+    }
 }
 
 fn filters(ui: &mut egui::Ui, app: &mut App) {
@@ -85,8 +90,12 @@ fn filters(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         let shown = app.filtered_issue_indices().len();
         let selected = app.issues.iter().filter(|i| i.will_repair()).count();
+        let archived = match app.archived_issues.len() {
+            0 => String::new(),
+            n => format!(" · {n} archived"),
+        };
         ui.label(theme::muted(format!(
-            "{shown} of {} findings shown · {selected} selected for repair",
+            "{shown} of {} findings shown · {selected} selected for repair{archived}",
             app.issues.len()
         )));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -308,12 +317,14 @@ fn risk_text(risk: RiskScore) -> &'static str {
     }
 }
 
-fn detail(ui: &mut egui::Ui, app: &mut App, indices: &[usize]) {
-    let Some(&issue_index) = indices.get(app.selected_filtered_index) else {
-        return;
-    };
+/// The selected finding in full. Returns its index when the user asked to
+/// archive it.
+fn detail(ui: &mut egui::Ui, app: &App, indices: &[usize]) -> Option<usize> {
+    let &issue_index = indices.get(app.selected_filtered_index)?;
     let issue: &Issue = &app.issues[issue_index];
     let palette = theme::palette(ui);
+    let busy = app.is_busy();
+    let mut archive = false;
 
     egui::ScrollArea::vertical()
         .id_salt("issue_detail")
@@ -337,10 +348,29 @@ fn detail(ui: &mut egui::Ui, app: &mut App, indices: &[usize]) {
                     });
                 }
             });
-            ui.label(theme::muted(format!(
-                "{} · {}",
-                issue.category, issue.module_id
-            )));
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // A fixed finding is history; there is nothing to hide.
+                    if !issue.is_fixed {
+                        archive = ui
+                            .add_enabled(!busy, egui::Button::new("Archive"))
+                            .on_hover_text(
+                                "Hide this finding and leave it out of the health score. \
+                                 Settings brings it back.",
+                            )
+                            .clicked();
+                    }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.add(
+                            egui::Label::new(theme::muted(format!(
+                                "{} · {}",
+                                issue.category, issue.module_id
+                            )))
+                            .truncate(),
+                        );
+                    });
+                });
+            });
             ui.add_space(6.0);
             ui.label(theme::heading(ui, &issue.title, 15.0));
             ui.add_space(4.0);
@@ -375,6 +405,7 @@ fn detail(ui: &mut egui::Ui, app: &mut App, indices: &[usize]) {
                 }
             }
         });
+    archive.then_some(issue_index)
 }
 
 fn empty(ui: &mut egui::Ui, headline: &str, hint: &str) {

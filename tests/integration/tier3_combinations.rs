@@ -479,7 +479,7 @@ fn test_tier3_reporter_html_with_system_cleaner_issues() {
     let health = DiagnosticEngine::calculate_health_score(&issues);
     let audit_entries = vec![];
 
-    let html = DiagnosticReporter::to_html(&issues, health, &audit_entries);
+    let html = DiagnosticReporter::to_html(&issues, health, &audit_entries, 0);
     assert!(html.contains("Browser caches"));
     assert!(html.contains("System &amp; Cache Cleaner") || html.contains("System & Cache Cleaner"));
 }
@@ -501,7 +501,7 @@ fn test_tier3_reporter_markdown_with_system_cleaner_issues() {
     let health = DiagnosticEngine::calculate_health_score(&issues);
     let audit_entries = vec![];
 
-    let md = DiagnosticReporter::to_markdown(&issues, health, &audit_entries);
+    let md = DiagnosticReporter::to_markdown(&issues, health, &audit_entries, 0);
     // Values are escaped for Markdown: `(`, `)`, `.` and `_` are special there.
     assert!(md.contains(r"Delivery Optimization \(WUDO\) cache \(1\.20 GB, 50 files\)"));
     assert!(md.contains(r"system\_cleaner"));

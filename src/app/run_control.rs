@@ -19,6 +19,7 @@ impl App {
         self.scan_started_at = Some(Instant::now());
         self.active_tab = TAB_HOME;
         self.issues.clear();
+        self.archived_issues.clear();
         self.selected_issue_index = 0;
         self.selected_filtered_index = 0;
         self.scan_log_messages.clear();

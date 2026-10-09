@@ -8,6 +8,7 @@
 //! | Module | Responsibility |
 //! | --- | --- |
 //! | [`state`] | The [`App`] struct, construction, log buffers |
+//! | [`archive`] | Archived findings: sorted out as they come in, brought back from Settings |
 //! | [`input`] | Key dispatch — the only place a keystroke maps to an action |
 //! | [`run_control`] | Starting, cancelling and simulating scans and repairs |
 //! | [`events`] | Draining scan, repair and background channels into state |
@@ -21,6 +22,7 @@ use crate::utils::self_update::{InstalledUpdate, UpdateFailure};
 use crate::utils::updater::UpdateInfo;
 use std::collections::VecDeque;
 
+pub mod archive;
 pub mod confirm;
 pub mod events;
 pub mod filters;
