@@ -168,7 +168,7 @@ impl DiagnosticModule for WheaLoggerModule {
         Self::send_progress(
             &progress_tx,
             80,
-            "Classifying CPU, PCIe, Memory & Storage faults...",
+            "Classifying CPU, PCIe and memory faults...",
             Some("Triangulating core, bank and bus mappings..."),
         )
         .await;
@@ -404,15 +404,18 @@ impl DiagnosticModule for WheaLoggerModule {
             )));
         }
 
-        // 4. Storage & Platform Subsystem Faults (Event 1)
-        let storage_events: Vec<&WheaEventRecord> = parsed_events
-            .iter()
-            .filter(|e| e.event_id == 1 || e.raw_snippet.to_lowercase().contains("storport"))
-            .collect();
+        // 4. Fatal hardware errors (Event 1). In the provider's manifest event
+        // 1 is the generic fatal error: its only data are `Length` and
+        // `RawData`, the error record, so nothing in it names a component.
+        // The specific events (18 for a processor, 47 for memory) are separate.
+        // The id is older than this reading and kept, so earlier reports and
+        // the history still match.
+        let fatal_events: Vec<&WheaEventRecord> =
+            parsed_events.iter().filter(|e| e.event_id == 1).collect();
 
-        if !storage_events.is_empty() {
-            let count = storage_events.len();
-            let sample_snippet = storage_events
+        if !fatal_events.is_empty() {
+            let count = fatal_events.len();
+            let sample_snippet = fatal_events
                 .iter()
                 .take(2)
                 .map(|e| e.raw_snippet.as_str())
@@ -422,16 +425,17 @@ impl DiagnosticModule for WheaLoggerModule {
             issues.push(Issue::new(
                 "whea_storage_platform_error",
                 self.id(),
-                format!("WHEA Storage / Platform hardware fault(s) ({} events)", count),
+                format!("WHEA fatal hardware error(s) ({} events)", count),
                 "Hardware & Stability",
                 Severity::Critical,
                 RiskScore::Medium,
-                "WHEA reported critical storage/platform hardware faults (CPER records). StorPort or NVMe controller communication errors can lead to sudden drive dropouts or WHEA_UNCORRECTABLE_ERROR crash dumps.",
+                "Windows logged a fatal hardware error. The event holds only the raw error record, so it does not say which component failed. It usually comes with a WHEA_UNCORRECTABLE_ERROR blue screen; unstable CPU or memory settings are a common cause, a failing component another.",
                 format!("Total Events: {}\n\nEvent Log Excerpt:\n{}", count, sample_snippet),
-                "Inspect storage drive SMART telemetry, update SSD firmware, and test NVMe slot",
+                "Run the PC at BIOS defaults and see whether the error comes back",
                 vec![
-                    "Update SSD/NVMe controller firmware via manufacturer utility".to_string(),
-                    "Verify disk health with chkdsk and SMART diagnostics".to_string(),
+                    "Reset CPU and memory overclocking, undervolting and XMP/EXPO to the BIOS defaults".to_string(),
+                    "Update the motherboard BIOS/UEFI".to_string(),
+                    "Check CPU temperatures and the power supply under load".to_string(),
                 ],
             ).with_advice_only());
         }
@@ -466,7 +470,7 @@ impl DiagnosticModule for WheaLoggerModule {
             "whea_cpu_cache_error" | "whea_memory_error" => {
                 schedule_memory_test(&*self.runner).await
             }
-            // The storage/platform finding is advice: a repair run never asks.
+            // The fatal-error finding is advice: a repair run never asks.
             _ => Err(format!("Unknown WHEA issue id: {}", issue_id)),
         }
     }
@@ -926,18 +930,49 @@ mod tests {
         assert!(issue.technical_details.contains("0x1f4c8000"));
     }
 
+    /// Event 1 as the provider's manifest defines it: `Length` and
+    /// `RawData` (the error record), in the shape of `whea_constructed.xml`,
+    /// whose first event carries the same two fields. Nothing in it names a
+    /// component, so the finding names none either.
     #[tokio::test]
-    async fn test_scan_detects_storage_event_1() {
-        let issues = scan_with(whea_event(1, 2, &[("ErrorSource", "7")])).await;
+    async fn event_1_is_a_fatal_error_of_an_unknown_component() {
+        let issues = scan_with(whea_event(
+            1,
+            2,
+            &[
+                ("Length", "928"),
+                (
+                    "RawData",
+                    "435045521002FFFFFFFF03000200000002000000A0030000",
+                ),
+            ],
+        ))
+        .await;
 
         assert_eq!(issues.len(), 1);
         let issue = &issues[0];
         assert_eq!(issue.id, "whea_storage_platform_error");
         assert_eq!(issue.severity, Severity::Critical);
         assert!(
-            issue.advice_only,
-            "a failing drive is not repaired in software"
+            issue.title.contains("fatal hardware error"),
+            "{}",
+            issue.title
         );
+        assert!(
+            issue.advice_only,
+            "a hardware fault is not repaired in software"
+        );
+        let text = format!(
+            "{} {} {} {}",
+            issue.title,
+            issue.description,
+            issue.recommended_fix,
+            issue.fix_steps.join(" ")
+        )
+        .to_lowercase();
+        for blamed in ["storage", "storport", "nvme", "ssd", "chkdsk"] {
+            assert!(!text.contains(blamed), "{blamed}: {text}");
+        }
     }
 
     #[tokio::test]
