@@ -940,7 +940,8 @@ mod tests {
             "Health goes up to about 100 / 100",
             "Repair 2 problems",
             "Scan again",
-            "A restore point is created first, so everything can be undone.",
+            "A restore point is created first. It can undo changes to system files, settings \
+             and programs. Deleted files do not come back.",
         ] {
             assert!(
                 harness.query_by_label(expected).is_some(),
@@ -969,6 +970,86 @@ mod tests {
         // A module that gave up is named, but its error text is not.
         assert!(harness.query_by_label_contains("Could not check").is_some());
         assert!(harness.query_by_label_contains("0x800f081f").is_none());
+    }
+
+    /// #180: a cleanup deletes files, and System Restore leaves personal
+    /// files alone, so no restore point brings them back. The Recycle Bin,
+    /// which "Select all" ticks, or any other cleanup: neither page promises
+    /// otherwise, and only a ticked cleanup is mentioned.
+    #[test]
+    fn the_restore_point_is_promised_to_undo_no_deleted_files() {
+        let recycle_bin = || {
+            issue(
+                "sys_clean_recycle_bin",
+                "Windows Recycle Bin (1.0 GB, 12 files)",
+                Severity::Info,
+            )
+            .with_reclaimable_bytes(GB)
+        };
+        const ADVANCED: &str = "A restore point is created first. It can undo changes to \
+                                system files, the registry and programs.";
+        const GONE: &str = "Deleted files do not come back.";
+
+        for ticked in [true, false] {
+            let mut app = scanned_app();
+            app.config.create_vss_before_repair = true;
+            let mut bin = recycle_bin();
+            bin.is_selected = ticked;
+            app.issues.push(bin);
+            let harness = window(app);
+            assert!(harness.query_by_label_contains("can be undone").is_none());
+            assert!(harness.query_by_label_contains(ADVANCED).is_some());
+            assert_eq!(harness.query_by_label_contains(GONE).is_some(), ticked);
+        }
+
+        let mut app = easy_forecast_app();
+        app.config.create_vss_before_repair = true;
+        app.issues[1].is_selected = false;
+        let harness = window(app);
+        assert!(
+            harness
+                .query_by_label(
+                    "A restore point is created first. \
+                     It can undo changes to system files, settings and programs."
+                )
+                .is_some()
+        );
+        assert!(harness.query_by_label_contains(GONE).is_none());
+    }
+
+    /// Every finding whose repair deletes files counts as one, and a repair
+    /// of the registry or a setting does not.
+    #[test]
+    fn every_repair_that_deletes_files_is_known_as_one() {
+        use views::home::deletes_files;
+
+        // Measured cleanups, as their modules raise them.
+        for id in [
+            "storage_temp_bloat",
+            "wu_cache_bloat",
+            "crash_stale_dumps",
+            "sys_clean_delivery_optimization",
+            "sys_clean_browser_cache",
+            "sys_clean_setup_logs",
+            "sys_clean_error_reporting",
+            "sys_clean_shader_certs",
+            "sys_clean_recycle_bin",
+            "sys_clean_system_temp",
+        ] {
+            let cleanup = issue(id, id, Severity::Info).with_reclaimable_bytes(GB);
+            assert!(deletes_files(&cleanup), "{id}");
+        }
+        // Those that cannot measure what they delete.
+        for id in [
+            "sys_clean_winsxs",
+            "storage_icon_cache_bloated",
+            crate::modules::devices::PRINT_QUEUE_STUCK,
+        ] {
+            assert!(deletes_files(&issue(id, id, Severity::Info)), "{id}");
+        }
+        for id in ["net_dns_failure", "pagefile_disabled", "reg_orphaned_run_x"] {
+            assert!(!deletes_files(&issue(id, id, Severity::Warning)), "{id}");
+        }
     }
 
     /// The next step should be impossible to miss.

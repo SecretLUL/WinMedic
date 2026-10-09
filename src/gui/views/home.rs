@@ -10,9 +10,10 @@
 
 use super::{easy, findings};
 use crate::app::App;
-use crate::engine::issue::Severity;
+use crate::engine::issue::{Issue, Severity};
 use crate::gui::theme;
 use crate::modules::ModuleStatus;
+use crate::modules::devices::PRINT_QUEUE_STUCK;
 use eframe::egui::{self, RichText};
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -52,6 +53,26 @@ pub(super) fn repair_label(dry_run: bool, selected: usize, noun: &str) -> String
         (true, n) => format!("Simulate {}", plural(n, "repair")),
         (false, n) => format!("Repair {}", plural(n, noun)),
     }
+}
+
+/// Whether repairing `issue` deletes files. No restore point brings them
+/// back: System Restore reverts system files, registry settings and installed
+/// programs, "without affecting your personal files". Every cleanup measures
+/// what it frees, except DISM's component store cleanup, the icon cache and
+/// the print queue.
+pub(crate) fn deletes_files(issue: &Issue) -> bool {
+    issue.reclaimable_bytes.is_some()
+        || matches!(
+            issue.id.as_str(),
+            "sys_clean_winsxs" | "storage_icon_cache_bloated" | PRINT_QUEUE_STUCK
+        )
+}
+
+/// Whether a repair the next run makes deletes files.
+pub(super) fn deletes_ticked_files(app: &App) -> bool {
+    app.issues
+        .iter()
+        .any(|i| i.will_repair() && deletes_files(i))
 }
 
 pub(super) fn has_scanned(app: &App) -> bool {
@@ -149,13 +170,19 @@ fn header(ui: &mut egui::Ui, app: &mut App) {
                 ),
                 Some(theme::severity_color(ui, worst)),
             );
-            ui.label(if app.config.create_vss_before_repair || app.dry_run {
-                "Tick what you want fixed, then click Repair. A restore point is created first, \
-                 so every change can be undone."
+            let mut text = String::from("Tick what you want fixed, then click Repair.");
+            if app.config.create_vss_before_repair || app.dry_run {
+                text.push_str(
+                    " A restore point is created first. It can undo changes to system files, \
+                     the registry and programs.",
+                );
+                if deletes_ticked_files(app) {
+                    text.push_str(" Deleted files do not come back.");
+                }
             } else {
-                "Tick what you want fixed, then click Repair. Restore points are switched off \
-                 in Settings."
-            });
+                text.push_str(" Restore points are switched off in Settings.");
+            }
+            ui.label(text);
         }
         last_runs(ui, app);
         ui.add_space(4.0);
