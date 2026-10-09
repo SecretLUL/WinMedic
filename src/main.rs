@@ -403,13 +403,16 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
             ));
         }
 
+        // The window's results are saved over: what it decided against them
+        // carries over until Windows restarts.
         let state = app::ScanState::new(
             health_score,
             issues.clone(),
             module_statuses,
             Some(scan_started.elapsed().as_secs()),
         )
-        .with_archived(archived.clone());
+        .with_archived(archived.clone())
+        .carrying_over(app::ScanState::load(), &config.archived_findings);
         let (status, details) = match state.save() {
             Err(e) => ("FAILED", format!("The results could not be saved: {e}")),
             Ok(()) if failed_modules.is_empty() => (

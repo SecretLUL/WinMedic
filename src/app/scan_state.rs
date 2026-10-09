@@ -7,7 +7,11 @@ use chrono::Local;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use super::archive::split;
+use super::state::{carry_over, keep_waiting};
+use crate::config::ArchivedFinding;
 use crate::engine::issue::{Issue, Severity};
+use crate::engine::runner::DiagnosticEngine;
 use crate::modules::ModuleStatus;
 use crate::modules::clock_restart::RESTART_OVERDUE;
 use crate::modules::windows_updates::REBOOT_PENDING;
@@ -95,6 +99,37 @@ impl ScanState {
     /// The findings of the same scan that the user archived.
     pub fn with_archived(mut self, archived_issues: Vec<Issue>) -> Self {
         self.archived_issues = archived_issues;
+        self
+    }
+
+    /// This scan with what was decided against `previous`, the scan saved
+    /// before it, carried over while Windows has not restarted since: what
+    /// the user unticked, the repairs that wait for the restart, why a repair
+    /// failed. The background scan saves over the window's results, and
+    /// used to drop the repairs waiting for the restart from them. After a
+    /// restart this scan stands as it is.
+    pub fn carrying_over(
+        mut self,
+        previous: Option<ScanState>,
+        archived: &[ArchivedFinding],
+    ) -> Self {
+        let Some(previous) = previous.filter(|previous| {
+            !restarted_since(
+                previous,
+                self.boot_id,
+                self.boot_time_secs.unwrap_or_default(),
+            )
+        }) else {
+            return self;
+        };
+        let mut known = previous.issues;
+        known.extend(previous.archived_issues);
+        let mut all = std::mem::take(&mut self.issues);
+        all.append(&mut self.archived_issues);
+        carry_over(&mut all, &known);
+        keep_waiting(&mut all, &known);
+        (self.issues, self.archived_issues) = split(all, archived);
+        self.health_score = DiagnosticEngine::calculate_health_score(&self.issues);
         self
     }
 
@@ -310,6 +345,73 @@ mod tests {
             .unwrap();
         assert_eq!(ScanState::load_from(&tmp).unwrap().issues, [warning]);
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    fn finding(id: &str) -> Issue {
+        Issue::new(
+            id,
+            "storage",
+            id,
+            "Storage",
+            Severity::Warning,
+            RiskScore::Low,
+            "",
+            "",
+            "",
+            vec![],
+        )
+    }
+
+    /// What the window saved: the page file waiting for the restart, and the
+    /// dirty bit waiting for it and archived.
+    fn saved_by_the_window(boot_id: u32) -> ScanState {
+        let mut page_file = finding("pagefile_disabled");
+        page_file.is_reboot_pending = true;
+        page_file.is_selected = false;
+        let mut dirty_bit = page_file.clone();
+        dirty_bit.id = "storage_dirty_bit".to_string();
+        ScanState {
+            boot_id: Some(boot_id),
+            ..ScanState::new(90, vec![page_file], Vec::new(), None).with_archived(vec![dirty_bit])
+        }
+    }
+
+    /// The background scan saves over the window's results. Until Windows
+    /// restarts, a repair that waits for the restart keeps waiting, whether
+    /// the scan reports it again or not; after the restart the scan stands.
+    #[test]
+    fn a_background_scan_keeps_the_repairs_waiting_until_windows_restarts() {
+        let archived = [crate::config::ArchivedFinding {
+            id: "storage_dirty_bit".to_string(),
+            title: "Dirty bit".to_string(),
+            archived_at: "2026-10-09".to_string(),
+        }];
+        let fresh = || {
+            let (shown, hidden) = split(
+                vec![finding("storage_dirty_bit"), finding("dns")],
+                &archived,
+            );
+            ScanState {
+                boot_id: Some(835),
+                ..ScanState::new(90, shown, Vec::new(), None).with_archived(hidden)
+            }
+        };
+
+        let merged = fresh().carrying_over(Some(saved_by_the_window(835)), &archived);
+        let ids = |issues: &[Issue]| issues.iter().map(|i| i.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&merged.issues), ["dns", "pagefile_disabled"]);
+        assert_eq!(ids(&merged.archived_issues), ["storage_dirty_bit"]);
+        assert!(merged.issues[1].is_reboot_pending);
+        assert!(merged.archived_issues[0].is_reboot_pending);
+        assert!(!merged.archived_issues[0].is_selected);
+        assert_eq!(
+            merged.health_score,
+            DiagnosticEngine::calculate_health_score(&merged.issues)
+        );
+
+        let after_restart = fresh().carrying_over(Some(saved_by_the_window(834)), &archived);
+        assert_eq!(ids(&after_restart.issues), ["dns"]);
+        assert!(!after_restart.archived_issues[0].is_reboot_pending);
     }
 
     #[test]
