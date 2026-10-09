@@ -202,7 +202,7 @@ $localeManifest = @(
     'Author: SecretLUL'
     'PackageName: WinMedic'
     "PackageUrl: https://github.com/$Repo"
-    'License: MIT'
+    'License: GPL-3.0-only'
     "LicenseUrl: https://github.com/$Repo/blob/main/LICENSE"
     'Copyright: Copyright (c) 2026 SecretLUL'
     "CopyrightUrl: https://github.com/$Repo/blob/main/LICENSE"

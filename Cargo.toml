@@ -10,7 +10,7 @@ build = "build.rs"
 authors = ["Ammar <https://github.com/SecretLUL>"]
 description = "High-performance Windows Self-Healing & Diagnostic GUI in Rust"
 readme = "README.md"
-license = "MIT"
+license = "GPL-3.0-only"
 keywords = ["windows", "diagnostics", "repair", "gui", "egui"]
 categories = ["gui", "system-administration"]
 

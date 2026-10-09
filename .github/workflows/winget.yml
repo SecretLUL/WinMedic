@@ -173,8 +173,9 @@ jobs:
             komac sync-fork
           fi
           # The release assets are the binary and its .sha256; only the binary
-          # is an installer. komac downloads it and hashes it itself, and takes
-          # everything else - portable, the `winmedic` command, the licence -
+          # is an installer. komac downloads it and hashes it itself, reads the
+          # licence from this repository as it is on main at the time of the
+          # run, and takes everything else - portable, the `winmedic` command -
           # from the version already in winget-pkgs.
           komac update SecretLUL.WinMedic \
             --version "$version" \

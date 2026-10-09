@@ -5,7 +5,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/SecretLUL/WinMedic/ci.yml?branch=main&label=CI)](https://github.com/SecretLUL/WinMedic/actions/workflows/ci.yml)
 [![Version](https://img.shields.io/github/v/release/SecretLUL/WinMedic?label=Version&color=0F7B0F)](https://github.com/SecretLUL/WinMedic/releases/latest)
 [![Windows 10 / 11](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D6)](https://www.microsoft.com/windows)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue)](LICENSE)
 
 </div>
 
@@ -144,4 +144,7 @@ extra care. Please report security problems privately, as described in
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+Copyright (c) 2026 Ammar (https://github.com/SecretLUL)
+
+GPL-3.0-only, see [LICENSE](LICENSE). Version 0.8.0 and earlier were released
+under the MIT License.
