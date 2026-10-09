@@ -102,6 +102,14 @@ The device lists in the tweaks tests are what SetupAPI listed on that day
 (`SetupDiGetClassDevs` with `DIGCF_PRESENT`, `CM_Get_DevNode_Status`): HPET
 and the NDIS enumerator with problem code 22, two devices without a driver.
 
+Captured unelevated on 2026-10-09 on the same machine, read-only commands:
+
+| File | Command | Encoding | Notes |
+| --- | --- | --- | --- |
+| `sc_enumdepend_cryptsvc.bin` | `sc enumdepend cryptsvc 65536` | CP850 | The services that depend on cryptsvc, directly or not, the one that starts last first: IsolationSession, the Smartlocker filter driver `applockerfltr` (`TYPE 1 KERNEL_DRIVER`), which depends on AppIDSvc too, and AppIDSvc (Application Identity, AppLocker's service). All `1 STOPPED`. With a buffer of 60 bytes `sc` fails instead, exit code 234 and "weitere Daten, benötigt 418 Bytes". |
+| `sc_enumdepend_spooler.bin` | `sc enumdepend spooler 65536` | CP850 | Fax, `1 STOPPED`. The tests switch it to `4 RUNNING`. |
+| `sc_enumdepend_none.bin` | `sc enumdepend wuauserv 65536` | ASCII | `entriesread = 0`; bits prints the same. |
+
 Captured in Windows Sandbox on 2026-10-09 (Windows 11 24H2, 26100.9550,
 German, the account the sandbox signs in with, an Administrator):
 
@@ -109,6 +117,14 @@ German, the account the sandbox signs in with, an Administrator):
 | --- | --- | --- | --- |
 | `sc_query_service_list.bin` | `sc query type= service state= all` after two test services had been created and the sandbox restarted: `WinMedicChainA` starts automatically and depends on `WinMedicChainB`, whose program does not exist | CP850 | 268 services, each `SERVICE_NAME`, the translated `DISPLAY_NAME`, then `STATE` and `WIN32_EXIT_CODE` as numbers. `WinMedicChainA` is `1 STOPPED` with `1068 (0x42c)`, "the dependency service failed to start": Windows gives that code to a service whose dependency failed at boot, and again when it is started by hand. `WinMedicChainB`, whose program could not be found, has exit code 0. |
 | `pnputil_enable_device_disabled_since_boot_de.bin` | `pnputil /enable-device "ROOT\NDISVIRTUALBUS\0000"` after the device had been disabled with `Disable-PnpDevice` and the sandbox restarted | Windows-1252 | Exit 1167 (`ERROR_DEVICE_NOT_CONNECTED`), "Das Gerät ist nicht angeschlossen." pnputil takes a device's state from its `DEVPKEY_Device_DevNodeStatus` property, which Windows does not report for a device that has been disabled since it started (`CM_Get_DevNode_PropertyW`: `CR_NO_SUCH_VALUE`, while `CM_Get_DevNode_Status` reports problem 22). `pnputil /enum-devices` lists it as "Getrennt", and the enable is refused. Disabled without a restart in between, pnputil enabled it. `Enable-PnpDevice` enabled it in both states, without a restart. The development PC's `ROOT\HVSERVICE\0000` was refused the same way on 2026-10-08. |
+
+Captured in Windows Sandbox on 2026-10-09, the same build, as SYSTEM (`wsb
+exec -r System`), while the three services that depend on cryptsvc ran:
+
+| File | Command | Encoding | Notes |
+| --- | --- | --- | --- |
+| `sc_enumdepend_cryptsvc_running.bin` | `sc enumdepend cryptsvc 65536` | CP850 | The same three as on the development PC, in the same order, each `4 RUNNING` with a line of flags under the state. |
+| `net_stop_dependents_running_de.bin` | `net stop cryptsvc`, its input on NUL as WinMedic starts it | CP850 | "Die folgenden Dienste hängen vom Dienst Kryptografiedienste ab.", the three by display name, then "Möchten Sie diesen Vorgang fortsetzen? (J/N) [N]:". On stderr, `net_stop_dependents_running_stderr_de.bin`: "Es wurde keine gültige Antwort gegeben." Exit code -1, and nothing stopped. WinMedic's own runner got the same. `net stop cryptsvc /y` stopped the dependents still running and cryptsvc, and `net start cryptsvc` then started cryptsvc alone. |
 
 Captured elevated on 2026-09-25, read-only commands, with the time each piece
 of the pipe arrived:

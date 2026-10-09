@@ -16,8 +16,7 @@ use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
 use crate::utils::pnp::PnpDevice;
 use crate::utils::registry;
 use crate::utils::service::{
-    self, SERVICE_AUTO_START, SERVICE_DISABLED, SERVICE_RUNNING, SERVICE_START_PENDING,
-    SERVICE_STOPPED, StartAgain,
+    self, SERVICE_AUTO_START, SERVICE_DISABLED, SERVICE_STOPPED, StartAgain,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -286,16 +285,17 @@ impl DevicesModule {
             ),
             "Clear the print queue and restart the print spooler",
             vec![
-                "net stop spooler".to_string(),
+                "net stop spooler, after the running services that depend on it".to_string(),
                 format!("Delete the files in {}", self.spool_dir.display()),
-                "net start spooler".to_string(),
+                "net start spooler, then those services".to_string(),
             ],
         ))
     }
 
-    /// Stop the spooler and check it stopped, delete the waiting jobs, start
-    /// it again, then check it runs and the folder is empty. Until that second
-    /// start, a cancelled or failing repair starts the spooler again itself.
+    /// Stop the spooler, after the services that depend on it, and check it
+    /// stopped, delete the waiting jobs, start them all again, then check
+    /// they run and the folder is empty. A repair that is cancelled or fails
+    /// in between starts what it stopped again itself.
     async fn clear_print_queue(&self) -> Result<String, String> {
         if !self.restart_services {
             return Err(
@@ -303,19 +303,11 @@ impl DevicesModule {
                     .to_string(),
             );
         }
-        // Armed before the stop, so that a cancel, or a failed state check,
-        // between stopping and starting does not leave the spooler stopped.
-        let mut start_again = StartAgain::new(self.runner.clone(), &[SPOOLER]);
-        let _ = self
-            .runner
-            .run("net.exe", &["stop", SPOOLER], Duration::from_secs(60))
-            .await;
-        let state = service::state(&*self.runner, SPOOLER).await?;
-        if state != Some(SERVICE_STOPPED) {
-            return Err(format!(
-                "The print spooler did not stop (state {state:?}), so no print job was deleted."
-            ));
-        }
+        let mut services = StartAgain::new(self.runner.clone());
+        services
+            .stop(SPOOLER)
+            .await
+            .map_err(|e| format!("{e}, so no print job was deleted."))?;
         let mut deleted = 0;
         if let Ok(entries) = std::fs::read_dir(&self.spool_dir) {
             for entry in entries.flatten() {
@@ -326,16 +318,21 @@ impl DevicesModule {
                 }
             }
         }
-        let _ = self
-            .runner
-            .run("net.exe", &["start", SPOOLER], Duration::from_secs(60))
-            .await;
-        start_again.disarm();
-        let state = service::state(&*self.runner, SPOOLER).await?;
+        let not_running = services.start().await?;
         let left = files_in(&self.spool_dir);
-        if !matches!(state, Some(SERVICE_RUNNING | SERVICE_START_PENDING)) {
+        if let Some((_, state)) = not_running.iter().find(|(name, _)| name == SPOOLER) {
             return Err(format!(
                 "{deleted} print job file(s) deleted, but the print spooler did not start again (state {state:?}). Restart Windows; if it stops again, a printer driver is the likely cause."
+            ));
+        }
+        if !not_running.is_empty() {
+            let names: Vec<String> = not_running
+                .iter()
+                .map(|(name, state)| format!("{name} (state {state:?})"))
+                .collect();
+            return Err(format!(
+                "The print queue was cleared ({deleted} file(s)) and the print spooler runs again, but these services that depend on it did not start again: {}. Restart Windows to start them.",
+                names.join(", ")
             ));
         }
         if left > 0 {
@@ -694,6 +691,9 @@ mod tests {
     use super::*;
     use crate::utils::cmd::{CmdOutput, MockCommandRunner};
     use crate::utils::decode::decode_output;
+    use crate::utils::service::test_support::{
+        ServiceManager, enumdepend_spooler, sc_query_output,
+    };
 
     // pnputil's answers, captured on a German Windows 11; see
     // tests/fixtures/README.md.
@@ -1227,9 +1227,11 @@ mod tests {
     }
 
     /// The spooler answers `before` until `net start` ran, then running.
+    /// Fax, which depends on it, is stopped, as on the development PC.
     fn spooler_repair(before: &str) -> MockCommandRunner {
         let mock = MockCommandRunner::new();
         mock.add_response("net.exe", CmdOutput::ok(""));
+        mock.add_response("enumdepend spooler", CmdOutput::ok(enumdepend_spooler()));
         mock.add_response("query spooler", spooler_state(before));
         mock.add_response_after(
             "net.exe start",
@@ -1279,6 +1281,78 @@ mod tests {
         assert_eq!(files_in(&spool.0), 1);
         settle().await;
         assert_eq!(spooler_starts(&mock), 1, "{:?}", mock.executed());
+    }
+
+    /// `sc enumdepend spooler` while Fax runs: the development PC's, where
+    /// Fax is stopped, with its state switched.
+    fn enumdepend_spooler_fax_running() -> String {
+        enumdepend_spooler().replace("1  STOPPED", "4  RUNNING")
+    }
+
+    /// While a service that depends on the spooler runs, `net stop spooler`
+    /// asks before stopping it and, its input NUL, stops nothing. It is
+    /// stopped first and started again after the spooler.
+    #[tokio::test]
+    async fn a_service_that_depends_on_the_spooler_is_stopped_first_and_started_again() {
+        let spool = Spool::new("dependent");
+        spool.job("00011.SPL", 3);
+        let scm = Arc::new(
+            ServiceManager::running(&["spooler", "Fax"])
+                .depends("spooler", &["Fax"])
+                .enumdepend("spooler", enumdepend_spooler_fax_running()),
+        );
+        let msg = DevicesModule::with_runner(scm.clone())
+            .with_spool_dir(spool.0.clone())
+            .fix(PRINT_QUEUE_STUCK, None)
+            .await
+            .unwrap();
+        assert!(msg.contains("1 file(s)"), "{msg}");
+        assert_eq!(files_in(&spool.0), 0);
+        assert_eq!(
+            scm.net_commands(),
+            [
+                "net.exe stop Fax",
+                "net.exe stop spooler",
+                "net.exe start spooler",
+                "net.exe start Fax",
+            ]
+        );
+        assert!(scm.runs("spooler") && scm.runs("Fax"));
+    }
+
+    /// The jobs are deleted and the spooler runs, but Fax, stopped for it,
+    /// does not start again: a failure that names it.
+    #[tokio::test]
+    async fn a_dependent_that_does_not_start_again_is_named() {
+        let spool = Spool::new("dependent_down");
+        spool.job("00011.SPL", 3);
+        let mock = MockCommandRunner::new();
+        mock.add_response("net.exe", CmdOutput::ok(""));
+        mock.add_response(
+            "enumdepend spooler",
+            CmdOutput::ok(enumdepend_spooler_fax_running()),
+        );
+        mock.add_response_after(
+            "net.exe start spooler",
+            "query spooler",
+            spooler_state("4  RUNNING"),
+        );
+        mock.add_response_after(
+            "net.exe stop spooler",
+            "query spooler",
+            spooler_state("1  STOPPED"),
+        );
+        mock.add_response("query Fax", CmdOutput::ok(sc_query_output("Fax", 1)));
+        let err = module(&mock)
+            .with_spool_dir(spool.0.clone())
+            .fix(PRINT_QUEUE_STUCK, None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("depend on it did not start again: Fax (state Some(1))"),
+            "{err}"
+        );
+        assert_eq!(files_in(&spool.0), 0);
     }
 
     #[tokio::test]
@@ -1356,6 +1430,7 @@ mod tests {
         // No answer for `sc query`, so the runner fails.
         let mock = MockCommandRunner::new();
         mock.add_response("net.exe", CmdOutput::ok(""));
+        mock.add_response("enumdepend spooler", CmdOutput::ok(enumdepend_spooler()));
         let result = module(&mock)
             .with_spool_dir(spool.0.clone())
             .fix(PRINT_QUEUE_STUCK, None)
