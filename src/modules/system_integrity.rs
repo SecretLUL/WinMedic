@@ -465,12 +465,26 @@ impl Drop for Dismount {
 
 /// Every app package of this user as `status|full name|install location`.
 /// `Status` is an enum name (`Ok`, `Modified`, `Tampered`, `LicenseIssue`,
-/// `Disabled`, several joined with `, `), the same in every language. Start,
-/// Settings and the Store are such packages; a broken one does not open.
+/// `PackageOffline` and more, several joined with `, `), the same in every
+/// language. Start, Settings and the Store are such packages; a broken one
+/// does not open.
 const APPX_PACKAGES_SCRIPT: &str = "Get-AppxPackage -ErrorAction Stop | ForEach-Object { '{0}|{1}|{2}' -f $_.Status, $_.PackageFullName, $_.InstallLocation }";
 
-/// The finding for app packages that are not `Ok`.
+/// The finding for damaged app packages.
 pub const APPX_BROKEN: &str = "sys_appx_broken";
+
+/// The finding for app packages on a drive that is not there.
+pub const APPX_OFFLINE: &str = "sys_appx_offline";
+
+/// The package or its data is on a drive that is not there, such as an
+/// unplugged external disk (`PackageStatus`: "the package is offline and
+/// cannot be used"). Registering it again from its folder fails; connecting
+/// the drive is what helps.
+const OFFLINE_STATUS: [&str; 2] = ["PackageOffline", "DataOffline"];
+
+/// A Store install or update is working on the package ("the package is
+/// being serviced"); it passes on its own.
+const PASSING_STATUS: [&str; 2] = ["DeploymentInProgress", "Servicing"];
 
 /// One line of [`APPX_PACKAGES_SCRIPT`]'s output.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -484,6 +498,47 @@ impl AppxPackage {
     /// `Microsoft.WindowsStore` out of its full name.
     pub fn name(&self) -> &str {
         self.full_name.split('_').next().unwrap_or(&self.full_name)
+    }
+
+    /// Whether one of the names in its `Status` is among `names`. A
+    /// combination of flags prints as `Modified, NeedsRemediation`.
+    fn status_among(&self, names: &[&str]) -> bool {
+        self.status.split(',').any(|status| {
+            names
+                .iter()
+                .any(|name| status.trim().eq_ignore_ascii_case(name))
+        })
+    }
+
+    /// Whether it or its data is on a drive that is not there.
+    pub fn offline(&self) -> bool {
+        self.status_among(&OFFLINE_STATUS)
+    }
+
+    /// Whether Windows reports it damaged: `Modified`, `Tampered`,
+    /// `NeedsRemediation`, `DependencyIssue`, `LicenseIssue` or any other
+    /// status but `Ok`, unless it is offline or only being serviced.
+    pub fn damaged(&self) -> bool {
+        !self.offline()
+            && self.status.split(',').map(str::trim).any(|status| {
+                !status.eq_ignore_ascii_case("Ok")
+                    && !PASSING_STATUS
+                        .iter()
+                        .any(|name| status.eq_ignore_ascii_case(name))
+            })
+    }
+
+    /// The drive that is not there, `E:`: the one its folder is on, when it
+    /// is `PackageOffline` and the folder starts with a drive letter. With
+    /// only `DataOffline` it is the data's drive, which the folder does not
+    /// tell.
+    fn missing_drive(&self) -> Option<&str> {
+        if !self.status_among(&["PackageOffline"]) {
+            return None;
+        }
+        let drive = self.install_location.get(..2)?;
+        (drive.ends_with(':') && drive.starts_with(|c: char| c.is_ascii_alphabetic()))
+            .then_some(drive)
     }
 }
 
@@ -501,12 +556,20 @@ pub fn parse_appx_packages(output: &str) -> Vec<AppxPackage> {
         .collect()
 }
 
-/// The packages that are not `Ok` and can be registered again from their
-/// folder.
+/// The damaged packages, which can be registered again from their folder.
 pub fn broken_packages(packages: Vec<AppxPackage>) -> Vec<AppxPackage> {
     packages
         .into_iter()
-        .filter(|p| p.status != "Ok" && !p.install_location.is_empty())
+        .filter(|p| p.damaged() && !p.install_location.is_empty())
+        .collect()
+}
+
+/// The packages on a drive that is not there, with the folder they are in.
+pub fn offline_packages(packages: &[AppxPackage]) -> Vec<AppxPackage> {
+    packages
+        .iter()
+        .filter(|p| p.offline() && !p.install_location.is_empty())
+        .cloned()
         .collect()
 }
 
@@ -639,6 +702,48 @@ impl SystemIntegrityModule {
                 format!(" Add-AppxPackage said: {}", refused.join("; "))
             }
         ))
+    }
+
+    /// The advice for app packages on a drive that is not there. Registering
+    /// them again from a folder Windows cannot reach fails, so the finding is
+    /// advice: connecting the drive clears it.
+    fn offline_packages_issue(&self, offline: &[AppxPackage]) -> Issue {
+        let mut drives: Vec<&str> = offline
+            .iter()
+            .filter_map(AppxPackage::missing_drive)
+            .collect();
+        drives.sort_unstable();
+        drives.dedup();
+        let recommendation = if offline.iter().any(|p| p.missing_drive().is_none()) {
+            "Connect the drive these apps are on again".to_string()
+        } else if drives.len() == 1 {
+            format!("Connect drive {} again", drives[0])
+        } else {
+            format!("Connect drives {} again", drives.join(", "))
+        };
+        Issue::new(
+            APPX_OFFLINE,
+            self.id(),
+            format!("{} app(s) are on a drive that is not connected", offline.len()),
+            "System Integrity",
+            Severity::Info,
+            RiskScore::Low,
+            "Windows reports app packages whose files or data are on a drive that is not there, such as an unplugged external disk. They work again once that drive is connected.",
+            offline
+                .iter()
+                .map(|p| format!("{} ({}): {}", p.name(), p.status, p.install_location))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            recommendation,
+            offline
+                .iter()
+                .map(|p| match p.missing_drive() {
+                    Some(drive) => format!("Connect drive {drive}, which holds {}", p.name()),
+                    None => format!("Connect the drive that holds the data of {}", p.name()),
+                })
+                .collect(),
+        )
+        .with_advice_only()
     }
 
     /// The feature installations Windows rolled back that no later one
@@ -1236,6 +1341,10 @@ impl DiagnosticModule for SystemIntegrityModule {
         .await;
         match self.app_packages().await {
             Ok(packages) => {
+                let offline = offline_packages(&packages);
+                if !offline.is_empty() {
+                    issues.push(self.offline_packages_issue(&offline));
+                }
                 let broken = broken_packages(packages);
                 if !broken.is_empty() {
                     issues.push(Issue::new(
@@ -2507,6 +2616,94 @@ mod tests {
                 .technical_details
                 .contains("StartMenuExperienceHost (Modified)")
         );
+    }
+
+    /// The captured list with Xbox's package `status`, and on drive E: as an
+    /// app moved to another drive is. Constructed: every captured package is
+    /// `Ok` and on C:; only the status and the drive letter are changed.
+    fn xbox_app(status: &str) -> String {
+        real_packages().replace(
+            r"Ok|Microsoft.GamingApp_2608.1001.17.0_x64__8wekyb3d8bbwe|C:\",
+            &format!(r"{status}|Microsoft.GamingApp_2608.1001.17.0_x64__8wekyb3d8bbwe|E:\"),
+        )
+    }
+
+    /// Registering it again from a folder on an unplugged disk fails, and
+    /// the finding came back on every scan: advice to connect the drive.
+    #[tokio::test]
+    async fn an_app_on_an_unplugged_drive_is_advice() {
+        let packages = parse_appx_packages(&xbox_app("PackageOffline"));
+        assert!(broken_packages(packages.clone()).is_empty());
+        assert_eq!(offline_packages(&packages).len(), 1);
+
+        let mock = MockCommandRunner::with_default_success();
+        mock.add_response("Get-AppxPackage", CmdOutput::ok(xbox_app("PackageOffline")));
+        let issues = module_with(mock.clone()).scan(None).await.unwrap();
+        assert!(!issues.iter().any(|i| i.id == APPX_BROKEN), "{issues:?}");
+        let issue = issues.iter().find(|i| i.id == APPX_OFFLINE).unwrap();
+        assert!(issue.advice_only && !issue.is_selected);
+        assert_eq!(issue.recommended_fix, "Connect drive E: again");
+        assert!(
+            issue
+                .technical_details
+                .contains(r"Microsoft.GamingApp (PackageOffline): E:\Program Files\WindowsApps\"),
+            "{}",
+            issue.technical_details
+        );
+
+        // Nor does the repair of damaged packages try it.
+        let msg = module_with(mock.clone())
+            .fix(APPX_BROKEN, None)
+            .await
+            .unwrap();
+        assert_eq!(msg, "Every app package is intact.");
+        assert!(
+            !mock
+                .executed()
+                .iter()
+                .any(|c| c.contains("Add-AppxPackage"))
+        );
+    }
+
+    /// Only the data is offline: the folder does not tell which drive.
+    #[test]
+    fn an_app_whose_data_is_offline_names_no_drive() {
+        let offline = offline_packages(&parse_appx_packages(&xbox_app("DataOffline")));
+        assert_eq!(offline.len(), 1);
+        assert_eq!(offline[0].missing_drive(), None);
+    }
+
+    /// A Store install or update passes on its own; damage stays damage,
+    /// also among several flags.
+    #[test]
+    fn statuses_are_read_by_their_names() {
+        for passing in [
+            "DeploymentInProgress",
+            "Servicing",
+            "DeploymentInProgress, Servicing",
+        ] {
+            assert!(
+                broken_packages(parse_appx_packages(&xbox_app(passing))).is_empty(),
+                "{passing}"
+            );
+        }
+        for damaged in [
+            "Modified",
+            "Tampered",
+            "NeedsRemediation",
+            "DependencyIssue",
+            "LicenseIssue",
+            "Servicing, NeedsRemediation",
+        ] {
+            assert_eq!(
+                broken_packages(parse_appx_packages(&xbox_app(damaged))).len(),
+                1,
+                "{damaged}"
+            );
+        }
+        let both = parse_appx_packages(&xbox_app("Modified, PackageOffline"));
+        assert!(broken_packages(both.clone()).is_empty());
+        assert_eq!(offline_packages(&both).len(), 1);
     }
 
     /// The package list answers `before` until a package was registered.
