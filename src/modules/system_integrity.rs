@@ -839,14 +839,15 @@ impl SystemIntegrityModule {
         first_run: &CmdOutput,
         log_tx: Option<Sender<String>>,
     ) -> Result<String, String> {
-        let (this_windows, page) = media
-            .windows
-            .as_ref()
-            .map_or(("the Windows of this PC".to_string(), "windows11"), |w| {
-                (w.describe(), w.download_page())
-            });
+        let (iso, page) = media.windows.as_ref().map_or(
+            (
+                "a Windows ISO of this PC's edition".to_string(),
+                "windows11",
+            ),
+            |w| (w.iso_to_get(), w.download_page()),
+        );
         let download = format!(
-            "Save the {this_windows} ISO from microsoft.com/software-download/{page} in your Downloads folder, then run this repair again."
+            "Save {iso} from microsoft.com/software-download/{page} in your Downloads folder, then run this repair again."
         );
         let Some(image) = media.best() else {
             let found = if media.images.is_empty() {
@@ -1560,7 +1561,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             err,
-            "Windows Update could not deliver the files DISM needs (error 0x800F0915). Save the Windows 11 25H2 (build 26200) ISO from microsoft.com/software-download/windows11 in your Downloads folder, then run this repair again."
+            "Windows Update could not deliver the files DISM needs (error 0x800F0915). Save the current Windows 11 ISO from microsoft.com/software-download/windows11 in your Downloads folder, then run this repair again."
         );
         assert!(!mock.executed().iter().any(|c| c.contains("/Source:")));
         assert!(
