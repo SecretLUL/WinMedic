@@ -55,6 +55,58 @@ fn escape_md(value: &str) -> String {
 }
 
 /// The line a report adds when the user archived some of the findings.
+/// What a report says of a finding, decided as the window decides it: a
+/// repair that succeeded but waits for Windows to restart is neither fixed
+/// nor open, and the window marks it "Restart".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Status {
+    Fixed,
+    Restart,
+    Failed,
+    Advice,
+    Open,
+}
+
+impl Status {
+    fn of(issue: &Issue) -> Self {
+        if issue.is_fixed {
+            Self::Fixed
+        } else if issue.is_reboot_pending {
+            Self::Restart
+        } else if issue.fix_error.is_some() {
+            Self::Failed
+        } else if issue.advice_only {
+            Self::Advice
+        } else {
+            Self::Open
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Fixed => "FIXED",
+            Self::Restart => "RESTART",
+            Self::Failed => "FAILED",
+            Self::Advice => "ADVICE",
+            Self::Open => "OPEN",
+        }
+    }
+}
+
+/// How many findings are fixed, how many wait for the restart, and how many
+/// are open: everything else.
+fn status_counts(issues: &[Issue]) -> (usize, usize, usize) {
+    let fixed = issues
+        .iter()
+        .filter(|i| Status::of(i) == Status::Fixed)
+        .count();
+    let restart = issues
+        .iter()
+        .filter(|i| Status::of(i) == Status::Restart)
+        .count();
+    (fixed, restart, issues.len() - fixed - restart)
+}
+
 fn archived_note(archived: usize) -> Option<String> {
     match archived {
         0 => None,
@@ -213,8 +265,12 @@ impl DiagnosticReporter {
             .iter()
             .filter(|i| i.severity == Severity::Info)
             .count();
-        let fixed_count = issues.iter().filter(|i| i.is_fixed).count();
-        let open_count = issues.len().saturating_sub(fixed_count);
+        let (fixed_count, restart_count, open_count) = status_counts(issues);
+        let waiting = if restart_count > 0 {
+            format!(", {restart_count} waiting for a restart")
+        } else {
+            String::new()
+        };
 
         let mut md = format!(
             "# WinMedic Diagnostic & System Report\n\n\
@@ -222,7 +278,7 @@ impl DiagnosticReporter {
             - **Generated:** {}\n\
             - **Health score:** {}/100\n\
             - **Issues found:** {} (critical: {}, warnings: {}, informational: {})\n\
-            - **Status:** {} fixed, {} open\n\n",
+            - **Status:** {} fixed{}, {} open\n\n",
             escape_md(&hostname),
             timestamp,
             health_score,
@@ -231,6 +287,7 @@ impl DiagnosticReporter {
             warn_count,
             info_count,
             fixed_count,
+            waiting,
             open_count
         );
         if let Some(note) = archived_note(archived) {
@@ -244,15 +301,7 @@ impl DiagnosticReporter {
             for (idx, issue) in issues.iter().enumerate() {
                 // The same three strings the GUI once carried a copy of.
                 let sev_str = issue.severity.badge();
-                let status_str = if issue.is_fixed {
-                    "[FIXED]"
-                } else if issue.fix_error.is_some() {
-                    "[FAILED]"
-                } else if issue.advice_only {
-                    "[ADVICE]"
-                } else {
-                    "[OPEN]"
-                };
+                let status_str = format!("[{}]", Status::of(issue).label());
 
                 md.push_str(&format!(
                     "### {}. {} [{}] {}\n\n\
@@ -336,8 +385,17 @@ impl DiagnosticReporter {
             .iter()
             .filter(|i| i.severity == Severity::Warning)
             .count();
-        let fixed_count = issues.iter().filter(|i| i.is_fixed).count();
-        let open_count = issues.len().saturating_sub(fixed_count);
+        let (fixed_count, restart_count, open_count) = status_counts(issues);
+        // A third number only when a repair waits for the restart, so a
+        // report of a scan reads as it always did.
+        let (counts_label, waiting) = if restart_count > 0 {
+            (
+                "Fixed / restart / open",
+                format!("<span class=\"val-warn\">{restart_count}</span> / "),
+            )
+        } else {
+            ("Fixed / open", String::new())
+        };
 
         let health_color = if health_score >= 80 {
             "#10b981" // Emerald
@@ -366,15 +424,14 @@ impl DiagnosticReporter {
                     Severity::Info => ("badge-info", "INFO"),
                 };
 
-                let (status_class, status_label) = if issue.is_fixed {
-                    ("status-fixed", "FIXED")
-                } else if issue.fix_error.is_some() {
-                    ("status-failed", "FAILED")
-                } else if issue.advice_only {
-                    ("status-open", "ADVICE")
-                } else {
-                    ("status-open", "OPEN")
+                let status = Status::of(issue);
+                let status_class = match status {
+                    Status::Fixed => "status-fixed",
+                    Status::Restart => "status-restart",
+                    Status::Failed => "status-failed",
+                    Status::Advice | Status::Open => "status-open",
                 };
+                let status_label = status.label();
 
                 let mut steps_html = String::new();
                 if !issue.fix_steps.is_empty() {
@@ -661,6 +718,7 @@ impl DiagnosticReporter {
         }}
         .status-fixed {{ background: rgba(16, 185, 129, 0.2); color: var(--emerald); }}
         .status-failed {{ background: rgba(239, 68, 68, 0.2); color: var(--coral); }}
+        .status-restart {{ background: rgba(245, 158, 11, 0.2); color: var(--amber); }}
         .status-open {{ background: rgba(148, 163, 184, 0.2); color: var(--text-muted); }}
         .issue-desc {{
             font-size: 15px;
@@ -807,8 +865,8 @@ impl DiagnosticReporter {
                 <div class="stat-val val-warn">{warn_count}</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Fixed / open</div>
-                <div class="stat-val"><span class="val-fixed">{fixed_count}</span> <span style="font-size: 16px; color: var(--text-muted);">/ {open_count}</span></div>
+                <div class="stat-label">{counts_label}</div>
+                <div class="stat-val"><span class="val-fixed">{fixed_count}</span> <span style="font-size: 16px; color: var(--text-muted);">/ {waiting}{open_count}</span></div>
             </div>
         </div>
 
@@ -835,7 +893,9 @@ impl DiagnosticReporter {
             total_issues = issues.len(),
             crit_count = crit_count,
             warn_count = warn_count,
+            counts_label = counts_label,
             fixed_count = fixed_count,
+            waiting = waiting,
             open_count = open_count,
             archived_html = archived_note(archived)
                 .map(|note| format!("<p class=\"meta-text\">{note}</p>"))
@@ -983,6 +1043,52 @@ mod tests {
         ] {
             assert!(!report.contains("archived finding"));
         }
+    }
+
+    /// A finding as `run_repairs` leaves it after a repair that succeeded and
+    /// needs Windows to restart: not fixed yet, unticked, no error.
+    fn waiting_for_restart() -> Issue {
+        let mut issue = sample_issues().remove(0);
+        issue.requires_reboot = true;
+        issue.is_reboot_pending = true;
+        issue.is_selected = false;
+        issue
+    }
+
+    #[test]
+    fn a_repair_waiting_for_the_restart_is_not_open_in_the_markdown_report() {
+        let issues = vec![waiting_for_restart(), sample_issues().remove(1)];
+        let md = DiagnosticReporter::to_markdown(&issues, 80, &[], 0);
+        assert!(
+            md.contains("### 1. [!] CRITICAL [[RESTART]] Corrupted system files found"),
+            "{md}"
+        );
+        assert!(md.contains("- **Status:** [RESTART]\n"));
+        assert!(md.contains("### 2. [!] WARNING [[OPEN]] Temp files"));
+        assert!(md.contains("- **Status:** 0 fixed, 1 waiting for a restart, 1 open\n"));
+    }
+
+    #[test]
+    fn a_repair_waiting_for_the_restart_is_not_open_in_the_html_report() {
+        let mut fixed = sample_issues().remove(1);
+        fixed.is_fixed = true;
+        let html = DiagnosticReporter::to_html(&[waiting_for_restart(), fixed], 80, &[], 0);
+        assert!(html.contains(r#"<span class="status-pill status-restart">RESTART</span>"#));
+        assert!(html.contains(r#"<span class="status-pill status-fixed">FIXED</span>"#));
+        assert!(!html.contains(">OPEN</span>"));
+        assert!(html.contains(">Fixed / restart / open<"));
+        assert!(html.contains(r#"<span class="val-warn">1</span> / 0</span>"#));
+    }
+
+    /// Without a repair waiting for the restart, the counts read as before.
+    #[test]
+    fn a_report_without_a_waiting_repair_counts_fixed_and_open() {
+        let md = DiagnosticReporter::to_markdown(&sample_issues(), 80, &[], 0);
+        assert!(md.contains("- **Status:** 0 fixed, 2 open\n"));
+        let html = DiagnosticReporter::to_html(&sample_issues(), 80, &[], 0);
+        assert!(html.contains(">Fixed / open<"));
+        assert!(!html.contains("status-pill status-restart"));
+        assert!(!html.contains("val-warn\">"));
     }
 
     #[test]
