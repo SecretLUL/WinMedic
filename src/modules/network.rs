@@ -1111,7 +1111,7 @@ impl DiagnosticModule for NetworkModule {
                     RiskScore::Low,
                     "Websites cannot be resolved by domain name even though IP connectivity to the internet works. The usual cause is a stale DNS cache or broken resolver settings.",
                     format!("{}\nping 1.1.1.1 succeeded", evidence),
-                    "Flush the DNS cache (ipconfig /flushdns) and re-register the DNS resolver",
+                    "Flush the DNS cache (ipconfig /flushdns) and refresh the DHCP leases (ipconfig /registerdns)",
                     vec![
                         "Run ipconfig /flushdns".to_string(),
                         "Run ipconfig /registerdns".to_string(),
@@ -1364,10 +1364,10 @@ impl DiagnosticModule for NetworkModule {
                 // sees. Asking the resolver again is the only honest answer.
                 let (resolves, probe_log) = self.resolver_works().await;
                 if resolves {
-                    Ok("DNS cache flushed and the resolver re-registered - name resolution is working again.".to_string())
+                    Ok("DNS cache flushed and DHCP leases refreshed - name resolution is working again.".to_string())
                 } else {
                     Err(format!(
-                        "The DNS cache was flushed and the resolver re-registered, but names still do not resolve: {}. The fault is outside what WinMedic can reset - check the DNS servers configured on the adapter, the router, or an active VPN.",
+                        "The DNS cache was flushed and the DHCP leases refreshed, but names still do not resolve: {}. The fault is outside what WinMedic can reset - check the DNS servers configured on the adapter, the router, or an active VPN.",
                         probe_log.join("; ")
                     ))
                 }
@@ -1552,6 +1552,8 @@ mod tests {
             err.contains("dns.google"),
             "the message has to say what was tried"
         );
+        assert!(err.contains("DHCP leases refreshed"));
+        assert!(!err.contains("re-registered"));
     }
 
     #[tokio::test]
@@ -1564,6 +1566,8 @@ mod tests {
         let msg = module.fix("net_dns_failure", None).await.unwrap();
 
         assert!(msg.contains("working again"));
+        assert!(msg.contains("DHCP leases refreshed"));
+        assert!(!msg.contains("re-registered"));
     }
 
     #[tokio::test]
@@ -1582,7 +1586,16 @@ mod tests {
 
         let dns_issue = issues.iter().find(|i| i.id == "net_dns_failure");
         assert!(dns_issue.is_some());
-        assert_eq!(dns_issue.unwrap().severity, Severity::Critical);
+        let dns_issue = dns_issue.unwrap();
+        assert_eq!(dns_issue.severity, Severity::Critical);
+        // ipconfig /registerdns refreshes the DHCP leases and registers this
+        // PC's own names with its DNS server; it re-registers no resolver.
+        assert!(!dns_issue.recommended_fix.contains("resolver"));
+        assert!(
+            dns_issue
+                .recommended_fix
+                .contains("refresh the DHCP leases")
+        );
     }
 
     /// [`ADAPTER_IPV4_SCRIPT`] on a German Windows 11, LAN address replaced.
