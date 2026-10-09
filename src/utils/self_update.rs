@@ -758,9 +758,15 @@ fn delete_retired(exe: &Path, attempts: u32, interval: Duration) -> bool {
 ///
 /// `CREATE_NO_WINDOW` because this process has already given its console back
 /// (see [`crate::utils::console`]): a plain spawn would open a console window
-/// for the new process that flashes up before it gives that one back too.
+/// for the new process that flashes up before it gives that one back too. No
+/// stdio for the same reason: there is none to pass on.
 pub fn start_installed(exe: &Path) -> Result<(), String> {
+    use std::process::Stdio;
+
     let mut cmd = std::process::Command::new(exe);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
