@@ -1390,8 +1390,9 @@ impl TweaksModule {
     }
 
     /// Backs the hosts file up, then replaces it with the unblocked bytes. The
-    /// result is read back and checked; if the check fails, the backup is
-    /// copied back over the hosts file.
+    /// result is read back and checked; if the check fails, the bytes read at
+    /// the start are written back. The copy in the backup folder is for the
+    /// user: it is never read back, so it needs no anchor.
     fn fix_hosts(&self) -> Result<String, String> {
         let original = std::fs::read(&self.hosts_path).map_err(|e| {
             format!(
@@ -1442,18 +1443,16 @@ impl TweaksModule {
                 ));
             }
         };
-        Err(
-            match std::fs::read(&backup).and_then(|bytes| replace_file(&self.hosts_path, &bytes)) {
-                Ok(()) => format!(
-                    "{problem}, so the backup was copied back and the hosts file is as it was. The backup is {}.",
-                    backup.display()
-                ),
-                Err(e) => format!(
-                    "{problem}, and the backup could not be copied back ({e}). The hosts file has the new content; the original is in {}.",
-                    backup.display()
-                ),
-            },
-        )
+        Err(match replace_file(&self.hosts_path, &original) {
+            Ok(()) => format!(
+                "{problem}, so the backup was copied back and the hosts file is as it was. The backup is {}.",
+                backup.display()
+            ),
+            Err(e) => format!(
+                "{problem}, and the backup could not be copied back ({e}). The hosts file has the new content; the original is in {}.",
+                backup.display()
+            ),
+        })
     }
 }
 
