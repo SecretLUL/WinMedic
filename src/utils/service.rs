@@ -173,43 +173,119 @@ pub async fn start_type(runner: &dyn CommandRunner, service: &str) -> Result<Opt
     Ok(parse_start_type(&out.stdout))
 }
 
-/// Starts `services`, in the order given, when dropped while still armed: a
-/// repair that is cancelled, or fails, between stopping a service and starting
-/// it again must not leave it stopped. Through the runner, on the runtime,
-/// because a destructor cannot wait. Armed by [`Self::new`]; [`Self::disarm`]
-/// once the caller has started them itself.
+/// `sc enumdepend`'s buffer in bytes, room for any number of services: one
+/// too small fails with exit code 234 instead of listing them.
+const ENUMDEPEND_BUFFER: &str = "65536";
+
+/// The services that depend on `service`, directly or not, and are not
+/// stopped, in the order they have to be stopped: `sc enumdepend` lists the
+/// one that starts last first.
+pub async fn running_dependents(
+    runner: &dyn CommandRunner,
+    service: &str,
+) -> Result<Vec<ServiceStatus>, String> {
+    let out = runner
+        .run(
+            "sc.exe",
+            &["enumdepend", service, ENUMDEPEND_BUFFER],
+            Duration::from_secs(8),
+        )
+        .await?;
+    if !out.success {
+        return Err(format!(
+            "The services that depend on '{service}' could not be listed (sc enumdepend, exit code {:?})",
+            out.exit_code
+        ));
+    }
+    Ok(parse_status_list(&out.stdout)
+        .into_iter()
+        .filter(|s| s.state != SERVICE_STOPPED)
+        .collect())
+}
+
+/// The services a repair stops for a moment. [`Self::stop`] stops one, after
+/// the services that depend on it; [`Self::start`] starts them all again, the
+/// last stopped first. Dropped before that - a repair that is cancelled, or
+/// fails, between stopping a service and starting it again - it starts them
+/// itself, through the runner, on the runtime, because a destructor cannot
+/// wait.
 pub struct StartAgain {
     runner: Arc<dyn CommandRunner>,
-    services: &'static [&'static str],
+    /// In the order they were stopped.
+    stopped: Vec<String>,
     armed: bool,
 }
 
 impl StartAgain {
-    /// Armed: dropping the guard runs `net start` for each of `services`.
-    pub fn new(runner: Arc<dyn CommandRunner>, services: &'static [&'static str]) -> Self {
+    pub fn new(runner: Arc<dyn CommandRunner>) -> Self {
         Self {
             runner,
-            services,
+            stopped: Vec::new(),
             armed: true,
         }
     }
 
-    /// The caller has started the services, so dropping the guard does nothing.
-    pub fn disarm(&mut self) {
+    /// `net stop` for `service` and a check that it stopped, after the same
+    /// for each service that depends on it and runs. Left to `net stop`,
+    /// those are asked about first (J/N), and with its input on NUL it reads
+    /// no answer and stops nothing.
+    pub async fn stop(&mut self, service: &str) -> Result<(), String> {
+        for dependent in running_dependents(&*self.runner, service).await? {
+            let state = self.stop_one(&dependent.name).await?;
+            if state != Some(SERVICE_STOPPED) {
+                return Err(format!(
+                    "'{}', which depends on '{service}', did not stop (state {state:?})",
+                    dependent.name
+                ));
+            }
+        }
+        let state = self.stop_one(service).await?;
+        if state != Some(SERVICE_STOPPED) {
+            return Err(format!("'{service}' did not stop (state {state:?})"));
+        }
+        Ok(())
+    }
+
+    /// `net stop`, then the state. Recorded first, so that a service that
+    /// stops only halfway is started again too.
+    async fn stop_one(&mut self, service: &str) -> Result<Option<u32>, String> {
+        self.stopped.push(service.to_string());
+        let _ = self
+            .runner
+            .run("net.exe", &["stop", service], Duration::from_secs(60))
+            .await;
+        state(&*self.runner, service).await
+    }
+
+    /// `net start` for each service stopped, the last first, and then its
+    /// state. Returns the ones that do not run, with their state.
+    pub async fn start(mut self) -> Result<Vec<(String, Option<u32>)>, String> {
+        let mut not_running = Vec::new();
+        for service in self.stopped.iter().rev() {
+            let _ = self
+                .runner
+                .run("net.exe", &["start", service], Duration::from_secs(60))
+                .await;
+            let state = state(&*self.runner, service).await?;
+            if !matches!(state, Some(SERVICE_RUNNING | SERVICE_START_PENDING)) {
+                not_running.push((service.clone(), state));
+            }
+        }
         self.armed = false;
+        Ok(not_running)
     }
 }
 
 impl Drop for StartAgain {
     fn drop(&mut self) {
-        if !self.armed {
+        if !self.armed || self.stopped.is_empty() {
             return;
         }
         let runner = self.runner.clone();
-        let services = self.services;
+        let stopped = std::mem::take(&mut self.stopped);
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
-                for svc in services {
+                for svc in stopped.iter().rev() {
                     let _ = runner
                         .run("net.exe", &["start", svc], Duration::from_secs(30))
                         .await;
@@ -219,10 +295,169 @@ impl Drop for StartAgain {
     }
 }
 
-/// Real `sc qc` output for other modules' tests.
+/// Real `sc` output, and a service manager that answers with it, for other
+/// modules' tests.
 #[cfg(test)]
 pub(crate) mod test_support {
+    use crate::utils::cmd::{CmdOutput, CommandRunner};
     use crate::utils::decode::decode_output;
+    use std::sync::Mutex;
+    use std::time::Duration;
+    use tokio::sync::mpsc::Sender;
+
+    /// What `net stop cryptsvc` printed in Windows Sandbox while three
+    /// services that depend on it ran, its input on NUL: the question, then
+    /// "no valid answer" on stderr. It stopped nothing.
+    const NET_STOP_REFUSED: &[u8] =
+        include_bytes!("../../tests/fixtures/console/net_stop_dependents_running_de.bin");
+    const NET_STOP_REFUSED_STDERR: &[u8] =
+        include_bytes!("../../tests/fixtures/console/net_stop_dependents_running_stderr_de.bin");
+
+    /// The service manager as `net` and `sc` show it to a repair that stops
+    /// services. `net stop` refuses while a service that depends on the one
+    /// named runs, as captured in Windows Sandbox; `net start` starts only
+    /// the one named; `sc enumdepend` prints what it is given for a service.
+    pub struct ServiceManager {
+        running: Mutex<Vec<String>>,
+        /// `(service, the services that depend on it)`, for `net stop`.
+        dependents: Vec<(String, Vec<String>)>,
+        /// `(service, what sc enumdepend prints for it)`.
+        enumdepend: Vec<(String, String)>,
+        executed: Mutex<Vec<String>>,
+    }
+
+    impl ServiceManager {
+        /// These services run, and none depends on another.
+        pub fn running(services: &[&str]) -> Self {
+            Self {
+                running: Mutex::new(services.iter().map(|s| s.to_string()).collect()),
+                dependents: Vec::new(),
+                enumdepend: Vec::new(),
+                executed: Mutex::new(Vec::new()),
+            }
+        }
+
+        /// `service` does not stop while one of `dependents` runs.
+        pub fn depends(mut self, service: &str, dependents: &[&str]) -> Self {
+            let dependents = dependents.iter().map(|s| s.to_string()).collect();
+            self.dependents.push((service.to_string(), dependents));
+            self
+        }
+
+        /// What `sc enumdepend <service>` prints.
+        pub fn enumdepend(mut self, service: &str, output: String) -> Self {
+            self.enumdepend.push((service.to_string(), output));
+            self
+        }
+
+        pub fn executed(&self) -> Vec<String> {
+            self.executed.lock().unwrap().clone()
+        }
+
+        /// The `net` commands run, in order.
+        pub fn net_commands(&self) -> Vec<String> {
+            let mut net = self.executed();
+            net.retain(|c| c.starts_with("net.exe"));
+            net
+        }
+
+        pub fn runs(&self, service: &str) -> bool {
+            self.running
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(service))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl CommandRunner for ServiceManager {
+        async fn run(
+            &self,
+            program: &str,
+            args: &[&str],
+            _timeout: Duration,
+        ) -> Result<CmdOutput, String> {
+            let command = format!("{program} {}", args.join(" "));
+            self.executed.lock().unwrap().push(command.clone());
+            match (program, args) {
+                ("net.exe", ["stop", service]) => {
+                    let blocked = self
+                        .dependents
+                        .iter()
+                        .filter(|(s, _)| s.eq_ignore_ascii_case(service))
+                        .flat_map(|(_, dependents)| dependents)
+                        .any(|d| self.runs(d));
+                    if blocked {
+                        return Ok(CmdOutput {
+                            success: false,
+                            exit_code: Some(-1),
+                            stdout: decode_output(NET_STOP_REFUSED),
+                            stderr: decode_output(NET_STOP_REFUSED_STDERR),
+                        });
+                    }
+                    let mut running = self.running.lock().unwrap();
+                    running.retain(|s| !s.eq_ignore_ascii_case(service));
+                    Ok(CmdOutput::ok(""))
+                }
+                ("net.exe", ["start", service]) => {
+                    if !self.runs(service) {
+                        self.running.lock().unwrap().push(service.to_string());
+                    }
+                    Ok(CmdOutput::ok(""))
+                }
+                ("sc.exe", ["query", service]) => {
+                    let state = if self.runs(service) { 4 } else { 1 };
+                    Ok(CmdOutput::ok(sc_query_output(service, state)))
+                }
+                ("sc.exe", ["enumdepend", service, _]) => self
+                    .enumdepend
+                    .iter()
+                    .find(|(s, _)| s.eq_ignore_ascii_case(service))
+                    .map(|(_, output)| CmdOutput::ok(output.clone()))
+                    .ok_or_else(|| format!("no sc enumdepend output for {service}")),
+                _ => Err(format!("ServiceManager does not know '{command}'")),
+            }
+        }
+
+        async fn run_streaming(
+            &self,
+            program: &str,
+            args: &[&str],
+            _log_tx: Option<Sender<String>>,
+            timeout: Duration,
+        ) -> Result<CmdOutput, String> {
+            self.run(program, args, timeout).await
+        }
+    }
+
+    /// What `sc enumdepend` printed for a service nothing depends on
+    /// (wuauserv), for the spooler with Fax stopped, and for cryptsvc with
+    /// the three services that depend on it stopped (the development PC) or
+    /// running (Windows Sandbox).
+    pub fn enumdepend_none() -> String {
+        decode_output(include_bytes!(
+            "../../tests/fixtures/console/sc_enumdepend_none.bin"
+        ))
+    }
+
+    pub fn enumdepend_spooler() -> String {
+        decode_output(include_bytes!(
+            "../../tests/fixtures/console/sc_enumdepend_spooler.bin"
+        ))
+    }
+
+    pub fn enumdepend_cryptsvc() -> String {
+        decode_output(include_bytes!(
+            "../../tests/fixtures/console/sc_enumdepend_cryptsvc.bin"
+        ))
+    }
+
+    pub fn enumdepend_cryptsvc_running() -> String {
+        decode_output(include_bytes!(
+            "../../tests/fixtures/console/sc_enumdepend_cryptsvc_running.bin"
+        ))
+    }
 
     /// What `sc qc <service>` prints on a German Windows 11 for a service with
     /// this start type — the captured output of a disabled service, renamed and
@@ -415,6 +650,60 @@ mod tests {
         assert_eq!(one.len(), 1);
         assert_eq!(one[0].name, "AppVClient");
         assert_eq!(one[0].state, SERVICE_STOPPED);
+    }
+
+    /// `sc enumdepend cryptsvc` in Windows Sandbox, the three services that
+    /// depend on it running: the indirect ones too, the last to start first -
+    /// the Smartlocker filter driver, which depends on AppIDSvc, before it.
+    #[tokio::test]
+    async fn running_dependents_come_in_the_order_to_stop_them() {
+        use crate::utils::cmd::{CmdOutput, MockCommandRunner};
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "enumdepend cryptsvc",
+            CmdOutput::ok(test_support::enumdepend_cryptsvc_running()),
+        );
+        let names: Vec<String> = running_dependents(&mock, "cryptsvc")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(names, ["IsolationSession", "applockerfltr", "AppIDSvc"]);
+        assert_eq!(mock.executed(), ["sc.exe enumdepend cryptsvc 65536"]);
+    }
+
+    /// The development PC: the same three stopped, and Fax, which depends on
+    /// the spooler, stopped. Nothing to stop first.
+    #[tokio::test]
+    async fn stopped_dependents_are_left_alone() {
+        use crate::utils::cmd::{CmdOutput, MockCommandRunner};
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "enumdepend cryptsvc",
+            CmdOutput::ok(test_support::enumdepend_cryptsvc()),
+        );
+        mock.add_response(
+            "enumdepend spooler",
+            CmdOutput::ok(test_support::enumdepend_spooler()),
+        );
+        mock.add_response(
+            "enumdepend wuauserv",
+            CmdOutput::ok(test_support::enumdepend_none()),
+        );
+        for service in ["cryptsvc", "spooler", "wuauserv"] {
+            assert!(running_dependents(&mock, service).await.unwrap().is_empty());
+        }
+    }
+
+    /// A list that could not be read is not an empty one.
+    #[tokio::test]
+    async fn dependents_that_cannot_be_listed_are_an_error() {
+        use crate::utils::cmd::{CmdOutput, MockCommandRunner};
+        let mock = MockCommandRunner::new();
+        mock.add_response("enumdepend", CmdOutput::failed(234, ""));
+        let err = running_dependents(&mock, "cryptsvc").await.unwrap_err();
+        assert!(err.contains("exit code Some(234)"), "{err}");
     }
 
     #[test]

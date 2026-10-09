@@ -30,10 +30,6 @@ pub struct WindowsUpdatesModule {
 /// are stopped.
 const CACHE_SERVICES: [&str; 3] = ["wuauserv", "bits", "cryptsvc"];
 
-/// [`CACHE_SERVICES`] in reverse: the order they are started again.
-const CACHE_SERVICES_REVERSED: [&str; 3] =
-    [CACHE_SERVICES[2], CACHE_SERVICES[1], CACHE_SERVICES[0]];
-
 /// The finding for restart work Windows has queued. Only the restart settles
 /// it, so it is advice, and the window offers the restart.
 pub const REBOOT_PENDING: &str = "wu_reboot_pending";
@@ -397,7 +393,7 @@ pub fn failed_update_findings(module_id: &str, failed: &[FailedUpdate]) -> Vec<I
                     failed_list(&updates),
                     "Reset Windows Update's components",
                     vec![
-                        "Stop wuauserv, bits and cryptsvc".to_string(),
+                        "Stop wuauserv, bits and cryptsvc, after the running services that depend on them".to_string(),
                         r"Rename %SystemRoot%\SoftwareDistribution and %SystemRoot%\System32\catroot2".to_string(),
                         "Start the services again".to_string(),
                     ],
@@ -455,41 +451,28 @@ impl WindowsUpdatesModule {
         self
     }
 
-    /// Stop [`CACHE_SERVICES`] and check each one stopped. The guard starts
-    /// them again if the caller does not get to; `untouched` says what was
-    /// left alone when one does not stop.
+    /// Stop [`CACHE_SERVICES`], each after the services that depend on it
+    /// and run, and check each one stopped. The guard starts them again if
+    /// the caller does not get to; `untouched` says what was left alone when
+    /// one does not stop.
     async fn stop_services(&self, untouched: &str) -> Result<StartAgain, String> {
-        let guard = StartAgain::new(self.runner.clone(), &CACHE_SERVICES_REVERSED);
+        let mut services = StartAgain::new(self.runner.clone());
         for svc in CACHE_SERVICES {
-            let _ = self
-                .runner
-                .run("net.exe", &["stop", svc], Duration::from_secs(60))
-                .await;
-            let state = service::state(&*self.runner, svc).await?;
-            if state != Some(SERVICE_STOPPED) {
-                return Err(format!(
-                    "'{svc}' did not stop (state {state:?}), so {untouched}. The services are being started again."
-                ));
-            }
+            services.stop(svc).await.map_err(|e| {
+                format!("{e}, so {untouched}. The services are being started again.")
+            })?;
         }
-        Ok(guard)
+        Ok(services)
     }
 
     /// Start the services again; the ones that did not, with their state.
-    async fn start_services(&self, mut guard: StartAgain) -> Result<Vec<String>, String> {
-        let mut not_running = Vec::new();
-        for svc in CACHE_SERVICES_REVERSED {
-            let _ = self
-                .runner
-                .run("net.exe", &["start", svc], Duration::from_secs(60))
-                .await;
-            let state = service::state(&*self.runner, svc).await?;
-            if !matches!(state, Some(SERVICE_RUNNING | SERVICE_START_PENDING)) {
-                not_running.push(format!("{svc} (state {state:?})"));
-            }
-        }
-        guard.disarm();
-        Ok(not_running)
+    async fn start_services(&self, services: StartAgain) -> Result<Vec<String>, String> {
+        Ok(services
+            .start()
+            .await?
+            .into_iter()
+            .map(|(svc, state)| format!("{svc} (state {state:?})"))
+            .collect())
     }
 
     /// Reset Windows Update's components the way Microsoft describes it: stop
@@ -725,7 +708,7 @@ impl DiagnosticModule for WindowsUpdatesModule {
                     format!("Files: {}, total size: {} MB", file_count, total_size_mb),
                     "Safely clean the SoftwareDistribution download folder",
                     vec![
-                        "Temporarily stop the Windows Update services".to_string(),
+                        "Temporarily stop the Windows Update services and the running services that depend on them".to_string(),
                         "Empty the temporary download cache".to_string(),
                         "Restart the services cleanly".to_string(),
                     ],
@@ -937,7 +920,10 @@ mod tests {
     use super::*;
     use crate::utils::cmd::{CmdOutput, MockCommandRunner};
 
-    use crate::utils::service::test_support::{sc_qc_output, sc_query_output};
+    use crate::utils::service::test_support::{
+        ServiceManager, enumdepend_cryptsvc, enumdepend_cryptsvc_running, enumdepend_none,
+        sc_qc_output, sc_query_output,
+    };
 
     #[tokio::test]
     async fn test_windows_updates_detects_disabled_service() {
@@ -1128,10 +1114,14 @@ mod tests {
     }
 
     /// `sc query` answers `before` for every service until a `net start`
-    /// ran, then `after`.
+    /// ran, then `after`. The services that depend on cryptsvc are stopped,
+    /// as on the development PC.
     fn services(before: u32, after: u32) -> MockCommandRunner {
         let mock = MockCommandRunner::new();
         mock.add_response("net.exe", CmdOutput::ok(""));
+        mock.add_response("enumdepend wuauserv", CmdOutput::ok(enumdepend_none()));
+        mock.add_response("enumdepend bits", CmdOutput::ok(enumdepend_none()));
+        mock.add_response("enumdepend cryptsvc", CmdOutput::ok(enumdepend_cryptsvc()));
         for svc in CACHE_SERVICES {
             mock.add_response(
                 format!("query {svc}"),
@@ -1179,22 +1169,116 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("'wuauserv' did not stop"), "{err}");
         assert!(cache.0.join("sub").join("update.cab").exists());
-        for _ in 0..10 {
-            tokio::task::yield_now().await;
-        }
+        settle().await;
+        // What it tried to stop, and only that.
         let started: Vec<String> = mock
             .executed()
             .into_iter()
             .filter(|c| c.starts_with("net.exe start"))
             .collect();
+        assert_eq!(started, ["net.exe start wuauserv"]);
+    }
+
+    /// Lets the start that a dropped repair spawns on the runtime run.
+    async fn settle() {
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// The three services, and those that depend on cryptsvc running, as in
+    /// Windows Sandbox: AppIDSvc (AppLocker), the Smartlocker filter driver,
+    /// which depends on AppIDSvc too, and IsolationSession.
+    fn services_with_dependents() -> ServiceManager {
+        ServiceManager::running(&[
+            "wuauserv",
+            "bits",
+            "cryptsvc",
+            "IsolationSession",
+            "applockerfltr",
+            "AppIDSvc",
+        ])
+        .depends(
+            "cryptsvc",
+            &["IsolationSession", "applockerfltr", "AppIDSvc"],
+        )
+        .depends("AppIDSvc", &["applockerfltr"])
+        .enumdepend("wuauserv", enumdepend_none())
+        .enumdepend("bits", enumdepend_none())
+        .enumdepend("cryptsvc", enumdepend_cryptsvc_running())
+    }
+
+    /// While services that depend on cryptsvc run, `net stop cryptsvc` asks
+    /// before stopping them and, its input NUL, stops nothing. They are
+    /// stopped first, in the order `sc enumdepend` lists them, and started
+    /// again after cryptsvc, the other way round.
+    #[tokio::test]
+    async fn services_that_depend_on_cryptsvc_are_stopped_first_and_started_again() {
+        let cache = Cache::new("dependents");
+        let scm = Arc::new(services_with_dependents());
+        let msg = WindowsUpdatesModule::with_runner(ModuleConfig::default(), scm.clone())
+            .with_download_dir(cache.0.clone())
+            .fix("wu_cache_bloat", None)
+            .await
+            .unwrap();
+        assert!(msg.contains("200.0 KB freed"), "{msg}");
         assert_eq!(
-            started,
+            scm.net_commands(),
             [
+                "net.exe stop wuauserv",
+                "net.exe stop bits",
+                "net.exe stop IsolationSession",
+                "net.exe stop applockerfltr",
+                "net.exe stop AppIDSvc",
+                "net.exe stop cryptsvc",
                 "net.exe start cryptsvc",
+                "net.exe start AppIDSvc",
+                "net.exe start applockerfltr",
+                "net.exe start IsolationSession",
                 "net.exe start bits",
-                "net.exe start wuauserv"
+                "net.exe start wuauserv",
             ]
         );
+        for svc in ["wuauserv", "bits", "cryptsvc", "AppIDSvc", "applockerfltr"] {
+            assert!(scm.runs(svc), "{svc}");
+        }
+    }
+
+    /// A service that depends on cryptsvc and does not stop: the cache is
+    /// left alone, the error names it, and what was stopped is started again.
+    #[tokio::test]
+    async fn a_dependent_that_does_not_stop_leaves_the_cache_and_is_named() {
+        let cache = Cache::new("dependent_stays");
+        // A service the list does not show keeps IsolationSession running.
+        let scm = Arc::new(services_with_dependents().depends("IsolationSession", &["Unlisted"]));
+        scm.run("net.exe", &["start", "Unlisted"], Duration::ZERO)
+            .await
+            .unwrap();
+        let err = WindowsUpdatesModule::with_runner(ModuleConfig::default(), scm.clone())
+            .with_download_dir(cache.0.clone())
+            .fix("wu_cache_bloat", None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("'IsolationSession', which depends on 'cryptsvc', did not stop"),
+            "{err}"
+        );
+        assert!(err.contains("the cache was left alone"), "{err}");
+        assert!(cache.0.join("sub").join("update.cab").exists());
+        settle().await;
+        assert_eq!(
+            scm.net_commands(),
+            [
+                "net.exe start Unlisted",
+                "net.exe stop wuauserv",
+                "net.exe stop bits",
+                "net.exe stop IsolationSession",
+                "net.exe start IsolationSession",
+                "net.exe start bits",
+                "net.exe start wuauserv",
+            ]
+        );
+        assert!(scm.runs("wuauserv") && scm.runs("bits") && scm.runs("cryptsvc"));
     }
 
     // Captured on a German Windows 11; see tests/fixtures/README.md.
