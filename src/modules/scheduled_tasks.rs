@@ -74,6 +74,9 @@ const SERVICE_ALREADY_RUNNING: i64 = 1056;
 /// Folder of the tasks Windows registers for its own upkeep.
 const WINDOWS_TASK_FOLDER: &str = r"\Microsoft\Windows\";
 
+/// Folder of the tasks Office Click-to-Run registers.
+const OFFICE_TASK_FOLDER: &str = r"\Microsoft\Office\";
+
 /// Explorer registers this one in the root folder, not under
 /// [`WINDOWS_TASK_FOLDER`], to start itself again without elevation.
 const EXPLORER_UNELEVATED_TASK: &str = "CreateExplorerShellUnelevatedTask";
@@ -85,17 +88,26 @@ enum TaskOwner {
     /// Switched off, that upkeep stops and nothing says so; the repair did
     /// that to ten of them on one PC (#172).
     Windows,
+    /// Office Click-to-Run registers every task in its folder again with
+    /// each update, which switches a disabled one back on: a failing one was
+    /// "repaired" again after every update (#171).
+    Office,
     /// Anything else, as far as the folder tells.
     Other,
 }
 
 impl TaskOwner {
     fn of(path: &str, name: &str) -> Self {
-        let windows_folder = path
-            .get(..WINDOWS_TASK_FOLDER.len())
-            .is_some_and(|head| head.eq_ignore_ascii_case(WINDOWS_TASK_FOLDER));
-        if windows_folder || (path == r"\" && name.eq_ignore_ascii_case(EXPLORER_UNELEVATED_TASK)) {
+        let in_folder = |folder: &str| {
+            path.get(..folder.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(folder))
+        };
+        if in_folder(WINDOWS_TASK_FOLDER)
+            || (path == r"\" && name.eq_ignore_ascii_case(EXPLORER_UNELEVATED_TASK))
+        {
             TaskOwner::Windows
+        } else if in_folder(OFFICE_TASK_FOLDER) {
+            TaskOwner::Office
         } else {
             TaskOwner::Other
         }
@@ -711,7 +723,21 @@ impl DiagnosticModule for ScheduledTasksModule {
                 code,
                 task.missed_runs
             );
-            if task.owner() == TaskOwner::Windows {
+            let advice = match task.owner() {
+                TaskOwner::Windows => Some((
+                    "It is one of Windows' own tasks; switched off, what it looks after would stop, so WinMedic leaves it on.",
+                    format!(
+                        "Leave the task on. If it keeps failing, look up 0x{:X} together with the task's name",
+                        code
+                    ),
+                )),
+                TaskOwner::Office => Some((
+                    "Office registers its tasks again with every update, which switches a disabled one back on, so WinMedic leaves it on.",
+                    "Leave the task to Office. If it keeps failing, repair Office (Settings > Apps, Office, Modify)".to_string(),
+                )),
+                TaskOwner::Other => None,
+            };
+            if let Some((why, what_to_do)) = advice {
                 issues.push(
                     Issue::new(
                         id,
@@ -720,15 +746,9 @@ impl DiagnosticModule for ScheduledTasksModule {
                         "Scheduled Tasks",
                         severity,
                         RiskScore::Low,
-                        format!(
-                            "{} It is one of Windows' own tasks; switched off, what it looks after would stop, so WinMedic leaves it on.",
-                            failed
-                        ),
+                        format!("{} {}", failed, why),
                         details,
-                        format!(
-                            "Leave the task on. If it keeps failing, look up 0x{:X} together with the task's name",
-                            code
-                        ),
+                        what_to_do,
                         Vec::new(),
                     )
                     .with_advice_only(),
@@ -745,7 +765,7 @@ impl DiagnosticModule for ScheduledTasksModule {
                 RiskScore::Medium,
                 failed,
                 details,
-                "Check the task in Task Scheduler; disabling it stops the recurring failure without deleting it",
+                "Check the task in Task Scheduler. Disabling it stops its runs without deleting it; an update of its software may switch it back on",
                 vec![format!(
                     "Run Disable-ScheduledTask -TaskPath '{}' -TaskName '{}'",
                     task.path, task.name
@@ -793,11 +813,22 @@ impl DiagnosticModule for ScheduledTasksModule {
 
         // The scan offers no repair for these. A finding saved by an older
         // WinMedic may still be ticked, and must not switch one off either.
-        if TaskOwner::of(&task.path, &task.name) == TaskOwner::Windows {
-            return Err(format!(
-                "'{}{}' is one of Windows' own tasks. WinMedic does not switch those off.",
-                task.path, task.name
-            ));
+        match TaskOwner::of(&task.path, &task.name) {
+            TaskOwner::Windows => {
+                return Err(format!(
+                    "'{}{}' is one of Windows' own tasks. WinMedic does not switch those off.",
+                    task.path, task.name
+                ));
+            }
+            // One whose program is gone may still be switched off: once
+            // Office is uninstalled, nothing registers it again.
+            TaskOwner::Office if issue_id.starts_with("sched_failing_") => {
+                return Err(format!(
+                    "'{}{}' belongs to Office, which switches it back on with its next update. WinMedic leaves it on.",
+                    task.path, task.name
+                ));
+            }
+            TaskOwner::Office | TaskOwner::Other => {}
         }
 
         self.disable_task(&task).await
@@ -913,6 +944,10 @@ mod tests {
                 "{path}{name}"
             );
         }
+        assert_eq!(
+            TaskOwner::of(r"\Microsoft\Office\", "Office Feature Updates"),
+            TaskOwner::Office
+        );
         for (path, name) in [
             (r"\Microsoft\WindowsUpdateLookalike\", "Task"),
             (r"\", "Vendor Updater"),
@@ -1041,6 +1076,12 @@ mod tests {
         );
         assert!(failing.title.contains("0x80070002"));
         assert!(failing.technical_details.contains("NumberOfMissedRuns: 3"));
+        // Its software may register it again; nothing promises it stays off.
+        assert!(
+            !failing
+                .recommended_fix
+                .contains("stops the recurring failure")
+        );
     }
 
     #[tokio::test]
@@ -1152,6 +1193,73 @@ mod tests {
         assert!(issues[0].id.starts_with("sched_orphaned_"));
         assert!(issues[0].advice_only && !issues[0].is_selected);
         assert!(issues[0].fix_steps.is_empty());
+    }
+
+    /// #171. "Office Feature Updates" with its last result from the
+    /// development PC, 0x800710E0, after an Office update had switched it
+    /// back on.
+    #[tokio::test]
+    async fn a_failing_office_task_is_advice_since_office_switches_it_back_on() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "Disable-ScheduledTask",
+            CmdOutput::ok("WINMEDIC_TASK_STATE=Disabled"),
+        );
+        mock.add_response(
+            "Schedule.Service",
+            inventory(vec![format!(
+                r"\Microsoft\Office\|Office Feature Updates|Ready|2147946720|0|{}",
+                live_exe()
+            )]),
+        );
+        let module = ScheduledTasksModule::with_runner(Arc::new(mock.clone()));
+
+        let issues = module.scan(None).await.unwrap();
+        assert_eq!(issues.len(), 1);
+        let issue = &issues[0];
+        assert!(issue.title.contains("0x800710E0"));
+        assert!(issue.advice_only && !issue.is_selected);
+        assert!(issue.fix_steps.is_empty());
+        assert!(issue.description.contains("every update"));
+        assert!(
+            !issue
+                .recommended_fix
+                .contains("stops the recurring failure")
+        );
+
+        let err = module.fix(&issue.id, None).await.unwrap_err();
+        assert!(err.contains("next update"), "{err}");
+        assert!(
+            !mock
+                .executed()
+                .iter()
+                .any(|c| c.contains("Disable-ScheduledTask"))
+        );
+    }
+
+    /// Switched off, it stays a leftover: nothing registers it again once
+    /// Office is gone.
+    #[tokio::test]
+    async fn an_office_task_whose_program_is_gone_can_still_be_switched_off() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "Disable-ScheduledTask",
+            CmdOutput::ok("WINMEDIC_TASK_STATE=Disabled"),
+        );
+        mock.add_response(
+            "Schedule.Service",
+            inventory(vec![format!(
+                r"\Microsoft\Office\|Office Feature Updates|Ready|0|0|{}",
+                MISSING_EXE
+            )]),
+        );
+        let module = ScheduledTasksModule::with_runner(Arc::new(mock));
+
+        let issues = module.scan(None).await.unwrap();
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].id.starts_with("sched_orphaned_"));
+        assert!(!issues[0].advice_only);
+        assert!(module.fix(&issues[0].id, None).await.is_ok());
     }
 
     #[tokio::test]
