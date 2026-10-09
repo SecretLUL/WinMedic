@@ -1,9 +1,13 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
-use crate::modules::event_log::{memory_test_finding, schedule_memory_test};
+use crate::modules::crash_timeline::logged_at;
+use crate::modules::event_log::{
+    last_passed_memory_test, memory_test_finding, schedule_memory_test,
+};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
 use crate::utils::debug_log::DebugTrace;
 use crate::utils::event_xml::{EventRecord, parse_events, read_events, system_log_query};
+use chrono::{DateTime, Utc};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,6 +19,8 @@ use tokio::time::sleep;
 pub struct WheaEventRecord {
     pub event_id: u32,
     pub level: Option<String>,
+    /// When it was logged.
+    pub logged: Option<DateTime<Utc>>,
     pub error_source: Option<String>,
     pub error_type: Option<String>,
     pub apic_id: Option<u32>,
@@ -174,6 +180,17 @@ impl DiagnosticModule for WheaLoggerModule {
         .await;
         sleep(Duration::from_millis(150)).await;
 
+        // A passed memory test answers the findings that offer one; it is
+        // read only when there is such a finding.
+        let memory_test = if parsed_events
+            .iter()
+            .any(|e| matches!(e.event_id, 18 | 19 | 47))
+        {
+            last_passed_memory_test(&*self.runner).await
+        } else {
+            None
+        };
+
         // 1. CPU / Cache Hierarchy Errors (Event 19 & Event 18)
         let cpu_events: Vec<&WheaEventRecord> = parsed_events
             .iter()
@@ -294,7 +311,7 @@ impl DiagnosticModule for WheaLoggerModule {
                     "Update motherboard BIOS/UEFI to latest AGESA/Microcode firmware".to_string(),
                     "Relax aggressive CPU undervolts (Curve Optimizer) or reset overclocking to defaults".to_string(),
                 ],
-            )));
+            ), memory_test, cpu_events.iter().map(|e| e.logged)));
         }
 
         // 2. PCIe Root Port / Bus Errors (Event 17)
@@ -426,7 +443,7 @@ impl DiagnosticModule for WheaLoggerModule {
                     "Schedule Windows Memory Diagnostic (mdsched.exe) for the next reboot".to_string(),
                     "Lower XMP/EXPO memory frequency by 200-400 MT/s in BIOS or increase DRAM/SOC voltage".to_string(),
                 ],
-            )));
+            ), memory_test, mem_events.iter().map(|e| e.logged)));
         }
 
         // 4. Fatal hardware errors (Event 1). In the provider's manifest event
@@ -638,6 +655,7 @@ pub fn whea_records(events: Vec<EventRecord>) -> Vec<WheaEventRecord> {
             WheaEventRecord {
                 event_id: event.event_id,
                 level: event.level.map(|level| level_name(level).to_string()),
+                logged: logged_at(&event),
                 error_source: text("ErrorSource"),
                 error_type: text("ErrorType"),
                 apic_id: number("ApicId"),
@@ -679,6 +697,7 @@ fn level_name(level: u8) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::event_log::test_support::memory_test_event;
     use crate::utils::cmd::{CmdOutput, MockCommandRunner};
 
     // Built in the exact shape wevtutil prints, with the EventData field names
@@ -1011,6 +1030,63 @@ mod tests {
         assert_eq!(issue.id, "whea_memory_error");
         assert_eq!(issue.severity, Severity::Critical);
         assert!(issue.technical_details.contains("0x1f4c8000"));
+    }
+
+    /// WHEA events 19 and 47 of 2026-08-20 and a memory test logged at
+    /// `test_logged`.
+    async fn scan_with_memory_test(id: u32, test_logged: &str) -> Vec<Issue> {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "MemoryDiagnostics",
+            CmdOutput::ok(memory_test_event(id, test_logged)),
+        );
+        let events = whea_event(19, 3, &[("ApicId", "8"), ("MCABank", "3")])
+            + &whea_event(47, 3, &[("PhysicalAddress", "0x1f4c8000")]);
+        mock.add_response("wevtutil.exe", CmdOutput::ok(events));
+        let module = WheaLoggerModule::with_runner(ModuleConfig::default(), Arc::new(mock));
+        module.scan(None).await.expect("scan failed")
+    }
+
+    /// A WHEA event 47 and a later Windows Memory Diagnostic that found no
+    /// errors: the test has been run, so it is not offered again. The BIOS
+    /// steps stay, since the test misses faults that come and go.
+    #[tokio::test]
+    async fn a_memory_test_passed_after_the_errors_is_not_offered_again() {
+        let issues = scan_with_memory_test(1201, "2026-09-20T06:12:03.0000000Z").await;
+        for id in ["whea_memory_error", "whea_cpu_cache_error"] {
+            let issue = issues.iter().find(|i| i.id == id).expect(id);
+            assert!(issue.advice_only && !issue.will_repair(), "{id}");
+            assert!(!issue.requires_reboot, "{id}");
+            assert!(
+                issue
+                    .recommended_fix
+                    .contains("Windows Memory Diagnostic found no errors on 2026-09-"),
+                "{}",
+                issue.recommended_fix
+            );
+            assert!(
+                !issue
+                    .fix_steps
+                    .iter()
+                    .any(|s| s.contains("Memory Diagnostic"))
+            );
+            assert!(issue.fix_steps.iter().any(|s| s.contains("BIOS")), "{id}");
+        }
+    }
+
+    /// A test from before the errors, or one that found errors, answers
+    /// nothing: the test is offered as before.
+    #[tokio::test]
+    async fn an_older_or_failed_memory_test_leaves_the_test_on_offer() {
+        for (id, logged) in [
+            (1201, "2026-08-01T06:12:03.0000000Z"),
+            (1202, "2026-09-20T06:12:03.0000000Z"),
+        ] {
+            let issues = scan_with_memory_test(id, logged).await;
+            let issue = issues.iter().find(|i| i.id == "whea_memory_error").unwrap();
+            assert!(!issue.advice_only && issue.requires_reboot, "{id} {logged}");
+            assert!(issue.fix_steps[0].contains("Memory Diagnostic"));
+        }
     }
 
     /// Event 1 as the provider's manifest defines it: `Length` and

@@ -1,6 +1,8 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::crash_timeline::{self, Change};
-use crate::modules::event_log::{memory_test_finding, schedule_memory_test};
+use crate::modules::event_log::{
+    last_passed_memory_test, memory_test_finding, schedule_memory_test,
+};
 use crate::modules::shell_extensions;
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
 use crate::safety::reg_backup::RegBackupManager;
@@ -37,6 +39,8 @@ pub struct MinidumpInfo {
 struct CrashInstance {
     bugcheck_code: u32,
     when: Option<String>,
+    /// When it happened, to compare with a memory test.
+    logged: Option<DateTime<Utc>>,
     source_file: String,
 }
 
@@ -47,6 +51,8 @@ pub struct CrashEventRecord {
     pub bugcheck_code: Option<u32>,
     /// When it was logged, local time, `%Y-%m-%d %H:%M` like the dump times.
     pub when: Option<String>,
+    /// When it was logged.
+    pub logged: Option<DateTime<Utc>>,
     /// The file name of the dump a bugcheck event points at, so the same
     /// crash is not counted once from the dump and again from the event.
     pub dump_file: Option<String>,
@@ -219,11 +225,9 @@ impl CrashAnalysisModule {
                     stale.bytes += meta.len();
                     continue;
                 }
-                let modified = meta.modified().ok().map(|t| {
-                    DateTime::<Local>::from(t)
-                        .format("%Y-%m-%d %H:%M")
-                        .to_string()
-                });
+                let logged = meta.modified().ok().map(DateTime::<Utc>::from);
+                let modified =
+                    logged.map(|t| t.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string());
                 let file_name = path
                     .file_name()
                     .and_then(|n| n.to_str())
@@ -241,6 +245,7 @@ impl CrashAnalysisModule {
                 crashes.push(CrashInstance {
                     bugcheck_code: info.bugcheck_code,
                     when: modified,
+                    logged,
                     source_file: file_name,
                 });
             }
@@ -509,6 +514,7 @@ impl DiagnosticModule for CrashAnalysisModule {
             crashes.push(CrashInstance {
                 bugcheck_code: e.bugcheck_code.unwrap_or(0),
                 when: e.when.clone(),
+                logged: e.logged,
                 source_file: "Event 1001".to_string(),
             });
         }
@@ -584,6 +590,7 @@ impl DiagnosticModule for CrashAnalysisModule {
         // 2. Memory-class stop codes
         if !memory_crashes.is_empty() {
             let count = memory_crashes.len();
+            let memory_test = last_passed_memory_test(&*self.runner).await;
             issues.push(memory_test_finding(Issue::new(
                 "crash_memory_bugcheck",
                 self.id(),
@@ -603,7 +610,7 @@ impl DiagnosticModule for CrashAnalysisModule {
                     "Lower XMP/EXPO memory frequency or increase DRAM voltage in BIOS".to_string(),
                     "If errors persist, test DIMMs individually to isolate the failing module".to_string(),
                 ],
-            )));
+            ), memory_test, memory_crashes.iter().map(|c| c.logged)));
         }
 
         // 3. Every other stop code
@@ -1064,15 +1071,13 @@ pub fn crash_events(events: Vec<EventRecord>) -> Vec<CrashEventRecord> {
             } else {
                 return None;
             };
-            let when = event.time_created.as_deref().and_then(|time| {
-                DateTime::parse_from_rfc3339(time)
-                    .ok()
-                    .map(|t| t.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string())
-            });
+            let logged = crash_timeline::logged_at(&event);
+            let when = logged.map(|t| t.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string());
             Some(CrashEventRecord {
                 event_id: event.event_id,
                 bugcheck_code,
                 when,
+                logged,
                 dump_file,
                 without_bugcheck,
                 raw_snippet: event.summary(),
@@ -1107,6 +1112,7 @@ fn extract_hex_code(line: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::event_log::test_support::memory_test_event;
     use crate::utils::cmd::{CmdOutput, MockCommandRunner};
     use crate::utils::decode::{CodePage, decode_output_in};
 
@@ -1504,6 +1510,50 @@ mod tests {
         assert!(mem.technical_details.contains("Event 1001"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The bugcheck of 2026-08-20 and a Windows Memory Diagnostic that found
+    /// no errors a month later: the test is not offered again.
+    #[tokio::test]
+    async fn a_memory_test_passed_after_the_crash_is_not_offered_again() {
+        let dir = temp_dump_dir("mem_tested");
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "MemoryDiagnostics",
+            CmdOutput::ok(memory_test_event(1101, "2026-09-20T06:12:03.0000000Z")),
+        );
+        mock.add_response(
+            "wevtutil.exe",
+            CmdOutput::ok(event_xml(
+                "Microsoft-Windows-WER-SystemErrorReporting",
+                1001,
+                &[("param1", "0x00000050 (0xfffff80233000000)")],
+            )),
+        );
+
+        let issues = CrashAnalysisModule::with_runner_and_dump_dir(
+            ModuleConfig::default(),
+            Arc::new(mock),
+            &dir,
+        )
+        .scan(None)
+        .await
+        .expect("scan failed");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mem = issues
+            .iter()
+            .find(|i| i.id == "crash_memory_bugcheck")
+            .expect("the crash is still reported");
+        assert!(mem.advice_only && !mem.will_repair());
+        assert!(!mem.requires_reboot);
+        assert!(
+            mem.recommended_fix
+                .contains("Windows Memory Diagnostic found no errors on 2026-09-"),
+            "{}",
+            mem.recommended_fix
+        );
+        assert!(mem.fix_steps.iter().any(|s| s.contains("XMP/EXPO")));
     }
 
     #[tokio::test]
