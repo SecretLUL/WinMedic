@@ -370,7 +370,10 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         }
     }
 
-    let mut issues = engine_handle.await?;
+    // Archived findings are left out of everything below, as in the window:
+    // the score, the reports, the repairs and the exit code.
+    let (mut issues, archived) =
+        app::archive::split(engine_handle.await?, &config.archived_findings);
 
     let health_score = DiagnosticEngine::calculate_health_score(&issues);
 
@@ -405,7 +408,8 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
             issues.clone(),
             module_statuses,
             Some(scan_started.elapsed().as_secs()),
-        );
+        )
+        .with_archived(archived.clone());
         let (status, details) = match state.save() {
             Err(e) => ("FAILED", format!("The results could not be saved: {e}")),
             Ok(()) if failed_modules.is_empty() => (
@@ -435,7 +439,7 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     // reflects the post-repair state instead of a snapshot that is already stale.
     let defer_json = args.json && args.runs_repairs() && !scan_cancelled;
     if !args.json && !args.helper {
-        DiagnosticReporter::print_cli_report(&issues, health_score);
+        DiagnosticReporter::print_cli_report(&issues, health_score, archived.len());
     } else if !defer_json && !args.helper {
         println!(
             "{}",
@@ -554,7 +558,13 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     if let Some(ref out_path) = args.output {
         let health = DiagnosticEngine::calculate_health_score(&issues);
         let audit_entries = this_run();
-        match DiagnosticReporter::save_report(out_path, &issues, health, &audit_entries) {
+        match DiagnosticReporter::save_report(
+            out_path,
+            &issues,
+            health,
+            &audit_entries,
+            archived.len(),
+        ) {
             Ok(()) => {
                 if !quiet {
                     println!("Report saved: {}", out_path.display());

@@ -1361,6 +1361,76 @@ mod tests {
         }
     }
 
+    /// Archived from its details, a finding leaves the list and the counter
+    /// says so; Settings names it, and "Show again" brings it back.
+    #[test]
+    fn a_finding_archived_from_its_details_comes_back_from_settings() {
+        let mut app = scanned_app();
+        app.selected_filtered_index = 0;
+        let mut harness = window(app);
+
+        harness.get_by_label("Archive").click();
+        harness.run_steps(2);
+        assert!(harness.query_by_label("DNS cache full").is_none());
+        assert!(
+            harness
+                .query_by_label_contains("selected for repair · 1 archived")
+                .is_some()
+        );
+
+        harness.state_mut().active_tab = TAB_SETTINGS;
+        harness.run_steps(2);
+        assert!(harness.query_by_label("DNS cache full").is_some());
+        harness.get_by_label("Show again").click();
+        harness.run_steps(2);
+        assert!(harness.query_by_label("Nothing archived.").is_some());
+        assert_eq!(harness.state().issues.len(), 2);
+        assert!(harness.state().archived_issues.is_empty());
+    }
+
+    /// A fixed finding has nothing to hide, and nothing is archived while a
+    /// repair runs.
+    #[test]
+    fn archive_is_offered_for_open_findings_and_not_during_a_run() {
+        use egui_kittest::kittest::NodeT;
+
+        let mut app = scanned_app();
+        app.issues[0].is_fixed = true;
+        app.selected_filtered_index = 0;
+        assert!(window(app).query_by_label("Archive").is_none());
+
+        let mut app = scanned_app();
+        app.selected_filtered_index = 0;
+        app.is_fixing = true;
+        let harness = window(app);
+        assert!(
+            harness
+                .get_by_label("Archive")
+                .accesskit_node()
+                .is_disabled()
+        );
+    }
+
+    #[test]
+    fn settings_say_when_nothing_is_archived() {
+        let mut app = scanned_app();
+        app.active_tab = TAB_SETTINGS;
+        assert!(window(app).query_by_label("Nothing archived.").is_some());
+    }
+
+    /// Nowhere else either: Easy mode does not count it, and a repair of it
+    /// that waits for a restart raises no banner.
+    #[test]
+    fn an_archived_finding_is_left_out_of_easy_mode_and_the_banner() {
+        let mut app = easy_scanned_app();
+        app.issues[0].is_reboot_pending = true;
+        app.archive_issue(0);
+        app.archive_issue(0);
+        let harness = window(app);
+        assert!(harness.query_by_label("Your PC is in good shape").is_some());
+        assert!(harness.query_by_label_contains("Restart Windows").is_none());
+    }
+
     /// Once a restart is all that is left, Easy mode's page is the prompt,
     /// and the banner would only say it twice. On the Settings tab the page
     /// shows something else, so the banner is back.
