@@ -1,0 +1,9 @@
+Enable-PnpDevice : Es wurden keine Win32_PnPEntity-Objekte gefunden, bei denen die DeviceID-Eigenschaft gleich 
+"ROOT\WINMEDIC_DOES_NOT_EXIST\0000" ist. Überprüfen Sie den Wert der Eigenschaft, und versuchen Sie es erneut.
+In Zeile:1 Zeichen:70
++ ... ew($false); Enable-PnpDevice -InstanceId 'ROOT\WINMEDIC_DOES_NOT_EXIS ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : ObjectNotFound: (ROOT\WINMEDIC_DOES_NOT_EXIST\0000:String) [Enable-PnpDevice], CimJobExc 
+   eption
+    + FullyQualifiedErrorId : CmdletizationQuery_NotFound_DeviceID,Enable-PnpDevice
+ 

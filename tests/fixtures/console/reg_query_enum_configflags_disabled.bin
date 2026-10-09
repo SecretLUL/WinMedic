@@ -1,0 +1,4 @@
+
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Enum\ACPI\PNP0103\2&daba3ff&0
+    ConfigFlags    REG_DWORD    0x1
+

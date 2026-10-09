@@ -13,9 +13,11 @@
 //! network, no sound, no updates — are ticked by default.
 
 use crate::engine::issue::{Issue, RiskScore, Severity};
+use crate::modules::devices::meaning;
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
 use crate::safety::reg_backup::RegBackupManager;
-use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
+use crate::utils::cmd::{CommandRunner, SystemCommandRunner, ps_single_quoted};
+use crate::utils::pnp::PnpDevice;
 use crate::utils::registry::{self, RegKeyValues};
 use crate::utils::service::{self, SERVICE_DISABLED};
 use std::io::Write;
@@ -262,6 +264,111 @@ const CORE_SERVICES: &[CoreService] = &[
 
 fn service_issue_id(name: &str) -> String {
     format!("tweak_svc_{}", name.to_ascii_lowercase())
+}
+
+/// `CM_PROB_DISABLED`: the device is disabled in Device Manager.
+const DEVICE_DISABLED: u32 = 22;
+/// `CM_PROB_NEED_RESTART`: the device starts after Windows restarts.
+const NEEDS_RESTART: u32 = 14;
+
+/// Where a device's settings are, `ConfigFlags` among them.
+const ENUM_KEY: &str = r"HKLM\SYSTEM\CurrentControlSet\Enum";
+
+/// A Windows system device, and what goes wrong while it is disabled.
+///
+/// The Devices & Drivers check leaves every disabled device alone, which is
+/// right for hardware someone switched off. These are parts of Windows
+/// itself that tuning tools switch off.
+struct CoreDevice {
+    /// The device's hardware ID. Its instance ID starts with it:
+    /// `ROOT\HVSERVICE\0000` for `ROOT\HVSERVICE`.
+    hardware_id: &'static str,
+    display: &'static str,
+    /// What stops working while it is disabled. Only what has been observed
+    /// or is documented; without that, a neutral sentence.
+    breaks: &'static str,
+    /// Disabling it is known to break something, so the finding is a ticked
+    /// warning. Otherwise it is an unticked hint.
+    known_fault: bool,
+}
+
+/// No fault is known to come from disabling the device.
+const NO_KNOWN_FAULT: &str = "No fault is known to come from this; enable it if something has misbehaved since it was disabled.";
+
+const CORE_DEVICES: &[CoreDevice] = &[
+    // On the development PC a tuning tool had disabled it. HvHost then
+    // stopped at every start with an error (31; 298 while the services were
+    // grouped), CmService could not start, and installing Windows Sandbox
+    // was rolled back twice (CBS_E_INSTALLERS_FAILED). Enabled again on
+    // 2026-10-08, HvHost started at once and Windows Sandbox installed.
+    CoreDevice {
+        hardware_id: r"ROOT\HVSERVICE",
+        display: "Microsoft Hypervisor Service",
+        breaks: "Without it the HV Host Service stops with an error: Windows Sandbox and containers do not start, and installing Windows Sandbox is rolled back.",
+        known_fault: true,
+    },
+    // Disabled by the same tuning tool; nothing was seen to break.
+    CoreDevice {
+        hardware_id: r"ROOT\NDISVIRTUALBUS",
+        display: "NDIS Virtual Network Adapter Enumerator",
+        breaks: NO_KNOWN_FAULT,
+        known_fault: false,
+    },
+    // Disabled by the same tuning tool; nothing was seen to break.
+    CoreDevice {
+        hardware_id: r"ACPI\PNP0103",
+        display: "High Precision Event Timer",
+        breaks: NO_KNOWN_FAULT,
+        known_fault: false,
+    },
+];
+
+/// The entry for the device with `instance_id`: the one whose hardware ID it
+/// starts with, followed by a backslash, in any case. SetupAPI reports
+/// `ROOT\HVSERVICE\0000`, pnputil the same device as `ROOT\hvservice\0000`.
+fn core_device(instance_id: &str) -> Option<&'static CoreDevice> {
+    CORE_DEVICES.iter().find(|entry| {
+        let len = entry.hardware_id.len();
+        instance_id
+            .get(..len)
+            .is_some_and(|start| start.eq_ignore_ascii_case(entry.hardware_id))
+            && instance_id[len..].starts_with('\\')
+            && instance_id.len() > len + 1
+    })
+}
+
+const DEVICE_ID_PREFIX: &str = "tweak_dev_";
+
+fn device_issue_id(instance_id: &str) -> String {
+    let slug: String = instance_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{DEVICE_ID_PREFIX}{slug}")
+}
+
+/// Device Manager's "Enable device" for one device, through PowerShell's
+/// `Enable-PnpDevice`, which clears the device's disabled flag
+/// (`ConfigFlags`) and starts it.
+///
+/// Not `pnputil /enable-device`: pnputil refuses a device that was already
+/// disabled when Windows started. It reads the device's state from its
+/// `DEVPKEY_Device_DevNodeStatus` property, which Windows does not report
+/// for such a device, lists it as disconnected and fails with
+/// `ERROR_DEVICE_NOT_CONNECTED` (1167). `Enable-PnpDevice` enabled the same
+/// device without a restart - in Windows Sandbox, and on 2026-10-08 the
+/// development PC's Microsoft Hypervisor Service.
+fn enable_device_script(instance_id: &str) -> String {
+    format!(
+        "Enable-PnpDevice -InstanceId {} -Confirm:$false -ErrorAction Stop",
+        ps_single_quoted(instance_id)
+    )
 }
 
 pub const WU_POLICY_KEY: &str = r"HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate";
@@ -897,6 +1004,131 @@ impl TweaksModule {
         Ok(set)
     }
 
+    /// The finding for `device`, if it is a Windows system device that is
+    /// disabled.
+    fn device_issue(&self, device: &PnpDevice) -> Option<Issue> {
+        if device.problem != DEVICE_DISABLED {
+            return None;
+        }
+        let entry = core_device(&device.instance_id)?;
+        let mut steps = Vec::new();
+        if self.config.auto_backup_registry {
+            steps.push(format!(
+                "Back up ConfigFlags of {ENUM_KEY}\\{} to the registry backups",
+                device.instance_id
+            ));
+        }
+        steps.push(format!(
+            "Run {} (Device Manager: Enable device)",
+            enable_device_script(&device.instance_id)
+        ));
+        steps.push("Check that the device no longer reports a problem".to_string());
+        let mut issue = Issue::new(
+            device_issue_id(&device.instance_id),
+            self.id(),
+            format!("'{}' is disabled", entry.display),
+            "Tweaks & Policies",
+            if entry.known_fault {
+                Severity::Warning
+            } else {
+                Severity::Info
+            },
+            RiskScore::Medium,
+            format!(
+                "This Windows device is disabled in Device Manager, which tuning tools do. {}",
+                entry.breaks
+            ),
+            format!(
+                "Device: {}\nInstance ID: {}\nProblem code: {} (disabled)",
+                device.name, device.instance_id, device.problem
+            ),
+            format!("Enable '{}' again", entry.display),
+            steps,
+        );
+        issue.is_selected = entry.known_fault;
+        Some(issue)
+    }
+
+    /// Back up the device's `ConfigFlags`, enable it, and read its problem
+    /// code again.
+    async fn fix_device(&self, issue_id: &str) -> Result<String, String> {
+        let devices = self.runner.connected_devices().await?;
+        let Some((device, entry)) = devices.iter().find_map(|device| {
+            let entry = core_device(&device.instance_id)?;
+            (device_issue_id(&device.instance_id) == issue_id).then_some((device, entry))
+        }) else {
+            return Ok("The device is no longer connected - nothing to change.".to_string());
+        };
+        if device.problem != DEVICE_DISABLED {
+            return Ok(format!(
+                "'{}' is no longer disabled - nothing to change.",
+                entry.display
+            ));
+        }
+
+        let key = format!("{ENUM_KEY}\\{}", device.instance_id);
+        if self.config.auto_backup_registry {
+            RegBackupManager::with_dir(self.backup_dir.clone())
+                .export_value_with(
+                    &*self.runner,
+                    &key,
+                    "ConfigFlags",
+                    &format!(
+                        "Before enabling '{}'; restoring it disables the device again at the next restart",
+                        entry.display
+                    ),
+                )
+                .await
+                .map_err(|e| {
+                    format!("Aborted: the registry backup of {key} failed ({e}). Nothing was changed.")
+                })?;
+        }
+
+        let out = self
+            .runner
+            .run_powershell(
+                &enable_device_script(&device.instance_id),
+                Duration::from_secs(60),
+            )
+            .await;
+        let refusal = match &out {
+            Ok(out) if !out.success => format!(" Enable-PnpDevice: {}", out.stderr.trim()),
+            Err(e) => format!(" Enable-PnpDevice: {e}"),
+            Ok(_) => String::new(),
+        };
+
+        let after = self
+            .runner
+            .connected_devices()
+            .await?
+            .into_iter()
+            .find(|d| d.instance_id.eq_ignore_ascii_case(&device.instance_id));
+        let name = entry.display;
+        match after.map(|d| d.problem) {
+            Some(0) => Ok(format!(
+                "'{name}' is enabled again and works.{} To disable it again: Device Manager -> right-click it -> Disable device.",
+                if self.config.auto_backup_registry {
+                    " Its old setting is in the registry backups."
+                } else {
+                    ""
+                }
+            )),
+            Some(DEVICE_DISABLED) => Err(format!(
+                "Windows did not enable '{name}'; it is still disabled.{refusal}"
+            )),
+            Some(NEEDS_RESTART) => Err(format!(
+                "'{name}' is enabled, but Windows starts it only after a restart. Restart Windows."
+            )),
+            Some(code) => Err(format!(
+                "'{name}' is enabled but reports problem code {code}: {}.",
+                meaning(code)
+            )),
+            None => Err(format!(
+                "'{name}' is no longer listed after it was enabled.{refusal}"
+            )),
+        }
+    }
+
     /// Backs the hosts file up, then replaces it with the unblocked bytes. The
     /// result is read back and checked; if the check fails, the backup is
     /// copied back over the hosts file.
@@ -976,7 +1208,7 @@ impl DiagnosticModule for TweaksModule {
     }
 
     fn description(&self) -> &'static str {
-        "Finds what tweak and debloat tools leave behind: disabled core services, update, Store and Defender policies, and hosts entries that block Windows"
+        "Finds what tweak and debloat tools leave behind: disabled core services and system devices, update, Store and Defender policies, and hosts entries that block Windows"
     }
 
     fn icon(&self) -> &'static str {
@@ -1026,7 +1258,7 @@ impl DiagnosticModule for TweaksModule {
         }
         Self::send_progress(
             &progress_tx,
-            40,
+            35,
             "Core services checked",
             Some(&format!(
                 "{} of {} core services disabled.",
@@ -1036,7 +1268,39 @@ impl DiagnosticModule for TweaksModule {
         )
         .await;
 
-        // 2. Policies
+        // 2. Windows system devices
+        Self::send_progress(
+            &progress_tx,
+            40,
+            "Checking Windows system devices...",
+            Some("Device Manager's problem codes (SetupAPI, CfgMgr32)"),
+        )
+        .await;
+        match self.runner.connected_devices().await {
+            Ok(devices) => {
+                let found: Vec<Issue> = devices
+                    .iter()
+                    .filter_map(|device| self.device_issue(device))
+                    .collect();
+                Self::send_progress(
+                    &progress_tx,
+                    45,
+                    "Windows system devices checked",
+                    Some(&format!(
+                        "{} of {} Windows system devices disabled.",
+                        found.len(),
+                        CORE_DEVICES.len()
+                    )),
+                )
+                .await;
+                issues.extend(found);
+            }
+            Err(e) => {
+                Self::send_progress(&progress_tx, 45, "System devices not checked", Some(&e)).await;
+            }
+        }
+
+        // 3. Policies
         Self::send_progress(
             &progress_tx,
             50,
@@ -1123,7 +1387,7 @@ impl DiagnosticModule for TweaksModule {
             }
         }
 
-        // 3. hosts
+        // 4. hosts
         Self::send_progress(
             &progress_tx,
             80,
@@ -1181,6 +1445,9 @@ impl DiagnosticModule for TweaksModule {
         }
         if issue_id.starts_with("tweak_policy_") {
             return self.fix_policy(issue_id).await;
+        }
+        if issue_id.starts_with(DEVICE_ID_PREFIX) {
+            return self.fix_device(issue_id).await;
         }
         if issue_id == "tweak_hosts_blocks_windows" {
             let message = self.fix_hosts()?;
@@ -1833,5 +2100,389 @@ mod tests {
             crate::utils::cmd::powershell_parse_errors(DEFENDER_STATUS_SCRIPT).await,
             0
         );
+    }
+
+    const HPET: &str = r"ACPI\PNP0103\2&DABA3FF&0";
+    const HVSERVICE: &str = r"ROOT\HVSERVICE\0000";
+    const NDIS_BUS: &str = r"ROOT\NDISVIRTUALBUS\0000";
+
+    fn pnp(problem: u32, instance_id: &str, name: &str) -> PnpDevice {
+        PnpDevice {
+            problem,
+            class: "System".to_string(),
+            instance_id: instance_id.to_string(),
+            name: name.to_string(),
+        }
+    }
+
+    /// The development PC's devices with a problem as SetupAPI listed them
+    /// on 2026-10-09 - HPET and the NDIS enumerator disabled, two devices
+    /// without a driver - with the Microsoft Hypervisor Service reporting
+    /// `hvservice`: 22 until it was enabled on 2026-10-08, 0 since.
+    fn dev_pc(hvservice: u32) -> Vec<PnpDevice> {
+        vec![
+            pnp(22, HPET, "Hochpräzisionsereigniszeitgeber"),
+            pnp(hvservice, HVSERVICE, "Microsoft-Hypervisor-Dienst"),
+            pnp(
+                28,
+                r"USB\VID_046D&PID_0943&MI_05\9&B24F85A&0&0005",
+                "Brio 500",
+            ),
+            pnp(
+                22,
+                NDIS_BUS,
+                "Enumerator für virtuelle NDIS-Netzwerkadapter",
+            ),
+            pnp(28, r"ACPI\AMDI0204\2&DABA3FF&0", ""),
+        ]
+    }
+
+    fn device_findings(issues: &[Issue]) -> Vec<&Issue> {
+        issues
+            .iter()
+            .filter(|i| i.id.starts_with(DEVICE_ID_PREFIX))
+            .collect()
+    }
+
+    #[test]
+    fn instance_ids_match_a_hardware_id_in_any_case() {
+        for id in [
+            HVSERVICE,
+            r"ROOT\hvservice\0000",
+            HPET,
+            r"acpi\pnp0103\0",
+            NDIS_BUS,
+            r"ROOT\NdisVirtualBus\0000",
+        ] {
+            assert!(core_device(id).is_some(), "{id}");
+        }
+        for id in [
+            r"ROOT\HVSERVICEX\0000",
+            r"ROOT\HVSERVICE",
+            r"ROOT\HVSERVICE\",
+            r"ACPI\PNP0103",
+            r"ACPI\PNP01030\0",
+            r"SWD\ROOT\HVSERVICE\0000",
+            r"USB\VID_046D&PID_0943&MI_05\9&B24F85A&0&0005",
+            "",
+        ] {
+            assert!(core_device(id).is_none(), "{id}");
+        }
+    }
+
+    /// Every entry fires for its device while it is disabled, and for no
+    /// other problem: a device that stopped or has no driver is the Devices
+    /// & Drivers check's.
+    #[test]
+    fn every_entry_fires_only_while_its_device_is_disabled() {
+        let dir = sandbox("device_entries");
+        let module = module(MockCommandRunner::new(), &dir, b"");
+        for entry in CORE_DEVICES {
+            let id = format!("{}\\0000", entry.hardware_id);
+            let issue = module.device_issue(&pnp(22, &id, "x")).unwrap();
+            assert_eq!(issue.title, format!("'{}' is disabled", entry.display));
+            assert_eq!(issue.is_selected, entry.known_fault, "{id}");
+            for problem in [0, 10, 28, 45] {
+                assert!(module.device_issue(&pnp(problem, &id, "x")).is_none());
+            }
+        }
+    }
+
+    /// Only an entry whose fault has been seen starts ticked; the others are
+    /// hints that claim nothing.
+    #[test]
+    fn only_entries_with_a_known_fault_are_ticked_warnings() {
+        for entry in CORE_DEVICES {
+            assert_eq!(entry.known_fault, entry.breaks != NO_KNOWN_FAULT);
+        }
+        let known: Vec<&str> = CORE_DEVICES
+            .iter()
+            .filter(|entry| entry.known_fault)
+            .map(|entry| entry.hardware_id)
+            .collect();
+        assert_eq!(known, [r"ROOT\HVSERVICE"]);
+    }
+
+    async fn scan_devices(devices: Vec<PnpDevice>) -> Vec<Issue> {
+        let dir = sandbox("devices_scan");
+        let mock = MockCommandRunner::new();
+        healthy(&mock);
+        mock.set_devices(devices);
+        module(mock, &dir, b"").scan(None).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_devices_a_tuning_tool_disabled_are_found() {
+        let issues = scan_devices(dev_pc(22)).await;
+        let found = device_findings(&issues);
+        assert_eq!(found.len(), 3, "{found:?}");
+
+        let hv = found
+            .iter()
+            .find(|i| i.id == device_issue_id(HVSERVICE))
+            .unwrap();
+        assert_eq!(hv.title, "'Microsoft Hypervisor Service' is disabled");
+        assert_eq!(hv.severity, Severity::Warning);
+        assert!(hv.is_selected && !hv.advice_only && !hv.requires_reboot);
+        assert!(
+            hv.description.contains("Windows Sandbox"),
+            "{}",
+            hv.description
+        );
+        assert!(hv.technical_details.contains(HVSERVICE));
+
+        for id in [HPET, NDIS_BUS] {
+            let hint = found.iter().find(|i| i.id == device_issue_id(id)).unwrap();
+            assert_eq!(hint.severity, Severity::Info);
+            assert!(!hint.is_selected, "{id}");
+            assert!(hint.description.ends_with(NO_KNOWN_FAULT));
+        }
+    }
+
+    /// The development PC today: the Hypervisor Service works again, HPET
+    /// and the NDIS enumerator are still disabled.
+    #[tokio::test]
+    async fn an_enabled_device_is_not_a_finding() {
+        let issues = scan_devices(dev_pc(0)).await;
+        let ids: Vec<String> = device_findings(&issues)
+            .iter()
+            .map(|i| i.id.clone())
+            .collect();
+        assert_eq!(ids, [device_issue_id(HPET), device_issue_id(NDIS_BUS)]);
+    }
+
+    /// Devices & Drivers leaves every disabled device alone, so none of
+    /// these is reported twice.
+    #[tokio::test]
+    async fn the_devices_check_does_not_report_them_too() {
+        use crate::modules::devices::{DevicesModule, Remedy, remedy};
+        assert_eq!(remedy(DEVICE_DISABLED), Remedy::None);
+        let mock = MockCommandRunner::new();
+        mock.set_devices(dev_pc(22));
+        let issues = DevicesModule::with_runner(Arc::new(mock))
+            .scan(None)
+            .await
+            .unwrap();
+        for id in [HVSERVICE, HPET, NDIS_BUS] {
+            assert!(
+                !issues.iter().any(|i| i.technical_details.contains(id)),
+                "{id}: {issues:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_dry_run_lists_the_backup_the_enable_and_the_check() {
+        let dir = sandbox("device_steps");
+        let hv = pnp(22, HVSERVICE, "Microsoft-Hypervisor-Dienst");
+        let steps = module(MockCommandRunner::new(), &dir, b"")
+            .device_issue(&hv)
+            .unwrap()
+            .fix_steps;
+        assert_eq!(
+            steps,
+            [
+                format!(
+                    "Run Enable-PnpDevice -InstanceId '{HVSERVICE}' -Confirm:$false -ErrorAction Stop (Device Manager: Enable device)"
+                ),
+                "Check that the device no longer reports a problem".to_string(),
+            ]
+        );
+        let steps = backing_up(MockCommandRunner::new(), &dir)
+            .device_issue(&hv)
+            .unwrap()
+            .fix_steps;
+        assert_eq!(
+            steps[0],
+            format!(
+                r"Back up ConfigFlags of HKLM\SYSTEM\CurrentControlSet\Enum\{HVSERVICE} to the registry backups"
+            )
+        );
+        assert_eq!(steps.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn the_enable_script_parses() {
+        assert_eq!(
+            crate::utils::cmd::powershell_parse_errors(&enable_device_script(HPET)).await,
+            0
+        );
+    }
+
+    /// `reg query ... /v ConfigFlags` of the development PC's HPET, disabled.
+    const CONFIG_FLAGS_DISABLED: &[u8] =
+        include_bytes!("../../tests/fixtures/console/reg_query_enum_configflags_disabled.bin");
+    /// `Enable-PnpDevice` refusing a device it cannot find: exit 1 and a
+    /// German message on stderr.
+    const ENABLE_REFUSED: &[u8] =
+        include_bytes!("../../tests/fixtures/console/powershell_enable_pnpdevice_not_found_de.bin");
+    /// `pnputil /enable-device` of a device disabled since Windows started:
+    /// exit 1167, "Das Gerät ist nicht angeschlossen".
+    const PNPUTIL_REFUSED: &[u8] = include_bytes!(
+        "../../tests/fixtures/console/pnputil_enable_device_disabled_since_boot_de.bin"
+    );
+
+    /// The module with registry backups on, into `dir\backups`.
+    fn backing_up(mock: MockCommandRunner, dir: &Path) -> TweaksModule {
+        std::fs::write(dir.join("hosts"), b"").unwrap();
+        TweaksModule::with_paths(
+            ModuleConfig {
+                auto_backup_registry: true,
+                ..ModuleConfig::default()
+            },
+            Arc::new(mock),
+            dir.join("hosts"),
+            dir.join("Registry.pol"),
+            dir.join("backups"),
+        )
+    }
+
+    /// The development PC with HPET disabled until `Enable-PnpDevice` ran,
+    /// which answers `enable` and leaves HPET reporting `after`.
+    fn hpet_repair(enable: CmdOutput, after: u32) -> MockCommandRunner {
+        let mock = MockCommandRunner::new();
+        mock.set_devices(dev_pc(0));
+        mock.add_response(
+            "/v ConfigFlags",
+            CmdOutput::ok(decode_output(CONFIG_FLAGS_DISABLED)),
+        );
+        mock.add_response("Enable-PnpDevice", enable);
+        let devices = dev_pc(0)
+            .into_iter()
+            .map(|d| {
+                if d.instance_id == HPET {
+                    pnp(after, HPET, &d.name)
+                } else {
+                    d
+                }
+            })
+            .collect();
+        mock.set_devices_after("Enable-PnpDevice", devices);
+        mock
+    }
+
+    #[tokio::test]
+    async fn a_disabled_device_is_backed_up_enabled_and_read_back() {
+        let dir = sandbox("device_fix");
+        let mock = hpet_repair(CmdOutput::ok(""), 0);
+        let msg = backing_up(mock.clone(), &dir)
+            .fix(&device_issue_id(HPET), None)
+            .await
+            .unwrap();
+        assert!(
+            msg.starts_with("'High Precision Event Timer' is enabled again and works."),
+            "{msg}"
+        );
+        assert!(msg.contains("registry backups"), "{msg}");
+
+        let executed = mock.executed();
+        let at = |what: &str| executed.iter().position(|c| c.contains(what)).unwrap();
+        assert!(
+            at("/v ConfigFlags") < at("Enable-PnpDevice"),
+            "{executed:?}"
+        );
+        assert!(executed[at("Enable-PnpDevice")].contains(&format!("-InstanceId '{HPET}'")));
+
+        let backup = RegBackupManager::with_dir(dir.join("backups")).list_backups();
+        assert_eq!(backup.len(), 1);
+        assert_eq!(backup[0].key_path, format!(r"{ENUM_KEY}\{HPET}"));
+        let bytes = std::fs::read(&backup[0].file_path).unwrap();
+        let text = String::from_utf16(
+            &bytes[2..]
+                .chunks(2)
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        assert!(text.contains("\"ConfigFlags\"=dword:00000001"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_refused_enable_leaves_the_finding_open() {
+        let dir = sandbox("device_refused");
+        let refused = CmdOutput::with_output(1, "", decode_output(ENABLE_REFUSED));
+        let err = module(hpet_repair(refused, 22), &dir, b"")
+            .fix(&device_issue_id(HPET), None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.starts_with(
+                "Windows did not enable 'High Precision Event Timer'; it is still disabled."
+            ),
+            "{err}"
+        );
+        assert!(
+            err.contains("CmdletizationQuery_NotFound_DeviceID"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_device_that_starts_only_after_a_restart_says_so() {
+        let dir = sandbox("device_restart");
+        let err = module(hpet_repair(CmdOutput::ok(""), NEEDS_RESTART), &dir, b"")
+            .fix(&device_issue_id(HPET), None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("Restart Windows"), "{err}");
+
+        let err = module(hpet_repair(CmdOutput::ok(""), 10), &dir, b"")
+            .fix(&device_issue_id(HPET), None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("problem code 10: it cannot start"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn without_a_backup_nothing_is_enabled() {
+        let dir = sandbox("device_nobackup");
+        let mock = MockCommandRunner::new();
+        mock.set_devices(dev_pc(22));
+        mock.add_response(
+            "/v ConfigFlags",
+            CmdOutput::with_output(1, "", "FEHLER: Zugriff verweigert"),
+        );
+        let err = backing_up(mock.clone(), &dir)
+            .fix(&device_issue_id(HVSERVICE), None)
+            .await
+            .unwrap_err();
+        assert!(err.starts_with("Aborted:"), "{err}");
+        assert!(
+            !mock
+                .executed()
+                .iter()
+                .any(|c| c.contains("Enable-PnpDevice"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_device_enabled_since_the_scan_is_left_alone() {
+        let dir = sandbox("device_gone");
+        let mock = MockCommandRunner::new();
+        mock.set_devices(dev_pc(0));
+        let module = module(mock.clone(), &dir, b"");
+        let msg = module.fix(&device_issue_id(HVSERVICE), None).await.unwrap();
+        assert!(msg.contains("no longer disabled"), "{msg}");
+        mock.set_devices(Vec::new());
+        let msg = module.fix(&device_issue_id(HVSERVICE), None).await.unwrap();
+        assert!(msg.contains("no longer connected"), "{msg}");
+        assert!(mock.executed().is_empty(), "{:?}", mock.executed());
+    }
+
+    /// pnputil refused the development PC's Microsoft Hypervisor Service on
+    /// 2026-10-08, and in Windows Sandbox it refused the NDIS enumerator once
+    /// it had been disabled across a restart. The repair does not ask it.
+    #[tokio::test]
+    async fn the_repair_does_not_rely_on_pnputil() {
+        let refused = decode_output(PNPUTIL_REFUSED);
+        assert!(refused.contains(r"ROOT\NdisVirtualBus\0000"), "{refused}");
+        let dir = sandbox("device_pnputil");
+        let mock = hpet_repair(CmdOutput::ok(""), 0);
+        mock.add_response("pnputil.exe", CmdOutput::with_output(1167, refused, ""));
+        module(mock.clone(), &dir, b"")
+            .fix(&device_issue_id(HPET), None)
+            .await
+            .unwrap();
+        assert!(!mock.executed().iter().any(|c| c.contains("pnputil")));
     }
 }
