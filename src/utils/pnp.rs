@@ -18,6 +18,9 @@ pub struct PnpDevice {
     /// The friendly name, else the description; empty for some devices
     /// without a driver.
     pub name: String,
+    /// The service of its driver (`SPDRP_SERVICE`), the name `sc` knows it
+    /// by; empty for a device without one.
+    pub service: String,
 }
 
 /// Every device that is connected now, with its problem code.
@@ -25,7 +28,7 @@ pub struct PnpDevice {
 pub fn connected_devices() -> Result<Vec<PnpDevice>, String> {
     use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
         CM_Get_DevNode_Status, CR_SUCCESS, DIGCF_ALLCLASSES, DIGCF_PRESENT, DN_HAS_PROBLEM,
-        SP_DEVINFO_DATA, SPDRP_CLASS, SPDRP_DEVICEDESC, SPDRP_FRIENDLYNAME,
+        SP_DEVINFO_DATA, SPDRP_CLASS, SPDRP_DEVICEDESC, SPDRP_FRIENDLYNAME, SPDRP_SERVICE,
         SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW,
         SetupDiGetDeviceInstanceIdW,
     };
@@ -81,6 +84,7 @@ pub fn connected_devices() -> Result<Vec<PnpDevice>, String> {
                 name: text(SPDRP_FRIENDLYNAME)
                     .or_else(|| text(SPDRP_DEVICEDESC))
                     .unwrap_or_default(),
+                service: text(SPDRP_SERVICE).unwrap_or_default(),
             });
         }
 
@@ -140,13 +144,14 @@ mod tests {
         assert_eq!(utf16_until_nul(&[]), "");
     }
 
-    /// Reads, changes nothing: every Windows has devices, and each has an
-    /// instance ID.
+    /// Reads, changes nothing: every Windows has devices, each has an
+    /// instance ID, and drivers are services.
     #[cfg(windows)]
     #[test]
     fn windows_lists_its_devices() {
         let devices = connected_devices().unwrap();
         assert!(!devices.is_empty());
         assert!(devices.iter().all(|d| !d.instance_id.is_empty()));
+        assert!(devices.iter().any(|d| !d.service.is_empty()));
     }
 }

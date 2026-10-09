@@ -1,0 +1,12 @@
+[SC] QueryServiceConfig ERFOLG
+
+SERVICE_NAME: hvservice
+        TYPE               : 1  KERNEL_DRIVER 
+        START_TYPE         : 3   DEMAND_START
+        ERROR_CONTROL      : 1   NORMAL
+        BINARY_PATH_NAME   : \SystemRoot\System32\drivers\hvservice.sys
+        LOAD_ORDER_GROUP   : 
+        TAG                : 0
+        DISPLAY_NAME       : Microsoft-Hypervisor-Diensttreiber
+        DEPENDENCIES       : 
+        SERVICE_START_NAME : 

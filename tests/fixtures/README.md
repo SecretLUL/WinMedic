@@ -84,6 +84,19 @@ Captured elevated on 2026-10-09 on the same machine, read-only commands:
 | `reg_query_svchost_split_threshold.bin` | `reg query HKLM\SYSTEM\CurrentControlSet\Control /v SvcHostSplitThresholdInKB` | CP850 | `0x380000` (3670016 KB, 3.5 GB), the value since 2026-10-08. A tuning tool had set it to 32 GB (`0x2000000`); the tests put that back. |
 | `reg_query_enum_configflags_disabled.bin` | `reg query "HKLM\SYSTEM\CurrentControlSet\Enum\ACPI\PNP0103\2&daba3ff&0" /v ConfigFlags` | CP850 | The High Precision Event Timer, disabled in Device Manager by a tuning tool: `ConfigFlags` 0x1. `reg` spells the instance ID as the registry does (`daba3ff`), SetupAPI in capitals. |
 | `powershell_enable_pnpdevice_not_found_de.bin` | The tweaks module's enable script (`Enable-PnpDevice -InstanceId '…' -Confirm:$false -ErrorAction Stop`) for an instance ID that does not exist, stderr | UTF-8 | Exit 1. The message is German, the `FullyQualifiedErrorId` (`CmdletizationQuery_NotFound_DeviceID`) is not. It changed nothing. |
+| `sc_qc_cmservice.bin` | `sc qc CmService` | CP850 | `DEPENDENCIES` over three lines: `rpcss`, `vmcompute`, `hvhost`, each further one as ` : name` under the first. |
+| `sc_qc_hvhost.bin` | `sc qc HvHost` | CP850 | `TYPE 20 WIN32_SHARE_PROCESS` (the number is hex), depends on `hvservice`. The chain tests copy it for services of their own. |
+| `sc_qc_hvservice.bin` | `sc qc hvservice` | CP850 | The driver HvHost depends on: `TYPE 1 KERNEL_DRIVER`, no dependencies. The tests rename it for other drivers. |
+| `sc_qc_vmcompute.bin` | `sc qc vmcompute` | CP850 | Depends on `rpcss` and the drivers `wcifs`, `hvsocketcontrol`, `condrv`. |
+| `sc_qc_group_dependency.bin` | `sc qc cdfs` | CP850 | `TYPE 2 FILE_SYSTEM_DRIVER`, and a dependency on a group, which `sc` prints with a `+`: `+SCSI CDROM Class`. |
+| `sc_qc_not_installed_de.bin` | `sc qc` of a service that does not exist | CP850 | Exit 1060, "[SC] OpenService FEHLER 1060:" and a German sentence: no `TYPE`. |
+
+The failing state of 2026-10-08 - HvHost stopped with 31 (298 while the
+services were grouped), CmService stopped with 1068 - is gone, and HvHost
+and CmService cannot be made to fail again without changing the machine.
+The chain tests list them as stopped with those exit codes by renaming the
+captured entry of a service that stopped the same way (WinMedicChainA in
+`sc_query_service_list.bin`, below), and so are **constructed** from it.
 
 The device lists in the tweaks tests are what SetupAPI listed on that day
 (`SetupDiGetClassDevs` with `DIGCF_PRESENT`, `CM_Get_DevNode_Status`): HPET
@@ -94,6 +107,7 @@ German, the account the sandbox signs in with, an Administrator):
 
 | File | Command | Encoding | Notes |
 | --- | --- | --- | --- |
+| `sc_query_service_list.bin` | `sc query type= service state= all` after two test services had been created and the sandbox restarted: `WinMedicChainA` starts automatically and depends on `WinMedicChainB`, whose program does not exist | CP850 | 268 services, each `SERVICE_NAME`, the translated `DISPLAY_NAME`, then `STATE` and `WIN32_EXIT_CODE` as numbers. `WinMedicChainA` is `1 STOPPED` with `1068 (0x42c)`, "the dependency service failed to start": Windows gives that code to a service whose dependency failed at boot, and again when it is started by hand. `WinMedicChainB`, whose program could not be found, has exit code 0. |
 | `pnputil_enable_device_disabled_since_boot_de.bin` | `pnputil /enable-device "ROOT\NDISVIRTUALBUS\0000"` after the device had been disabled with `Disable-PnpDevice` and the sandbox restarted | Windows-1252 | Exit 1167 (`ERROR_DEVICE_NOT_CONNECTED`), "Das Gerät ist nicht angeschlossen." pnputil takes a device's state from its `DEVPKEY_Device_DevNodeStatus` property, which Windows does not report for a device that has been disabled since it started (`CM_Get_DevNode_PropertyW`: `CR_NO_SUCH_VALUE`, while `CM_Get_DevNode_Status` reports problem 22). `pnputil /enum-devices` lists it as "Getrennt", and the enable is refused. Disabled without a restart in between, pnputil enabled it. `Enable-PnpDevice` enabled it in both states, without a restart. The development PC's `ROOT\HVSERVICE\0000` was refused the same way on 2026-10-08. |
 
 Captured elevated on 2026-09-25, read-only commands, with the time each piece

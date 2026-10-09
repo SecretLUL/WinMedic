@@ -716,6 +716,7 @@ mod tests {
             class: class.to_string(),
             instance_id: instance_id.to_string(),
             name: name.to_string(),
+            service: String::new(),
         }
     }
 

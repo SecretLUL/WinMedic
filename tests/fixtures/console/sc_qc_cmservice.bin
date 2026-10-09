@@ -1,0 +1,14 @@
+[SC] QueryServiceConfig ERFOLG
+
+SERVICE_NAME: CmService
+        TYPE               : 20  WIN32_SHARE_PROCESS 
+        START_TYPE         : 2   AUTO_START
+        ERROR_CONTROL      : 1   NORMAL
+        BINARY_PATH_NAME   : C:\WINDOWS\system32\svchost.exe -k LocalSystemNetworkRestricted
+        LOAD_ORDER_GROUP   : 
+        TAG                : 0
+        DISPLAY_NAME       : Container-Manager-Dienst
+        DEPENDENCIES       : rpcss
+                           : vmcompute
+                           : hvhost
+        SERVICE_START_NAME : LocalSystem
