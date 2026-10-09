@@ -62,6 +62,46 @@ const BENIGN_TASK_RESULTS: &[i64] = &[
     267045, // 0x41325 SCHED_S_TASK_QUEUED
 ];
 
+/// `ERROR_SERVICE_ALREADY_RUNNING` (1056, 0x420) as the exit code of `sc.exe`.
+///
+/// Windows' own `Time Synchronization\SynchronizeTime` runs
+/// `%windir%\system32\sc.exe start w32time task_started`, and `sc` ends with
+/// this code whenever the time service already runs: the task did what it is
+/// there for. Only starting a service returns it, so the program alone tells
+/// it apart; the inventory does not read the arguments.
+const SERVICE_ALREADY_RUNNING: i64 = 1056;
+
+/// Folder of the tasks Windows registers for its own upkeep.
+const WINDOWS_TASK_FOLDER: &str = r"\Microsoft\Windows\";
+
+/// Explorer registers this one in the root folder, not under
+/// [`WINDOWS_TASK_FOLDER`], to start itself again without elevation.
+const EXPLORER_UNELEVATED_TASK: &str = "CreateExplorerShellUnelevatedTask";
+
+/// Who registered a task, which decides whether switching it off is a repair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskOwner {
+    /// Windows' own upkeep: the clock, Secure Boot updates, disk cleanup.
+    /// Switched off, that upkeep stops and nothing says so; the repair did
+    /// that to ten of them on one PC (#172).
+    Windows,
+    /// Anything else, as far as the folder tells.
+    Other,
+}
+
+impl TaskOwner {
+    fn of(path: &str, name: &str) -> Self {
+        let windows_folder = path
+            .get(..WINDOWS_TASK_FOLDER.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(WINDOWS_TASK_FOLDER));
+        if windows_folder || (path == r"\" && name.eq_ignore_ascii_case(EXPLORER_UNELEVATED_TASK)) {
+            TaskOwner::Windows
+        } else {
+            TaskOwner::Other
+        }
+    }
+}
+
 /// Stands in for a PowerShell failure that carried no stderr of its own.
 const NO_DETAIL: &str = "PowerShell reported no detail";
 
@@ -96,9 +136,21 @@ impl ScheduledTask {
     /// Whether the last run reported a real failure rather than a status code.
     fn last_run_failed(&self) -> bool {
         match self.last_result {
+            Some(SERVICE_ALREADY_RUNNING) if self.runs_sc() => false,
             Some(code) => !BENIGN_TASK_RESULTS.contains(&code),
             None => false,
         }
+    }
+
+    /// Whether the action's program is `sc.exe`, with or without a folder.
+    fn runs_sc(&self) -> bool {
+        let program = self.execute.trim().trim_matches('"');
+        let file = program.rsplit(['\\', '/']).next().unwrap_or(program);
+        file.eq_ignore_ascii_case("sc.exe") || file.eq_ignore_ascii_case("sc")
+    }
+
+    fn owner(&self) -> TaskOwner {
+        TaskOwner::of(&self.path, &self.name)
     }
 
     /// Whether Task Scheduler currently refuses to run this task at all.
@@ -535,10 +587,43 @@ impl DiagnosticModule for ScheduledTasksModule {
             let id = Self::issue_id("sched_orphaned", &full);
             self.remember(&id, task);
 
+            let title = format!(
+                "Scheduled task points at a deleted program: '{}'",
+                task.name
+            );
+            let details = format!(
+                "Task: {}\nState: {}\nAction: {}\nResolved target (missing): {}",
+                full,
+                task.state,
+                task.execute,
+                missing.display()
+            );
+            if task.owner() == TaskOwner::Windows {
+                issues.push(
+                    Issue::new(
+                        id,
+                        self.id(),
+                        title,
+                        "Scheduled Tasks",
+                        Severity::Warning,
+                        RiskScore::Low,
+                        format!(
+                            "The task '{}' launches '{}', which does not exist. It is one of Windows' own tasks, so WinMedic leaves it on.",
+                            full,
+                            missing.display()
+                        ),
+                        details,
+                        "If the program belongs to Windows, System Integrity's repair (DISM, SFC) can put it back",
+                        Vec::new(),
+                    )
+                    .with_advice_only(),
+                );
+                continue;
+            }
             issues.push(Issue::new(
                 id,
                 self.id(),
-                format!("Scheduled task points at a deleted program: '{}'", task.name),
+                title,
                 "Scheduled Tasks",
                 Severity::Warning,
                 // Reversible with one command and touching nothing but this one
@@ -550,13 +635,7 @@ impl DiagnosticModule for ScheduledTasksModule {
                     full,
                     missing.display()
                 ),
-                format!(
-                    "Task: {}\nState: {}\nAction: {}\nResolved target (missing): {}",
-                    full,
-                    task.state,
-                    task.execute,
-                    missing.display()
-                ),
+                details,
                 "Disable the task (reversible with Enable-ScheduledTask); nothing is deleted",
                 vec![format!(
                     "Run Disable-ScheduledTask -TaskPath '{}' -TaskName '{}'",
@@ -603,28 +682,69 @@ impl DiagnosticModule for ScheduledTasksModule {
                 String::new()
             };
 
+            let title = format!(
+                "Scheduled task '{}' last run failed (0x{:X})",
+                task.name, code
+            );
+            let severity = if repeatedly {
+                Severity::Warning
+            } else {
+                Severity::Info
+            };
+            // Not "its program is still installed": a task whose action is a
+            // COM handler has no program, and one started by name is looked
+            // up through PATH, which this module does not do.
+            let failed = format!(
+                "The task '{}' ended its last run with 0x{:X}{}.",
+                full, code, missed_clause
+            );
+            let details = format!(
+                "Task: {}\nState: {}\nAction: {}\nLastTaskResult: {} (0x{:X})\nNumberOfMissedRuns: {}",
+                full,
+                task.state,
+                if task.execute.is_empty() {
+                    "(no program)"
+                } else {
+                    &task.execute
+                },
+                code,
+                code,
+                task.missed_runs
+            );
+            if task.owner() == TaskOwner::Windows {
+                issues.push(
+                    Issue::new(
+                        id,
+                        self.id(),
+                        title,
+                        "Scheduled Tasks",
+                        severity,
+                        RiskScore::Low,
+                        format!(
+                            "{} It is one of Windows' own tasks; switched off, what it looks after would stop, so WinMedic leaves it on.",
+                            failed
+                        ),
+                        details,
+                        format!(
+                            "Leave the task on. If it keeps failing, look up 0x{:X} together with the task's name",
+                            code
+                        ),
+                        Vec::new(),
+                    )
+                    .with_advice_only(),
+                );
+                continue;
+            }
+
             let mut issue = Issue::new(
                 id,
                 self.id(),
-                format!(
-                    "Scheduled task '{}' last run failed (0x{:X})",
-                    task.name, code
-                ),
+                title,
                 "Scheduled Tasks",
-                if repeatedly {
-                    Severity::Warning
-                } else {
-                    Severity::Info
-                },
+                severity,
                 RiskScore::Medium,
-                format!(
-                    "The task '{}' ended its last run with 0x{:X}{}. Its program is still installed, so this is a failing task rather than an orphaned one.",
-                    full, code, missed_clause
-                ),
-                format!(
-                    "Task: {}\nState: {}\nAction: {}\nLastTaskResult: {} (0x{:X})\nNumberOfMissedRuns: {}",
-                    full, task.state, task.execute, code, code, task.missed_runs
-                ),
+                failed,
+                details,
                 "Check the task in Task Scheduler; disabling it stops the recurring failure without deleting it",
                 vec![format!(
                     "Run Disable-ScheduledTask -TaskPath '{}' -TaskName '{}'",
@@ -670,6 +790,15 @@ impl DiagnosticModule for ScheduledTasksModule {
                 issue_id
             ));
         };
+
+        // The scan offers no repair for these. A finding saved by an older
+        // WinMedic may still be ticked, and must not switch one off either.
+        if TaskOwner::of(&task.path, &task.name) == TaskOwner::Windows {
+            return Err(format!(
+                "'{}{}' is one of Windows' own tasks. WinMedic does not switch those off.",
+                task.path, task.name
+            ));
+        }
 
         self.disable_task(&task).await
     }
@@ -747,6 +876,51 @@ mod tests {
         let task =
             ScheduledTasksModule::parse_task_line(r"\V\|T|Ready|2147942402|0|C:\t.exe").unwrap();
         assert!(task.last_run_failed());
+    }
+
+    #[test]
+    fn a_service_already_running_is_a_success_only_for_sc() {
+        for program in [
+            r"%windir%\system32\sc.exe",
+            r"C:\WINDOWS\System32\SC.EXE",
+            r#""C:\Windows\System32\sc.exe""#,
+            "sc.exe",
+        ] {
+            let line = format!(r"\V\|T|Ready|1056|0|{}", program);
+            let task = ScheduledTasksModule::parse_task_line(&line).unwrap();
+            assert!(!task.last_run_failed(), "{program}");
+        }
+
+        // Any other program decides itself what 1056 means.
+        let task =
+            ScheduledTasksModule::parse_task_line(r"\V\|T|Ready|1056|0|C:\Tools\desc.exe").unwrap();
+        assert!(task.last_run_failed());
+    }
+
+    #[test]
+    fn windows_own_tasks_are_told_by_their_folder() {
+        for (path, name) in [
+            (
+                r"\Microsoft\Windows\Time Synchronization\",
+                "SynchronizeTime",
+            ),
+            (r"\microsoft\windows\DiskCleanup\", "SilentCleanup"),
+            (r"\", "CreateExplorerShellUnelevatedTask"),
+        ] {
+            assert_eq!(
+                TaskOwner::of(path, name),
+                TaskOwner::Windows,
+                "{path}{name}"
+            );
+        }
+        for (path, name) in [
+            (r"\Microsoft\WindowsUpdateLookalike\", "Task"),
+            (r"\", "Vendor Updater"),
+            (r"\Vendor\Microsoft\Windows\", "Task"),
+            (r"\", ""),
+        ] {
+            assert_eq!(TaskOwner::of(path, name), TaskOwner::Other, "{path}{name}");
+        }
     }
 
     #[test]
@@ -891,6 +1065,93 @@ mod tests {
         ]);
 
         assert!(module.scan(None).await.unwrap().is_empty());
+    }
+
+    /// #172. Windows registers SynchronizeTime with the program
+    /// `%windir%\system32\sc.exe` and the arguments `start w32time
+    /// task_started`; the inventory reads the program. 1056 (0x420) was its
+    /// last result on the development PC, whose time service ran already.
+    #[tokio::test]
+    async fn synchronize_time_finding_the_time_service_running_is_not_reported() {
+        let module = module_with(vec![
+            r"\Microsoft\Windows\Time Synchronization\|SynchronizeTime|Ready|1056|0|%windir%\system32\sc.exe"
+                .to_string(),
+        ]);
+
+        assert!(module.scan(None).await.unwrap().is_empty());
+    }
+
+    /// #172. StorageSense with its last result from the development PC,
+    /// 0x80040154, and no program: the inventory reads none for a task whose
+    /// action is a COM handler.
+    #[tokio::test]
+    async fn a_failing_windows_task_is_advice_and_never_switched_off() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "Disable-ScheduledTask",
+            CmdOutput::ok("WINMEDIC_TASK_STATE=Disabled"),
+        );
+        mock.add_response(
+            "Schedule.Service",
+            inventory(vec![
+                r"\Microsoft\Windows\DiskFootprint\|StorageSense|Ready|2147746132|0|".to_string(),
+            ]),
+        );
+        let module = ScheduledTasksModule::with_runner(Arc::new(mock.clone()));
+
+        let issues = module.scan(None).await.unwrap();
+        assert_eq!(issues.len(), 1);
+        let issue = &issues[0];
+        assert!(issue.title.contains("0x80040154"));
+        assert!(issue.advice_only && !issue.is_selected);
+        assert!(
+            !issue
+                .fix_steps
+                .iter()
+                .any(|s| s.contains("Disable-ScheduledTask"))
+        );
+        assert!(!issue.recommended_fix.to_lowercase().contains("disabl"));
+        // It has no program to be still installed.
+        assert!(!issue.description.contains("still installed"));
+        assert!(issue.technical_details.contains("Action: (no program)"));
+
+        // Not even a finding ticked by an older WinMedic switches it off.
+        let err = module.fix(&issue.id, None).await.unwrap_err();
+        assert!(err.contains("Windows' own tasks"), "{err}");
+        assert!(
+            !mock
+                .executed()
+                .iter()
+                .any(|c| c.contains("Disable-ScheduledTask"))
+        );
+    }
+
+    #[tokio::test]
+    async fn explorers_own_task_in_the_root_folder_is_advice() {
+        // CreateExplorerShellUnelevatedTask with its last result from the
+        // development PC, 0x40010004.
+        let module = module_with(vec![format!(
+            r"\|CreateExplorerShellUnelevatedTask|Ready|1073807364|0|{}",
+            live_exe()
+        )]);
+
+        let issues = module.scan(None).await.unwrap();
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].advice_only);
+    }
+
+    #[tokio::test]
+    async fn a_windows_task_whose_program_is_gone_is_advice() {
+        let module = module_with(vec![format!(
+            r"\Microsoft\Windows\Example\|Ghost|Ready|0|0|{}",
+            MISSING_EXE
+        )]);
+
+        let issues = module.scan(None).await.unwrap();
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].id.starts_with("sched_orphaned_"));
+        assert!(issues[0].advice_only && !issues[0].is_selected);
+        assert!(issues[0].fix_steps.is_empty());
     }
 
     #[tokio::test]
