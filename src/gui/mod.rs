@@ -262,7 +262,7 @@ fn update_banner(ui: &mut egui::Ui, app: &mut App, update: &UpdateInfo) {
 /// takes this down.
 fn restart_banner(ui: &mut egui::Ui, app: &mut App) {
     let text = ui.visuals().strong_text_color();
-    let repairs = app.issues.iter().filter(|i| i.is_reboot_pending).count();
+    let repairs = app.repairs_waiting_for_restart();
     let detail = if repairs > 0 {
         format!("Restart Windows to finish {}.", plural(repairs, "repair"))
     } else {
@@ -1240,30 +1240,124 @@ mod tests {
         }
     }
 
-    /// Restart work Windows queued itself, found by the scan, gets the banner
-    /// too, and the restart dialog names it.
-    #[test]
-    fn windows_waiting_for_a_restart_gets_the_banner_too() {
-        let mut app = scanned_app();
-        app.issues.push(issue(
-            crate::modules::windows_updates::REBOOT_PENDING,
-            "System reboot pending after updates",
-            Severity::Info,
-        ));
-        let mut harness = window(app);
-        assert!(
-            harness
-                .query_by_label("Windows is waiting for a restart to finish its updates.")
-                .is_some()
-        );
+    /// Windows' own pending restart, as the scan reports it.
+    fn windows_restart() -> Issue {
+        crate::modules::windows_updates::reboot_pending_finding("windows_updates", "evidence")
+    }
 
-        harness.get_by_label("Restart now").click();
-        harness.run_steps(2);
-        match &harness.state().pending_confirm {
-            Some(ConfirmRequest::RestartRequired { issues }) => {
-                assert_eq!(issues, &["System reboot pending after updates"]);
+    /// A repair that waits for the restart to finish.
+    fn repair_waiting() -> Issue {
+        let mut issue = issue(
+            "pagefile_disabled",
+            "Page file disabled on every drive",
+            Severity::Warning,
+        );
+        issue.is_reboot_pending = true;
+        issue.is_selected = false;
+        issue
+    }
+
+    /// Windows' own pending restart as 0.8.0 saved it once it had "repaired"
+    /// it, read back the way the window reads its last scan.
+    fn windows_restart_saved_by_0_8_0() -> Issue {
+        static FILES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let mut old = windows_restart();
+        old.advice_only = false;
+        old.is_reboot_pending = true;
+        let path = std::env::temp_dir().join(format!(
+            "winmedic_gui_restart_{}_{}.json",
+            std::process::id(),
+            FILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        crate::app::ScanState::new(90, vec![old], Vec::new(), None)
+            .save_to(&path)
+            .unwrap();
+        let loaded = crate::app::ScanState::load_from(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        loaded.issues.into_iter().next().unwrap()
+    }
+
+    const WINDOWS_WAITS: &str = "Windows is waiting for a restart to finish its updates.";
+
+    /// What waits for the restart, what the banner says about it and what
+    /// Easy mode says: (a) only Windows, (b) only a repair, (c) both, (d) a
+    /// scan saved by 0.8.0.
+    fn restart_cases() -> [(Vec<Issue>, &'static str, &'static str); 4] {
+        const REPAIRS: &str = "Restart Windows to finish 1 repair.";
+        const REPAIR: &str = "Restart Windows to finish the repair.";
+        [
+            (vec![windows_restart()], WINDOWS_WAITS, WINDOWS_WAITS),
+            (vec![repair_waiting()], REPAIRS, REPAIR),
+            (vec![windows_restart(), repair_waiting()], REPAIRS, REPAIR),
+            (
+                vec![windows_restart_saved_by_0_8_0()],
+                WINDOWS_WAITS,
+                WINDOWS_WAITS,
+            ),
+        ]
+    }
+
+    /// The banner counts repairs, and Windows' own pending restart is none,
+    /// not even as 0.8.0 saved it.
+    #[test]
+    fn the_restart_banner_counts_only_repairs() {
+        for (waiting, banner, _) in restart_cases() {
+            let mut app = scanned_app();
+            app.issues.extend(waiting);
+            let harness = window(app);
+            assert!(harness.query_by_label(banner).is_some(), "{banner}");
+        }
+    }
+
+    /// Once only restarts are left, Easy mode asks for one, whoever waits for
+    /// it, in words that fit, and only once.
+    #[test]
+    fn easy_mode_asks_for_the_restart_whoever_waits_for_it() {
+        for (waiting, banner, sentence) in restart_cases() {
+            let mut app = easy_scanned_app();
+            for issue in &mut app.issues {
+                issue.is_fixed = true;
             }
-            other => panic!("expected the restart dialog, got {other:?}"),
+            app.issues.extend(waiting);
+            let harness = window(app);
+            assert!(
+                harness.query_by_label("Almost done").is_some(),
+                "{sentence}"
+            );
+            assert_eq!(
+                harness.query_all_by_label(sentence).count(),
+                1,
+                "{sentence}"
+            );
+            if banner != sentence {
+                assert!(harness.query_by_label(banner).is_none(), "{banner}");
+            }
+        }
+    }
+
+    /// The dialog names what the restart finishes and calls none of it a
+    /// repair: Windows' own updates can be all there is.
+    #[test]
+    fn the_restart_dialog_names_what_waits_without_calling_it_a_repair() {
+        for (waiting, _, _) in restart_cases() {
+            let titles: Vec<String> = waiting.iter().map(|i| i.title.clone()).collect();
+            let mut app = scanned_app();
+            app.issues.extend(waiting);
+            let mut harness = window(app);
+
+            harness.get_by_label("Restart now").click();
+            harness.run_steps(2);
+            let request = harness.state().pending_confirm.clone();
+            let Some(ConfirmRequest::RestartRequired { issues }) = &request else {
+                panic!("expected the restart dialog, got {request:?}");
+            };
+            assert_eq!(issues, &titles);
+            let body = request.as_ref().unwrap().body();
+            assert_eq!(body[0], "Restarting Windows finishes:");
+            assert!(
+                !body.join(" ").to_lowercase().contains("repair"),
+                "{body:?}"
+            );
         }
     }
 
