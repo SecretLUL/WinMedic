@@ -242,7 +242,7 @@ fn row(ui: &mut egui::Ui, app: &mut App, issue_index: usize, highlighted: bool, 
                             );
                             false
                         } else {
-                            ui.checkbox(&mut issue.is_selected, "").changed()
+                            theme::checkbox(ui, &mut issue.is_selected, "").changed()
                         };
                         // A fixed-width first column, so the titles line up
                         // whether a row carries a checkbox or a word.
@@ -384,22 +384,7 @@ fn empty(ui: &mut egui::Ui, headline: &str, hint: &str) {
 
 #[cfg(test)]
 mod tests {
-    /// The WCAG 2 contrast ratio of two opaque colours.
-    fn contrast(a: egui::Color32, b: egui::Color32) -> f32 {
-        let luminance = |c: egui::Color32| {
-            let channel = |v: u8| {
-                let v = f32::from(v) / 255.0;
-                if v <= 0.04045 {
-                    v / 12.92
-                } else {
-                    ((v + 0.055) / 1.055).powf(2.4)
-                }
-            };
-            0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
-        };
-        let (a, b) = (luminance(a), luminance(b));
-        (a.max(b) + 0.05) / (a.min(b) + 0.05)
-    }
+    use crate::gui::theme::tests::contrast;
 
     /// Every word a row can carry, on every background a row can have, in
     /// both themes: 4.5:1 at least, the WCAG minimum for text.
@@ -554,6 +539,31 @@ mod tests {
             harness.state().selected_filtered_index,
             2,
             "and the detail pane follows the box that was ticked"
+        );
+    }
+
+    /// The box is painted by WinMedic, not egui, so whether it is ticked
+    /// reaches a screen reader only if the box says so itself.
+    #[test]
+    fn a_checkbox_tells_a_screen_reader_whether_it_is_ticked() {
+        use eframe::egui::accesskit::Toggled;
+        use egui_kittest::kittest::NodeT;
+
+        let mut app = triage_app();
+        app.issues[1].is_selected = true;
+        let harness = harness(app);
+
+        let ticks: Vec<_> = harness
+            .get_all_by_role(Role::CheckBox)
+            .map(|node| node.accesskit_node().toggled())
+            .collect();
+        assert_eq!(
+            ticks,
+            vec![
+                Some(Toggled::False),
+                Some(Toggled::True),
+                Some(Toggled::False)
+            ]
         );
     }
 

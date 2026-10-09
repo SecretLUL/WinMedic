@@ -246,8 +246,7 @@ fn actions(ui: &mut egui::Ui, app: &mut App, open: usize) {
         }
 
         let mut dry_run = app.dry_run;
-        if ui
-            .checkbox(&mut dry_run, "Simulate only (change nothing)")
+        if theme::checkbox(ui, &mut dry_run, "Simulate only (change nothing)")
             .on_hover_text("D - list the steps each repair would run, without running them")
             .changed()
         {

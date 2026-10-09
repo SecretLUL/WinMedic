@@ -2,8 +2,9 @@
 //!
 //! Deliberately plain. The window uses egui's stock light and dark visuals,
 //! follows the Windows app theme, and draws in Segoe UI at the density of a
-//! regular Windows tool. Colour is kept for what it means — severity and the
-//! outcome of a check or repair — and not spent on decoration.
+//! regular Windows tool. Colour is kept for what it means — severity, the
+//! outcome of a check or repair, and what is ticked — and not spent on
+//! decoration.
 
 use crate::engine::issue::Severity;
 use eframe::egui::{self, Color32, RichText, Stroke};
@@ -15,6 +16,10 @@ pub struct Palette {
     pub amber: Color32,
     pub green: Color32,
     pub blue: Color32,
+    /// What Windows 11 fills a ticked box with: its default accent colour.
+    pub accent: Color32,
+    /// The tick on [`Palette::accent`].
+    pub on_accent: Color32,
 }
 
 const DARK: Palette = Palette {
@@ -22,6 +27,8 @@ const DARK: Palette = Palette {
     amber: Color32::from_rgb(230, 175, 60),
     green: Color32::from_rgb(100, 195, 120),
     blue: Color32::from_rgb(100, 170, 240),
+    accent: Color32::from_rgb(96, 205, 255),
+    on_accent: Color32::BLACK,
 };
 
 /// The Windows 11 status colours for light surfaces.
@@ -30,6 +37,8 @@ const LIGHT: Palette = Palette {
     amber: Color32::from_rgb(157, 93, 0),
     green: Color32::from_rgb(15, 123, 15),
     blue: Color32::from_rgb(0, 95, 184),
+    accent: Color32::from_rgb(0, 95, 184),
+    on_accent: Color32::WHITE,
 };
 
 pub fn palette(ui: &egui::Ui) -> Palette {
@@ -276,16 +285,136 @@ pub fn big_button(ui: &mut egui::Ui, text: &str, primary: bool, enabled: bool) -
     ui.add_enabled(enabled, button)
 }
 
+/// How much of a ticked box's accent still shows over the panel under the
+/// pointer, and while it is pressed: Windows fades its accent controls
+/// toward the background the same way.
+const HOVERED: f32 = 0.92;
+const PRESSED: f32 = 0.85;
+
+/// The side of a checkbox, in points.
+const CHECKBOX: f32 = 16.0;
+
+/// A checkbox the way Windows 11 draws one: ticked, the box is filled with
+/// the accent colour around a bold tick; clear, it is an empty outline.
+///
+/// egui paints both states in the same grey and the tick as a hairline, and
+/// down a list of findings the ticked and the clear ones looked alike.
+pub fn checkbox(
+    ui: &mut egui::Ui,
+    checked: &mut bool,
+    text: impl Into<egui::WidgetText>,
+) -> egui::Response {
+    let text = text.into();
+    let gap = ui.spacing().icon_spacing;
+    let galley = (!text.is_empty()).then(|| {
+        text.into_galley(
+            ui,
+            None,
+            ui.available_width() - CHECKBOX - gap,
+            egui::TextStyle::Body,
+        )
+    });
+    let mut size = egui::vec2(CHECKBOX, ui.spacing().interact_size.y);
+    if let Some(galley) = &galley {
+        size.x += gap + galley.size().x;
+        size.y = size.y.max(galley.size().y);
+    }
+
+    let (rect, mut response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if response.clicked() {
+        *checked = !*checked;
+        response.mark_changed();
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::Checkbox,
+            ui.is_enabled(),
+            *checked,
+            galley.as_ref().map_or("", |galley| galley.text()),
+        )
+    });
+
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.visuals();
+        let palette = palette(ui);
+        let painter = ui.painter();
+        let square = egui::Rect::from_center_size(
+            egui::pos2(rect.left() + CHECKBOX / 2.0, rect.center().y),
+            egui::Vec2::splat(CHECKBOX),
+        );
+        if *checked {
+            let share = if response.is_pointer_button_down_on() {
+                PRESSED
+            } else if response.hovered() {
+                HOVERED
+            } else {
+                1.0
+            };
+            painter.rect_filled(
+                square,
+                4,
+                visuals.panel_fill.lerp_to_gamma(palette.accent, share),
+            );
+            tick(
+                painter,
+                square.shrink(3.0),
+                Stroke::new(2.0, palette.on_accent),
+            );
+        } else {
+            painter.rect(
+                square,
+                4,
+                clear_box(visuals, response.hovered()),
+                Stroke::new(1.0, visuals.weak_text_color()),
+                egui::StrokeKind::Inside,
+            );
+        }
+        if response.has_focus() {
+            painter.rect_stroke(
+                square.expand(2.0),
+                6,
+                visuals.selection.stroke,
+                egui::StrokeKind::Outside,
+            );
+        }
+        if let Some(galley) = galley {
+            let at = egui::pos2(
+                square.right() + gap,
+                rect.center().y - galley.size().y / 2.0,
+            );
+            painter.galley(at, galley, visuals.text_color());
+        }
+    }
+    response
+}
+
+/// The inside of a clear checkbox: the colour of a text field, lifted a
+/// shade toward the text under the pointer.
+fn clear_box(visuals: &egui::Visuals, hovered: bool) -> Color32 {
+    if hovered {
+        visuals
+            .extreme_bg_color
+            .lerp_to_gamma(visuals.text_color(), 0.1)
+    } else {
+        visuals.extreme_bg_color
+    }
+}
+
+/// A tick filling `rect`: a short stroke down, a long one up.
+fn tick(painter: &egui::Painter, rect: egui::Rect, stroke: Stroke) {
+    let point = |x: f32, y: f32| rect.min + egui::vec2(x * rect.width(), y * rect.height());
+    painter.add(egui::Shape::line(
+        vec![point(0.15, 0.55), point(0.4, 0.8), point(0.88, 0.25)],
+        stroke,
+    ));
+}
+
 /// A green tick, painted for the same reason as [`severity_icon`]: egui's
 /// fonts cannot be relied on to have one.
 pub fn check_mark(ui: &mut egui::Ui, size: f32) {
     let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::hover());
     let stroke = Stroke::new((size * 0.14).max(1.5), palette(ui).green);
-    let point = |x: f32, y: f32| rect.min + egui::vec2(x * size, y * size);
-    ui.painter()
-        .line_segment([point(0.15, 0.55), point(0.4, 0.8)], stroke);
-    ui.painter()
-        .line_segment([point(0.4, 0.8), point(0.88, 0.25)], stroke);
+    tick(ui.painter(), rect, stroke);
 }
 
 /// A usage bar that turns amber, then red, as it fills.
@@ -302,4 +431,65 @@ pub fn usage_bar(ui: &mut egui::Ui, fraction: f32, width: f32) -> egui::Response
         bar = bar.fill(palette.amber);
     }
     ui.add(bar)
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    /// The WCAG 2 contrast ratio of two opaque colours.
+    pub(crate) fn contrast(a: Color32, b: Color32) -> f32 {
+        let luminance = |c: Color32| {
+            let channel = |v: u8| {
+                let v = f32::from(v) / 255.0;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+        };
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    /// In both themes a ticked box stands out from the panel and its tick
+    /// from the box, at rest, under the pointer and pressed, and a clear one
+    /// keeps its outline: WCAG's 3:1 for a control.
+    #[test]
+    fn checkboxes_stay_legible() {
+        let ctx = egui::Context::default();
+        apply(&ctx);
+        for theme in [egui::Theme::Dark, egui::Theme::Light] {
+            let visuals = ctx.style_of(theme).visuals.clone();
+            let palette = palette_of(&visuals);
+            let panel = visuals.panel_fill;
+
+            assert!(
+                contrast(palette.accent, panel) >= 3.0,
+                "{theme:?}: ticked box"
+            );
+            let outline = visuals.weak_text_color();
+            for (against, fill) in [
+                ("the panel", panel),
+                ("the box", clear_box(&visuals, false)),
+                ("the hovered box", clear_box(&visuals, true)),
+            ] {
+                let ratio = contrast(outline, fill);
+                assert!(
+                    ratio >= 3.0,
+                    "{theme:?}: outline on {against}: {ratio:.2}:1"
+                );
+            }
+
+            for share in [1.0, HOVERED, PRESSED] {
+                let tick = contrast(
+                    palette.on_accent,
+                    panel.lerp_to_gamma(palette.accent, share),
+                );
+                assert!(tick >= 3.0, "{theme:?}: tick at {share}: {tick:.2}:1");
+            }
+        }
+    }
 }
