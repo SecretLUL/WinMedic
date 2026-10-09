@@ -1,0 +1,24 @@
+{"timestamp":"2026-08-14 17:06:25","action_type":"SCAN","module_id":"system_integrity","title":"System-Integrität (DISM / SFC / VSS)","status":"SUCCESS","details":"Scan completed with 0 issues detected."}
+{"timestamp":"2026-08-14 17:06:25","action_type":"SCAN","module_id":"windows_updates","title":"Windows Update & Dienste","status":"SUCCESS","details":"Scan completed with 0 issues detected."}
+{"timestamp":"2026-08-14 17:06:25","action_type":"SCAN","module_id":"network","title":"Netzwerk & DNS-Konnektivität","status":"SUCCESS","details":"Scan completed with 0 issues detected."}
+{"timestamp":"2026-08-14 17:06:25","action_type":"SCAN","module_id":"event_log","title":"Event-Log & Crash-Dump Analyse","status":"SUCCESS","details":"Scan completed with 0 issues detected."}
+{"timestamp":"2026-08-14 17:06:25","action_type":"SCAN","module_id":"storage","title":"Speicher & Dateisystem","status":"SUCCESS","details":"Scan completed with 0 issues detected."}{"timestamp":"2026-08-14 17:06:25","action_type":"SCAN","module_id":"system_integrity","title":"System-Integrität (DISM / SFC / VSS)","status":"SUCCESS","details":"Scan completed with 0 issues detected."}
+
+{"timestamp":"2026-08-14 17:06:25","action_type":"SCAN","module_id":"registry_startup","title":"Registry & Autostart","status":"SUCCESS","details":"Scan completed with 4 issues detected."}
+{"timestamp":"2026-08-14 17:06:25","action_type":"SCAN","module_id":"windows_updates","title":"Windows Update & Dienste","status":"SUCCESS","details":"Scan completed with 0 issues detected."}
+{"timestamp":"2026-08-14 17:06:39","action_type":"SCAN","module_id":"system_integrity","title":"System-Integrität (DISM / SFC / VSS)","status":"SUCCESS","details":"Scan completed with 0 issues detected."}
+{"timestamp":"2026-08-14 17:06:25","action_type":"SCAN","module_id":"network","title":"Netzwerk & DNS-Konnektivität","status":"SUCCESS","details":"Scan completed with 0 issues detected."}
+{"timestamp":"2026-08-14 17:06:39","action_type":"SCAN","module_id":"windows_updates","title":"Windows Update & Dienste","status":"SUCCESS","details":"Scan completed with 0 issues detected."}
+{"timestamp":"2026-08-14 17:06:25","action_type":"SCAN","module_id":"event_log","title":"Event-Log & Crash-Dump Analyse","status":"SUCCESS","details":"Scan completed with 0 issues detected."}
+{"timestamp":"2026-08-14 17:06:25","action_type":"SCAN","module_id":"system_integrity","title":"System-Integrität (DISM / SFC / VSS)","status":"SUCCESS","details":"Scan completed with 0 issues detected."}{"timestamp":"2026-08-14 17:06:40","action_type":"SCAN","module_id":"network","title":"Netzwerk & DNS-Konnektivität","status":"SUCCESS","details":"Scan completed with 0 issues detected."}
+{"timestamp":"2026-08-14 17:06:25","action_type":"SCAN","module_id":"storage","title":"Speicher & Dateisystem","status":"SUCCESS","details":"Scan completed with 0 issues detected."}
+
+{"timestamp":"2026-08-14 17:06:25","action_type":"SCAN","module_id":"system_integrity","title":"System-Integrität (DISM / SFC / VSS)","status":"SUCCESS","details":"Scan completed with 0 issues detected."}{"timestamp":"2026-08-14 17:06:25","action_type":"SCAN","module_id":"registry_startup","title":"Registry & Autostart","status":"SUCCESS","details":"Scan completed with 4 issues detected."}{"timestamp":"2026-08-14 17:06:40","action_type":"SCAN","module_id":"event_log","title":"Event-Log & Crash-Dump Analyse","status":"SUCCESS","details":"Scan completed with 0 issues detected."}{"timestamp":"2026-08-14 17:06:25","action_type":"SCAN","module_id":"windows_updates","title":"Windows Update & Dienste","status":"SUCCESS","details":"Scan completed with 0 issues detected."}
+
+
+
+{"timestamp":"2026-08-14 17:06:25","action_type":"SCAN","module_id":"system_integrity","title":"System-Integrität (DISM / SFC / VSS)","status":"SUCCESS","details":"Scan completed with 0 issues detected."}{"timestamp":"2026-08-14 17:06:39","action_type":"SCAN","module_id":"system_integrity","title":"System-Integrität (DISM / SFC / VSS)","status":"SUCCESS","details":"Scan completed with 0 issues detected."}
+
+{"timestamp":"2026-08-14 17:06:40","action_type":"SCAN","module_id":"storage","title":"Speicher & Dateisystem","status":"SUCCESS","details":"Scan completed with 0 issues detected."}{"timestamp":"2026-08-14 17:06:25","action_type":"SCAN","module_id":"windows_updates","title":"Windows Update & Dienste","status":"SUCCESS","details":"Scan completed with 0 issues detected."}{"timestamp":"2026-08-14 17:06:25","action_type":"SCAN","module_id":"windows_updates","title":"Windows Update & Dienste","status":"SUCCESS","details":"Scan completed with 0 issues detected."}{"timestamp":"2026-08-14 17:06:39","action_type":"SCAN","module_id":"windows_updates","title":"Windows Update & Dienste","status":"SUCCESS","details":"Scan completed with 0 issues detected."}
+
+
