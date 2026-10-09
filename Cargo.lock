@@ -3937,6 +3937,7 @@ dependencies = [
  "eframe",
  "egui_extras",
  "egui_kittest",
+ "raw-window-handle",
  "regex",
  "serde",
  "serde_json",

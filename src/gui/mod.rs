@@ -14,9 +14,11 @@
 //! | [`modals`] | Confirmation, setting entry and help overlays |
 //! | [`views`] | The two views, the findings list and Easy mode's short list |
 //! | [`window`] | Locking the window's size in Easy mode, and handing it back |
+//! | [`taskbar`] | A scan's or a repair run's progress on the taskbar button |
 
 pub mod keys;
 pub mod modals;
+pub mod taskbar;
 pub mod theme;
 pub mod views;
 pub mod window;
@@ -50,6 +52,7 @@ pub struct WinMedicApp {
     app: App,
     last_poll: Instant,
     window: window::WindowLock,
+    taskbar: taskbar::Taskbar,
 }
 
 /// Draw the navigation, the current view, the status bar and overlays.
@@ -110,6 +113,7 @@ impl WinMedicApp {
             app,
             last_poll: Instant::now(),
             window: window::WindowLock::default(),
+            taskbar: taskbar::Taskbar::of(cc),
         }
     }
 }
@@ -324,6 +328,10 @@ impl eframe::App for WinMedicApp {
             self.app.poll_external_scan_updates();
             self.last_poll = Instant::now();
         }
+
+        // Here rather than in `ui`, because a minimised window is the one
+        // whose taskbar button is being watched.
+        self.taskbar.show(taskbar::Progress::of(&self.app));
 
         // egui only repaints in response to input, and almost nothing this
         // window shows is driven by input: progress bars and log lines come

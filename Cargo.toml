@@ -72,6 +72,10 @@ eframe = { version = "0.36", default-features = false, features = [
     "persistence",
 ] }
 egui_extras = "0.36"
+# The window's handle, which its taskbar button is addressed by
+# (`gui::taskbar`). eframe hands it out through this crate's trait without
+# re-exporting it; the crate is in the tree already, through eframe.
+raw-window-handle = "0.6"
 
 [build-dependencies]
 winresource = "0.1"
