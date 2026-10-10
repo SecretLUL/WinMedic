@@ -188,7 +188,7 @@ fn upgrade(issue: &mut Issue) {
     }
     // So was an overdue restart with Fast Startup off: its repair changed
     // nothing, then waited for the restart as if it had. Advice now, and one
-    // "repaired" waits for nothing.
+    // "repaired" waits for nothing: the restart settles it as advice.
     if issue.id == RESTART_OVERDUE && issue.severity == Severity::Info {
         issue.advice_only = true;
         issue.is_selected = false;
