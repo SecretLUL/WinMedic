@@ -3,7 +3,7 @@ use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress
 use crate::safety::reg_backup::RegBackupManager;
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
 use crate::utils::registry::{self, RegValue};
-use std::path::PathBuf;
+use std::path::{Component, PathBuf, Prefix};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
@@ -40,21 +40,61 @@ fn issue_id(prefix: &str, name: &str) -> String {
     format!("{prefix}{slug}")
 }
 
-/// The file a Run value starts, if it names one by an absolute path that is
-/// not there.
-fn missing_target(value: &RegValue) -> Option<PathBuf> {
+/// What `GetDriveTypeW` reports for the root of a drive letter. A function,
+/// so that a test can pick the drives.
+pub type DriveTypeSource = Arc<dyn Fn(char) -> u32 + Send + Sync>;
+
+/// `GetDriveTypeW`: a disk of this PC. A network drive is 4, a removable
+/// one 2, and a letter nothing is mounted at 1.
+pub const DRIVE_FIXED: u32 = 3;
+
+/// `GetDriveTypeW` of `X:\`. It reads the drive table without touching the
+/// drive, so a share that does not answer cannot stall the scan.
+fn real_drive_type() -> DriveTypeSource {
+    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+    Arc::new(|letter| {
+        let root: Vec<u16> = format!("{letter}:\\")
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        unsafe { GetDriveTypeW(root.as_ptr()) }
+    })
+}
+
+/// The file a Run value starts, if it names one by an absolute path on a
+/// fixed drive of this PC and that file is not there.
+///
+/// Only there is a missing file proof that the program is gone. WinMedic
+/// runs elevated, and the drive letters the user mapped belong to the
+/// unelevated session, so a program on a mapped drive looked missing; so did
+/// one on a USB disk that is unplugged now. A share (`\\server\share`) may
+/// just not answer.
+fn missing_target(value: &RegValue, drive_type: &dyn Fn(char) -> u32) -> Option<PathBuf> {
     // `reg` prints the unnamed default value as "(Default)" in the display
     // language; deleting a value of that name would hit the wrong one.
     if value.name.starts_with('(') && value.name.ends_with(')') {
         return None;
     }
     let path = RegistryStartupModule::extract_exe_path(&value.data)?;
-    (path.is_absolute() && !path.exists()).then_some(path)
+    if !path.is_absolute() {
+        return None;
+    }
+    // `C:\...` and `\\?\C:\...`; a share, `\\?\UNC\...` and `\\.\...` are
+    // not drive letters.
+    let Some(Component::Prefix(prefix)) = path.components().next() else {
+        return None;
+    };
+    let (Prefix::Disk(letter) | Prefix::VerbatimDisk(letter)) = prefix.kind() else {
+        return None;
+    };
+    let on_fixed_drive = drive_type(char::from(letter).to_ascii_uppercase()) == DRIVE_FIXED;
+    (on_fixed_drive && !path.exists()).then_some(path)
 }
 
 pub struct RegistryStartupModule {
     config: ModuleConfig,
     runner: Arc<dyn CommandRunner>,
+    drive_type: DriveTypeSource,
     backup_dir: PathBuf,
 }
 
@@ -67,8 +107,15 @@ impl RegistryStartupModule {
         Self {
             config,
             runner,
+            drive_type: real_drive_type(),
             backup_dir: RegBackupManager::new().backup_dir().to_path_buf(),
         }
+    }
+
+    /// For tests: drives other than the machine's own.
+    pub fn with_drive_type(mut self, drive_type: DriveTypeSource) -> Self {
+        self.drive_type = drive_type;
+        self
     }
 
     /// Export `key_path` before it is modified.
@@ -160,7 +207,10 @@ impl RegistryStartupModule {
             .run_values(key)
             .await?
             .into_iter()
-            .filter(|v| self::issue_id(prefix, &v.name) == issue_id && missing_target(v).is_some())
+            .filter(|v| {
+                self::issue_id(prefix, &v.name) == issue_id
+                    && missing_target(v, &*self.drive_type).is_some()
+            })
             .map(|v| v.name)
             .collect();
         if names.is_empty() {
@@ -256,7 +306,7 @@ impl DiagnosticModule for RegistryStartupModule {
             };
             let mut valid = 0;
             for value in &values {
-                let Some(path) = missing_target(value) else {
+                let Some(path) = missing_target(value, &*self.drive_type) else {
                     valid += 1;
                     continue;
                 };
@@ -339,12 +389,39 @@ mod tests {
         )
     }
 
+    /// The same key with these values added, each `(name, data)` as REG_SZ.
+    fn run_key_plus(values: &[(&str, &str)]) -> String {
+        let mut text = real_run_key().trim_end().to_string();
+        for (name, data) in values {
+            text.push_str(&format!("\r\n    {name}    REG_SZ    {data}"));
+        }
+        text + "\r\n"
+    }
+
+    /// What `GetDriveTypeW` reports for the other kinds of drive.
+    const DRIVE_NO_ROOT_DIR: u32 = 1;
+    const DRIVE_REMOVABLE: u32 = 2;
+    const DRIVE_REMOTE: u32 = 4;
+
+    /// The drives the tests' PC has, whatever the machine running them has:
+    /// C: is its disk, E: a USB stick, Z: a mapped share, and no other
+    /// letter is in use.
+    fn drives(letter: char) -> u32 {
+        match letter {
+            'C' => DRIVE_FIXED,
+            'E' => DRIVE_REMOVABLE,
+            'Z' => DRIVE_REMOTE,
+            _ => DRIVE_NO_ROOT_DIR,
+        }
+    }
+
     fn module(mock: &MockCommandRunner) -> RegistryStartupModule {
         let config = ModuleConfig {
             auto_backup_registry: false,
             ..ModuleConfig::default()
         };
         RegistryStartupModule::with_runner(config, Arc::new(mock.clone()))
+            .with_drive_type(Arc::new(drives))
     }
 
     #[tokio::test]
@@ -362,6 +439,70 @@ mod tests {
         assert!(
             !issues.iter().any(|i| i.id.contains("securityhealth")),
             "%windir% is not an absolute path to judge"
+        );
+    }
+
+    // Elevated, WinMedic does not see the drives the user mapped; a USB disk
+    // may be unplugged, a share may not answer. None of them proves that a
+    // program is gone. None of these paths exists on any machine, so each
+    // was a finding before.
+    #[tokio::test]
+    async fn only_a_program_missing_from_a_fixed_drive_is_judged() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "HKLM",
+            CmdOutput::ok(run_key_plus(&[
+                (
+                    "Mapped Tool",
+                    r#""Z:\WinMedic-no-such-dir\tool.exe" --tray"#,
+                ),
+                ("Stick Tool", r"E:\WinMedic-no-such-dir\tool.exe"),
+                ("Unplugged Disk", r"Y:\WinMedic-no-such-dir\tool.exe /min"),
+                ("Share Tool", r#""\\winmedic.invalid\share\tool.exe""#),
+                ("Verbatim Share", r"\\?\UNC\winmedic.invalid\share\tool.exe"),
+                ("Verbatim Gone", r"\\?\C:\WinMedic-no-such-dir\tool.exe"),
+                ("Lower Case Gone", r"c:\WinMedic-no-such-dir\tool.exe"),
+            ])),
+        );
+        mock.add_response("HKCU", CmdOutput::with_output(1, "", "not found"));
+        let issues = module(&mock).scan(None).await.unwrap();
+        let ids: Vec<&str> = issues.iter().map(|i| i.id.as_str()).collect();
+
+        for left_alone in [
+            "reg_orphaned_hklm_mapped_tool",
+            "reg_orphaned_hklm_stick_tool",
+            "reg_orphaned_hklm_unplugged_disk",
+            "reg_orphaned_hklm_share_tool",
+            "reg_orphaned_hklm_verbatim_share",
+        ] {
+            assert!(!ids.contains(&left_alone), "{left_alone}: {ids:?}");
+        }
+        // On the fixed drive a missing file still is one.
+        assert!(ids.contains(&"reg_orphaned_hklm_verbatim_gone"), "{ids:?}");
+        assert!(
+            ids.contains(&"reg_orphaned_hklm_lower_case_gone"),
+            "{ids:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_repair_leaves_an_entry_on_a_mapped_drive_alone() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "reg.exe query",
+            CmdOutput::ok(run_key_plus(&[(
+                "Mapped Tool",
+                r#""Z:\WinMedic-no-such-dir\tool.exe" --tray"#,
+            )])),
+        );
+        mock.add_response("reg.exe delete", CmdOutput::ok(""));
+        let _ = module(&mock)
+            .fix("reg_orphaned_hklm_mapped_tool", None)
+            .await;
+        assert!(
+            !mock.executed().iter().any(|c| c.contains("delete")),
+            "{:?}",
+            mock.executed()
         );
     }
 
@@ -433,7 +574,7 @@ mod tests {
             kind: "REG_SZ".to_string(),
             data: r"C:\WinMedic-no-such-dir\tool.exe".to_string(),
         };
-        assert_eq!(missing_target(&value), None);
+        assert_eq!(missing_target(&value, &drives), None);
     }
 
     // Some letters change their length in UTF-8 when lowercased: U+0130 grows
