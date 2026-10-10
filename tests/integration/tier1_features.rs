@@ -205,11 +205,20 @@ async fn test_tier1_f02_winsxs_fix_executes_start_component_cleanup() {
 
     assert!(res.is_ok());
     assert!(res.unwrap().contains("StartComponentCleanup finished"));
-    // The cleanup itself, then the analysis that reads the store back to see
-    // whether the cleanup actually removed anything.
-    assert_eq!(runner.calls_for("dism.exe").len(), 2);
+    // The cleanup between two analyses, which count the reclaimable packages
+    // to see whether the cleanup actually removed anything.
+    assert_eq!(runner.calls_for("dism.exe").len(), 3);
     assert_eq!(
         runner.calls_for("dism.exe")[0],
+        vec![
+            "/Online",
+            "/Cleanup-Image",
+            "/AnalyzeComponentStore",
+            "/English"
+        ]
+    );
+    assert_eq!(
+        runner.calls_for("dism.exe")[1],
         vec![
             "/Online",
             "/Cleanup-Image",
@@ -218,7 +227,7 @@ async fn test_tier1_f02_winsxs_fix_executes_start_component_cleanup() {
         ]
     );
     assert_eq!(
-        runner.calls_for("dism.exe")[1],
+        runner.calls_for("dism.exe")[2],
         vec![
             "/Online",
             "/Cleanup-Image",

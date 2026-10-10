@@ -192,6 +192,14 @@ pub fn get_all_modules_with_runner(
     cfg: &ModuleConfig,
     runner: Arc<dyn crate::utils::cmd::CommandRunner>,
 ) -> Vec<Arc<dyn DiagnosticModule>> {
+    all_modules(cfg, runner, system_cleaner::CleanerPaths::from_env())
+}
+
+fn all_modules(
+    cfg: &ModuleConfig,
+    runner: Arc<dyn crate::utils::cmd::CommandRunner>,
+    cleaner_paths: system_cleaner::CleanerPaths,
+) -> Vec<Arc<dyn DiagnosticModule>> {
     vec![
         Arc::new(
             system_integrity::SystemIntegrityModule::with_runner(runner.clone())
@@ -211,9 +219,10 @@ pub fn get_all_modules_with_runner(
             cfg.clone(),
             runner.clone(),
         )),
-        Arc::new(system_cleaner::SystemCleanerModule::with_runner(
+        Arc::new(system_cleaner::SystemCleanerModule::with_runner_and_paths(
             cfg.clone(),
             runner.clone(),
+            cleaner_paths,
         )),
         Arc::new(scheduled_tasks::ScheduledTasksModule::with_runner(
             runner.clone(),
@@ -243,6 +252,14 @@ pub fn get_all_modules_with_runner(
 }
 
 /// Create every diagnostic module, configured from the user's settings using the default OS runner.
+///
+/// Only here, with the machine's own DISM, does the cleaner remember what its
+/// last component store cleanup left, in `%APPDATA%\WinMedic`; built around
+/// any other runner it remembers nothing.
 pub fn get_all_modules(cfg: &ModuleConfig) -> Vec<Arc<dyn DiagnosticModule>> {
-    get_all_modules_with_runner(cfg, Arc::new(crate::utils::cmd::SystemCommandRunner::new()))
+    all_modules(
+        cfg,
+        Arc::new(crate::utils::cmd::SystemCommandRunner::new()),
+        system_cleaner::CleanerPaths::from_env_remembering(),
+    )
 }

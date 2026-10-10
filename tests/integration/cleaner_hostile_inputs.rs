@@ -549,6 +549,12 @@ async fn adv_test_diagnostic_engine_full_integration_with_system_cleaner() {
         ),
     );
     mock.add_response("StartComponentCleanup", CmdOutput::ok("Success"));
+    // The cleanup removed both packages.
+    mock.add_response_after(
+        "StartComponentCleanup",
+        "AnalyzeComponentStore",
+        CmdOutput::ok("Number of Reclaimable Packages : 0\n"),
+    );
     mock.add_response("vssadmin.exe", CmdOutput::ok("Shadow copies found"));
     mock.add_response("dism.exe", CmdOutput::ok("No corruption detected"));
     mock.add_response(
