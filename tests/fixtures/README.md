@@ -133,7 +133,7 @@ line with LF, and are stored as `.txt` for that reason.
 
 | File | Command | Encoding | Notes |
 | --- | --- | --- | --- |
-| `powershell_restore_points.txt` | `restore_point::LIST_SCRIPT` (`Get-ComputerRestorePoint`, each point as `"$($_.SequenceNumber) \| $($_.Description) \| $($_.CreationTime)"`) | ASCII (transcribed) | Points 249 to 255, WinMedic's own and three of the Windows Modules Installer. `CreationTime` is a `System.String`, a WMI date, interpolated unconverted: `20261009201051.313055-000`. The `-000` is the offset from UTC in minutes, so the times are UTC: 20:10:51 was 22:10:51 on that PC. |
+| `powershell_restore_points.txt` | `restore_point::LIST_SCRIPT` (`Get-ComputerRestorePoint`, each point as `"$($_.SequenceNumber) \| $($_.Description) \| $($_.CreationTime)"`) | ASCII (transcribed) | Points 249 to 255, WinMedic's own and three of the Windows Modules Installer. `CreationTime` is a `System.String`, a WMI date, interpolated unconverted: `20261009201051.313055-000`. The `-000` is the offset from UTC in minutes, so the times are UTC: 20:10:51 was 22:10:51 on that PC. The crash analysis tests move the July crash series (`wevtutil_crashes_july.bin`) to 9 and 10 October, its first crash between points 253 and 254. |
 
 Captured elevated on 2026-09-25, read-only commands, with the time each piece
 of the pipe arrived:

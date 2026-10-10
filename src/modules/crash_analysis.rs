@@ -6,6 +6,7 @@ use crate::modules::event_log::{
 use crate::modules::shell_extensions;
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
 use crate::safety::reg_backup::RegBackupManager;
+use crate::safety::restore_point::{self, RestorePoint};
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner, ps_single_quoted};
 use crate::utils::debug_log::DebugTrace;
 use crate::utils::event_xml::{
@@ -276,9 +277,40 @@ impl CrashAnalysisModule {
         }
     }
 
-    /// The first crash of the last [`crash_timeline::SERIES_DAYS`] days and
-    /// what changed in the week before it; `None` when the logs show nothing.
-    async fn what_changed(&self, dbg: &DebugTrace) -> Option<(DateTime<Utc>, Vec<Change>)> {
+    /// Windows' restore points; none when the list could not be read, which
+    /// takes Administrator.
+    async fn restore_points(&self, dbg: &DebugTrace) -> Vec<RestorePoint> {
+        let out = dbg
+            .run_powershell(
+                &self.runner,
+                restore_point::LIST_SCRIPT,
+                Duration::from_secs(30),
+            )
+            .await;
+        match out {
+            Ok(out) if out.success => restore_point::parse_restore_points(&out.stdout),
+            Ok(out) => {
+                dbg.warn(format!(
+                    "Restore point list failed: exit code {:?}",
+                    out.exit_code
+                ))
+                .await;
+                Vec::new()
+            }
+            Err(err) => {
+                dbg.warn(format!("Restore point list failed: {err}")).await;
+                Vec::new()
+            }
+        }
+    }
+
+    /// The first crash of the last [`crash_timeline::SERIES_DAYS`] days, what
+    /// changed in the week before it and the restore point from before it;
+    /// `None` when the logs show no change and there is no such point.
+    async fn what_changed(
+        &self,
+        dbg: &DebugTrace,
+    ) -> Option<(DateTime<Utc>, Vec<Change>, Option<RestorePoint>)> {
         let series_ms = crash_timeline::SERIES_DAYS as u64 * 86_400_000;
         let first = crash_timeline::first_of_series(
             self.events(dbg, system_log_query(&crash_filter(), series_ms, 500))
@@ -332,7 +364,8 @@ impl CrashAnalysisModule {
         }
 
         let changes = crash_timeline::before(first, changes);
-        (!changes.is_empty()).then_some((first, changes))
+        let point = crash_timeline::point_before(first, self.restore_points(dbg).await, &changes);
+        (!changes.is_empty() || point.is_some()).then_some((first, changes, point))
     }
 
     /// Programs' crash dumps older than [`DUMP_EVIDENCE_DAYS`].
@@ -703,8 +736,13 @@ impl DiagnosticModule for CrashAnalysisModule {
             None,
         )
         .await;
-        if let Some((first, changes)) = self.what_changed(&dbg).await {
-            issues.push(crash_timeline::finding(self.id(), first, &changes));
+        if let Some((first, changes, point)) = self.what_changed(&dbg).await {
+            issues.push(crash_timeline::finding(
+                self.id(),
+                first,
+                &changes,
+                point.as_ref(),
+            ));
         }
 
         Self::send_progress(&progress_tx, 100, "Crash analysis complete", None).await;
@@ -1192,6 +1230,98 @@ mod tests {
             !issue.technical_details.contains("New driver"),
             "{}",
             issue.technical_details
+        );
+    }
+
+    /// The development PC's restore points, 249 to 255 on 8 and 9 October;
+    /// see tests/fixtures/README.md.
+    const RESTORE_POINTS: &str =
+        include_str!("../../tests/fixtures/console/powershell_restore_points.txt");
+
+    /// The July logs with the crash series moved to 9 and 10 October, its
+    /// first crash to 14:02 UTC: after restore point 253 (11:33 UTC), before
+    /// 254 (15:38 UTC). The July changes are then weeks older than it.
+    fn october() -> MockCommandRunner {
+        let ansi = |bytes| decode_output_in(bytes, CodePage::Ansi);
+        let crashes = ansi(JULY_CRASHES)
+            .replace("2026-07-26T20:02", "2026-10-09T14:02")
+            .replace("2026-07-27T", "2026-10-10T");
+        let mock = MockCommandRunner::new();
+        mock.add_response("EventID=19 and", CmdOutput::ok(ansi(JULY_UPDATES)));
+        mock.add_response("EventID=7045", CmdOutput::ok(ansi(JULY_SERVICES)));
+        mock.add_response("EventID=1033", CmdOutput::ok(ansi(JULY_PROGRAMS)));
+        mock.add_response("/rd:false", CmdOutput::ok(ansi(OLDEST_EVENT)));
+        mock.add_response("EventID=41", CmdOutput::ok(crashes));
+        mock
+    }
+
+    /// No change in the week before, but restore point 253 from the morning
+    /// of the first crash: System Restore to it is the advice.
+    #[tokio::test]
+    async fn the_restore_point_from_before_the_first_crash_is_named() {
+        let mock = october();
+        mock.add_response("Get-ComputerRestorePoint", CmdOutput::ok(RESTORE_POINTS));
+        let issue = what_changed("timeline_restore_point", mock)
+            .await
+            .expect("point 253 is older than the first crash");
+        assert!(issue.advice_only && !issue.is_selected);
+        assert_eq!(issue.title, "A restore point from before the crashes began");
+        let when = DateTime::parse_from_rfc3339("2026-10-09T11:33:42Z")
+            .unwrap()
+            .with_timezone(&Local)
+            .format("%d %b %Y, %H:%M")
+            .to_string();
+        let details = &issue.technical_details;
+        assert!(
+            details.contains(&format!(
+                "Restore point before it: {when}  WinMedic Auto-Restore Point (before repairs)"
+            )),
+            "{details}"
+        );
+        assert!(!details.contains("Windows update"), "{details}");
+        assert_eq!(
+            issue.fix_steps,
+            [format!(
+                "Go back to before the crashes: System Restore (rstrui.exe) -> choose the point of {when}, \"WinMedic Auto-Restore Point (before repairs)\""
+            )]
+        );
+    }
+
+    /// The same series without a readable list of restore points (it takes
+    /// Administrator): nothing to name, so no timeline.
+    #[tokio::test]
+    async fn an_unreadable_restore_point_list_changes_nothing() {
+        let mock = october();
+        mock.add_response(
+            "Get-ComputerRestorePoint",
+            CmdOutput::with_output(1, RESTORE_POINTS, "Access denied"),
+        );
+        assert_eq!(what_changed("timeline_rp_failed", mock).await, None);
+        // Not answered at all.
+        assert_eq!(what_changed("timeline_rp_none", october()).await, None);
+    }
+
+    /// The July series began long before every captured point: the timeline
+    /// names none, and lists the week as before.
+    #[tokio::test]
+    async fn no_point_before_the_first_crash_names_none() {
+        let mock = july(OLDEST_EVENT);
+        mock.add_response("Get-ComputerRestorePoint", CmdOutput::ok(RESTORE_POINTS));
+        let issue = what_changed("timeline_rp_later", mock)
+            .await
+            .expect("changes before 26 July");
+        assert!(
+            !issue.technical_details.contains("Restore point"),
+            "{}",
+            issue.technical_details
+        );
+        assert!(
+            !issue
+                .fix_steps
+                .iter()
+                .any(|step| step.contains("System Restore")),
+            "{:?}",
+            issue.fix_steps
         );
     }
 
