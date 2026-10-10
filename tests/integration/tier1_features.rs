@@ -1032,17 +1032,20 @@ async fn test_tier1_f12_whea_logger_scan_and_repair_integration() {
     assert_eq!(issues.len(), 1);
     assert_eq!(issues[0].id, "whea_pcie_bus_error");
     assert_eq!(issues[0].category, "Hardware & Stability");
+    // ASPM is off already: switching it off is no repair, so it is advice.
+    assert!(issues[0].advice_only && !issues[0].is_selected);
 
-    let fix_res = module.fix("whea_pcie_bus_error", None).await;
-    assert!(fix_res.is_ok());
-    assert!(
-        fix_res
-            .unwrap()
-            .contains("PCIe Link State Power Management")
-    );
+    // Asked anyway, the repair changes nothing and does not call that a
+    // success.
+    let err = module
+        .fix("whea_pcie_bus_error", None)
+        .await
+        .expect_err("nothing was changed");
+    assert!(err.contains("PCIe Link State Power Management"), "{err}");
 
     let powercfg_calls = runner.calls_for("powercfg.exe");
     assert!(!powercfg_calls.is_empty());
+    assert!(powercfg_calls.iter().all(|args| args[0] == "/query"));
 }
 
 #[test]
