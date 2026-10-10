@@ -126,6 +126,15 @@ exec -r System`), while the three services that depend on cryptsvc ran:
 | `sc_enumdepend_cryptsvc_running.bin` | `sc enumdepend cryptsvc 65536` | CP850 | The same three as on the development PC, in the same order, each `4 RUNNING` with a line of flags under the state. |
 | `net_stop_dependents_running_de.bin` | `net stop cryptsvc`, its input on NUL as WinMedic starts it | CP850 | "Die folgenden Dienste hängen vom Dienst Kryptografiedienste ab.", the three by display name, then "Möchten Sie diesen Vorgang fortsetzen? (J/N) [N]:". On stderr, `net_stop_dependents_running_stderr_de.bin`: "Es wurde keine gültige Antwort gegeben." Exit code -1, and nothing stopped. WinMedic's own runner got the same. `net stop cryptsvc /y` stopped the dependents still running and cryptsvc, and `net start cryptsvc` then started cryptsvc alone. |
 
+Captured elevated on 2026-10-09 on the development PC, Windows PowerShell
+5.1.26100.9549, and posted by the maintainer in a comment on #183. **Not the
+raw pipe bytes:** the lines were transcribed from that comment, ASCII, one per
+line with LF, and are stored as `.txt` for that reason.
+
+| File | Command | Encoding | Notes |
+| --- | --- | --- | --- |
+| `powershell_restore_points.txt` | `restore_point::LIST_SCRIPT` (`Get-ComputerRestorePoint`, each point as `"$($_.SequenceNumber) \| $($_.Description) \| $($_.CreationTime)"`) | ASCII (transcribed) | Points 249 to 255, WinMedic's own and three of the Windows Modules Installer. `CreationTime` is a `System.String`, a WMI date, interpolated unconverted: `20261009201051.313055-000`. The `-000` is the offset from UTC in minutes, so the times are UTC: 20:10:51 was 22:10:51 on that PC. |
+
 Captured elevated on 2026-09-25, read-only commands, with the time each piece
 of the pipe arrived:
 

@@ -1,4 +1,6 @@
 use crate::utils::cmd::{ps_single_quoted, run_powershell};
+use chrono::{DateTime, FixedOffset, Local, NaiveDate, TimeZone, Utc};
+use std::fmt::Display;
 use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
@@ -269,21 +271,131 @@ impl Default for RestorePointService {
     }
 }
 
-/// Query existing Windows restore points
-pub async fn list_restore_points() -> Vec<String> {
-    let script = r#"
+/// Lists the restore points one per line, `<SequenceNumber> | <Description>
+/// | <CreationTime>`. `CreationTime` is a WMI date string, and interpolated it
+/// stays one (`20261009201051.313055-000`); Rust converts it, see
+/// [`parse_wmi_datetime`]. Needs Administrator. Settings and the crash
+/// timeline both read it.
+pub const LIST_SCRIPT: &str = r#"
         Get-ComputerRestorePoint | Select-Object -Property SequenceNumber, Description, CreationTime | ForEach-Object {
             "$($_.SequenceNumber) | $($_.Description) | $($_.CreationTime)"
         }
     "#;
 
-    match run_powershell(script, Duration::from_secs(30)).await {
-        Ok(out) => out
-            .stdout
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
-            .collect(),
+/// How a restore point's time is shown: `09 Oct 2026, 22:10`.
+const TIME_FORMAT: &str = "%d %b %Y, %H:%M";
+
+/// A WMI date, `yyyymmddHHMMSS.mmmmmmsUUU`: the time where it was taken,
+/// then the sign and the minutes that zone is ahead of UTC (`-000` is UTC,
+/// `+120` two hours ahead). `None` for anything else, such as the asterisks
+/// WMI writes for fields it leaves out.
+pub fn parse_wmi_datetime(text: &str) -> Option<DateTime<Utc>> {
+    let text = text.trim();
+    if text.len() != 25 || !text.is_ascii() || &text[14..15] != "." {
+        return None;
+    }
+    let number = |from: usize, to: usize| -> Option<u32> {
+        let digits = &text[from..to];
+        if !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        digits.parse().ok()
+    };
+    let local = NaiveDate::from_ymd_opt(number(0, 4)? as i32, number(4, 6)?, number(6, 8)?)?
+        .and_hms_micro_opt(
+            number(8, 10)?,
+            number(10, 12)?,
+            number(12, 14)?,
+            number(15, 21)?,
+        )?;
+    let minutes = number(22, 25)? as i32;
+    let ahead = match &text[21..22] {
+        "+" => minutes,
+        "-" => -minutes,
+        _ => return None,
+    };
+    FixedOffset::east_opt(ahead * 60)?
+        .from_local_datetime(&local)
+        .single()
+        .map(|t| t.with_timezone(&Utc))
+}
+
+/// One line of [`LIST_SCRIPT`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestorePoint {
+    pub sequence: u32,
+    pub description: String,
+    /// `None` when `CreationTime` was no WMI date.
+    pub created: Option<DateTime<Utc>>,
+    /// `CreationTime` as Windows wrote it.
+    creation_time: String,
+}
+
+impl RestorePoint {
+    /// `None` for a line that is not `<number> | <description> | <time>`. A
+    /// description may itself contain ` | `, so the number is split off the
+    /// front and the time off the back.
+    pub fn parse(line: &str) -> Option<Self> {
+        let (sequence, rest) = line.trim().split_once(" | ")?;
+        let (description, creation_time) = rest.rsplit_once(" | ")?;
+        Some(Self {
+            sequence: sequence.trim().parse().ok()?,
+            description: description.trim().to_string(),
+            created: parse_wmi_datetime(creation_time),
+            creation_time: creation_time.trim().to_string(),
+        })
+    }
+
+    /// When it was created, in `zone`; as Windows wrote it when that was no
+    /// WMI date.
+    pub fn time_in<Tz: TimeZone>(&self, zone: &Tz) -> String
+    where
+        Tz::Offset: Display,
+    {
+        match self.created {
+            Some(created) => created.with_timezone(zone).format(TIME_FORMAT).to_string(),
+            None => self.creation_time.clone(),
+        }
+    }
+
+    /// `255 | WinMedic Auto-Restore Point (before repairs) | 09 Oct 2026, 22:10`.
+    pub fn line_in<Tz: TimeZone>(&self, zone: &Tz) -> String
+    where
+        Tz::Offset: Display,
+    {
+        format!(
+            "{} | {} | {}",
+            self.sequence,
+            self.description,
+            self.time_in(zone)
+        )
+    }
+}
+
+/// The restore points in [`LIST_SCRIPT`]'s output; lines that are none are
+/// left out.
+pub fn parse_restore_points(stdout: &str) -> Vec<RestorePoint> {
+    stdout.lines().filter_map(RestorePoint::parse).collect()
+}
+
+/// What Settings lists for [`LIST_SCRIPT`]'s output: each point with its time
+/// in local time. A line that does not parse is shown as it came, rather than
+/// not at all.
+pub fn settings_lines(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            RestorePoint::parse(line).map_or_else(|| line.to_string(), |p| p.line_in(&Local))
+        })
+        .collect()
+}
+
+/// Query existing Windows restore points, as Settings lists them.
+pub async fn list_restore_points() -> Vec<String> {
+    match run_powershell(LIST_SCRIPT, Duration::from_secs(30)).await {
+        Ok(out) => settings_lines(&out.stdout),
         Err(_) => Vec::new(),
     }
 }
@@ -449,5 +561,116 @@ mod tests {
         assert_eq!(res.outcome, RestorePointOutcome::Throttled);
         assert_eq!(res.description, "Before repairs");
         assert!(!res.message.is_empty());
+    }
+
+    /// What [`LIST_SCRIPT`] printed, elevated, on the development PC; see
+    /// tests/fixtures/README.md.
+    const CAPTURED_POINTS: &str =
+        include_str!("../../tests/fixtures/console/powershell_restore_points.txt");
+
+    fn utc(text: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(text)
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn the_captured_points_parse_with_their_times_in_utc() {
+        let points = parse_restore_points(CAPTURED_POINTS);
+        let sequences: Vec<u32> = points.iter().map(|p| p.sequence).collect();
+        assert_eq!(sequences, [249, 250, 251, 252, 253, 254, 255]);
+        assert_eq!(points[1].description, "Windows Modules Installer");
+        assert_eq!(
+            points[6].description,
+            "WinMedic Auto-Restore Point (before repairs)"
+        );
+        // `-000`: the times are UTC.
+        assert_eq!(points[6].created, Some(utc("2026-10-09T20:10:51.313055Z")));
+        assert_eq!(points[0].created, Some(utc("2026-10-08T17:15:52.483597Z")));
+    }
+
+    /// 20261009201051 UTC was 22:10:51 on the PC the list was captured on,
+    /// two hours ahead of UTC in October.
+    #[test]
+    fn settings_shows_the_time_where_the_pc_is() {
+        let point = RestorePoint::parse(CAPTURED_POINTS.lines().last().unwrap()).unwrap();
+        let berlin = FixedOffset::east_opt(2 * 3600).unwrap();
+        assert_eq!(
+            point.line_in(&berlin),
+            "255 | WinMedic Auto-Restore Point (before repairs) | 09 Oct 2026, 22:10"
+        );
+        assert_eq!(point.time_in(&Utc), "09 Oct 2026, 20:10");
+    }
+
+    /// Settings lists every captured point, and none as a WMI date string.
+    #[test]
+    fn settings_lists_no_wmi_date() {
+        let lines = settings_lines(CAPTURED_POINTS);
+        assert_eq!(lines.len(), 7, "{lines:?}");
+        for (line, point) in lines.iter().zip(parse_restore_points(CAPTURED_POINTS)) {
+            assert_eq!(*line, point.line_in(&Local));
+            assert!(
+                !line.contains("-000") && !line.contains(".483597"),
+                "{line}"
+            );
+        }
+    }
+
+    /// The offset is minutes ahead of UTC, with a sign: the issue's example
+    /// was taken two hours ahead of UTC.
+    #[test]
+    fn the_offset_is_signed_minutes() {
+        assert_eq!(
+            parse_wmi_datetime("20261009221311.500000+120"),
+            Some(utc("2026-10-09T20:13:11.5Z"))
+        );
+        assert_eq!(
+            parse_wmi_datetime("20261009221311.500000-300"),
+            Some(utc("2026-10-10T03:13:11.5Z"))
+        );
+        assert_eq!(
+            parse_wmi_datetime("20261009221311.500000+330"),
+            Some(utc("2026-10-09T16:43:11.5Z"))
+        );
+    }
+
+    #[test]
+    fn what_is_no_wmi_date_is_none() {
+        for text in [
+            "",
+            "09.10.2026 22:13:11",
+            "20261009221311.500000",
+            "20261309221311.500000-000",
+            "20261009221311.500000*000",
+            "2026100922131*.******+***",
+            "20261009221311,500000-000",
+            "20261009221311.5000ä-000",
+        ] {
+            assert_eq!(parse_wmi_datetime(text), None, "{text}");
+        }
+    }
+
+    /// A description of its own may contain ` | `.
+    #[test]
+    fn a_bar_in_the_description_stays_in_it() {
+        let point = RestorePoint::parse("256 | Before A | B | 20261009201051.313055-000").unwrap();
+        assert_eq!(point.sequence, 256);
+        assert_eq!(point.description, "Before A | B");
+        assert_eq!(point.created, Some(utc("2026-10-09T20:10:51.313055Z")));
+    }
+
+    /// A time that is no WMI date is shown as Windows wrote it, and a line
+    /// that is no point at all as it came: neither vanishes.
+    #[test]
+    fn what_does_not_parse_is_shown_raw() {
+        let point = RestorePoint::parse("256 | Manual point | not a date").unwrap();
+        assert_eq!(point.created, None);
+        assert_eq!(point.line_in(&Utc), "256 | Manual point | not a date");
+
+        let lines = settings_lines("256 | Manual point | not a date\r\n\r\nsomething else\r\n");
+        assert_eq!(lines, ["256 | Manual point | not a date", "something else"]);
+        assert!(
+            parse_restore_points("something else\nx | y | 20261009201051.313055-000").is_empty()
+        );
     }
 }
