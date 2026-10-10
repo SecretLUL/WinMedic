@@ -441,9 +441,54 @@ fn dir_stats_filtered(path: &Path, skip: fn(&Path) -> bool) -> DirStats {
     stats
 }
 
+/// Whether the file name starts with `prefix`, in any letter case.
+fn name_starts_with(name: &str, prefix: &str) -> bool {
+    name.get(..prefix.len())
+        .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+}
+
 /// What the Recycle Bin is really holding, ignoring the stubs Windows owns.
+///
+/// `files` counts deleted items, not files on disk. Windows keeps each item
+/// as a pair: `$R<id>` holds the content — a file, or a folder with
+/// everything that was in it — and `$I<id>` its name, path and size. Counting
+/// every file made one deleted document "2 files" and a deleted folder all of
+/// its files plus one. Each `$R` entry is one item; the `$I` stubs, orphaned
+/// ones included, add their bytes and no item.
 pub fn scan_recycle_bin_contents(path: &Path) -> DirStats {
-    dir_stats_filtered(path, is_recreated_shell_stub)
+    let mut stats = DirStats::default();
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return stats;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if is_recreated_shell_stub(&p) {
+            continue;
+        }
+        let Ok(meta) = p.symlink_metadata() else {
+            continue;
+        };
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+        if name_starts_with(&name, "$R") {
+            stats.files += 1;
+            stats.bytes += if meta.is_dir() {
+                dir_stats_filtered(&p, is_recreated_shell_stub).bytes
+            } else {
+                meta.len()
+            };
+        } else if meta.is_dir() {
+            let sub = scan_recycle_bin_contents(&p);
+            stats.bytes += sub.bytes;
+            stats.files += sub.files;
+        } else {
+            stats.bytes += meta.len();
+            if !name_starts_with(&name, "$I") {
+                stats.files += 1;
+            }
+        }
+    }
+    stats
 }
 
 /// Empty the Recycle Bin directories, leaving the stubs Windows owns in place.
@@ -1179,7 +1224,7 @@ impl DiagnosticModule for SystemCleanerModule {
                 "sys_clean_recycle_bin",
                 self.id(),
                 format!(
-                    "Windows Recycle Bin ({}, {} files)",
+                    "Windows Recycle Bin ({}, {} items)",
                     format_bytes(recycle_stats.bytes),
                     recycle_stats.files
                 ),
@@ -1191,7 +1236,7 @@ impl DiagnosticModule for SystemCleanerModule {
                 RiskScore::High,
                 "Your Recycle Bin holds deleted files on the local drives. Other accounts' Recycle Bins are left alone. WARNING: emptying it is permanent — not even the system restore point brings these files back.",
                 format!(
-                    "Recycle Bin contents: {} across {} files on the local drives",
+                    "Recycle Bin contents: {} across {} deleted items on the local drives",
                     format_bytes(recycle_stats.bytes),
                     recycle_stats.files
                 ),
@@ -2561,15 +2606,57 @@ The operation completed successfully.";
         assert!(stub.exists(), "the stub must survive the sweep");
     }
 
+    /// Windows keeps a deleted file as `$R<id>`, its content, and `$I<id>`,
+    /// its name, path and size: one item, not two files.
     #[test]
     fn a_real_deleted_file_next_to_the_stub_still_counts() {
         let td = TestDir::new("recycle_real_entry");
         td.create_file("$Recycle.Bin/S-1-5-21/desktop.ini", &[1u8; 129]);
         td.create_file("$Recycle.Bin/S-1-5-21/$RABCDEF.docx", &[2u8; 4096]);
+        td.create_file("$Recycle.Bin/S-1-5-21/$IABCDEF.docx", &[3u8; 544]);
 
         let stats = scan_recycle_bin_contents(&td.path.join("$Recycle.Bin"));
         assert_eq!(stats.files, 1, "only the deleted document counts");
-        assert_eq!(stats.bytes, 4096);
+        assert_eq!(stats.bytes, 4096 + 544);
+    }
+
+    /// A deleted folder is one item, whatever it held; an `$I` stub whose
+    /// content is gone is none, though its bytes still count.
+    #[test]
+    fn a_deleted_folder_is_one_item_and_an_orphaned_stub_none() {
+        let td = TestDir::new("recycle_folder_entry");
+        td.create_file("$Recycle.Bin/S-1-5-21/$RFOLDER/a.txt", &[1u8; 1000]);
+        td.create_file("$Recycle.Bin/S-1-5-21/$RFOLDER/sub/b.txt", &[2u8; 2000]);
+        td.create_file("$Recycle.Bin/S-1-5-21/$IFOLDER", &[3u8; 544]);
+        td.create_file("$Recycle.Bin/S-1-5-21/$IORPHAN.txt", &[4u8; 544]);
+
+        let stats = scan_recycle_bin_contents(&td.path.join("$Recycle.Bin"));
+        assert_eq!(stats.files, 1, "the folder is the one deleted item");
+        assert_eq!(stats.bytes, 1000 + 2000 + 544 + 544);
+    }
+
+    #[tokio::test]
+    async fn the_recycle_bin_finding_counts_deleted_items() {
+        let td = TestDir::new("recycle_items_title");
+        td.create_file("$Recycle.Bin/S-1-5-21/$RABCDEF.docx", &reportable_payload());
+        td.create_file("$Recycle.Bin/S-1-5-21/$IABCDEF.docx", &[3u8; 544]);
+
+        let module = sandboxed(&td, Arc::new(MockCommandRunner::new()));
+        let issues = module.scan(None).await.unwrap();
+        let issue = issues
+            .iter()
+            .find(|i| i.id == "sys_clean_recycle_bin")
+            .expect("a deleted document above the floor");
+        assert!(issue.title.ends_with(", 1 items)"), "{}", issue.title);
+        assert!(
+            issue.technical_details.contains("across 1 deleted items"),
+            "{}",
+            issue.technical_details
+        );
+        assert_eq!(
+            issue.reclaimable_bytes,
+            Some(MIN_REPORTABLE_CLEANUP_BYTES + 1 + 544)
+        );
     }
 
     #[tokio::test]
