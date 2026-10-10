@@ -50,6 +50,9 @@ pub struct CrashEventRecord {
     /// The file name of the dump a bugcheck event points at, so the same
     /// crash is not counted once from the dump and again from the event.
     pub dump_file: Option<String>,
+    /// Kernel-Power 41 with `BugcheckCode` 0: Windows went down without a
+    /// bugcheck.
+    pub without_bugcheck: bool,
     pub raw_snippet: String,
 }
 
@@ -480,9 +483,16 @@ impl DiagnosticModule for CrashAnalysisModule {
             .filter(|e| e.event_id == 1001 && e.bugcheck_code.is_some())
             .collect();
         let kernel_power_41: usize = events.iter().filter(|e| e.event_id == 41).count();
+        let unexpected_shutdowns: Vec<&CrashEventRecord> =
+            events.iter().filter(|e| e.without_bugcheck).collect();
         dbg.kv("bugcheck_events", bugcheck_events.len().to_string())
             .await;
         dbg.kv("kernel_power_41", kernel_power_41.to_string()).await;
+        dbg.kv(
+            "kernel_power_41_without_bugcheck",
+            unexpected_shutdowns.len().to_string(),
+        )
+        .await;
 
         // Merge dump + event crash instances. A bugcheck usually leaves both a
         // dump and an Event 1001 naming that dump; it is one crash.
@@ -647,24 +657,27 @@ impl DiagnosticModule for CrashAnalysisModule {
             ).with_advice_only());
         }
 
-        // 4. Kernel-Power 41 events beyond explainable bugchecks
-        let bugcheck_total = crashes.len();
-        if kernel_power_41 > bugcheck_total {
-            let unexplained = kernel_power_41 - bugcheck_total;
+        // 4. Kernel-Power 41 events that say there was no bugcheck. A
+        // bugcheck puts its stop code into the event, 0 means none.
+        // Subtracting the dumps instead let a blue screen days ago, outside
+        // the event window, "explain" a power loss today.
+        if !unexpected_shutdowns.is_empty() {
+            let count = unexpected_shutdowns.len();
+            let times: Vec<&str> = unexpected_shutdowns
+                .iter()
+                .filter_map(|e| e.when.as_deref())
+                .collect();
             issues.push(Issue::new(
                 "crash_unexpected_shutdown",
                 self.id(),
-                format!(
-                    "{} unexpected shutdown(s) without a bugcheck",
-                    unexplained
-                ),
+                format!("{count} unexpected shutdown(s) without a bugcheck"),
                 "Hardware & Stability",
                 Severity::Warning,
                 RiskScore::Low,
-                "Kernel-Power Event 41 was logged without a corresponding crash dump: the system lost power or froze hard before Windows could write a bugcheck. This points to PSU instability, overheating with emergency shutdown, a stuck system image or a held power button.",
+                "Kernel-Power event 41 was logged with bugcheck code 0: Windows went down without a clean shutdown and without a blue screen. The PC lost power, froze hard or was switched off at the power button; this points to PSU instability or overheating.",
                 format!(
-                    "Kernel-Power 41 events: {}\nBugcheck-backed crashes: {}\nUnexplained: {}",
-                    kernel_power_41, bugcheck_total, unexplained
+                    "Kernel-Power 41 with BugcheckCode 0 in the last {window_hours} h: {count}\nWhen: {}",
+                    if times.is_empty() { "unknown".to_string() } else { times.join(", ") }
                 ),
                 "Check PSU capacity/cabling, CPU & GPU thermals and Windows reliability history",
                 vec![
@@ -1016,6 +1029,13 @@ pub fn crash_events(events: Vec<EventRecord>) -> Vec<CrashEventRecord> {
     events
         .into_iter()
         .filter_map(|event| {
+            // Down without a bugcheck: Kernel-Power 41 with BugcheckCode 0.
+            // A missing or unreadable code is not taken for 0.
+            let without_bugcheck = event.provider == KERNEL_POWER_PROVIDER
+                && event
+                    .data("BugcheckCode")
+                    .and_then(|code| code.trim().parse::<u32>().ok())
+                    == Some(0);
             let (bugcheck_code, dump_file) = if event.provider == KERNEL_POWER_PROVIDER {
                 // Kernel-Power also logs events other than 41.
                 if event.event_id != 41 {
@@ -1054,6 +1074,7 @@ pub fn crash_events(events: Vec<EventRecord>) -> Vec<CrashEventRecord> {
                 bugcheck_code,
                 when,
                 dump_file,
+                without_bugcheck,
                 raw_snippet: event.summary(),
             })
         })
@@ -1301,13 +1322,19 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert!(events.iter().all(|e| e.event_id == 41));
         // BugcheckCode 0: the machine went down without a bugcheck.
-        assert!(events.iter().all(|e| e.bugcheck_code.is_none()));
+        assert!(
+            events
+                .iter()
+                .all(|e| e.bugcheck_code.is_none() && e.without_bugcheck)
+        );
     }
 
     #[test]
     fn test_kernel_power_41_carries_a_decimal_bugcheck_code() {
         let xml = event_xml(KERNEL_POWER_PROVIDER, 41, &[("BugcheckCode", "159")]);
-        assert_eq!(parse_crash_events(&xml)[0].bugcheck_code, Some(0x9F));
+        let event = &parse_crash_events(&xml)[0];
+        assert_eq!(event.bugcheck_code, Some(0x9F));
+        assert!(!event.without_bugcheck);
     }
 
     #[test]
@@ -1532,7 +1559,13 @@ mod tests {
             .find(|i| i.id == "crash_unexpected_shutdown")
             .expect("unexpected shutdown issue");
         assert_eq!(kp.severity, Severity::Warning);
-        assert!(kp.technical_details.contains("Unexplained: 1"));
+        assert_eq!(kp.title, "1 unexpected shutdown(s) without a bugcheck");
+        assert!(
+            kp.technical_details
+                .starts_with("Kernel-Power 41 with BugcheckCode 0 in the last 24 h: 1\n"),
+            "{}",
+            kp.technical_details
+        );
         assert!(
             kp.advice_only,
             "a lost power supply is not repaired in software"
@@ -1543,6 +1576,66 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The unexpected shutdowns a scan of `dir` reports, with the System
+    /// log answering `events`.
+    async fn unexpected_shutdowns(dir: &Path, events: CmdOutput) -> Option<Issue> {
+        let mock = MockCommandRunner::new();
+        mock.add_response("wevtutil.exe", events);
+        let issues = CrashAnalysisModule::with_runner_and_dump_dir(
+            ModuleConfig::default(),
+            Arc::new(mock),
+            dir,
+        )
+        .scan(None)
+        .await
+        .expect("scan failed");
+        issues
+            .into_iter()
+            .find(|i| i.id == "crash_unexpected_shutdown")
+    }
+
+    /// Dumps are kept for 30 days, events are read for 24 hours: a blue
+    /// screen three days ago is no reason for the power loss today.
+    #[tokio::test]
+    async fn a_blue_screen_days_ago_explains_no_shutdown_today() {
+        let dir = temp_dump_dir("kp41_old_dump");
+        write_old_dump(&dir, "100626-1234-01.dmp", &synth_dump64(0x9F, b""), 3);
+        let events = event_xml(KERNEL_POWER_PROVIDER, 41, &[("BugcheckCode", "0")]);
+        let found = unexpected_shutdowns(&dir, CmdOutput::ok(events)).await;
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let kp = found.expect("the power loss is reported");
+        assert_eq!(kp.title, "1 unexpected shutdown(s) without a bugcheck");
+    }
+
+    /// The capture's two events 41: the one of 26 July with BugcheckCode 0,
+    /// the one of 27 July with 159, the 0x9F its event 1001 reports. Only
+    /// the first is an unexpected shutdown, whatever dumps there are.
+    #[tokio::test]
+    async fn real_events_41_tell_a_power_loss_from_a_blue_screen() {
+        let dir = temp_dump_dir("kp41_july");
+        write_old_dump(&dir, "100626-1234-01.dmp", &synth_dump64(0x9F, b""), 3);
+        let events = CmdOutput::ok(decode_output_in(JULY_CRASHES, CodePage::Ansi));
+        let found = unexpected_shutdowns(&dir, events).await;
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let kp = found.expect("26 July");
+        assert_eq!(kp.title, "1 unexpected shutdown(s) without a bugcheck");
+    }
+
+    /// Two real events 41 with BugcheckCode 0, and a bugcheck's event in
+    /// the same hours: the bugcheck explains neither.
+    #[tokio::test]
+    async fn a_bugcheck_explains_no_event_41_without_one() {
+        let dir = temp_dump_dir("kp41_real");
+        let events = CmdOutput::ok(format!("{KERNEL_POWER_41}{WER_BUGCHECK}"));
+        let found = unexpected_shutdowns(&dir, events).await;
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let kp = found.expect("two power losses");
+        assert_eq!(kp.title, "2 unexpected shutdown(s) without a bugcheck");
     }
 
     #[tokio::test]
