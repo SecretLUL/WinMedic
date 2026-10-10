@@ -54,14 +54,15 @@ fn dism_failure(out: &CmdOutput) -> String {
     }
 }
 
-/// How much of the end of CBS.log to read. The log grows to hundreds of
-/// megabytes; the last SFC or DISM run is all that matters, and its summary
-/// sits at the very end.
+/// How much of the end of CBS.log is searched for DISM's last summary, and
+/// for what SFC wrote when the start of its last run is not found.
 const CBS_TAIL_BYTES: u64 = 64 * 1024;
 
-/// How much of the end of CBS.log is searched for DISM's last report. Its list
-/// of damaged files comes before the summary and runs to a hundred kilobytes
-/// for a few hundred files.
+/// How much of the end of CBS.log is searched for DISM's last report and
+/// SFC's last run. The report's list of damaged files comes before the
+/// summary and runs to a hundred kilobytes for a few hundred files; an SFC
+/// run writes 65 KB, and every scan about 100 KB after it (the cleaner's
+/// `DISM /AnalyzeComponentStore`).
 const STORE_REPORT_TAIL_BYTES: u64 = 8 * 1024 * 1024;
 
 /// What the last DISM scan or repair reported about the component store.
@@ -210,24 +211,43 @@ impl ComponentStoreHealth {
 /// one, a driver file SFC found damaged and did not put back, or a DISM
 /// summary that detected more than it repaired.
 pub fn cbs_unrepaired_corruption(tail: &str) -> Option<String> {
-    unrepaired_evidence(tail, true)
+    let mut evidence = sfc_evidence(tail);
+    evidence.extend(dism_summary_evidence(tail));
+    (!evidence.is_empty()).then(|| evidence.join("\n"))
 }
 
-/// [`cbs_unrepaired_corruption`], with DISM's summary left out unless
-/// `dism_summary` - for when that summary counts only backup copies.
-fn unrepaired_evidence(tail: &str, dism_summary: bool) -> Option<String> {
+/// What CBS logs as an SFC run begins: `TiWorker: Client requests SFP
+/// repair object.` Every captured run, `/scannow` and `/verifyonly`,
+/// started with it.
+const SFC_RUN_START: &str = "Client requests SFP repair object";
+
+/// The last SFC run in `log`, from the line it began with to the end of
+/// `log`; `None` without an `[SR]` line after such a start.
+///
+/// What it found stands until SFC runs again. Judged by whatever the end
+/// of CBS.log held, it was gone after one scan: WinMedic's own
+/// `DISM /AnalyzeComponentStore` writes about 100 KB after it.
+pub fn last_sfc_run(log: &str) -> Option<&str> {
+    let last_line = log.rfind("[SR] ")?;
+    let start = log[..last_line].rfind(SFC_RUN_START)?;
+    Some(&log[start..])
+}
+
+/// The lines in `log` of SFC giving up on a file, and the driver files it
+/// found damaged and did not put back.
+fn sfc_evidence(log: &str) -> Vec<String> {
     const SFC_GAVE_UP: [&str; 2] = [
         "Cannot repair member file",
         "Could not reproject corrupted file",
     ];
-    let mut evidence: Vec<String> = tail
+    let mut evidence: Vec<String> = log
         .lines()
         .filter(|line| SFC_GAVE_UP.iter().any(|marker| line.contains(marker)))
         .take(3)
         .map(|line| line.trim().to_string())
         .collect();
 
-    let damaged: Vec<String> = pnp_files(tail)
+    let damaged: Vec<String> = pnp_files(log)
         .into_iter()
         .filter_map(|(path, damaged)| damaged.then_some(path))
         .collect();
@@ -240,7 +260,11 @@ fn unrepaired_evidence(tail: &str, dism_summary: bool) -> Option<String> {
     if damaged.len() > 3 {
         evidence.push(format!("... and {} more", damaged.len() - 3));
     }
+    evidence
+}
 
+/// The last DISM summary in `tail`, when it detected more than it repaired.
+fn dism_summary_evidence(tail: &str) -> Option<String> {
     let count_after = |label: &str, text: &str| -> Option<(usize, u32)> {
         let at = text.rfind(label)?;
         let value = text[at + label.len()..]
@@ -251,20 +275,12 @@ fn unrepaired_evidence(tail: &str, dism_summary: bool) -> Option<String> {
             .ok()?;
         Some((at, value))
     };
-    if let Some((at, detected)) =
-        count_after("Total Detected Corruption:", tail).filter(|_| dism_summary)
-    {
-        let repaired = count_after("Total Repaired Corruption:", &tail[at..])
-            .map(|(_, repaired)| repaired)
-            .unwrap_or(0);
-        if detected > repaired {
-            evidence.push(format!(
-                "DISM summary: {detected} corruption(s) detected, {repaired} repaired"
-            ));
-        }
-    }
-
-    (!evidence.is_empty()).then(|| evidence.join("\n"))
+    let (at, detected) = count_after("Total Detected Corruption:", tail)?;
+    let repaired = count_after("Total Repaired Corruption:", &tail[at..])
+        .map(|(_, repaired)| repaired)
+        .unwrap_or(0);
+    (detected > repaired)
+        .then(|| format!("DISM summary: {detected} corruption(s) detected, {repaired} repaired"))
 }
 
 /// Every driver file SFC wrote about in `log`, and whether the last thing it
@@ -1075,9 +1091,10 @@ impl DiagnosticModule for SystemIntegrityModule {
             .await;
         // CheckHealth only repeats what the last scan or repair found, and
         // that one's report says what it was.
-        let missing_backups = read_tail(&self.cbs_log, STORE_REPORT_TAIL_BYTES)
-            .ok()
-            .and_then(|tail| last_store_report(&tail))
+        let cbs_end = read_tail(&self.cbs_log, STORE_REPORT_TAIL_BYTES).ok();
+        let missing_backups = cbs_end
+            .as_deref()
+            .and_then(last_store_report)
             .filter(StoreReport::only_backups_left)
             .map(|report| report.missing_backups);
 
@@ -1220,7 +1237,17 @@ impl DiagnosticModule for SystemIntegrityModule {
         sleep(Duration::from_millis(150)).await;
 
         if let Ok(tail) = read_tail(&self.cbs_log, CBS_TAIL_BYTES) {
-            if let Some(evidence) = unrepaired_evidence(&tail, missing_backups.is_none()) {
+            // SFC's verdict is its last run's, however far up servicing has
+            // pushed it since. A log without the line a run starts with is
+            // judged by its end, as before.
+            let sfc_run = cbs_end.as_deref().and_then(last_sfc_run).unwrap_or(&tail);
+            let mut evidence = sfc_evidence(sfc_run);
+            // Left out when the summary counts only backup copies.
+            if missing_backups.is_none() {
+                evidence.extend(dism_summary_evidence(&tail));
+            }
+            if !evidence.is_empty() {
+                let evidence = evidence.join("\n");
                 issues.push(Issue::new(
                     "sys_sfc_corrupt",
                     self.id(),
@@ -2258,6 +2285,7 @@ mod tests {
         assert_eq!(cbs_unrepaired_corruption(&log), None);
     }
 
+    /// A log without the line an SFC run starts with is judged by its end.
     #[tokio::test]
     async fn the_cbs_log_is_read_from_its_tail() {
         let path = std::env::temp_dir().join(format!("winmedic-cbs-{}.log", std::process::id()));
@@ -2378,6 +2406,62 @@ mod tests {
             "{}",
             issue.technical_details
         );
+    }
+
+    /// The SFC finding of a scan while CBS.log holds `cbs` and DISM calls
+    /// the store healthy.
+    async fn sfc_finding(name: &str, cbs: &[u8]) -> Option<Issue> {
+        let mock = MockCommandRunner::new();
+        mock.add_response("dism.exe", dism_says(HEALTHY));
+        healthy_vss(&mock);
+        let path = cbs_file(name, cbs);
+        let issues = SystemIntegrityModule::with_runner_and_cbs_log(Arc::new(mock), path.clone())
+            .with_reagent_xml(std::env::temp_dir().join("winmedic-test-no-such-ReAgent.xml"))
+            .with_downloads(None)
+            .scan(None)
+            .await
+            .unwrap();
+        let _ = std::fs::remove_file(&path);
+        issues.into_iter().find(|i| i.id == "sys_sfc_corrupt")
+    }
+
+    /// What the development PC showed: the scan's own component store
+    /// analysis wrote 97 KB after the SFC run, and the next scan had lost
+    /// the damage. The lines after it here are real servicing lines from
+    /// the capture machine, not that analysis: the report of the ISO
+    /// repair that evening, 101 KB, which lists only backup copies (no
+    /// damage of its own).
+    #[tokio::test]
+    async fn sfc_damage_outlasts_later_servicing_lines() {
+        assert!(CBS_REPAIR_BACKUPS_MISSING.len() as u64 > CBS_TAIL_BYTES);
+        let log = [CBS_SFC_FOUND_DAMAGE, CBS_REPAIR_BACKUPS_MISSING].concat();
+        let issue = sfc_finding("sfc-outlasts", &log)
+            .await
+            .expect("SFC's damage is still there");
+        for file in BLUETOOTH {
+            assert!(
+                issue
+                    .technical_details
+                    .contains(&format!("Damaged and not repaired: {file}")),
+                "{}",
+                issue.technical_details
+            );
+        }
+    }
+
+    /// The next SFC run is the verdict: one that found nothing, and one
+    /// that put the files back, with or without servicing lines after it.
+    /// Damaged then clean used to be read from a tail that still held the
+    /// end of the damaged run.
+    #[tokio::test]
+    async fn a_later_sfc_run_replaces_the_verdict() {
+        for (name, later) in [("clean", CBS_SFC_CLEAN), ("repaired", CBS_SFC_REPAIRED)] {
+            for (after, servicing) in [("alone", &b""[..]), ("then", CBS_REPAIR_BACKUPS_MISSING)] {
+                let log = [CBS_SFC_FOUND_DAMAGE, later, servicing].concat();
+                let found = sfc_finding(&format!("sfc-{name}-{after}"), &log).await;
+                assert!(found.is_none(), "{name} {after}: {found:?}");
+            }
+        }
     }
 
     /// Stands in for `sfc /scannow`: prints `stdout` and adds `run_log` to
