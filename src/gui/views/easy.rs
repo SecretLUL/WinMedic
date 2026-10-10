@@ -8,7 +8,9 @@
 //! mode (F7) has all of that, and the Repair button repairs exactly what is
 //! ticked there, which out of the box is what the checks recommend.
 
-use super::home::{format_duration, has_scanned, plural, repair_label, selected_for_repair};
+use super::home::{
+    deletes_ticked_files, format_duration, has_scanned, plural, repair_label, selected_for_repair,
+};
 use crate::app::App;
 use crate::app::state::waits_for_restart;
 use crate::engine::issue::Severity;
@@ -274,20 +276,22 @@ fn result(ui: &mut egui::Ui, app: &mut App) {
 
     ui.add_space(10.0);
     if to_repair > 0 {
-        let preview = app.repair_preview();
-        note(
-            ui,
-            match (app.config.create_vss_before_repair, preview.needs_restart) {
-                (true, false) => "A restore point is created first, so everything can be undone.",
-                (true, true) => {
-                    "A restore point is created first. Windows needs a restart afterwards."
-                }
-                (false, false) => "Restore points are switched off in Settings.",
-                (false, true) => {
-                    "Restore points are switched off in Settings. Windows needs a restart afterwards."
-                }
-            },
-        );
+        let mut text = Vec::new();
+        if app.config.create_vss_before_repair {
+            text.push(
+                "A restore point is created first. \
+                 It can undo changes to system files, settings and programs.",
+            );
+            if deletes_ticked_files(app) {
+                text.push("Deleted files do not come back.");
+            }
+        } else {
+            text.push("Restore points are switched off in Settings.");
+        }
+        if app.repair_preview().needs_restart {
+            text.push("Windows needs a restart afterwards.");
+        }
+        note(ui, text.join(" "));
     }
 
     let failed = app
