@@ -156,14 +156,20 @@ impl ThisWindows {
         self.build >= 22000
     }
 
-    /// "Windows 11 25H2 (build 26200)", for telling the user which ISO fits.
-    pub fn describe(&self) -> String {
+    /// "the current Windows 11 ISO", for telling the user which ISO to get.
+    ///
+    /// Not this PC's own release: the download page offers only the newest
+    /// one, 26H2 since 2026-09-29, and [`Media::best`] takes any image of
+    /// this edition and Windows, the newest when this build is not there.
+    /// The page's ISO holds several editions: the 25H2 one Home, Education,
+    /// Pro and Pro for Workstations, each also as N.
+    pub fn iso_to_get(&self) -> String {
         let name = if self.is_windows_11() {
             "Windows 11"
         } else {
             "Windows 10"
         };
-        format!("{name} {} (build {})", self.display_version, self.build)
+        format!("the current {name} ISO")
     }
 
     /// The page on microsoft.com/software-download/ that offers its ISO.
@@ -443,13 +449,18 @@ mod tests {
         assert_eq!(media.images.len(), 10);
     }
 
+    /// The download page offers only the newest release, so a 25H2 PC is
+    /// asked for the current ISO, not for a 25H2 one.
     #[test]
-    fn this_windows_is_named_the_way_the_download_page_does() {
-        let media = Media::parse(THIS_PC);
-        assert_eq!(
-            media.windows.unwrap().describe(),
-            "Windows 11 25H2 (build 26200)"
-        );
+    fn the_current_iso_is_asked_for() {
+        let windows = Media::parse(THIS_PC).windows.unwrap();
+        assert_eq!(windows.iso_to_get(), "the current Windows 11 ISO");
+        assert_eq!(windows.download_page(), "windows11");
+        let windows_10 = Media::parse("WINDOWS\tProfessional\t19045\t22H2\r\n")
+            .windows
+            .unwrap();
+        assert_eq!(windows_10.iso_to_get(), "the current Windows 10 ISO");
+        assert_eq!(windows_10.download_page(), "windows10");
     }
 
     #[test]
