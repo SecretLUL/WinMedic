@@ -741,6 +741,39 @@ mod tests {
         );
     }
 
+    /// #155: the page was drawn before the repair ran. Nothing was picked, so
+    /// the log still opens on the run that happened last.
+    #[test]
+    fn the_log_opens_on_a_repair_that_ran_after_the_page_was_drawn() {
+        let mut app = scanned_app();
+        app.total_to_fix = 0;
+        app.fixed_count = 0;
+        app.failed_count = 0;
+        app.repair_console_lines.clear();
+        let mut harness = window(app);
+
+        let app = harness.state_mut();
+        app.total_to_fix = 3;
+        app.fixed_count = 2;
+        app.failed_count = 1;
+        app.push_repair_log("[X] Failed: access denied.");
+        harness.run();
+        harness.get_by_label("Show log").click();
+        harness.run();
+
+        assert!(
+            harness
+                .query_by_label_contains("[X] Failed: access denied.")
+                .is_some(),
+            "the repair output is what opens"
+        );
+        assert!(
+            harness
+                .query_by_label_contains("Module 'network' finished.")
+                .is_none()
+        );
+    }
+
     #[test]
     fn confirmation_blocks_clicks_on_the_navigation() {
         let mut app = fresh_app();
