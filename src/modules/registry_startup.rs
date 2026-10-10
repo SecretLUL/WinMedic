@@ -3,7 +3,7 @@ use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress
 use crate::safety::reg_backup::RegBackupManager;
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
 use crate::utils::registry::{self, RegValue};
-use std::path::{Component, PathBuf, Prefix};
+use std::path::{Component, Path, PathBuf, Prefix};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
@@ -50,7 +50,7 @@ pub const DRIVE_FIXED: u32 = 3;
 
 /// `GetDriveTypeW` of `X:\`. It reads the drive table without touching the
 /// drive, so a share that does not answer cannot stall the scan.
-fn real_drive_type() -> DriveTypeSource {
+pub(crate) fn real_drive_type() -> DriveTypeSource {
     use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
     Arc::new(|letter| {
         let root: Vec<u16> = format!("{letter}:\\")
@@ -59,6 +59,20 @@ fn real_drive_type() -> DriveTypeSource {
             .collect();
         unsafe { GetDriveTypeW(root.as_ptr()) }
     })
+}
+
+/// Whether `path` names a file by the letter of a fixed drive of this PC
+/// (`C:\...`, `\\?\C:\...`). A share, `\\?\UNC\...` and `\\.\...` are
+/// not drive letters, and a mapped, removable or absent drive is no fixed
+/// one: only on a fixed drive does a missing file prove a program is gone.
+pub(crate) fn on_fixed_drive(path: &Path, drive_type: &dyn Fn(char) -> u32) -> bool {
+    let Some(Component::Prefix(prefix)) = path.components().next() else {
+        return false;
+    };
+    let (Prefix::Disk(letter) | Prefix::VerbatimDisk(letter)) = prefix.kind() else {
+        return false;
+    };
+    drive_type(char::from(letter).to_ascii_uppercase()) == DRIVE_FIXED
 }
 
 /// The file a Run value starts, if it names one by an absolute path on a
@@ -76,19 +90,7 @@ fn missing_target(value: &RegValue, drive_type: &dyn Fn(char) -> u32) -> Option<
         return None;
     }
     let path = RegistryStartupModule::extract_exe_path(&value.data)?;
-    if !path.is_absolute() {
-        return None;
-    }
-    // `C:\...` and `\\?\C:\...`; a share, `\\?\UNC\...` and `\\.\...` are
-    // not drive letters.
-    let Some(Component::Prefix(prefix)) = path.components().next() else {
-        return None;
-    };
-    let (Prefix::Disk(letter) | Prefix::VerbatimDisk(letter)) = prefix.kind() else {
-        return None;
-    };
-    let on_fixed_drive = drive_type(char::from(letter).to_ascii_uppercase()) == DRIVE_FIXED;
-    (on_fixed_drive && !path.exists()).then_some(path)
+    (path.is_absolute() && on_fixed_drive(&path, drive_type) && !path.exists()).then_some(path)
 }
 
 pub struct RegistryStartupModule {

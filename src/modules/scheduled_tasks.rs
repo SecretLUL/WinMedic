@@ -9,6 +9,7 @@
 //! task, which Task Scheduler reverses with a single `Enable-ScheduledTask`.
 
 use crate::engine::issue::{Issue, RiskScore, Severity};
+use crate::modules::registry_startup::{DriveTypeSource, on_fixed_drive, real_drive_type};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner, ps_single_quoted};
 use sha2::{Digest, Sha256};
@@ -196,6 +197,9 @@ pub struct ScheduledTasksModule {
     runner: Arc<dyn CommandRunner>,
     /// Issue id -> the task that issue was raised for, filled in by `scan`.
     known_tasks: Arc<Mutex<HashMap<String, TaskRef>>>,
+    /// Which drive letters are fixed disks of this PC; see
+    /// [`Self::missing_target`].
+    drive_type: DriveTypeSource,
 }
 
 impl Default for ScheduledTasksModule {
@@ -213,7 +217,14 @@ impl ScheduledTasksModule {
         Self {
             runner,
             known_tasks: Arc::new(Mutex::new(HashMap::new())),
+            drive_type: real_drive_type(),
         }
+    }
+
+    /// For tests: drives other than the machine's own.
+    pub fn with_drive_type(mut self, drive_type: DriveTypeSource) -> Self {
+        self.drive_type = drive_type;
+        self
     }
 
     async fn send_progress(
@@ -322,11 +333,15 @@ impl ScheduledTasksModule {
     ///   never reaches the existence check.
     /// - A relative path is interpreted against the task's working directory,
     ///   which the inventory does not read.
+    /// - A path that is not on a fixed drive of this PC: WinMedic runs
+    ///   elevated, and the drive letters the user mapped belong to the
+    ///   unelevated session, so a program on a mapped drive looks missing, as
+    ///   does one on an unplugged USB disk or a share that does not answer.
     ///
     /// The 64-bit builds WinMedic ships see `System32` unredirected, so a task
     /// launching a 64-bit-only system binary is checked against the directory
     /// Task Scheduler itself would use.
-    fn missing_target(execute: &str) -> Option<PathBuf> {
+    fn missing_target(execute: &str, drive_type: &dyn Fn(char) -> u32) -> Option<PathBuf> {
         let trimmed = execute.trim().trim_matches('"').trim();
         if trimmed.is_empty() {
             return None;
@@ -335,7 +350,7 @@ impl ScheduledTasksModule {
         let expanded = Self::expand_env_vars(trimmed);
         let path = PathBuf::from(expanded.trim().trim_matches('"'));
 
-        if !path.is_absolute() || path.exists() {
+        if !path.is_absolute() || !on_fixed_drive(&path, drive_type) || path.exists() {
             return None;
         }
         Some(path)
@@ -590,7 +605,7 @@ impl DiagnosticModule for ScheduledTasksModule {
                 already_disabled += 1;
                 continue;
             }
-            let Some(missing) = Self::missing_target(&task.execute) else {
+            let Some(missing) = Self::missing_target(&task.execute, &*self.drive_type) else {
                 continue;
             };
             orphaned += 1;
@@ -677,7 +692,7 @@ impl DiagnosticModule for ScheduledTasksModule {
                 continue;
             }
             // Already reported above, with a more specific explanation.
-            if Self::missing_target(&task.execute).is_some() {
+            if Self::missing_target(&task.execute, &*self.drive_type).is_some() {
                 continue;
             }
             failing += 1;
@@ -859,6 +874,18 @@ mod tests {
         CmdOutput::ok(lines.join("\r\n"))
     }
 
+    /// What `GetDriveTypeW` reports for the test PC's drives, whatever the
+    /// machine running the tests has: C: is its disk, E: a USB stick, Z: a
+    /// mapped share, and no other letter is in use.
+    fn drives(letter: char) -> u32 {
+        match letter {
+            'C' => crate::modules::registry_startup::DRIVE_FIXED,
+            'E' => 2,
+            'Z' => 4,
+            _ => 1,
+        }
+    }
+
     fn module_with(lines: Vec<String>) -> ScheduledTasksModule {
         let mock = MockCommandRunner::new();
         mock.add_response("Schedule.Service", inventory(lines));
@@ -965,7 +992,7 @@ mod tests {
 
         assert_eq!(expanded, raw, "an unset variable must survive verbatim");
         // Which is what keeps it out of the orphan check.
-        assert!(ScheduledTasksModule::missing_target(raw).is_none());
+        assert!(ScheduledTasksModule::missing_target(raw, &drives).is_none());
     }
 
     #[test]
@@ -988,19 +1015,54 @@ mod tests {
     #[test]
     fn only_a_provably_missing_absolute_path_counts_as_orphaned() {
         // Resolved through PATH by Task Scheduler, not by this module.
-        assert!(ScheduledTasksModule::missing_target("powershell.exe").is_none());
+        assert!(ScheduledTasksModule::missing_target("powershell.exe", &drives).is_none());
         // Relative to the task's working directory, which is not read.
-        assert!(ScheduledTasksModule::missing_target(r"..\tools\run.bat").is_none());
-        assert!(ScheduledTasksModule::missing_target("").is_none());
-        assert!(ScheduledTasksModule::missing_target("   ").is_none());
+        assert!(ScheduledTasksModule::missing_target(r"..\tools\run.bat", &drives).is_none());
+        assert!(ScheduledTasksModule::missing_target("", &drives).is_none());
+        assert!(ScheduledTasksModule::missing_target("   ", &drives).is_none());
         // A file that does exist on every Windows host.
         if let Ok(root) = std::env::var("SystemRoot") {
             let real = format!(r"{}\system32\cmd.exe", root);
-            assert!(ScheduledTasksModule::missing_target(&real).is_none());
+            assert!(ScheduledTasksModule::missing_target(&real, &drives).is_none());
         }
         // Absolute, quoted, and gone.
-        assert!(ScheduledTasksModule::missing_target(MISSING_EXE).is_some());
-        assert!(ScheduledTasksModule::missing_target(&format!("\"{}\"", MISSING_EXE)).is_some());
+        assert!(ScheduledTasksModule::missing_target(MISSING_EXE, &drives).is_some());
+        assert!(
+            ScheduledTasksModule::missing_target(&format!("\"{}\"", MISSING_EXE), &drives)
+                .is_some()
+        );
+    }
+
+    /// #216: WinMedic runs elevated and does not see the drives the user
+    /// mapped; a USB disk may be unplugged and a share may not answer. Only
+    /// on a fixed drive of this PC does a missing program prove it is gone.
+    #[test]
+    fn only_a_program_missing_from_a_fixed_drive_counts_as_orphaned() {
+        for elsewhere in [
+            r"Z:\Tools\backup.exe",
+            r"E:\Backup\run.exe",
+            r"Y:\Gone\tool.exe",
+            r"\\winmedic.invalid\share\tool.exe",
+            r"\\?\UNC\winmedic.invalid\share\tool.exe",
+        ] {
+            assert!(
+                ScheduledTasksModule::missing_target(elsewhere, &drives).is_none(),
+                "{elsewhere}"
+            );
+        }
+        assert!(
+            ScheduledTasksModule::missing_target(&format!(r"\\?\{MISSING_EXE}"), &drives).is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_task_on_a_mapped_drive_is_left_alone() {
+        let module = module_with(vec![
+            r"\Vendor\|Nightly Backup|Ready|0|0|Z:\Tools\backup.exe".to_string(),
+        ])
+        .with_drive_type(Arc::new(drives));
+
+        assert!(module.scan(None).await.unwrap().is_empty());
     }
 
     #[test]
