@@ -170,18 +170,27 @@ fn header(ui: &mut egui::Ui, app: &mut App) {
                 ),
                 Some(theme::severity_color(ui, worst)),
             );
-            let mut text = String::from("Tick what you want fixed, then click Repair.");
-            if app.config.create_vss_before_repair || app.dry_run {
-                text.push_str(
-                    " A restore point is created first. It can undo changes to system files, \
-                     the registry and programs.",
-                );
-                if deletes_ticked_files(app) {
-                    text.push_str(" Deleted files do not come back.");
-                }
+            // A simulation changes nothing and creates no restore point,
+            // whatever Settings say about restore points.
+            let text = if app.dry_run {
+                "Tick what you want simulated, then click Simulate. A simulation changes \
+                 nothing and creates no restore point."
+                    .to_string()
             } else {
-                text.push_str(" Restore points are switched off in Settings.");
-            }
+                let mut text = String::from("Tick what you want fixed, then click Repair.");
+                if app.config.create_vss_before_repair {
+                    text.push_str(
+                        " A restore point is created first. It can undo changes to system \
+                         files, the registry and programs.",
+                    );
+                    if deletes_ticked_files(app) {
+                        text.push_str(" Deleted files do not come back.");
+                    }
+                } else {
+                    text.push_str(" Restore points are switched off in Settings.");
+                }
+                text
+            };
             ui.label(text);
         }
         last_runs(ui, app);

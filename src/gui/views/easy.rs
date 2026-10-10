@@ -277,19 +277,25 @@ fn result(ui: &mut egui::Ui, app: &mut App) {
     ui.add_space(10.0);
     if to_repair > 0 {
         let mut text = Vec::new();
-        if app.config.create_vss_before_repair {
-            text.push(
-                "A restore point is created first. \
-                 It can undo changes to system files, settings and programs.",
-            );
-            if deletes_ticked_files(app) {
-                text.push("Deleted files do not come back.");
-            }
+        if app.dry_run {
+            // Nothing is changed, so nothing needs a restore point or a
+            // restart.
+            text.push("A simulation changes nothing and creates no restore point.");
         } else {
-            text.push("Restore points are switched off in Settings.");
-        }
-        if app.repair_preview().needs_restart {
-            text.push("Windows needs a restart afterwards.");
+            if app.config.create_vss_before_repair {
+                text.push(
+                    "A restore point is created first. \
+                     It can undo changes to system files, settings and programs.",
+                );
+                if deletes_ticked_files(app) {
+                    text.push("Deleted files do not come back.");
+                }
+            } else {
+                text.push("Restore points are switched off in Settings.");
+            }
+            if app.repair_preview().needs_restart {
+                text.push("Windows needs a restart afterwards.");
+            }
         }
         note(ui, text.join(" "));
     }
