@@ -103,11 +103,22 @@ impl StoreReport {
     }
 }
 
+/// The line a DISM report starts with, and the label of the line its
+/// summary ends with.
+const REPORT_START: &str = "Checking System Update Readiness.";
+const REPORT_END: &str = "Total Repaired Corruption:";
+
+/// Whether `log` holds a DISM report or the end of one. The last one in it
+/// is DISM's last word, whether it can be read whole or not.
+fn holds_store_report(log: &str) -> bool {
+    log.contains(REPORT_START) || log.contains(REPORT_END)
+}
+
 /// The last report of a DISM scan or repair in `log`: from "Checking System
 /// Update Readiness." to its summary, one `(p)` line per damaged item. CBS
 /// writes it in English on every system.
 pub fn last_store_report(log: &str) -> Option<StoreReport> {
-    let report = &log[log.rfind("Checking System Update Readiness.")?..];
+    let report = &log[log.rfind(REPORT_START)?..];
     let counted =
         |line: &str, label: &str| -> Option<u32> { line.split_once(label)?.1.trim().parse().ok() };
     let (mut detected, mut repaired) = (None, None);
@@ -116,7 +127,7 @@ pub fn last_store_report(log: &str) -> Option<StoreReport> {
     for line in report.lines() {
         if let Some(count) = counted(line, "Total Detected Corruption:") {
             detected = Some(count);
-        } else if let Some(count) = counted(line, "Total Repaired Corruption:") {
+        } else if let Some(count) = counted(line, REPORT_END) {
             repaired = Some(count);
             let summary_at = line.as_ptr() as usize - report.as_ptr() as usize;
             after_summary = &report[summary_at + line.len()..];
@@ -147,6 +158,51 @@ pub fn last_store_report(log: &str) -> Option<StoreReport> {
         other_unrepaired,
         marked_corrupt_since: after_summary.contains(MARKED_CORRUPT),
     })
+}
+
+/// DISM's last report in `logs`, given the newest first and each read whole,
+/// a line at a time: the first log that holds one decides, as
+/// [`holds_store_report`] says. A store marked corrupt after the report,
+/// later in its log or in a newer one, counts.
+///
+/// CBS archives CBS.log into `CbsPersist_<time>.log` beside it, and every
+/// scan adds about 100 KB, so the report of the last DISM scan soon lies
+/// further back than the end of CBS.log that is read first.
+pub fn store_report_in(logs: &[PathBuf]) -> Option<StoreReport> {
+    use std::io::{BufRead, BufReader};
+
+    let mut marked_since = false;
+    for log in logs {
+        let Ok(file) = std::fs::File::open(log) else {
+            continue;
+        };
+        // The last report from its start to its summary, whether that has
+        // been read yet, and whether the store was marked corrupt after it.
+        let (mut report, mut ended, mut marked) = (None::<String>, false, false);
+        let mut holds = false;
+        for line in BufReader::new(file).split(b'\n').map_while(Result::ok) {
+            let line = String::from_utf8_lossy(&line);
+            holds |= line.contains(REPORT_START) || line.contains(REPORT_END);
+            if line.contains(REPORT_START) {
+                (report, ended, marked) = (Some(String::new()), false, false);
+            }
+            match report.as_mut() {
+                Some(text) if !ended => {
+                    text.push_str(&line);
+                    text.push('\n');
+                    ended = line.contains(REPORT_END);
+                }
+                _ => marked |= line.contains(MARKED_CORRUPT),
+            }
+        }
+        if holds {
+            let mut report = last_store_report(&report?)?;
+            report.marked_corrupt_since |= marked || marked_since;
+            return Some(report);
+        }
+        marked_since |= marked;
+    }
+    None
 }
 
 /// What the user reads when all DISM left are backup copies.
@@ -875,6 +931,18 @@ impl SystemIntegrityModule {
         .with_advice_only()
     }
 
+    /// DISM's last report when the end of CBS.log holds none: in the rest of
+    /// CBS.log, or in the `CbsPersist_*.log` CBS archived it into, the newest
+    /// first. Off the runtime: the logs are read whole.
+    async fn archived_store_report(&self) -> Option<StoreReport> {
+        let mut logs = feature_rollback::cbs_logs(&self.cbs_log);
+        logs.reverse();
+        tokio::task::spawn_blocking(move || store_report_in(&logs))
+            .await
+            .ok()
+            .flatten()
+    }
+
     fn cbs_log_len(&self) -> u64 {
         std::fs::metadata(&self.cbs_log).map_or(0, |m| m.len())
     }
@@ -1092,9 +1160,17 @@ impl DiagnosticModule for SystemIntegrityModule {
         // CheckHealth only repeats what the last scan or repair found, and
         // that one's report says what it was.
         let cbs_end = read_tail(&self.cbs_log, STORE_REPORT_TAIL_BYTES).ok();
-        let missing_backups = cbs_end
-            .as_deref()
-            .and_then(last_store_report)
+        let repairable = dism_check.as_ref().is_ok_and(|output| {
+            ComponentStoreHealth::from_dism(output) == ComponentStoreHealth::Repairable
+        });
+        let report = match cbs_end.as_deref().filter(|end| holds_store_report(end)) {
+            Some(end) => last_store_report(end),
+            // Further back only when it decides a finding: the logs are
+            // read whole then.
+            None if repairable => self.archived_store_report().await,
+            None => None,
+        };
+        let missing_backups = report
             .filter(StoreReport::only_backups_left)
             .map(|report| report.missing_backups);
 
@@ -1863,6 +1939,87 @@ mod tests {
         )
         .await;
         assert_eq!(found, vec!["sys_dism_corrupt", "sys_sfc_corrupt"]);
+    }
+
+    /// A scan while DISM calls the store repairable, CBS.log holds `live`,
+    /// and CBS archived `archives` beside it.
+    async fn scan_repairable_archived(
+        tag: &str,
+        archives: &[(&str, &[u8])],
+        live: &[u8],
+    ) -> Vec<String> {
+        let folder = CbsFolder::new(tag, archives);
+        std::fs::write(folder.0.join("CBS.log"), live).unwrap();
+        let mock = MockCommandRunner::new();
+        mock.add_response("dism.exe", dism_says(REPAIRABLE));
+        healthy_vss(&mock);
+        let issues = folder.module(mock).scan(None).await.unwrap();
+        issues.into_iter().map(|issue| issue.id).collect()
+    }
+
+    /// What the development PC showed after CBS archived its log on
+    /// 2026-10-08: the last DISM report in a CbsPersist log, none in
+    /// CBS.log (here the real lines of an SFC run), and "Windows component
+    /// store is corrupted" back on every scan.
+    #[tokio::test]
+    async fn a_report_in_an_archived_log_still_counts() {
+        let found = scan_repairable_archived(
+            "archived_backups",
+            &[("CbsPersist_20261008190827.log", CBS_SCAN_BACKUPS_MISSING)],
+            CBS_SFC_CLEAN,
+        )
+        .await;
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    /// The newest archive's report decides, the other way round as well.
+    #[tokio::test]
+    async fn the_newest_archived_report_decides() {
+        let found = scan_repairable_archived(
+            "archived_damage_first",
+            &[
+                (
+                    "CbsPersist_20261008190827.log",
+                    with_real_damage(CBS_SCAN_BACKUPS_MISSING).as_bytes(),
+                ),
+                ("CbsPersist_20261008192300.log", CBS_REPAIR_BACKUPS_MISSING),
+            ],
+            CBS_SFC_CLEAN,
+        )
+        .await;
+        assert!(found.is_empty(), "{found:?}");
+
+        let found = scan_repairable_archived(
+            "archived_damage_last",
+            &[
+                ("CbsPersist_20261008190827.log", CBS_SCAN_BACKUPS_MISSING),
+                (
+                    "CbsPersist_20261008192300.log",
+                    with_real_damage(CBS_REPAIR_BACKUPS_MISSING).as_bytes(),
+                ),
+            ],
+            CBS_SFC_CLEAN,
+        )
+        .await;
+        assert_eq!(found, vec!["sys_dism_corrupt"]);
+    }
+
+    /// An update that failed on a damaged component after the archived
+    /// report, logged in CBS.log: the report no longer vouches for the
+    /// store. The line is the one of
+    /// `damage_servicing_found_after_the_report_counts`.
+    #[tokio::test]
+    async fn damage_marked_after_an_archived_report_counts() {
+        let marked = cbs_line(&format!(
+            "{MARKED_CORRUPT} because of package: Package_for_RollupFix~31bf3856ad364e35~amd64~~26100.9999.1.3"
+        ));
+        let found = scan_repairable_archived(
+            "archived_marked",
+            &[("CbsPersist_20261008190827.log", CBS_SCAN_BACKUPS_MISSING)],
+            marked.as_bytes(),
+        )
+        .await;
+        assert_eq!(found, vec!["sys_dism_corrupt"]);
     }
 
     /// Stands in for DISM and the media search: each DISM run adds the next
