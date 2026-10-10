@@ -125,6 +125,9 @@ pub struct App {
     /// The findings of the last scan the user archived, kept so that one
     /// brought back in Settings is shown at once.
     pub archived_issues: Vec<Issue>,
+    /// The findings shown and archived when the running scan started, for
+    /// what was decided against them; see [`carry_over`].
+    pub(super) last_findings: Vec<Issue>,
     pub selected_issue_index: usize,
     pub health_score: u8,
 
@@ -323,6 +326,7 @@ impl App {
             engine,
             issues: saved_issues,
             archived_issues,
+            last_findings: Vec::new(),
             selected_issue_index: 0,
             health_score: saved_health,
             severity_filter: None,
@@ -465,7 +469,7 @@ impl App {
     pub fn repairs_waiting_for_restart(&self) -> usize {
         self.issues
             .iter()
-            .filter(|i| i.is_reboot_pending && i.id != REBOOT_PENDING)
+            .filter(|i| repair_waits_for_restart(i))
             .count()
     }
 
@@ -713,28 +717,17 @@ impl App {
     pub(super) fn take_in_background_scan(&mut self, mut saved: ScanState) {
         let mut all = std::mem::take(&mut saved.issues);
         all.append(&mut saved.archived_issues);
-        let (mut shown, archived) = split_archived(all, &self.config.archived_findings);
-
-        // A fresh scan knows nothing of the decisions made against the last
-        // one: which findings the user unticked, which repairs wait on a
-        // restart, which failed and why. Carry them over for findings that are
-        // still reported, or the next [F] repairs what was deliberately left
-        // out. No reboot can have happened in between — it would have ended
-        // this process — so a pending restart is still pending.
-        for issue in &mut shown {
-            let Some(known) = self.issues.iter().find(|i| i.id == issue.id) else {
-                continue;
-            };
-            if known.is_reboot_pending {
-                issue.is_reboot_pending = true;
-                issue.is_selected = false;
-            } else {
-                issue.is_selected = known.is_selected && !issue.advice_only;
-            }
-            if issue.fix_error.is_none() {
-                issue.fix_error = known.fix_error.clone();
-            }
-        }
+        // No reboot can have happened in between — it would have ended this
+        // process — so a pending restart is still pending.
+        let known: Vec<Issue> = self
+            .issues
+            .iter()
+            .chain(&self.archived_issues)
+            .cloned()
+            .collect();
+        carry_over(&mut all, &known);
+        keep_waiting(&mut all, &known);
+        let (shown, archived) = split_archived(all, &self.config.archived_findings);
 
         let (_, default_statuses) = Self::module_lists(&self.engine);
         self.module_statuses =
@@ -776,6 +769,51 @@ fn time_left(elapsed: Duration, percent: f32) -> Option<Duration> {
 /// both; if Windows queued more, the next scan finds it again.
 pub(crate) fn waits_for_restart(issue: &Issue) -> bool {
     issue.is_reboot_pending || (issue.id == REBOOT_PENDING && !issue.is_fixed)
+}
+
+/// Whether `issue` is a repair that waits for the restart to finish.
+/// Windows' own pending restart is none, even as a scan from 0.8.0 saved it:
+/// "repaired" and waiting.
+pub(crate) fn repair_waits_for_restart(issue: &Issue) -> bool {
+    issue.is_reboot_pending && issue.id != REBOOT_PENDING
+}
+
+/// A fresh scan knows nothing of the decisions made against the last one,
+/// `known`: which findings the user unticked, which repairs wait for the
+/// restart, which failed and why. Carried over to the `fresh` findings that
+/// are still reported, or the next repair run repairs what was deliberately
+/// left out, and schedules again what only waits for the restart.
+///
+/// Only while Windows has not restarted since `known` was scanned: after a
+/// restart nothing waits for it any more.
+pub(crate) fn carry_over(fresh: &mut [Issue], known: &[Issue]) {
+    for issue in fresh {
+        let Some(known) = known.iter().find(|i| i.id == issue.id) else {
+            continue;
+        };
+        if known.is_reboot_pending {
+            issue.is_reboot_pending = true;
+            issue.is_selected = false;
+        } else {
+            issue.is_selected = known.is_selected && !issue.advice_only;
+        }
+        if issue.fix_error.is_none() {
+            issue.fix_error = known.fix_error.clone();
+        }
+    }
+}
+
+/// Add to `fresh` the repairs in `known` that wait for the restart and that
+/// `fresh` no longer reports. The page file, the service grouping threshold
+/// and the Winsock reset read as repaired the moment they are written, so a
+/// scan before the restart drops them; they still wait for it.
+pub(crate) fn keep_waiting(fresh: &mut Vec<Issue>, known: &[Issue]) {
+    let gone: Vec<Issue> = known
+        .iter()
+        .filter(|w| repair_waits_for_restart(w) && !fresh.iter().any(|i| i.id == w.id))
+        .cloned()
+        .collect();
+    fresh.extend(gone);
 }
 
 /// Windows has restarted since the saved scan: what waited for it is done.
@@ -835,6 +873,31 @@ mod tests {
         assert!(issues[1].is_fixed);
         assert!(!issues[2].is_fixed, "a finding a restart does not touch");
         assert!(!issues.iter().any(waits_for_restart));
+    }
+
+    /// A background scan saved while the window was open: no restart can
+    /// have happened in between, so a repair that waited for one still does,
+    /// reported again or not.
+    #[test]
+    fn a_background_scan_keeps_the_repairs_waiting_for_the_restart() {
+        let mut app = App::new();
+        app.issues = vec![finding("pagefile_disabled"), finding("storage_dirty_bit")];
+        for issue in &mut app.issues {
+            issue.is_reboot_pending = true;
+            issue.is_selected = false;
+        }
+
+        app.take_in_background_scan(ScanState::new(
+            0,
+            vec![finding("storage_dirty_bit"), finding("dns")],
+            Vec::new(),
+            None,
+        ));
+
+        let ids: Vec<&str> = app.issues.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["storage_dirty_bit", "dns", "pagefile_disabled"]);
+        assert_eq!(app.repairs_waiting_for_restart(), 2);
+        assert!(!app.issues[0].is_selected);
     }
 
     #[test]

@@ -6,8 +6,9 @@
 //! until empty, never awaiting, so a slow producer cannot stall rendering.
 
 use super::archive::split as split_archived;
-use super::state::{App, ModuleScanProgress};
+use super::state::{App, ModuleScanProgress, carry_over};
 use super::{BackgroundEvent, ConfirmRequest, push_bounded_log};
+use crate::engine::issue::Issue;
 use crate::engine::runner::{DiagnosticEngine, RepairEvent, ScanEvent};
 use crate::modules::ModuleStatus;
 use crate::utils::progress::percent;
@@ -76,7 +77,18 @@ impl App {
                     }
                     self.recalculate_scan_progress();
                 }
-                ScanEvent::ModuleFinished { module_id, issues } => {
+                ScanEvent::ModuleFinished {
+                    module_id,
+                    mut issues,
+                } => {
+                    carry_over(&mut issues, &self.last_findings);
+                    // A repair kept waiting since the scan started gives way
+                    // to its fresh report, which carries the wait over.
+                    let reported = |kept: &Issue| {
+                        kept.module_id == module_id && issues.iter().any(|i| i.id == kept.id)
+                    };
+                    self.issues.retain(|kept| !reported(kept));
+                    self.archived_issues.retain(|kept| !reported(kept));
                     let (issues, archived) = split_archived(issues, &self.config.archived_findings);
                     if let Some(module) = self.module_progress_mut(&module_id) {
                         module.percent = 100;
@@ -90,11 +102,15 @@ impl App {
                             }
                         ));
                     }
-                    if let Some(pos) = self.module_statuses.iter().position(|m| m.0 == module_id) {
-                        self.module_statuses[pos].3 = ModuleStatus::from_findings(&issues);
-                    }
                     self.issues.extend(issues);
                     self.archived_issues.extend(archived);
+                    // Counting a repair that still waits for the restart, as
+                    // the badge does when the scan is loaded again.
+                    if let Some(pos) = self.module_statuses.iter().position(|m| m.0 == module_id) {
+                        self.module_statuses[pos].3 = ModuleStatus::from_findings(
+                            self.issues.iter().filter(|i| i.module_id == module_id),
+                        );
+                    }
                     self.recalculate_scan_progress();
                     push_bounded_log(
                         &mut self.scan_log_messages,
@@ -170,6 +186,7 @@ impl App {
             self.last_scan_timestamp =
                 Some(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
             self.scan_started_at = None;
+            self.last_findings.clear();
             self.scan_event_rx = None;
             self.cancel_token = None;
             self.audit_entries = self.audit_logger.get_history();
@@ -1106,6 +1123,164 @@ mod tests {
             .filter(|l| l.contains("100.0%"))
             .count();
         assert_eq!(bars, 2);
+    }
+
+    /// The dirty bit as the storage module reports it: chkdsk now, the
+    /// check itself at the next start.
+    fn dirty_bit() -> Issue {
+        Issue::new(
+            "storage_dirty_bit",
+            "storage",
+            "File system inconsistency on system drive C: (dirty bit set)",
+            "Storage & File System",
+            crate::engine::issue::Severity::Critical,
+            crate::engine::issue::RiskScore::Medium,
+            "Description",
+            "Details",
+            "Fix",
+            vec!["Run chkdsk C: /scan online".to_string()],
+        )
+        .with_requires_reboot(true)
+    }
+
+    /// A repair that ran and waits for the restart to finish.
+    fn waiting(mut issue: Issue) -> Issue {
+        issue.is_reboot_pending = true;
+        issue.is_selected = false;
+        issue
+    }
+
+    /// `app` scanning again, with no modules: the test feeds it what they
+    /// report.
+    fn scanning_again(mut app: App) -> (App, tokio::sync::mpsc::Sender<ScanEvent>) {
+        // No modules: the scan must not check this machine.
+        app.engine = std::sync::Arc::new(DiagnosticEngine::with_modules(Vec::new()));
+        app.start_scan();
+        assert!(app.is_scanning);
+        let (tx, rx) = channel::<ScanEvent>(16);
+        app.scan_event_rx = Some(rx);
+        (app, tx)
+    }
+
+    async fn finish(
+        app: &mut App,
+        tx: &tokio::sync::mpsc::Sender<ScanEvent>,
+        reports: Vec<(&str, Vec<Issue>)>,
+    ) {
+        for (module_id, issues) in reports {
+            tx.send(ScanEvent::ModuleFinished {
+                module_id: module_id.to_string(),
+                issues,
+            })
+            .await
+            .unwrap();
+        }
+        tx.send(ScanEvent::ScanCompleted {
+            total_issues: 0,
+            health_score: 0,
+        })
+        .await
+        .unwrap();
+        app.process_background_events();
+    }
+
+    /// #158: the dirty bit stays set until Windows checks the drive at the
+    /// next start, so a scan before the restart reports it again. It waited
+    /// for the restart and still does; ticked again, the next repair run
+    /// would schedule chkdsk once more.
+    #[tokio::test]
+    async fn a_scan_before_the_restart_keeps_the_repair_waiting_for_it() {
+        let mut app = App::new();
+        app.issues = vec![waiting(dirty_bit())];
+        let (mut app, tx) = scanning_again(app);
+        assert_eq!(app.repairs_waiting_for_restart(), 1, "while the scan runs");
+
+        finish(&mut app, &tx, vec![("storage", vec![dirty_bit()])]).await;
+
+        assert_eq!(app.issues.len(), 1, "{:?}", app.issues);
+        assert_eq!(app.repairs_waiting_for_restart(), 1);
+        let issue = &app.issues[0];
+        assert!(issue.is_reboot_pending && !issue.is_selected && !issue.will_repair());
+        let storage = app.module_statuses.iter().find(|m| m.0 == "storage");
+        assert_eq!(storage.map(|m| &m.3), Some(&ModuleStatus::Critical(1)));
+    }
+
+    /// The page file reads as repaired the moment it is set, so the scan
+    /// before the restart no longer reports it - shown or archived, it still
+    /// waits for the restart. Windows' own pending restart is the scan's to
+    /// report.
+    #[tokio::test]
+    async fn a_repair_the_new_scan_no_longer_reports_still_waits_for_the_restart() {
+        let page_file = waiting(
+            Issue::new(
+                "pagefile_disabled",
+                "page_file",
+                "Page file disabled on every drive",
+                "Page File & Memory",
+                crate::engine::issue::Severity::Warning,
+                crate::engine::issue::RiskScore::High,
+                "Description",
+                "Details",
+                "Fix",
+                vec![],
+            )
+            .with_requires_reboot(true),
+        );
+        let mut archived = waiting(dirty_bit());
+        archived.id = "winsock_reset".to_string();
+        archived.module_id = "network".to_string();
+        let windows =
+            crate::modules::windows_updates::reboot_pending_finding("windows_updates", "e");
+        let mut app = App::new();
+        app.issues = vec![page_file, waiting(windows)];
+        app.archived_issues = vec![archived];
+        let (mut app, tx) = scanning_again(app);
+
+        finish(
+            &mut app,
+            &tx,
+            vec![
+                ("page_file", Vec::new()),
+                ("network", Vec::new()),
+                ("windows_updates", Vec::new()),
+            ],
+        )
+        .await;
+
+        let ids = |issues: &[Issue]| issues.iter().map(|i| i.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&app.issues), ["pagefile_disabled"]);
+        assert_eq!(ids(&app.archived_issues), ["winsock_reset"]);
+        assert!(app.issues[0].is_reboot_pending && app.archived_issues[0].is_reboot_pending);
+        assert_eq!(app.repairs_waiting_for_restart(), 1);
+        let page_file = app.module_statuses.iter().find(|m| m.0 == "page_file");
+        assert_eq!(page_file.map(|m| &m.3), Some(&ModuleStatus::Warning(1)));
+    }
+
+    /// What the user unticked stays unticked, and a repair that failed keeps
+    /// its reason, as with a background scan.
+    #[tokio::test]
+    async fn a_new_scan_keeps_what_was_unticked_and_why_a_repair_failed() {
+        let mut unticked = dirty_bit();
+        unticked.is_selected = false;
+        let mut failed = dirty_bit();
+        failed.id = "storage_temp".to_string();
+        failed.fix_error = Some("access denied".to_string());
+        let mut app = App::new();
+        app.issues = vec![unticked, failed];
+        let (mut app, tx) = scanning_again(app);
+        let mut fresh_failed = dirty_bit();
+        fresh_failed.id = "storage_temp".to_string();
+
+        finish(
+            &mut app,
+            &tx,
+            vec![("storage", vec![dirty_bit(), fresh_failed])],
+        )
+        .await;
+
+        assert!(!app.issues[0].is_selected);
+        assert!(app.issues[1].is_selected);
+        assert_eq!(app.issues[1].fix_error.as_deref(), Some("access denied"));
     }
 
     #[tokio::test]

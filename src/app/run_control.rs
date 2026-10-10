@@ -1,7 +1,7 @@
 //! Starting, cancelling and simulating scans and repair runs.
 
 use super::TAB_HOME;
-use super::state::App;
+use super::state::{App, repair_waits_for_restart};
 use crate::engine::runner::{RepairEvent, RepairOptions, ScanEvent};
 use crate::modules::ModuleStatus;
 use std::time::Instant;
@@ -18,8 +18,18 @@ impl App {
         self.scan_overall_progress = 0;
         self.scan_started_at = Some(Instant::now());
         self.active_tab = TAB_HOME;
-        self.issues.clear();
-        self.archived_issues.clear();
+        // What was decided against the findings on screen carries over to
+        // the new scan's, see `carry_over`. A repair that waits for the
+        // restart stays: no restart can have happened while this process
+        // ran, and the scan may no longer report it.
+        self.last_findings = self
+            .issues
+            .iter()
+            .chain(&self.archived_issues)
+            .cloned()
+            .collect();
+        self.issues.retain(repair_waits_for_restart);
+        self.archived_issues.retain(repair_waits_for_restart);
         self.selected_issue_index = 0;
         self.selected_filtered_index = 0;
         self.scan_log_messages.clear();
