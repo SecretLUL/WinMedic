@@ -18,6 +18,7 @@ use crate::utils::registry;
 use crate::utils::service::{
     self, SERVICE_AUTO_START, SERVICE_DISABLED, SERVICE_STOPPED, StartAgain,
 };
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -177,13 +178,16 @@ const STUCK_JOB_AGE: Duration = Duration::from_secs(60 * 60);
 /// The finding for a stuck print queue.
 pub const PRINT_QUEUE_STUCK: &str = "dev_print_queue_stuck";
 
-/// Print jobs in `dir` (`.SPL` and `.SHD` files) older than
-/// [`STUCK_JOB_AGE`], or why the folder could not be read. It needs
-/// Administrator rights.
+/// Print jobs in `dir` older than [`STUCK_JOB_AGE`], or why the folder could
+/// not be read. It needs Administrator rights.
+///
+/// The spooler keeps each job as two files of the same name: the `.SPL` holds
+/// what is printed, the `.SHD` the job's administrative data. Counted by file,
+/// one stuck job read as two.
 pub fn stuck_print_jobs(dir: &Path) -> Result<usize, String> {
     let entries =
         std::fs::read_dir(dir).map_err(|e| format!("{} could not be read: {e}", dir.display()))?;
-    Ok(entries
+    let jobs: HashSet<String> = entries
         .flatten()
         .filter(|entry| {
             entry.metadata().is_ok_and(|meta| {
@@ -195,7 +199,14 @@ pub fn stuck_print_jobs(dir: &Path) -> Result<usize, String> {
                         .is_some_and(|age| age >= STUCK_JOB_AGE)
             })
         })
-        .count())
+        .filter_map(|entry| {
+            entry
+                .path()
+                .file_stem()
+                .map(|name| name.to_string_lossy().to_lowercase())
+        })
+        .collect();
+    Ok(jobs.len())
 }
 
 /// The files left in `dir`.
@@ -280,7 +291,7 @@ impl DevicesModule {
             RiskScore::Low,
             "Nothing prints while the queue is stuck: a damaged print job blocks every job behind it, or stops the print spooler whenever it starts. Clearing the queue deletes every waiting job; print them again afterwards.",
             format!(
-                "sc qc spooler: START_TYPE {start_type}\nsc query spooler: STATE {state}\n{}: {stuck} job file(s) older than an hour",
+                "sc qc spooler: START_TYPE {start_type}\nsc query spooler: STATE {state}\n{}: {stuck} print job(s) older than an hour",
                 self.spool_dir.display()
             ),
             "Clear the print queue and restart the print spooler",
@@ -1175,8 +1186,17 @@ mod tests {
         spool.job("00012.SPL", 0).job("00012.SHD", 0);
         assert_eq!(stuck_print_jobs(&spool.0), Ok(0));
         spool.job("00011.SPL", 2).job("00011.SHD", 2);
-        assert_eq!(stuck_print_jobs(&spool.0), Ok(2));
+        assert_eq!(stuck_print_jobs(&spool.0), Ok(1));
         assert!(stuck_print_jobs(&spool.0.join("missing")).is_err());
+    }
+
+    #[test]
+    fn a_print_job_is_its_spl_and_shd_file_together() {
+        let spool = Spool::new("pairs");
+        spool.job("00011.SPL", 2).job("00011.SHD", 2);
+        assert_eq!(stuck_print_jobs(&spool.0), Ok(1));
+        spool.job("FP00013.spl", 3).job("FP00013.SHD", 3);
+        assert_eq!(stuck_print_jobs(&spool.0), Ok(2));
     }
 
     #[tokio::test]
@@ -1190,7 +1210,12 @@ mod tests {
         )
         .await;
         let issue = issues.iter().find(|i| i.id == PRINT_QUEUE_STUCK).unwrap();
-        assert_eq!(issue.title, "2 print job(s) stuck for more than an hour");
+        assert_eq!(issue.title, "1 print job(s) stuck for more than an hour");
+        assert!(
+            issue
+                .technical_details
+                .contains("1 print job(s) older than an hour")
+        );
         assert!(issue.is_selected);
     }
 
