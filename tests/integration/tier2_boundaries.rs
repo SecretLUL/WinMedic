@@ -378,7 +378,7 @@ fn test_tier2_f05_browser_cache_code_cache_gpu_cache_discovery() {
 fn test_tier2_f06_setup_logs_non_matching_extensions_strictly_preserved() {
     let ws = TempWorkspace::new("logs_preserve");
     let dir = ws.create_dir("Logs");
-    let log1 = ws.create_file("Logs/cbs.log", &[0; 100]);
+    let log1 = ws.create_file("Logs/setupact.log", &[0; 100]);
     let log2 = ws.create_file("Logs/archive.cab", &[0; 200]);
     let bin1 = ws.create_file("Logs/app.dll", &[0; 5000]);
     let bin2 = ws.create_file("Logs/system.sys", &[0; 6000]);
