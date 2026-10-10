@@ -477,6 +477,7 @@ mod tests {
         app.total_to_fix = 3;
         app.fixed_count = 2;
         app.failed_count = 1;
+        app.last_repair = Some((2, 1));
         app.push_repair_log("[OK] DNS cache flushed.");
         app.push_repair_log("[X] Failed: access denied.");
         app
@@ -663,6 +664,57 @@ mod tests {
         );
         assert!(harness.query_by_label("2 repaired").is_some());
         assert!(harness.query_by_label("1 failed").is_some());
+    }
+
+    /// #181: a simulation of three findings repairs nothing. The header says
+    /// what it planned, and once simulation is off, how the last real repair
+    /// run went.
+    #[test]
+    fn a_simulation_is_not_reported_as_a_repair() {
+        use crate::engine::runner::RepairEvent;
+
+        let mut app = scanned_app();
+        app.issues
+            .push(issue("c", "Proxy left on", Severity::Warning));
+        app.dry_run = true;
+        app.is_fixing = true;
+        app.total_to_fix = 3;
+        app.fixed_count = 0;
+        app.failed_count = 0;
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        app.repair_event_rx = Some(rx);
+        for id in ["a", "b", "c"] {
+            tx.try_send(RepairEvent::FixFinished {
+                issue_id: id.to_string(),
+                success: true,
+                message: "Simulated".to_string(),
+            })
+            .unwrap();
+        }
+        tx.try_send(RepairEvent::AllRepairsCompleted {
+            fixed_count: 3,
+            failed_count: 0,
+        })
+        .unwrap();
+        app.process_background_events();
+        let mut harness = window(app);
+
+        assert!(harness.query_by_label("3 open findings").is_some());
+        assert!(harness.query_by_label("3 repaired").is_none());
+        assert!(
+            harness
+                .query_by_label_contains("Last simulation: 3 planned")
+                .is_some()
+        );
+
+        harness
+            .get_by_label("Simulate only (change nothing)")
+            .click();
+        harness.run();
+        assert!(!harness.state().dry_run);
+        assert!(harness.query_by_label("2 repaired").is_some());
+        assert!(harness.query_by_label("1 failed").is_some());
+        assert!(harness.query_by_label_contains("Last simulation").is_none());
     }
 
     /// While a scan runs, the page shows every check and how far it got.

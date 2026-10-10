@@ -174,6 +174,11 @@ pub struct App {
     pub fixed_count: usize,
     pub failed_count: usize,
     pub total_to_fix: usize,
+    /// How the last real repair run of this session ended: repaired, failed.
+    /// The counts above are the running run's, a simulation's too.
+    pub last_repair: Option<(usize, usize)>,
+    /// How many repairs the last simulation planned.
+    pub last_simulation: Option<usize>,
     pub vss_status: String,
     pub repair_console_lines: VecDeque<String>,
 
@@ -351,6 +356,8 @@ impl App {
             fixed_count: 0,
             failed_count: 0,
             total_to_fix: 0,
+            last_repair: None,
+            last_simulation: None,
             vss_status: "Ready".to_string(),
             repair_console_lines: VecDeque::from([String::from("Repair centre ready.")]),
             audit_logger,
