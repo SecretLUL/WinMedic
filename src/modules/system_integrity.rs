@@ -4,7 +4,8 @@ use crate::modules::install_media::{self, Media};
 use crate::modules::service_chain;
 use crate::modules::tweaks::device_name;
 use crate::modules::{
-    DiagnosticModule, FixProgress, ModuleProgress, SERVICING_TIMEOUT, console_lines,
+    DISM_NO_RESTART, DiagnosticModule, FixProgress, ModuleProgress, SERVICING_TIMEOUT,
+    console_lines,
 };
 use crate::utils::cmd::{CmdOutput, CommandRunner, SystemCommandRunner};
 use crate::utils::service::{self, SERVICE_DISABLED, SERVICE_RUNNING};
@@ -18,9 +19,20 @@ use tokio::time::sleep;
 /// display language otherwise, and the German one ("Der Komponentenspeicher
 /// kann repariert werden.") matched none of the words this check looked for,
 /// so a damaged store was reported as intact on every German machine.
-const DISM_CHECK_HEALTH_ARGS: &[&str] = &["/English", "/Online", "/Cleanup-Image", "/CheckHealth"];
-const DISM_RESTORE_HEALTH_ARGS: &[&str] =
-    &["/English", "/Online", "/Cleanup-Image", "/RestoreHealth"];
+const DISM_CHECK_HEALTH_ARGS: &[&str] = &[
+    "/English",
+    "/Online",
+    DISM_NO_RESTART,
+    "/Cleanup-Image",
+    "/CheckHealth",
+];
+const DISM_RESTORE_HEALTH_ARGS: &[&str] = &[
+    "/English",
+    "/Online",
+    DISM_NO_RESTART,
+    "/Cleanup-Image",
+    "/RestoreHealth",
+];
 
 /// How long mounting the ISOs and listing their images may take.
 const MEDIA_TIMEOUT: Duration = Duration::from_secs(300);
@@ -1650,7 +1662,8 @@ mod tests {
     const NOT_REPAIRABLE: &str = "The component store cannot be repaired.";
 
     /// A real, elevated DISM run, progress bar and all, says the same
-    /// sentence the resources above do.
+    /// sentence the resources above do, and so does CheckHealth run with the
+    /// arguments WinMedic passes.
     #[test]
     fn the_verdict_of_a_captured_dism_run_is_read() {
         let captured = decode_output(include_bytes!(
@@ -1659,6 +1672,13 @@ mod tests {
         assert_eq!(
             ComponentStoreHealth::from_dism(&CmdOutput::ok(captured)),
             ComponentStoreHealth::Repairable
+        );
+        let healthy = decode_output(include_bytes!(
+            "../../tests/fixtures/console/dism_checkhealth_healthy.bin"
+        ));
+        assert_eq!(
+            ComponentStoreHealth::from_dism(&CmdOutput::ok(healthy)),
+            ComponentStoreHealth::Healthy
         );
     }
 
@@ -1746,6 +1766,27 @@ mod tests {
         assert!(
             dismount.contains("Dismount-DiskImage") && dismount.contains(ISO),
             "{dismount}"
+        );
+    }
+
+    /// While an installed update waits for a restart, DISM asks whether to
+    /// restart and waits for an answer nobody can give (#222). No DISM call
+    /// of the check or of its repair lets it ask.
+    #[tokio::test]
+    async fn dism_is_never_left_asking_for_a_restart() {
+        let mock = update_cannot_deliver(&decode_output(MEDIA_MOUNTED_IT), CmdOutput::ok(""));
+        let module = module_with(mock.clone());
+        module.scan(None).await.unwrap();
+        module.fix("sys_dism_corrupt", None).await.unwrap();
+        let dism: Vec<String> = mock
+            .executed()
+            .into_iter()
+            .filter(|cmd| cmd.starts_with("dism.exe"))
+            .collect();
+        assert_eq!(dism.len(), 3, "CheckHealth, RestoreHealth twice: {dism:?}");
+        assert!(
+            dism.iter().all(|cmd| cmd.contains(" /NoRestart ")),
+            "{dism:?}"
         );
     }
 

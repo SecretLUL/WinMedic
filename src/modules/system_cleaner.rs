@@ -1,6 +1,7 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::{
-    DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress, SERVICING_TIMEOUT, console_lines,
+    DISM_NO_RESTART, DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress,
+    SERVICING_TIMEOUT, console_lines,
 };
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
 use crate::utils::debug_log::DebugTrace;
@@ -278,9 +279,11 @@ pub fn clean_log_dir_files(path: &Path) -> CleanStats {
 /// without it the parser would need the labels of every language Windows ships
 /// in. Pinning the output language leaves it one set to know, whatever locale
 /// it runs on. The German labels below stay as a fallback for a DISM build that
-/// ignores the switch.
+/// ignores the switch. [`DISM_NO_RESTART`]: while an update waits for a
+/// restart, the analysis asks for one.
 const DISM_ANALYZE_ARGS: &[&str] = &[
     "/Online",
+    DISM_NO_RESTART,
     "/Cleanup-Image",
     "/AnalyzeComponentStore",
     "/English",
@@ -289,6 +292,7 @@ const DISM_ANALYZE_ARGS: &[&str] = &[
 /// Remove the superseded packages the analysis above counted.
 const DISM_CLEANUP_ARGS: &[&str] = &[
     "/Online",
+    DISM_NO_RESTART,
     "/Cleanup-Image",
     "/StartComponentCleanup",
     "/English",
@@ -1302,7 +1306,7 @@ impl DiagnosticModule for SystemCleanerModule {
             &progress_tx,
             97,
             "Analysing the WinSxS component store (DISM, 1-2 min)...",
-            Some("dism.exe /Online /Cleanup-Image /AnalyzeComponentStore /English"),
+            Some(&format!("dism.exe {}", DISM_ANALYZE_ARGS.join(" "))),
         )
         .await;
 
@@ -2281,6 +2285,40 @@ The operation completed successfully.";
         assert!(
             winsxs_finding(&td, 2).await.is_none(),
             "what the cleanup leaves is not raised again"
+        );
+    }
+
+    /// While an installed update waits for a restart, DISM asks whether to
+    /// restart and waits for an answer nobody can give: the analysis ran out
+    /// of time in every scan (#222). No DISM call of the scan or of the
+    /// cleanup lets it ask.
+    #[tokio::test]
+    async fn dism_is_never_left_asking_for_a_restart() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "StartComponentCleanup",
+            CmdOutput::ok("The operation completed successfully."),
+        );
+        mock.add_response("AnalyzeComponentStore", store_with_reclaimable(2));
+        mock.add_response_after(
+            "StartComponentCleanup",
+            "AnalyzeComponentStore",
+            store_with_reclaimable(0),
+        );
+
+        let td = TestDir::new("winsxs_no_restart");
+        let module = sandboxed(&td, Arc::new(mock.clone()));
+        module.scan(None).await.unwrap();
+        module.fix("sys_clean_winsxs", None).await.unwrap();
+        let dism: Vec<String> = mock
+            .executed()
+            .into_iter()
+            .filter(|cmd| cmd.contains("dism.exe"))
+            .collect();
+        assert_eq!(dism.len(), 4, "scan, count, cleanup, count: {dism:?}");
+        assert!(
+            dism.iter().all(|cmd| cmd.contains(" /NoRestart ")),
+            "{dism:?}"
         );
     }
 

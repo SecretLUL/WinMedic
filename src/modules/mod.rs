@@ -40,6 +40,17 @@ use tokio::sync::mpsc::Sender;
 /// catch a tool that never comes back.
 pub const SERVICING_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
+/// Keeps DISM from asking whether to restart Windows; every DISM call passes
+/// it.
+///
+/// DISM asks when an operation leaves Windows waiting for a restart - while an
+/// installed update waits for one, `/AnalyzeComponentStore` does too - and
+/// reads the answer from the console (`_getwch`), not from its input. In the
+/// console without a window that WinMedic starts it in, nobody can answer:
+/// DISM waited until its time ran out, and the analysis was lost for as long
+/// as the restart was pending (#222).
+pub const DISM_NO_RESTART: &str = "/NoRestart";
+
 /// The subset of [`AppConfig`] that diagnostic modules need at scan/fix time.
 ///
 /// Modules receive this at construction, so changing a setting means rebuilding

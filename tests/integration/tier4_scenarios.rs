@@ -53,7 +53,7 @@ async fn test_scenario_1_full_system_scan_and_dry_run_triage() {
 
     let runner = Arc::new(ProgrammableMockRunner::new());
     runner.set_response_for_cmd_and_args(
-        "dism.exe /Online /Cleanup-Image /AnalyzeComponentStore /English",
+        "dism.exe /Online /NoRestart /Cleanup-Image /AnalyzeComponentStore /English",
         CmdOutput::ok(DISM_ANALYZE_ENGLISH_RECLAIMABLE),
     );
     runner.set_response("powershell.exe", CmdOutput::ok(""));
@@ -312,11 +312,11 @@ fn test_scenario_5_locked_file_resilience() {
 async fn test_scenario_6_dism_german_locale_pipeline() {
     let runner = Arc::new(ProgrammableMockRunner::new());
     runner.set_response_for_cmd_and_args(
-        "dism.exe /Online /Cleanup-Image /AnalyzeComponentStore /English",
+        "dism.exe /Online /NoRestart /Cleanup-Image /AnalyzeComponentStore /English",
         CmdOutput::ok(DISM_ANALYZE_GERMAN_RECLAIMABLE),
     );
     runner.set_response_for_cmd_and_args(
-        "dism.exe /Online /Cleanup-Image /StartComponentCleanup /English",
+        "dism.exe /Online /NoRestart /Cleanup-Image /StartComponentCleanup /English",
         CmdOutput::ok("Der Vorgang wurde erfolgreich beendet."),
     );
 
