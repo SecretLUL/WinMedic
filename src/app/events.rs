@@ -289,44 +289,29 @@ impl App {
                     RepairEvent::FixOutput { issue_id: _, line } => {
                         self.push_fix_output(line);
                     }
-                    RepairEvent::FixFinished {
-                        issue_id,
-                        success,
-                        message,
-                    } => {
+                    RepairEvent::FixFinished { issue_id, result } => {
                         self.end_repair_step();
                         // A simulation must never flip an issue to "fixed".
                         if !self.dry_run
                             && let Some(issue) = self.issues.iter_mut().find(|i| i.id == issue_id)
                         {
-                            if success {
-                                if issue.requires_reboot {
-                                    issue.is_reboot_pending = true;
-                                    issue.is_fixed = false;
-                                    issue.is_selected = false;
-                                } else {
-                                    issue.is_fixed = true;
-                                    issue.is_reboot_pending = false;
-                                }
-                                issue.fix_error = None;
-                            } else {
-                                issue.is_fixed = false;
-                                issue.is_reboot_pending = false;
-                                issue.fix_error = Some(message.clone());
-                            }
+                            issue.record_repair(&result);
                         }
-                        if success {
-                            self.fixed_count += 1;
-                            push_bounded_log(
-                                &mut self.repair_console_lines,
-                                format!("[OK] {}", message),
-                            );
-                        } else {
-                            self.failed_count += 1;
-                            push_bounded_log(
-                                &mut self.repair_console_lines,
-                                format!("[X] Error: {}", message),
-                            );
+                        match result {
+                            Ok(repaired) => {
+                                self.fixed_count += 1;
+                                push_bounded_log(
+                                    &mut self.repair_console_lines,
+                                    format!("[OK] {}", repaired.message()),
+                                );
+                            }
+                            Err(message) => {
+                                self.failed_count += 1;
+                                push_bounded_log(
+                                    &mut self.repair_console_lines,
+                                    format!("[X] Error: {}", message),
+                                );
+                            }
                         }
                     }
                     RepairEvent::RepairsCancelled {
@@ -523,7 +508,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::app::ConfirmRequest;
-    use crate::modules::ModuleProgress;
+    use crate::modules::{ModuleProgress, Repaired};
     use crate::safety::audit::AuditLogger;
     use crate::utils::debug_log::DebugTrace;
     use crate::utils::self_update::{InstalledUpdate, SignatureStatus, UpdateFailure};
@@ -1106,8 +1091,7 @@ mod tests {
 
         tx.send(RepairEvent::FixFinished {
             issue_id: "sys_dism_corrupt".to_string(),
-            success: true,
-            message: "done".to_string(),
+            result: Ok(Repaired::Changed("done".to_string())),
         })
         .await
         .unwrap();
@@ -1365,8 +1349,9 @@ mod tests {
 
         tx.send(RepairEvent::FixFinished {
             issue_id: "pagefile_disabled".to_string(),
-            success: true,
-            message: "Takes effect after a restart.".to_string(),
+            result: Ok(Repaired::Changed(
+                "Takes effect after a restart.".to_string(),
+            )),
         })
         .await
         .unwrap();
@@ -1391,6 +1376,54 @@ mod tests {
             ),
             "the banner offers the restart; a dialog would take the next key as a yes: {:?}",
             app.pending_confirm
+        );
+    }
+
+    /// A cleanup that found nothing to remove reaches the window as done, not
+    /// as failed (#228): no failure to count, and the log says why.
+    #[tokio::test]
+    async fn a_cleanup_with_nothing_to_remove_is_no_failed_repair() {
+        let mut app = App::new();
+        app.issues = vec![Issue::new(
+            "sys_clean_winsxs",
+            "system_cleaner",
+            "WinSxS component store cleanup recommended (2 reclaimable packages)",
+            "System & Cache Cleaner",
+            crate::engine::issue::Severity::Warning,
+            crate::engine::issue::RiskScore::Medium,
+            "Description",
+            "Details",
+            "Fix",
+            vec![],
+        )];
+        let (tx, rx) = channel::<RepairEvent>(10);
+        app.repair_event_rx = Some(rx);
+        app.is_fixing = true;
+        let why = "DISM still reports 2 reclaimable package(s).";
+
+        tx.send(RepairEvent::FixFinished {
+            issue_id: "sys_clean_winsxs".to_string(),
+            result: Ok(Repaired::NothingToRemove(why.to_string())),
+        })
+        .await
+        .unwrap();
+        tx.send(RepairEvent::AllRepairsCompleted {
+            fixed_count: 1,
+            failed_count: 0,
+        })
+        .await
+        .unwrap();
+        app.process_background_events();
+
+        assert!(app.issues[0].is_fixed);
+        assert_eq!(app.issues[0].nothing_to_remove.as_deref(), Some(why));
+        assert_eq!(app.issues[0].fix_error, None);
+        assert_eq!(app.last_repair, Some((1, 0)));
+        assert!(
+            app.repair_console_lines
+                .contains(&format!("[OK] Nothing to remove: {why}")),
+            "{:?}",
+            app.repair_console_lines
         );
     }
 }

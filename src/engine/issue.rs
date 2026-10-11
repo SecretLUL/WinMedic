@@ -1,3 +1,4 @@
+use crate::modules::Repaired;
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 
@@ -87,6 +88,11 @@ pub struct Issue {
     /// counts it as fixed, and it keeps weighing on the health score.
     #[serde(default)]
     pub advice_only: bool,
+    /// The repair ran, but Windows had nothing it would remove: why. That
+    /// settles the finding like a repair (`is_fixed`), but the window says
+    /// what happened instead of "Fixed".
+    #[serde(default)]
+    pub nothing_to_remove: Option<String>,
 }
 
 impl Issue {
@@ -126,7 +132,34 @@ impl Issue {
             timestamp: Local::now().format("%H:%M:%S").to_string(),
             reclaimable_bytes: None,
             advice_only: false,
+            nothing_to_remove: None,
         }
+    }
+
+    /// Record how a repair of this finding ended. A repair that needs a
+    /// restart leaves it pending, and out of the next run; one that found
+    /// nothing to remove changed nothing a restart could finish.
+    pub fn record_repair(&mut self, result: &Result<Repaired, String>) {
+        match result {
+            Ok(Repaired::Changed(_)) if self.requires_reboot => {
+                self.is_reboot_pending = true;
+                self.is_fixed = false;
+                self.is_selected = false;
+            }
+            Ok(_) => {
+                self.is_fixed = true;
+                self.is_reboot_pending = false;
+            }
+            Err(_) => {
+                self.is_fixed = false;
+                self.is_reboot_pending = false;
+            }
+        }
+        self.fix_error = result.as_ref().err().cloned();
+        self.nothing_to_remove = match result {
+            Ok(Repaired::NothingToRemove(why)) => Some(why.clone()),
+            _ => None,
+        };
     }
 
     /// Mark the finding as advice only. It starts unticked, like every finding

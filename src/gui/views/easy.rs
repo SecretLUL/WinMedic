@@ -223,7 +223,11 @@ fn result(ui: &mut egui::Ui, app: &mut App) {
     }
 
     if problems == 0 {
-        let repaired = app.issues.iter().any(|i| i.is_fixed);
+        // A repair that found nothing to remove fixed nothing.
+        let repaired = app
+            .issues
+            .iter()
+            .any(|i| i.is_fixed && i.nothing_to_remove.is_none());
         headline(
             ui,
             if repaired {

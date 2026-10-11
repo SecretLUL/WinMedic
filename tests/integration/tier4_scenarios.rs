@@ -24,7 +24,7 @@ use winmedic::modules::system_cleaner::{
     SystemCleanerModule, clean_log_dir_files, clean_path_contents, scan_log_dir_files,
     scan_path_recursive,
 };
-use winmedic::modules::{DiagnosticModule, ModuleConfig, get_all_modules_with_runner};
+use winmedic::modules::{DiagnosticModule, ModuleConfig, Repaired, get_all_modules_with_runner};
 use winmedic::safety::audit::{AuditEntry, AuditLogger, MAX_LOG_FILE_BYTES};
 use winmedic::utils::cmd::{CmdOutput, CommandRunner};
 use winmedic::utils::updater::{UpdateInfo, check_for_update};
@@ -330,10 +330,13 @@ async fn test_scenario_6_dism_german_locale_pipeline() {
     assert!(issue.title.contains("5 reclaimable packages"));
     assert!(issue.technical_details.contains("9.45 GB"));
 
-    // 2. Fix executes StartComponentCleanup. DISM still reports the same 5
-    // packages afterwards, so the repair says it removed nothing.
-    let fix_res = module.fix("sys_clean_winsxs", None).await;
-    assert!(fix_res.unwrap_err().contains("removed nothing"));
+    // 2. The repair executes StartComponentCleanup. DISM still reports the
+    // same 5 packages afterwards: nothing to remove, which is no failure.
+    let repaired = module.repair("sys_clean_winsxs", None).await;
+    assert!(
+        matches!(repaired, Ok(Repaired::NothingToRemove(_))),
+        "{repaired:?}"
+    );
     assert!(
         runner
             .calls_for("dism.exe")

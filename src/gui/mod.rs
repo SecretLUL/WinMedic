@@ -690,8 +690,7 @@ mod tests {
         for id in ["a", "b", "c"] {
             tx.try_send(RepairEvent::FixFinished {
                 issue_id: id.to_string(),
-                success: true,
-                message: "Simulated".to_string(),
+                result: Ok(crate::modules::Repaired::Changed("Simulated".to_string())),
             })
             .unwrap();
         }
@@ -1253,6 +1252,22 @@ mod tests {
         assert!(harness.query_by_label("Your PC is in good shape").is_some());
         assert!(harness.query_by_label("Health 100 / 100").is_some());
         assert!(harness.query_by_label("Scan again").is_some());
+    }
+
+    /// A repair that found nothing to remove fixed nothing (#228): with
+    /// nothing else repaired, the PC was in good shape all along.
+    #[test]
+    fn easy_mode_claims_no_fix_for_a_repair_with_nothing_to_remove() {
+        let mut app = easy_scanned_app();
+        app.issues.truncate(1);
+        app.issues[0].record_repair(&Ok(crate::modules::Repaired::NothingToRemove(
+            "Windows keeps both packages.".to_string(),
+        )));
+        app.health_score = 100;
+        let harness = window(app);
+
+        assert!(harness.query_by_label("Your PC is in good shape").is_some());
+        assert!(harness.query_by_label("All problems are fixed").is_none());
     }
 
     /// While a scan runs, Easy mode shows how far it got, not each module.

@@ -179,6 +179,26 @@ pub fn console_lines(
     Some(tx)
 }
 
+/// What a repair that did not fail came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Repaired {
+    /// It changed what the finding is about. The message says what.
+    Changed(String),
+    /// It ran, but Windows had nothing it would remove. The finding was a
+    /// false alarm, not a failure; the message says why.
+    NothingToRemove(String),
+}
+
+impl Repaired {
+    /// The line for the repair log and the audit log.
+    pub fn message(&self) -> String {
+        match self {
+            Self::Changed(message) => message.clone(),
+            Self::NothingToRemove(why) => format!("Nothing to remove: {why}"),
+        }
+    }
+}
+
 #[async_trait::async_trait]
 pub trait DiagnosticModule: Send + Sync {
     fn id(&self) -> &'static str;
@@ -196,6 +216,18 @@ pub trait DiagnosticModule: Send + Sync {
         issue_id: &str,
         progress_tx: Option<Sender<FixProgress>>,
     ) -> Result<String, String>;
+
+    /// [`Self::fix`], told apart from a repair that found nothing to remove.
+    ///
+    /// The engine calls this. A module whose repair can come up empty
+    /// overrides it; any other repair that succeeded changed something.
+    async fn repair(
+        &self,
+        issue_id: &str,
+        progress_tx: Option<Sender<FixProgress>>,
+    ) -> Result<Repaired, String> {
+        self.fix(issue_id, progress_tx).await.map(Repaired::Changed)
+    }
 }
 
 /// Create every diagnostic module, configured from the user's settings with a specific CommandRunner.

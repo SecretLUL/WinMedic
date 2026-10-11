@@ -13,7 +13,7 @@ use winmedic::modules::system_cleaner::{
     discover_wer_and_dump_dirs, format_bytes, parse_winsxs_analysis, scan_log_dir_files,
     scan_path_recursive,
 };
-use winmedic::modules::{DiagnosticModule, ModuleConfig, ModuleProgress};
+use winmedic::modules::{DiagnosticModule, ModuleConfig, ModuleProgress, Repaired};
 use winmedic::utils::cmd::{CmdOutput, CommandRunner, MockCommandRunner};
 
 struct TempDirFixture {
@@ -664,7 +664,7 @@ async fn adv_test_diagnostic_engine_full_integration_with_system_cleaner() {
         .await;
 
     let rep_evts = rep_events_h.await.unwrap();
-    assert!(rep_evts.iter().any(|e| matches!(e, RepairEvent::FixFinished { issue_id, success: true, .. } if issue_id == "sys_clean_winsxs")));
+    assert!(rep_evts.iter().any(|e| matches!(e, RepairEvent::FixFinished { issue_id, result: Ok(Repaired::Changed(_)) } if issue_id == "sys_clean_winsxs")));
     assert_eq!(succeeded, 1);
     assert_eq!(failed, 0);
     // Real repair MUST mark the issue as fixed
