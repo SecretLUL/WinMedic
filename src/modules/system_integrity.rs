@@ -3102,6 +3102,7 @@ mod tests {
             instance_id: r"ROOT\HVSERVICE\0000".to_string(),
             name: "Microsoft-Hypervisor-Dienst".to_string(),
             service: "hvservice".to_string(),
+            driver: String::new(),
         }
     }
 

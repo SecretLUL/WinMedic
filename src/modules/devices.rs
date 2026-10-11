@@ -728,6 +728,7 @@ mod tests {
             instance_id: instance_id.to_string(),
             name: name.to_string(),
             service: String::new(),
+            driver: String::new(),
         }
     }
 
