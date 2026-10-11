@@ -246,9 +246,9 @@ impl RegBackupManager {
         self.keep(&real, name, key_path, description, now)
     }
 
-    /// Back up one value of `key_path` - a `REG_DWORD`, a `REG_SZ`, or a
-    /// `REG_MULTI_SZ` that holds one string - into a `.reg` file that holds
-    /// that value alone.
+    /// Back up one value of `key_path` - a `REG_DWORD`, or text: `REG_SZ`,
+    /// `REG_EXPAND_SZ`, `REG_MULTI_SZ` - into a `.reg` file that holds that
+    /// value alone.
     ///
     /// Some values sit in keys far too large to export, or among values a
     /// rollback must not turn back: `SvcHostSplitThresholdInKB` is directly
@@ -259,6 +259,14 @@ impl RegBackupManager {
     /// writes one - UTF-16 with a byte order mark, the signature line, the
     /// key, the value - so a rollback imports it like any other backup, and
     /// it sets this value and nothing else.
+    ///
+    /// A number is taken from `reg query`. Text is not: `reg query` prints
+    /// in the console's code page, which turns what it cannot show into `?`
+    /// or into a look-alike (`Ł` into `L`, a full-width `Ｃ` into `C`), and a
+    /// backup of what it printed could put back a path that was never there.
+    /// Text is cut, line for line, from `reg export` of the key, which writes
+    /// UTF-16. That export goes into the backup folder, where nobody else can
+    /// change it while it is read, and is deleted again; it is never kept.
     pub async fn export_value_with(
         &self,
         runner: &dyn CommandRunner,
@@ -269,7 +277,16 @@ impl RegBackupManager {
         let value = registry::query_value(runner, key_path, value_name)
             .await?
             .ok_or_else(|| format!("{key_path}\\{value_name} does not exist"))?;
-        let export = value_export(key_path, &value)?;
+        let number = match value.kind.as_str() {
+            "REG_DWORD" => Some(dword_export(key_path, &value)?),
+            "REG_SZ" | "REG_EXPAND_SZ" | "REG_MULTI_SZ" => None,
+            other => {
+                return Err(format!(
+                    "{} is {other} {}, which is not backed up on its own",
+                    value.name, value.data
+                ));
+            }
+        };
 
         let now = Local::now();
         let safe_key = key_path.replace(['\\', '/'], "_");
@@ -279,6 +296,15 @@ impl RegBackupManager {
             now.format("%Y%m%d_%H%M%S")
         );
         let (_folder, real) = self.open_folder_to_write()?;
+        let export = match number {
+            Some(export) => export,
+            None => self
+                .text_from_export(runner, &real, key_path, &value.name)
+                .await
+                .map_err(|e| {
+                    format!("{key_path}\\{value_name} could not be cut from reg export: {e}")
+                })?,
+        };
         let file = real.join(&name);
         if let Err(e) = std::fs::write(&file, export) {
             // A partial file is not a backup.
@@ -286,6 +312,41 @@ impl RegBackupManager {
             return Err(format!("{} could not be written: {e}", file.display()));
         }
         self.keep(&real, name, key_path, description, now)
+    }
+
+    /// `value_name` of `key_path` as `reg export` writes it, cut from an export
+    /// of the key into `folder` (the backup folder, held) that is deleted
+    /// again whatever happens.
+    async fn text_from_export(
+        &self,
+        runner: &dyn CommandRunner,
+        folder: &Path,
+        key_path: &str,
+        value_name: &str,
+    ) -> Result<Vec<u8>, String> {
+        let temp = folder.join(format!(
+            "export_{}_{}.tmp",
+            std::process::id(),
+            Local::now().format("%Y%m%d_%H%M%S_%f")
+        ));
+        let exported = runner
+            .run(
+                "reg.exe",
+                &["export", key_path, &temp.to_string_lossy(), "/y"],
+                Duration::from_secs(15),
+            )
+            .await;
+        let read = match exported {
+            Ok(out) if out.success => self.read_written(&temp),
+            Ok(out) => Err(format!(
+                "reg export failed (exit code {:?}): {}",
+                out.exit_code,
+                [out.stderr.trim(), out.stdout.trim()].join(" ").trim()
+            )),
+            Err(e) => Err(e),
+        };
+        let _ = std::fs::remove_file(&temp);
+        cut_value(&read?, key_path, value_name)
     }
 
     /// Anchor the backup `name` that was just written into the folder `real`,
@@ -642,19 +703,7 @@ fn read_held(path: &Path) -> Result<(File, Vec<u8>), String> {
 /// the key lines decide what an import writes to. A `[-...]` line deletes a
 /// key; `reg export` never writes one.
 fn check_contents(bytes: &[u8], key_path: &str) -> Result<(), String> {
-    let text = bytes
-        .strip_prefix(b"\xFF\xFE")
-        .filter(|body| body.len() % 2 == 0)
-        .and_then(|body| {
-            let units: Vec<u16> = body
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|&pair| u16::from_le_bytes(pair))
-                .collect();
-            String::from_utf16(&units).ok()
-        })
-        .ok_or("it is not the UTF-16 text `reg export` writes")?;
+    let text = reg_export_text(bytes).ok_or("it is not the UTF-16 text `reg export` writes")?;
     if text.contains('\0') {
         return Err("it contains a NUL character".to_string());
     }
@@ -697,103 +746,120 @@ fn check_contents(bytes: &[u8], key_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// What `reg export` would write for `key_path` if `value` were all it held:
-/// UTF-16 with a byte order mark, the signature, the key and the value.
-///
-/// Only for the kinds a repair backs up on its own, `REG_DWORD`, `REG_SZ`
-/// and a `REG_MULTI_SZ` with one string, and only for text `reg query` shows
-/// exactly ([`exact_text`]): a backup of what it misread would put back a
-/// value that was never there, which is worse than a repair that does not
-/// start.
-fn value_export(key_path: &str, value: &RegValue) -> Result<Vec<u8>, String> {
-    let name = reg_quoted(&value.name);
-    let line = match value.kind.as_str() {
-        "REG_DWORD" => {
-            let number = value
-                .number()
-                .and_then(|number| u32::try_from(number).ok())
-                .ok_or_else(|| {
-                    format!(
-                        "{} is {} {}, not a number a REG_DWORD holds",
-                        value.name, value.kind, value.data
-                    )
-                })?;
-            format!("{name}=dword:{number:08x}")
-        }
-        "REG_SZ" => format!("{name}={}", reg_quoted(exact_text(value)?)),
-        // `reg query` joins the strings of a multi-string with a literal
-        // `\0`, which a path can hold too, and shows no string and one empty
-        // string alike: only one string that is neither can be told.
-        "REG_MULTI_SZ" => {
-            let text = exact_text(value)?;
-            if text.is_empty() || text.contains(r"\0") {
-                return Err(format!(
-                    "{} is a REG_MULTI_SZ that reg query does not show as one string: {}",
-                    value.name, value.data
-                ));
-            }
-            let mut bytes: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
-            // The string's terminator, and the list's.
-            bytes.extend([0, 0, 0, 0]);
-            hex_lines(&format!("{name}=hex(7):"), &bytes)
-        }
-        other => {
-            return Err(format!(
-                "{} is {other} {}, which is not backed up on its own",
-                value.name, value.data
-            ));
-        }
-    };
-    let key = registry::expand_hive(key_path.trim_end_matches('\\'));
-    let text = format!("{REG_EXPORT_SIGNATURE}\r\n\r\n[{key}]\r\n{line}\r\n\r\n");
-    let mut bytes = vec![0xFF, 0xFE];
-    bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
-    Ok(bytes)
+/// The text of a file `reg export` wrote: UTF-16 with a byte order mark.
+fn reg_export_text(bytes: &[u8]) -> Option<String> {
+    let body = bytes
+        .strip_prefix(b"\xFF\xFE")
+        .filter(|body| body.len() % 2 == 0)?;
+    let units: Vec<u16> = body
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&pair| u16::from_le_bytes(pair))
+        .collect();
+    String::from_utf16(&units).ok()
 }
 
-/// `value`'s data when `reg query` shows it exactly: printable ASCII without
-/// `?`. `reg` writes in the console's code page and turns what that cannot
-/// show into `?`.
-fn exact_text(value: &RegValue) -> Result<&str, String> {
-    if value
-        .data
-        .chars()
-        .all(|c| matches!(c, ' '..='~') && c != '?')
-    {
-        Ok(&value.data)
-    } else {
-        Err(format!(
-            "reg query may not show {} as it is: {}",
-            value.name, value.data
-        ))
+/// `text` as a `.reg` file holds it: UTF-16 with a byte order mark.
+fn reg_export_bytes(text: &str) -> Vec<u8> {
+    let mut bytes = vec![0xFF, 0xFE];
+    bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+    bytes
+}
+
+/// What `reg export` writes for `key_path` if the number `value` were all it
+/// held: the signature, the key and the value.
+fn dword_export(key_path: &str, value: &RegValue) -> Result<Vec<u8>, String> {
+    let number = value
+        .number()
+        .and_then(|number| u32::try_from(number).ok())
+        .ok_or_else(|| {
+            format!(
+                "{} is {} {}, not a number a REG_DWORD holds",
+                value.name, value.kind, value.data
+            )
+        })?;
+    let key = registry::expand_hive(key_path.trim_end_matches('\\'));
+    let name = reg_quoted(&value.name);
+    Ok(reg_export_bytes(&format!(
+        "{REG_EXPORT_SIGNATURE}\r\n\r\n[{key}]\r\n{name}=dword:{number:08x}\r\n\r\n"
+    )))
+}
+
+/// A `.reg` file that holds `value_name` of `key_path` alone, cut from
+/// `export`, a file `reg export` wrote of that key: the signature, the key's
+/// line and the value's lines, each as the export has them.
+///
+/// Refused when the key's own lines do not hold the value - a value of the
+/// same name in a key below it is another value - and when the lines cannot
+/// be all of it: a string not closed on its line, or a line that goes on with
+/// nothing after it.
+fn cut_value(export: &[u8], key_path: &str, value_name: &str) -> Result<Vec<u8>, String> {
+    let text = reg_export_text(export).ok_or("reg export did not write UTF-16 text")?;
+    let key = key_name(key_path);
+    let starts = format!("{}=", reg_quoted(value_name));
+    let mut lines = text.split("\r\n");
+    let mut header = None;
+    let mut first = None;
+    for line in lines.by_ref() {
+        if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            if header.is_some() {
+                break;
+            }
+            if key_name(name) == key {
+                header = Some(line);
+            }
+            continue;
+        }
+        let named = line.len() >= starts.len()
+            && line.is_char_boundary(starts.len())
+            && line[..starts.len()].eq_ignore_ascii_case(&starts);
+        if header.is_some() && named {
+            first = Some(line);
+            break;
+        }
     }
+    let (Some(header), Some(first)) = (header, first) else {
+        return Err(format!(
+            "reg export wrote no {value_name} directly under {key_path}"
+        ));
+    };
+
+    let mut value = vec![first];
+    while value.last().is_some_and(|line| line.ends_with('\\')) {
+        match lines.next() {
+            Some(next) if next.starts_with("  ") => value.push(next),
+            _ => {
+                return Err(format!(
+                    "reg export broke off {value_name} in the middle of a line"
+                ));
+            }
+        }
+    }
+    let string = first[starts.len()..].strip_prefix('"');
+    let unclosed = string.is_some_and(|s| value.len() > 1 || !closes_string(s));
+    if unclosed || value.iter().any(|line| line.contains(['\r', '\n', '\0'])) {
+        return Err(format!(
+            "reg export wrote {value_name} across lines a backup cannot cut"
+        ));
+    }
+    Ok(reg_export_bytes(&format!(
+        "{REG_EXPORT_SIGNATURE}\r\n\r\n{header}\r\n{}\r\n\r\n",
+        value.join("\r\n")
+    )))
+}
+
+/// Whether the rest of a `"..."` string line ends with its closing quote: a
+/// `"` after an even number of backslashes, which escape each other.
+fn closes_string(rest: &str) -> bool {
+    rest.strip_suffix('"')
+        .is_some_and(|inside| inside.bytes().rev().take_while(|&b| b == b'\\').count() % 2 == 0)
 }
 
 /// `text` in quotes, with `\` and `"` escaped, as `.reg` files write names
 /// and strings.
 fn reg_quoted(text: &str) -> String {
     format!("\"{}\"", text.replace('\\', r"\\").replace('"', "\\\""))
-}
-
-/// `prefix` and then `bytes` the way `reg export` writes binary data: two hex
-/// digits a byte, separated by commas, and once a line reaches 76 characters
-/// it ends with `,\` and the next is indented by two spaces.
-fn hex_lines(prefix: &str, bytes: &[u8]) -> String {
-    let mut out = String::from(prefix);
-    let mut column = prefix.chars().count();
-    for (i, byte) in bytes.iter().enumerate() {
-        out.push_str(&format!("{byte:02x}"));
-        column += 2;
-        if i + 1 < bytes.len() {
-            out.push(',');
-            column += 1;
-            if column >= 76 {
-                out.push_str("\\\r\n  ");
-                column = 2;
-            }
-        }
-    }
-    out
 }
 
 /// `path` with its root key spelt out, without a trailing backslash and in
@@ -1365,7 +1431,7 @@ mod tests {
         include_bytes!("../../tests/fixtures/console/reg_query_session_manager_power.bin");
 
     #[test]
-    fn a_value_is_written_as_reg_export_writes_it() {
+    fn a_number_is_written_as_reg_export_writes_it() {
         let export = text_of(POWER_EXPORT);
         let keys = registry::parse_reg_query(&crate::utils::decode::decode_output(POWER_QUERY));
         // Values both captures agree on; the boot times changed in between.
@@ -1378,7 +1444,7 @@ mod tests {
             "TotalResumeTime",
         ] {
             let value = registry::find(&keys, POWER_KEY, name).unwrap();
-            let written = text_of(&value_export(POWER_KEY, value).unwrap());
+            let written = text_of(&dword_export(POWER_KEY, value).unwrap());
             let mut lines = written.lines().filter(|line| !line.is_empty());
             assert_eq!(lines.next(), Some(REG_EXPORT_SIGNATURE));
             for line in lines {
@@ -1387,48 +1453,88 @@ mod tests {
         }
     }
 
-    /// The binary values of the Fast Startup key, as `reg query` printed them,
-    /// come out line for line as `reg export` wrapped them: the rule the
-    /// one-string `REG_MULTI_SZ` below is written by too.
+    /// Every kind of value in the captured Fast Startup export cuts out as
+    /// the lines `reg export` wrote for it, under the key's own line: a
+    /// number, a QWORD, and binary values over several lines.
     #[test]
-    fn binary_data_is_wrapped_as_reg_export_wraps_it() {
+    fn a_value_is_cut_from_the_export_line_for_line() {
         let export = text_of(POWER_EXPORT);
-        let keys = registry::parse_reg_query(&crate::utils::decode::decode_output(POWER_QUERY));
+        let lines: Vec<&str> = export.split("\r\n").collect();
+        let header = lines.iter().find(|line| line.starts_with('[')).unwrap();
         for name in [
             "AcPolicy",
-            "AcProcessorPolicy",
-            "DcPolicy",
-            "DcProcessorPolicy",
+            "HiberbootEnabled",
+            "KernelPagesWritten",
             "SystemPowerPolicy",
         ] {
-            let value = registry::find(&keys, POWER_KEY, name).unwrap();
-            assert_eq!(value.kind, "REG_BINARY");
-            let bytes: Vec<u8> = (0..value.data.len())
-                .step_by(2)
-                .map(|at| u8::from_str_radix(&value.data[at..at + 2], 16).unwrap())
-                .collect();
-            let written = hex_lines(&format!("\"{name}\"=hex:"), &bytes);
-
-            let first = format!("\"{name}\"=hex:");
-            let mut captured = export.lines().skip_while(|line| !line.starts_with(&first));
-            let mut lines = vec![captured.next().unwrap()];
-            while lines.last().unwrap().ends_with('\\') {
-                lines.push(captured.next().unwrap());
+            let start = format!("\"{name}\"=");
+            let first = lines.iter().position(|l| l.starts_with(&start)).unwrap();
+            let mut last = first;
+            while lines[last].ends_with('\\') {
+                last += 1;
             }
-            assert!(lines.len() > 1, "{name} spans lines in the capture");
-            assert_eq!(written, lines.join("\r\n"), "{name}");
+            let value = lines[first..=last].join("\r\n");
+
+            let cut = cut_value(POWER_EXPORT, POWER_KEY, name).unwrap();
+            assert_eq!(
+                text_of(&cut),
+                format!("{REG_EXPORT_SIGNATURE}\r\n\r\n{header}\r\n{value}\r\n\r\n"),
+                "{name}"
+            );
+            assert_eq!(check_contents(&cut, POWER_KEY), Ok(()), "{name}");
         }
+        // As in the registry, a value's name is the same in any case.
+        assert!(cut_value(POWER_EXPORT, POWER_KEY, "hiberbootenabled").is_ok());
     }
 
-    /// The `.reg` text a value backup writes for `value` under the driver
-    /// key of a graphics card.
-    fn exported(kind: &str, data: &str) -> Result<String, String> {
-        let value = RegValue {
-            name: "OpenGLDriverName".to_string(),
-            kind: kind.to_string(),
-            data: data.to_string(),
-        };
-        value_export(DISPLAY_KEY, &value).map(|bytes| text_of(&bytes))
+    #[test]
+    fn only_a_value_of_the_key_itself_is_cut() {
+        let below = power_export_and(
+            "[HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power\\PowerSettings]\r\n\"Extra\"=dword:00000001\r\n\r\n",
+        );
+        assert!(cut_value(&below, POWER_KEY, "Extra").is_err());
+        assert!(cut_value(&below, &format!("{POWER_KEY}\\PowerSettings"), "Extra").is_ok());
+        assert!(cut_value(POWER_EXPORT, POWER_KEY, "NoSuchValue").is_err());
+    }
+
+    #[test]
+    fn a_value_the_export_did_not_write_whole_is_not_cut() {
+        for broken in [
+            // A string broken by a line break inside it.
+            "\"Text\"=\"C:\\\\a\r\nb\"\r\n",
+            // A string whose last quote is escaped, so it is not closed.
+            "\"Text\"=\"C:\\\\a\\\"\r\n",
+            // Binary data that says it goes on, and does not.
+            "\"Text\"=hex(7):43,00,\\\r\n\r\n",
+        ] {
+            let export = power_export_and(broken);
+            assert!(cut_value(&export, POWER_KEY, "Text").is_err(), "{broken}");
+        }
+        let closed = power_export_and("\"Text\"=\"C:\\\\a\\\\\"\r\n");
+        assert!(cut_value(&closed, POWER_KEY, "Text").is_ok());
+        assert!(cut_value(b"no UTF-16", POWER_KEY, "AcPolicy").is_err());
+    }
+
+    /// `text` as a one-string `REG_MULTI_SZ` after `prefix`, wrapped as the
+    /// Fast Startup export wraps its binary values.
+    fn hex7_lines(prefix: &str, text: &str) -> String {
+        let mut bytes: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        bytes.extend([0, 0, 0, 0]);
+        let mut out = String::from(prefix);
+        let mut column = prefix.len();
+        for (i, byte) in bytes.iter().enumerate() {
+            out.push_str(&format!("{byte:02x}"));
+            column += 2;
+            if i + 1 < bytes.len() {
+                out.push(',');
+                column += 1;
+                if column >= 76 {
+                    out.push_str("\\\r\n  ");
+                    column = 2;
+                }
+            }
+        }
+        out
     }
 
     const DISPLAY_KEY: &str =
@@ -1438,69 +1544,21 @@ mod tests {
     /// as the incident report gave it).
     const ICD: &str = r"C:\WINDOWS\System32\DriverStore\FileRepository\u0203304.inf_amd64_a6e5a337568ce3f0\B026373\atig6pxx.dll";
 
-    #[test]
-    fn a_text_value_is_written_quoted_with_its_backslashes_and_quotes_escaped() {
-        let text = exported("REG_SZ", r#"C:\a "b"\c.dll"#).unwrap();
-        assert_eq!(
-            text,
-            "Windows Registry Editor Version 5.00\r\n\r\n[HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\0001]\r\n\"OpenGLDriverName\"=\"C:\\\\a \\\"b\\\"\\\\c.dll\"\r\n\r\n"
-        );
-        assert_eq!(
-            exported("REG_SZ", "").unwrap().lines().nth(3),
-            Some("\"OpenGLDriverName\"=\"\"")
-        );
+    /// The OpenGL driver's lines in [`display_export`].
+    fn icd_lines() -> String {
+        hex7_lines("\"OpenGLDriverName\"=hex(7):", ICD)
     }
 
-    #[test]
-    fn a_multi_string_with_one_string_is_written_as_hex7() {
-        let text = exported("REG_MULTI_SZ", ICD).unwrap();
-        let mut lines = text.lines().skip(3);
-        let mut value = lines.next().unwrap().to_string();
-        assert!(value.starts_with("\"OpenGLDriverName\"=hex(7):"), "{value}");
-        let mut continuation = 0;
-        while value.ends_with('\\') {
-            let next = lines.next().unwrap();
-            assert!(next.starts_with("  ") && next.len() <= 79, "{next}");
-            value.pop();
-            value.push_str(next.trim_start());
-            continuation += 1;
-        }
-        assert!(continuation > 0, "a path this long spans lines");
-
-        // The string in UTF-16LE, then its terminator and the list's.
-        let bytes: Vec<u8> = value["\"OpenGLDriverName\"=hex(7):".len()..]
-            .split(',')
-            .map(|pair| u8::from_str_radix(pair, 16).unwrap())
-            .collect();
-        let (string, ends) = bytes.split_at(bytes.len() - 4);
-        assert_eq!(ends, [0, 0, 0, 0]);
-        let units: Vec<u16> = string
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|&pair| u16::from_le_bytes(pair))
-            .collect();
-        assert_eq!(String::from_utf16(&units).unwrap(), ICD);
-        assert_eq!(check_contents(&utf16(&text), DISPLAY_KEY), Ok(()));
-    }
-
-    /// `reg query` prints in the console's code page and joins the strings of
-    /// a multi-string with `\0`: what it may have misread is no backup.
-    #[test]
-    fn what_reg_query_may_not_show_as_it_is_is_not_backed_up() {
-        for (kind, data) in [
-            ("REG_MULTI_SZ", r"C:\a.dll\0C:\b.dll"),
-            ("REG_MULTI_SZ", r"C:\Drivers\0Vendor\a.dll"),
-            ("REG_MULTI_SZ", ""),
-            ("REG_SZ", r"C:\Tr?ber\a.dll"),
-            ("REG_SZ", "C:\\Treiber\u{e4}\\a.dll"),
-            ("REG_SZ", "C:\\a\tb.dll"),
-            ("REG_EXPAND_SZ", r"%SystemRoot%\a.dll"),
-            ("REG_BINARY", "0100"),
-            ("REG_QWORD", "0x1"),
-        ] {
-            assert!(exported(kind, data).is_err(), "{kind} {data}");
-        }
+    /// `reg export` of a graphics card's driver key, **constructed** in the
+    /// shape of the captured export until a capture of such a key is at
+    /// hand: strings, the OpenGL driver as a one-string multi-string over
+    /// several lines, and a key below with a value of the same name.
+    fn display_export() -> Vec<u8> {
+        let key = registry::expand_hive(DISPLAY_KEY);
+        utf16(&format!(
+            "{REG_EXPORT_SIGNATURE}\r\n\r\n[{key}]\r\n\"DriverDesc\"=\"AMD Radeon RX 9070 XT\"\r\n\"InfPath\"=\"oem23.inf\"\r\n{}\r\n\r\n[{key}\\Settings]\r\n\"OpenGLDriverName\"=\"x\"\r\n\r\n",
+            icd_lines()
+        ))
     }
 
     /// `reg query ... /v SvcHostSplitThresholdInKB` on Windows 11, with the
@@ -1561,13 +1619,18 @@ mod tests {
         ))
     }
 
+    /// The backup holds the value as `reg export` wrote it, not as `reg
+    /// query` printed it: here the console's code page has made a `?` of a
+    /// character, which the backup does not put back.
     #[tokio::test]
-    async fn a_one_string_value_backup_holds_that_value_alone_and_is_imported() {
-        let dir = TempDir::new("multi_string");
+    async fn a_text_backup_is_the_values_lines_from_reg_export() {
+        let dir = TempDir::new("text_value");
         let mgr = RegBackupManager::with_dir(dir.path.clone());
-        let runner = MockCommandRunner::new();
-        runner.add_response("/v OpenGLDriverName", display_query("REG_MULTI_SZ", ICD));
-        runner.add_response("reg.exe import", CmdOutput::ok(""));
+        let runner = reg(&display_export());
+        runner.add_response(
+            "/v OpenGLDriverName",
+            display_query("REG_MULTI_SZ", r"C:\Tr?ber\atig6pxx.dll"),
+        );
 
         let record = mgr
             .export_value_with(
@@ -1581,11 +1644,22 @@ mod tests {
         let bytes = std::fs::read(&record.file_path).unwrap();
         assert_eq!(
             text_of(&bytes),
-            exported("REG_MULTI_SZ", ICD).unwrap(),
-            "the file holds the key and that value alone"
+            format!(
+                "{REG_EXPORT_SIGNATURE}\r\n\r\n[{}]\r\n{}\r\n\r\n",
+                registry::expand_hive(DISPLAY_KEY),
+                icd_lines()
+            )
         );
         assert_eq!(record.key_path, DISPLAY_KEY);
         assert_eq!(mgr.list_backups(), std::slice::from_ref(&record));
+        let left: Vec<String> = std::fs::read_dir(&dir.path)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !left.iter().any(|name| name.starts_with("export_")),
+            "the export is deleted: {left:?}"
+        );
 
         mgr.restore_key_with(&runner, &record.file_path)
             .await
@@ -1598,6 +1672,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn no_text_backup_is_kept_when_reg_export_does_not_give_the_value() {
+        let without_icd = utf16(&format!(
+            "{REG_EXPORT_SIGNATURE}\r\n\r\n[{}]\r\n\"InfPath\"=\"oem23.inf\"\r\n\r\n",
+            registry::expand_hive(DISPLAY_KEY)
+        ));
+        let refused = CmdOutput::with_output(1, "", "FEHLER: Zugriff verweigert");
+        for (case, export, answer) in [
+            ("refused", display_export(), refused),
+            ("not in it", without_icd, CmdOutput::ok("")),
+            ("not an export", b"no UTF-16".to_vec(), CmdOutput::ok("")),
+        ] {
+            let dir = TempDir::new("text_refused");
+            let mgr = RegBackupManager::with_dir(dir.path.clone());
+            let runner = MockCommandRunner::new();
+            runner.add_response("/v OpenGLDriverName", display_query("REG_SZ", ICD));
+            runner.add_written_file("reg.exe export", 2, export);
+            runner.add_response("reg.exe export", answer);
+
+            let error = mgr
+                .export_value_with(&runner, DISPLAY_KEY, "OpenGLDriverName", "test")
+                .await
+                .unwrap_err();
+            assert!(error.contains("OpenGLDriverName"), "{case}: {error}");
+            assert!(mgr.list_backups().is_empty(), "{case}");
+            assert_eq!(
+                std::fs::read_dir(&dir.path).unwrap().count(),
+                0,
+                "{case}: no backup kept, and the export deleted"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn no_value_backup_is_kept_when_there_is_nothing_to_keep() {
         let dir = TempDir::new("value_refused");
         let mgr = RegBackupManager::with_dir(dir.path.clone());
@@ -1607,19 +1714,19 @@ mod tests {
             CmdOutput::with_output(1, "\r\n\r\n", "FEHLER"),
         );
         runner.add_response(
-            "/v Text",
+            "/v Binary",
             CmdOutput::ok(
-                "\r\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\r\n    Text    REG_EXPAND_SZ    x\r\n\r\n",
+                "\r\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\r\n    Binary    REG_BINARY    0100\r\n\r\n",
             ),
         );
         runner.add_response(
-            "/v Two",
+            "/v Wide",
             CmdOutput::ok(
-                "\r\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\r\n    Two    REG_MULTI_SZ    a\\0b\r\n\r\n",
+                "\r\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\r\n    Wide    REG_QWORD    0x1\r\n\r\n",
             ),
         );
 
-        for name in ["Missing", "Text", "Two", "Unanswered"] {
+        for name in ["Missing", "Binary", "Wide", "Unanswered"] {
             let refused = mgr
                 .export_value_with(&runner, CONTROL_KEY, name, "test")
                 .await
