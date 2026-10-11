@@ -623,6 +623,7 @@ fn run_gui() -> Result<u8, Box<dyn std::error::Error>> {
 
     let options = eframe::NativeOptions {
         viewport,
+        wgpu_options: gui::renderer::wgpu_configuration(),
         ..Default::default()
     };
 
@@ -642,18 +643,21 @@ fn run_gui() -> Result<u8, Box<dyn std::error::Error>> {
 
     if let Err(err) = result {
         // The console is gone by now, so the error `main` prints would reach
-        // nobody. The likeliest cause is the very machine WinMedic is for: a
-        // broken graphics driver leaves only OpenGL 1.1, and the window needs 2.0.
+        // nobody. A missing or broken graphics driver no longer gets here:
+        // Windows' software renderer draws the window then (`gui::renderer`).
+        // What is left is Direct3D 12 failing even there, which usually means
+        // damaged system files - and those the command line can repair.
         utils::console::show_error_dialog(
             "WinMedic could not open its window",
             &format!(
                 "WinMedic could not open its window:\n\n{err}\n\n\
-                 This usually means the graphics driver offers no OpenGL 2.0 or newer - \
-                 for example the Microsoft Basic Display Adapter after a driver crash, \
-                 or some virtual machines and remote sessions.\n\n\
-                 Every check and repair also runs without the window. From a Command Prompt,\n\n\
+                 Not even Windows' own software renderer could draw it, which usually means \
+                 that Windows system files are damaged (Direct3D 12).\n\n\
+                 Every check and repair also runs without the window. From a Command Prompt \
+                 started as Administrator,\n\n\
                  \x20   winmedic --scan --output report.html\n\n\
-                 writes a report you can open in any browser; winmedic --help lists the rest."
+                 writes a report you can open in any browser, and winmedic --auto-fix repairs \
+                 what is safe to repair; winmedic --help lists the rest."
             ),
         );
         return Err(err.into());
