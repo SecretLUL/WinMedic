@@ -1,4 +1,5 @@
 use crate::utils::decode::{CodePage, LineDecoder, decode_output_in};
+use crate::utils::job::Job;
 use crate::utils::pnp::PnpDevice;
 use std::io::{PipeReader, Read};
 use std::path::{Path, PathBuf};
@@ -620,10 +621,12 @@ struct Started {
     child: tokio::process::Child,
     stdout: PipeReader,
     stderr: PipeReader,
+    /// The job the command runs in, `None` when Windows gave it none.
+    job: Option<Job>,
 }
 
 /// Start `program` without a window, its input empty and its output in two
-/// pipes of [`output_pipe`].
+/// pipes of [`output_pipe`], in a [`Job`] of its own.
 fn start(program: &str, args: &[&str]) -> Result<Started, String> {
     let mut cmd = TokioCommand::new(system_program(program)?);
     cmd.args(args);
@@ -636,12 +639,20 @@ fn start(program: &str, args: &[&str]) -> Result<Started, String> {
     cmd.stderr(stderr_end);
     // Dropping the future (e.g. when the user cancels a running scan) must take
     // the child process with it, otherwise a DISM or chkdsk run keeps going.
+    // When WinMedic ends without dropping it, the job takes it.
     cmd.kill_on_drop(true);
+    // Without one the command runs as every command did before #223.
+    let job = Job::new().ok();
 
     #[cfg(windows)]
     {
         const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        let suspended = if job.is_some() {
+            crate::utils::job::CREATE_SUSPENDED
+        } else {
+            0
+        };
+        cmd.creation_flags(CREATE_NO_WINDOW | suspended);
     }
 
     let child = cmd
@@ -651,11 +662,33 @@ fn start(program: &str, args: &[&str]) -> Result<Started, String> {
     // to, and an output does not end while one of them is open: every read
     // would wait out PIPE_DRAIN_LIMIT.
     drop(cmd);
+    #[cfg(windows)]
+    let job = match (job, child.raw_handle()) {
+        (Some(job), Some(process)) => {
+            // SAFETY: the child's handle, which lives as long as `child`.
+            let process = unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(process) };
+            match job.adopt(process) {
+                Ok(adopted) => adopted.then_some(job),
+                // Dropped, the suspended process is ended.
+                Err(e) => return Err(format!("'{program}' was started but could not run: {e}")),
+            }
+        }
+        _ => None,
+    };
     Ok(Started {
         child,
         stdout,
         stderr,
+        job,
     })
+}
+
+/// For a command that has ended by itself: what it left running, if anything,
+/// runs on (the icon cache repair starts Explorer so), once its job is closed.
+fn ended(job: &Option<Job>) {
+    if let Some(job) = job {
+        let _ = job.let_go();
+    }
 }
 
 /// Read `pipe` to the end into `out`, a piece at a time, so that what has
@@ -693,6 +726,7 @@ pub async fn run_cmd(
         mut child,
         stdout,
         stderr,
+        job,
     } = start(program, args)?;
 
     let stdout_bytes = Arc::new(Mutex::new(Vec::new()));
@@ -709,6 +743,7 @@ pub async fn run_cmd(
     let status_res = timeout(timeout_duration, child.wait()).await;
     match status_res {
         Ok(Ok(status)) => {
+            ended(&job);
             drain_readers(stdout_handle, stderr_handle, PIPE_DRAIN_LIMIT).await;
             Ok(CmdOutput {
                 success: status.success(),
@@ -736,6 +771,7 @@ pub async fn run_cmd_streaming(
         mut child,
         stdout,
         stderr,
+        job,
     } = start(program, args)?;
 
     let stdout_lines = Arc::new(Mutex::new(Vec::new()));
@@ -768,6 +804,7 @@ pub async fn run_cmd_streaming(
         }
     };
 
+    ended(&job);
     drain_readers(stdout_handle, stderr_handle, PIPE_DRAIN_LIMIT).await;
     Ok(CmdOutput {
         success: status.success(),
@@ -916,6 +953,7 @@ pub(crate) async fn powershell_parse_errors(script: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 
     #[tokio::test]
     async fn the_parse_check_finds_a_broken_script() {
@@ -1142,6 +1180,229 @@ mod tests {
         assert_eq!(out.stderr, "trouble");
     }
 
+    /// Turns the test binary into [`starts_a_ping_and_waits`] and names the
+    /// file it writes the ping's process id to.
+    const PING_REPORT: &str = "WINMEDIC_PING_REPORT";
+
+    /// A handle to process `pid`, to wait for it and to end it.
+    fn open_process(pid: u32) -> OwnedHandle {
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+        };
+        // SAFETY: takes plain values; the handle it returns is owned below.
+        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid) };
+        assert!(
+            !handle.is_null(),
+            "process {pid}: {}",
+            std::io::Error::last_os_error()
+        );
+        // SAFETY: a handle just opened, owned by nothing else.
+        unsafe { OwnedHandle::from_raw_handle(handle) }
+    }
+
+    /// Whether `process` has ended or ends within `limit`.
+    fn ends_within(process: &OwnedHandle, limit: Duration) -> bool {
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        // SAFETY: waits on a live handle of this process.
+        let waited =
+            unsafe { WaitForSingleObject(process.as_raw_handle(), limit.as_millis() as u32) };
+        waited == WAIT_OBJECT_0
+    }
+
+    /// Ends `process`, for a test that leaves one behind when it fails.
+    fn end(process: &OwnedHandle) {
+        // SAFETY: ends a process this test started, through a live handle.
+        unsafe {
+            windows_sys::Win32::System::Threading::TerminateProcess(process.as_raw_handle(), 1)
+        };
+    }
+
+    /// A command ends with WinMedic, however WinMedic ends. Ended by an abort
+    /// (a release build panics so) or in Task Manager, WinMedic drops
+    /// nothing, and the DISM runs of the scans 0.10.0 crashed in ran on for
+    /// hours (#223). The test binary starts itself as
+    /// [`starts_a_ping_and_waits`], which starts a ping as WinMedic starts a
+    /// command, and ends it with `TerminateProcess`, as Task Manager does.
+    /// Loopback only, no window.
+    #[test]
+    fn a_command_ends_with_the_process_that_started_it() {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        let report = std::env::temp_dir().join(format!("winmedic_ping_{}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&report);
+        // libtest names a test by its path inside the crate.
+        let (_, module) = module_path!().split_once("::").expect("a crate path");
+        let mut waiter =
+            std::process::Command::new(std::env::current_exe().expect("the test binary"))
+                .args([
+                    "--exact",
+                    &format!("{module}::starts_a_ping_and_waits"),
+                    "--ignored",
+                    "--test-threads=1",
+                    "-q",
+                ])
+                .env(PING_REPORT, &report)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
+                .expect("the test binary starts");
+
+        let asked = std::time::Instant::now();
+        let pid = loop {
+            let named = std::fs::read_to_string(&report).ok();
+            if let Some(pid) = named.and_then(|pid| pid.trim().parse::<u32>().ok()) {
+                break pid;
+            }
+            if asked.elapsed() > Duration::from_secs(60) {
+                let _ = waiter.kill();
+                panic!("the ping was not started");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let _ = std::fs::remove_file(&report);
+        let ping = open_process(pid);
+
+        waiter.kill().expect("the test binary is ended");
+        let _ = waiter.wait();
+
+        let ended = ends_within(&ping, Duration::from_secs(10));
+        if !ended {
+            end(&ping);
+        }
+        assert!(ended, "the ping outlived the process that started it");
+    }
+
+    /// The child half of [`a_command_ends_with_the_process_that_started_it`]:
+    /// starts a ping as WinMedic starts a command, names it and waits to be
+    /// ended. Does nothing unless that test started it.
+    #[test]
+    #[ignore = "started by a_command_ends_with_the_process_that_started_it"]
+    fn starts_a_ping_and_waits() {
+        let Some(report) = std::env::var_os(PING_REPORT).map(PathBuf::from) else {
+            return;
+        };
+        let runtime = tokio::runtime::Runtime::new().expect("a runtime");
+        let _runtime = runtime.enter();
+        let started = start("ping.exe", &["-n", "60", "127.0.0.1"]).expect("ping starts");
+        let pid = started.child.id().expect("the ping runs");
+        // Named in one step: the test reads the file while it waits.
+        let named = report.with_extension("tmp");
+        std::fs::write(&named, pid.to_string()).expect("the report is written");
+        std::fs::rename(&named, &report).expect("the report is named");
+        std::thread::sleep(Duration::from_secs(60));
+        drop(started);
+    }
+
+    /// Where PowerShell writes the process id of the ping it starts.
+    fn ping_report(test: &str, streamed: bool) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "winmedic_{test}_{}_{streamed}.txt",
+            std::process::id()
+        ))
+    }
+
+    /// PowerShell starts a ping that runs `seconds`, writes its process id to
+    /// `report` and waits `then` seconds before it ends.
+    fn ping_script(report: &Path, seconds: u32, then: u32) -> String {
+        format!(
+            "(Start-Process ping.exe -ArgumentList '-n {seconds} 127.0.0.1' -NoNewWindow -PassThru).Id | Set-Content -LiteralPath {}; Start-Sleep -Seconds {then}",
+            ps_single_quoted(&report.to_string_lossy())
+        )
+    }
+
+    /// `script` in PowerShell, through [`run_cmd`] or [`run_cmd_streaming`].
+    fn powershell_through(
+        streamed: bool,
+        script: String,
+        limit: Duration,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<CmdOutput, String>>>> {
+        Box::pin(async move {
+            let args = ["-NoProfile", "-NonInteractive", "-Command", &script];
+            if streamed {
+                run_cmd_streaming("powershell", &args, None, limit).await
+            } else {
+                run_cmd("powershell", &args, limit).await
+            }
+        })
+    }
+
+    /// The process `report` names, opened while it runs, once PowerShell has
+    /// written the file.
+    async fn process_named_in(report: &Path) -> OwnedHandle {
+        let asked = std::time::Instant::now();
+        loop {
+            let named = std::fs::read_to_string(report).ok();
+            if let Some(pid) = named.and_then(|pid| pid.trim().parse().ok()) {
+                let _ = std::fs::remove_file(report);
+                return open_process(pid);
+            }
+            assert!(
+                asked.elapsed() < Duration::from_secs(60),
+                "PowerShell named no ping"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// What a command that has ended by itself left running runs on: the icon
+    /// cache repair starts Explorer again so. The ping holds the pipes, so
+    /// each run waits out PIPE_DRAIN_LIMIT. Loopback only, no window.
+    #[tokio::test]
+    async fn what_a_command_left_running_runs_on() {
+        let left_running = |streamed| async move {
+            let report = ping_report("left_running", streamed);
+            let run = powershell_through(
+                streamed,
+                ping_script(&report, 30, 0),
+                Duration::from_secs(60),
+            );
+            tokio::join!(run, process_named_in(&report))
+        };
+        let (plain, streamed) = tokio::join!(left_running(false), left_running(true));
+        // Windows ends the processes of a closed job a moment after the close.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let ran_on = [&plain.1, &streamed.1].map(|ping| !ends_within(ping, Duration::ZERO));
+        end(&plain.1);
+        end(&streamed.1);
+        assert!(plain.0.is_ok_and(|out| out.success), "PowerShell ran");
+        assert!(streamed.0.is_ok_and(|out| out.success), "PowerShell ran");
+        assert_eq!(ran_on, [true, true], "plain and streamed: the ping ran on");
+    }
+
+    /// A command dropped while it runs, as a cancelled scan drops it, ends with
+    /// what it started: here a ping, for DISM its DismHost. One that runs out
+    /// of time ends the same way. Loopback only, no window.
+    #[tokio::test]
+    async fn a_cancelled_command_ends_with_what_it_started() {
+        let cancelled = |streamed| async move {
+            let report = ping_report("cancelled", streamed);
+            let mut run = powershell_through(
+                streamed,
+                ping_script(&report, 60, 60),
+                Duration::from_secs(90),
+            );
+            let ping = tokio::select! {
+                ping = process_named_in(&report) => ping,
+                out = &mut run => panic!("PowerShell ended first: {out:?}"),
+            };
+            drop(run);
+            ping
+        };
+        let (plain, streamed) = tokio::join!(cancelled(false), cancelled(true));
+        let ended = [&plain, &streamed].map(|ping| ends_within(ping, Duration::from_secs(10)));
+        end(&plain);
+        end(&streamed);
+        assert_eq!(
+            ended,
+            [true, true],
+            "plain and streamed: the ping ended with the command"
+        );
+    }
+
     /// Whether the kernel opened `handle` for synchronous I/O.
     fn is_synchronous(handle: std::os::windows::io::RawHandle) -> bool {
         #[link(name = "ntdll", kind = "raw-dylib")]
@@ -1184,7 +1445,6 @@ mod tests {
     /// done. cmd ends at once; no window.
     #[test]
     fn a_commands_output_is_read_through_a_synchronous_handle() {
-        use std::os::windows::io::AsRawHandle;
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
 
