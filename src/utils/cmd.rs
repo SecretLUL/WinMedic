@@ -1,10 +1,10 @@
 use crate::utils::decode::{CodePage, LineDecoder, decode_output_in};
 use crate::utils::pnp::PnpDevice;
+use std::io::{PipeReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::AsyncReadExt;
 use tokio::process::Command as TokioCommand;
 use tokio::sync::mpsc::Sender;
 use tokio::time::timeout;
@@ -579,8 +579,9 @@ fn windows_folder(get: unsafe extern "system" fn(*mut u16, u32) -> u32) -> Optio
 /// rest takes milliseconds; whatever arrived by the limit is kept.
 const PIPE_DRAIN_LIMIT: Duration = Duration::from_secs(10);
 
-/// Wait up to `limit` ([`PIPE_DRAIN_LIMIT`]) for both readers, then stop
-/// them.
+/// Wait up to `limit` ([`PIPE_DRAIN_LIMIT`]) for both readers. A reader that
+/// is still reading then goes on in the background until its pipe closes;
+/// the caller takes what it has collected so far.
 async fn drain_readers<T>(
     stdout: tokio::task::JoinHandle<T>,
     stderr: tokio::task::JoinHandle<T>,
@@ -596,15 +597,74 @@ async fn drain_readers<T>(
     }
 }
 
+/// A pipe for one of a command's outputs: the end this process reads, and the
+/// end for the command to write to.
+///
+/// Not `Stdio::piped()`. tokio reads that on Windows with blocking reads on
+/// the handle the standard library opens for overlapped I/O. Such a read
+/// waits for the handle to be signalled, and when that wait ends with the
+/// read still pending, the standard library ends the whole process: "fatal
+/// runtime error: I/O error: operation failed to complete synchronously".
+/// 0.10.0 ended so in the middle of the scan, while DISM analysed the
+/// component store and wrote nothing (two minidumps of 2026-10-10). Both ends
+/// of a pipe from `std::io::pipe` are synchronous: a read waits in the kernel
+/// until it is done, and that abort cannot be reached.
+fn output_pipe() -> Result<(PipeReader, Stdio), String> {
+    let (reader, writer) =
+        std::io::pipe().map_err(|e| format!("The command's output could not be piped: {e}"))?;
+    Ok((reader, writer.into()))
+}
+
+/// A command started by [`start`], and the ends of its output pipes.
+struct Started {
+    child: tokio::process::Child,
+    stdout: PipeReader,
+    stderr: PipeReader,
+}
+
+/// Start `program` without a window, its input empty and its output in two
+/// pipes of [`output_pipe`].
+fn start(program: &str, args: &[&str]) -> Result<Started, String> {
+    let mut cmd = TokioCommand::new(system_program(program)?);
+    cmd.args(args);
+    // No command reads its input. Inherited, a command run from the command
+    // line would read the terminal.
+    cmd.stdin(Stdio::null());
+    let (stdout, stdout_end) = output_pipe()?;
+    let (stderr, stderr_end) = output_pipe()?;
+    cmd.stdout(stdout_end);
+    cmd.stderr(stderr_end);
+    // Dropping the future (e.g. when the user cancels a running scan) must take
+    // the child process with it, otherwise a DISM or chkdsk run keeps going.
+    cmd.kill_on_drop(true);
+
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let child = cmd
+        .spawn()
+        .map_err(|e| describe_spawn_failure(program, &e))?;
+    // `cmd` still holds this process's copies of the ends the command writes
+    // to, and an output does not end while one of them is open: every read
+    // would wait out PIPE_DRAIN_LIMIT.
+    drop(cmd);
+    Ok(Started {
+        child,
+        stdout,
+        stderr,
+    })
+}
+
 /// Read `pipe` to the end into `out`, a piece at a time, so that what has
-/// arrived is kept when the reader is stopped early.
-async fn read_into(pipe: Option<impl tokio::io::AsyncRead + Unpin>, out: Arc<Mutex<Vec<u8>>>) {
-    let Some(mut pipe) = pipe else {
-        return;
-    };
+/// arrived is kept when nobody waits for the rest. Blocks: for a blocking
+/// thread.
+fn read_into(mut pipe: PipeReader, out: &Mutex<Vec<u8>>) {
     let mut buf = [0u8; 4096];
     loop {
-        match pipe.read(&mut buf).await {
+        match pipe.read(&mut buf) {
             Ok(0) | Err(_) => break,
             Ok(read) => {
                 if let Ok(mut out) = out.lock() {
@@ -629,31 +689,22 @@ pub async fn run_cmd(
     args: &[&str],
     timeout_duration: Duration,
 ) -> Result<CmdOutput, String> {
-    let mut cmd = TokioCommand::new(system_program(program)?);
-    cmd.args(args);
-    // No command reads its input. Inherited, a command run from the command
-    // line would read the terminal.
-    cmd.stdin(Stdio::null());
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    // Dropping the future (e.g. when the user cancels a running scan) must take
-    // the child process with it, otherwise a DISM or chkdsk run keeps going.
-    cmd.kill_on_drop(true);
-
-    #[cfg(windows)]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| describe_spawn_failure(program, &e))?;
+    let Started {
+        mut child,
+        stdout,
+        stderr,
+    } = start(program, args)?;
 
     let stdout_bytes = Arc::new(Mutex::new(Vec::new()));
     let stderr_bytes = Arc::new(Mutex::new(Vec::new()));
-    let stdout_handle = tokio::spawn(read_into(child.stdout.take(), stdout_bytes.clone()));
-    let stderr_handle = tokio::spawn(read_into(child.stderr.take(), stderr_bytes.clone()));
+    let stdout_handle = {
+        let sink = stdout_bytes.clone();
+        tokio::task::spawn_blocking(move || read_into(stdout, &sink))
+    };
+    let stderr_handle = {
+        let sink = stderr_bytes.clone();
+        tokio::task::spawn_blocking(move || read_into(stderr, &sink))
+    };
 
     let status_res = timeout(timeout_duration, child.wait()).await;
     match status_res {
@@ -681,62 +732,38 @@ pub async fn run_cmd_streaming(
     log_tx: Option<Sender<String>>,
     timeout_duration: Duration,
 ) -> Result<CmdOutput, String> {
-    let mut cmd = TokioCommand::new(system_program(program)?);
-    cmd.args(args);
-    // No command reads its input. Inherited, a command run from the command
-    // line would read the terminal.
-    cmd.stdin(Stdio::null());
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    // Dropping the future (e.g. when the user cancels a running scan) must take
-    // the child process with it, otherwise a DISM or chkdsk run keeps going.
-    cmd.kill_on_drop(true);
-
-    #[cfg(windows)]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| describe_spawn_failure(program, &e))?;
-
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
+    let Started {
+        mut child,
+        stdout,
+        stderr,
+    } = start(program, args)?;
 
     let stdout_lines = Arc::new(Mutex::new(Vec::new()));
     let stderr_lines = Arc::new(Mutex::new(Vec::new()));
-
-    let stdout_tx = log_tx.clone();
-    let stdout_sink = stdout_lines.clone();
-    let stdout_handle = tokio::spawn(async move {
-        if let Some(stdout) = stdout {
-            forward_lines(stdout, stdout_tx, "", &stdout_sink).await;
-        }
-    });
-
-    let stderr_tx = log_tx;
-    let stderr_sink = stderr_lines.clone();
-    let stderr_handle = tokio::spawn(async move {
-        if let Some(stderr) = stderr {
-            forward_lines(stderr, stderr_tx, "[STDERR] ", &stderr_sink).await;
-        }
-    });
+    let stdout_handle = {
+        let (tx, sink) = (log_tx.clone(), stdout_lines.clone());
+        tokio::task::spawn_blocking(move || {
+            forward_lines(stdout, |line| send(&tx, line), "", &sink)
+        })
+    };
+    let stderr_handle = {
+        let (tx, sink) = (log_tx, stderr_lines.clone());
+        tokio::task::spawn_blocking(move || {
+            forward_lines(stderr, |line| send(&tx, line), "[STDERR] ", &sink)
+        })
+    };
 
     // The readers end when the pipes close, which is when the process has
     // ended. Waiting for them before killing a process that ran out of time
     // waited for it to finish after all: a DISM run past its limit went on to
     // the end and was then reported as timed out, whatever it had achieved.
-    // They are dropped rather than awaited, in case something the process
-    // started still holds its pipes.
+    // They are not waited for at all then, in case something the process
+    // started still holds its pipes; a read goes on until they close.
     let status = match timeout(timeout_duration, child.wait()).await {
         Ok(Ok(status)) => status,
         Ok(Err(e)) => return Err(format!("Command error: {}", e)),
         Err(_) => {
             let _ = child.kill().await;
-            stdout_handle.abort();
-            stderr_handle.abort();
             return Err(timed_out(program, timeout_duration));
         }
     };
@@ -750,18 +777,18 @@ pub async fn run_cmd_streaming(
     })
 }
 
-/// Read `pipe` to the end, decoding it line by line, and hand each line to the
-/// log channel as it arrives.
+/// Read `pipe` to the end, decoding it line by line, and hand each line to
+/// `send` as it arrives. Blocks: for a blocking thread.
 ///
 /// Reads raw bytes rather than `lines()`: that reader stops at the first line
 /// that is not UTF-8, and German DISM or SFC output has one within the first
 /// few lines — everything after it, the verdict included, was lost.
 ///
-/// A progress bar the tool is still redrawing goes to the channel as well,
-/// each time it changes; only finished lines become the command's output.
-async fn forward_lines(
-    mut pipe: impl tokio::io::AsyncRead + Unpin,
-    tx: Option<Sender<String>>,
+/// A progress bar the tool is still redrawing goes to `send` as well, each
+/// time it changes; only finished lines become the command's output.
+fn forward_lines(
+    mut pipe: impl Read,
+    mut send: impl FnMut(String),
     prefix: &str,
     lines: &Mutex<Vec<String>>,
 ) {
@@ -769,30 +796,34 @@ async fn forward_lines(
     let mut buf = [0u8; 4096];
     let mut sent_progress = None;
     loop {
-        let read = match pipe.read(&mut buf).await {
+        let read = match pipe.read(&mut buf) {
             Ok(0) | Err(_) => break,
             Ok(read) => read,
         };
         for line in decoder.push(&buf[..read]) {
-            if let Some(ref tx) = tx {
-                let _ = tx.send(format!("{prefix}{line}")).await;
-            }
+            send(format!("{prefix}{line}"));
             keep(lines, line);
             sent_progress = None;
         }
         let progress = decoder.progress();
         if progress.is_some() && progress != sent_progress {
-            if let (Some(tx), Some(text)) = (&tx, &progress) {
-                let _ = tx.send(format!("{prefix}{text}")).await;
+            if let Some(text) = &progress {
+                send(format!("{prefix}{text}"));
             }
             sent_progress = progress;
         }
     }
     if let Some(line) = decoder.finish() {
-        if let Some(ref tx) = tx {
-            let _ = tx.send(format!("{prefix}{line}")).await;
-        }
+        send(format!("{prefix}{line}"));
         keep(lines, line);
+    }
+}
+
+/// Hand a line to the log channel, if there is one. On a reader's blocking
+/// thread, which waits here while the channel is full.
+fn send(tx: &Option<Sender<String>>, line: String) {
+    if let Some(tx) = tx {
+        let _ = tx.blocking_send(line);
     }
 }
 
@@ -985,19 +1016,15 @@ mod tests {
 
     /// SFC's progress reaches the log while its one progress line is still
     /// being written, and only the finished line becomes its output.
-    #[tokio::test]
-    async fn sfc_progress_is_forwarded_before_its_line_ends() {
+    #[test]
+    fn sfc_progress_is_forwarded_before_its_line_ends() {
         let captured: &[u8] =
             include_bytes!("../../tests/fixtures/console/sfc_verifyonly_progress_de.bin");
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(256);
+        let mut forwarded = Vec::new();
         let lines = Mutex::new(Vec::new());
-        forward_lines(captured, Some(tx), "", &lines).await;
+        forward_lines(captured, |line| forwarded.push(line), "", &lines);
         let lines = lines.into_inner().unwrap();
 
-        let mut forwarded = Vec::new();
-        while let Ok(line) = rx.try_recv() {
-            forwarded.push(line);
-        }
         let done = forwarded
             .iter()
             .position(|l| l == "Überprüfung 100 % abgeschlossen.")
@@ -1046,30 +1073,136 @@ mod tests {
         );
     }
 
-    /// A reader whose pipe stays open is stopped at the limit, and what it
-    /// read until then is kept.
+    /// A reader whose pipe stays open is not waited for past the limit, and
+    /// what it read until then is kept. It reads on a blocking thread, as the
+    /// real ones do, and cannot be stopped there.
     #[tokio::test]
-    async fn a_reader_held_open_is_stopped_and_keeps_what_it_read() {
+    async fn a_reader_held_open_is_left_behind_with_what_it_read() {
         let collected = Arc::new(Mutex::new(Vec::new()));
         let sink = collected.clone();
-        let held = tokio::spawn(async move {
+        let (release, held_open) = std::sync::mpsc::channel::<()>();
+        let held = tokio::task::spawn_blocking(move || {
             sink.lock().unwrap().extend_from_slice(b"verdict");
-            std::future::pending::<()>().await
+            let _ = held_open.recv();
         });
-        let probe = held.abort_handle();
-        let finished = tokio::spawn(async {});
+        let finished = tokio::task::spawn_blocking(|| {});
 
         let started = std::time::Instant::now();
         drain_readers(held, finished, Duration::from_millis(200)).await;
         assert!(started.elapsed() < Duration::from_secs(5));
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while !probe.is_finished() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("the held reader is stopped");
         assert_eq!(take_collected(&collected), b"verdict");
+        release.send(()).expect("the reader is still there");
+    }
+
+    /// A command's output ends with the command. Were this process to keep
+    /// its copies of the ends the command writes to, every read would wait
+    /// out PIPE_DRAIN_LIMIT. No window.
+    #[test]
+    fn a_command_is_read_to_its_end_as_soon_as_it_ends() {
+        let runtime = tokio::runtime::Runtime::new().expect("a runtime");
+        let started = std::time::Instant::now();
+        let out = runtime.block_on(run_cmd(
+            "cmd.exe",
+            &["/c", "echo verdict& echo trouble 1>&2"],
+            Duration::from_secs(30),
+        ));
+        // A dropped runtime waits for its blocking threads, and a reader of a
+        // pipe that never ends would hold up the test instead of failing it.
+        runtime.shutdown_background();
+        let out = out.expect("cmd starts");
+        assert_eq!(out.stdout.trim(), "verdict");
+        assert_eq!(out.stderr.trim(), "trouble");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "returned after {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// Each line a streamed command writes reaches the log, sent from the
+    /// thread that read it, and becomes its output. No window.
+    #[tokio::test]
+    async fn a_streamed_command_hands_its_lines_to_the_log() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(16);
+        let out = run_cmd_streaming(
+            "cmd.exe",
+            &["/c", "echo one& echo two& (echo trouble) 1>&2"],
+            Some(tx),
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("cmd starts");
+        let mut logged = Vec::new();
+        while let Ok(line) = rx.try_recv() {
+            logged.push(line);
+        }
+        logged.sort();
+        assert_eq!(logged, ["[STDERR] trouble", "one", "two"]);
+        assert_eq!(out.stdout, "one\ntwo");
+        assert_eq!(out.stderr, "trouble");
+    }
+
+    /// Whether the kernel opened `handle` for synchronous I/O.
+    fn is_synchronous(handle: std::os::windows::io::RawHandle) -> bool {
+        #[link(name = "ntdll", kind = "raw-dylib")]
+        unsafe extern "system" {
+            fn NtQueryInformationFile(
+                file: *mut std::ffi::c_void,
+                io_status: *mut [usize; 2],
+                information: *mut std::ffi::c_void,
+                length: u32,
+                class: i32,
+            ) -> i32;
+        }
+        const FILE_MODE_INFORMATION: i32 = 16;
+        const FILE_SYNCHRONOUS_IO_ALERT: u32 = 0x10;
+        const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;
+
+        let mut io_status = [0usize; 2];
+        let mut mode = 0u32;
+        // SAFETY: queries a live handle of this process into locals of the
+        // sizes passed.
+        let status = unsafe {
+            NtQueryInformationFile(
+                handle.cast(),
+                &mut io_status,
+                (&raw mut mode).cast(),
+                size_of::<u32>() as u32,
+                FILE_MODE_INFORMATION,
+            )
+        };
+        assert!(status >= 0, "NtQueryInformationFile: {status:#x}");
+        mode & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT) != 0
+    }
+
+    /// 0.10.0 ended itself during the scan, with "fatal runtime error: I/O
+    /// error: operation failed to complete synchronously" (two minidumps of
+    /// 2026-10-10). It read DISM's output through the overlapped handle that
+    /// `Stdio::piped()` leaves this process, and the wait for one read ended
+    /// before the read. A command's output now comes through a pipe that is
+    /// synchronous at this end, where a read waits in the kernel until it is
+    /// done. cmd ends at once; no window.
+    #[test]
+    fn a_commands_output_is_read_through_a_synchronous_handle() {
+        use std::os::windows::io::AsRawHandle;
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        let (reader, _writer) = output_pipe().expect("a pipe");
+        assert!(is_synchronous(reader.as_raw_handle()));
+
+        // What 0.10.0 read through.
+        let mut child = std::process::Command::new(system_program("cmd.exe").unwrap())
+            .args(["/c", "exit"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("cmd starts");
+        let piped = child.stdout.take().expect("a piped output");
+        assert!(!is_synchronous(piped.as_raw_handle()));
+        child.wait().expect("cmd ends");
     }
 
     #[test]
