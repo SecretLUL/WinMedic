@@ -126,6 +126,13 @@ exec -r System`), while the three services that depend on cryptsvc ran:
 | `sc_enumdepend_cryptsvc_running.bin` | `sc enumdepend cryptsvc 65536` | CP850 | The same three as on the development PC, in the same order, each `4 RUNNING` with a line of flags under the state. |
 | `net_stop_dependents_running_de.bin` | `net stop cryptsvc`, its input on NUL as WinMedic starts it | CP850 | "Die folgenden Dienste hängen vom Dienst Kryptografiedienste ab.", the three by display name, then "Möchten Sie diesen Vorgang fortsetzen? (J/N) [N]:". On stderr, `net_stop_dependents_running_stderr_de.bin`: "Es wurde keine gültige Antwort gegeben." Exit code -1, and nothing stopped. WinMedic's own runner got the same. `net stop cryptsvc /y` stopped the dependents still running and cryptsvc, and `net start cryptsvc` then started cryptsvc alone. |
 
+Captured in Windows Sandbox on 2026-10-11, the same build, as SYSTEM, started
+as WinMedic starts DISM: its input on NUL, a console without a window.
+
+| File | Command | Encoding | Notes |
+| --- | --- | --- | --- |
+| `dism_checkhealth_healthy.bin` | `dism /English /Online /NoRestart /Cleanup-Image /CheckHealth`, the arguments WinMedic passes since #222 | ASCII | "No component store corruption detected.", exit 0. The same 192 bytes as without `/NoRestart`: with no restart needed, the switch changes nothing. |
+
 Captured elevated on 2026-10-09 on the development PC, Windows PowerShell
 5.1.26100.9549, and posted by the maintainer in a comment on #183. **Not the
 raw pipe bytes:** the lines were transcribed from that comment, ASCII, one per

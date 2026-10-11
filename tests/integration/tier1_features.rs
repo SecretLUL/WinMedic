@@ -161,7 +161,7 @@ fn test_tier1_f02_winsxs_analyze_german_parser() {
 async fn test_tier1_f02_winsxs_scan_creates_issue_when_recommended() {
     let runner = Arc::new(ProgrammableMockRunner::new());
     runner.set_response_for_cmd_and_args(
-        "dism.exe /Online /Cleanup-Image /AnalyzeComponentStore /English",
+        "dism.exe /Online /NoRestart /Cleanup-Image /AnalyzeComponentStore /English",
         CmdOutput::ok(DISM_ANALYZE_ENGLISH_RECLAIMABLE),
     );
 
@@ -181,7 +181,7 @@ async fn test_tier1_f02_winsxs_scan_creates_issue_when_recommended() {
 async fn test_tier1_f02_winsxs_scan_clean_when_not_recommended() {
     let runner = Arc::new(ProgrammableMockRunner::new());
     runner.set_response_for_cmd_and_args(
-        "dism.exe /Online /Cleanup-Image /AnalyzeComponentStore /English",
+        "dism.exe /Online /NoRestart /Cleanup-Image /AnalyzeComponentStore /English",
         CmdOutput::ok(DISM_ANALYZE_CLEAN),
     );
 
@@ -196,7 +196,7 @@ async fn test_tier1_f02_winsxs_scan_clean_when_not_recommended() {
 async fn test_tier1_f02_winsxs_fix_executes_start_component_cleanup() {
     let runner = Arc::new(ProgrammableMockRunner::new());
     runner.set_response_for_cmd_and_args(
-        "dism.exe /Online /Cleanup-Image /StartComponentCleanup /English",
+        "dism.exe /Online /NoRestart /Cleanup-Image /StartComponentCleanup /English",
         CmdOutput::ok("The operation completed successfully."),
     );
 
@@ -212,6 +212,7 @@ async fn test_tier1_f02_winsxs_fix_executes_start_component_cleanup() {
         runner.calls_for("dism.exe")[0],
         vec![
             "/Online",
+            "/NoRestart",
             "/Cleanup-Image",
             "/AnalyzeComponentStore",
             "/English"
@@ -221,6 +222,7 @@ async fn test_tier1_f02_winsxs_fix_executes_start_component_cleanup() {
         runner.calls_for("dism.exe")[1],
         vec![
             "/Online",
+            "/NoRestart",
             "/Cleanup-Image",
             "/StartComponentCleanup",
             "/English"
@@ -230,6 +232,7 @@ async fn test_tier1_f02_winsxs_fix_executes_start_component_cleanup() {
         runner.calls_for("dism.exe")[2],
         vec![
             "/Online",
+            "/NoRestart",
             "/Cleanup-Image",
             "/AnalyzeComponentStore",
             "/English"
