@@ -1,7 +1,7 @@
 use crate::config::AppConfig;
 use crate::engine::issue::{Issue, Severity};
 use crate::modules::{
-    DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress, get_all_modules,
+    DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress, Repaired, get_all_modules,
     get_all_modules_with_runner,
 };
 use crate::safety::audit::AuditLogger;
@@ -65,8 +65,7 @@ pub enum RepairEvent {
     },
     FixFinished {
         issue_id: String,
-        success: bool,
-        message: String,
+        result: Result<Repaired, String>,
     },
     RepairsCancelled {
         fixed_count: usize,
@@ -769,8 +768,7 @@ impl DiagnosticEngine {
                 let _ = event_tx
                     .send(RepairEvent::FixFinished {
                         issue_id: issue.id.clone(),
-                        success: false,
-                        message: "Module not found".to_string(),
+                        result: Err("Module not found".to_string()),
                     })
                     .await;
                 continue;
@@ -797,7 +795,7 @@ impl DiagnosticEngine {
             let outcome = tokio::select! {
                 biased;
                 _ = cancel.cancelled() => None,
-                result = module.fix(&issue.id, Some(prog_tx)) => Some(result),
+                result = module.repair(&issue.id, Some(prog_tx)) => Some(result),
             };
 
             let _ = forward_handle.await;
@@ -811,8 +809,7 @@ impl DiagnosticEngine {
                 let _ = event_tx
                     .send(RepairEvent::FixFinished {
                         issue_id: issue.id.clone(),
-                        success: false,
-                        message: "Cancelled by the user.".to_string(),
+                        result: Err("Cancelled by the user.".to_string()),
                     })
                     .await;
                 self.audit_logger.log(
@@ -832,50 +829,30 @@ impl DiagnosticEngine {
                 return (fixed_count, failed_count);
             };
 
-            match result {
-                Ok(msg) => {
-                    if issue.requires_reboot {
-                        issue.is_reboot_pending = true;
-                        issue.is_fixed = false;
-                        issue.is_selected = false;
-                    } else {
-                        issue.is_fixed = true;
-                        issue.is_reboot_pending = false;
-                    }
-                    issue.fix_error = None;
+            issue.record_repair(&result);
+            // A repair that found nothing to remove counts as done: nothing
+            // failed, and the finding is settled.
+            let (status, details) = match &result {
+                Ok(repaired) => {
                     fixed_count += 1;
-
-                    let _ = event_tx
-                        .send(RepairEvent::FixFinished {
-                            issue_id: issue.id.clone(),
-                            success: true,
-                            message: msg.clone(),
-                        })
-                        .await;
-
-                    self.audit_logger
-                        .log("FIX", &issue.module_id, &issue.title, "SUCCESS", &msg);
+                    ("SUCCESS", repaired.message())
                 }
                 Err(err) => {
-                    issue.is_fixed = false;
-                    issue.is_reboot_pending = false;
-                    issue.fix_error = Some(err.clone());
                     failed_count += 1;
-
-                    trace.explain_failure(&err).await;
-
-                    let _ = event_tx
-                        .send(RepairEvent::FixFinished {
-                            issue_id: issue.id.clone(),
-                            success: false,
-                            message: err.clone(),
-                        })
-                        .await;
-
-                    self.audit_logger
-                        .log("FIX", &issue.module_id, &issue.title, "FAILED", &err);
+                    trace.explain_failure(err).await;
+                    ("FAILED", err.clone())
                 }
-            }
+            };
+
+            let _ = event_tx
+                .send(RepairEvent::FixFinished {
+                    issue_id: issue.id.clone(),
+                    result,
+                })
+                .await;
+
+            self.audit_logger
+                .log("FIX", &issue.module_id, &issue.title, status, &details);
         }
 
         let _ = event_tx
@@ -918,8 +895,7 @@ impl DiagnosticEngine {
         let _ = event_tx
             .send(RepairEvent::FixFinished {
                 issue_id: issue.id.clone(),
-                success: true,
-                message: message.clone(),
+                result: Ok(Repaired::Changed(message.clone())),
             })
             .await;
 
@@ -1260,9 +1236,7 @@ mod tests {
         let mut completed = None;
         while let Ok(evt) = rx.try_recv() {
             match evt {
-                RepairEvent::FixFinished {
-                    success, message, ..
-                } => finished = Some((success, message)),
+                RepairEvent::FixFinished { result, .. } => finished = Some(result),
                 RepairEvent::AllRepairsCompleted {
                     fixed_count,
                     failed_count,
@@ -1270,7 +1244,7 @@ mod tests {
                 _ => {}
             }
         }
-        assert_eq!(finished, Some((false, error.to_string())));
+        assert_eq!(finished, Some(Err(error.to_string())));
         assert_eq!(completed, Some((0, 1)));
 
         let history = logger.get_history();
@@ -1303,6 +1277,101 @@ mod tests {
         assert!(issues[0].is_reboot_pending);
         assert!(!issues[0].is_fixed);
         assert!(!issues[0].will_repair());
+    }
+
+    /// Why [`FindsNothing`] removes nothing.
+    const KEPT: &str = "Windows keeps both packages.";
+
+    /// A module whose every repair runs and finds nothing to remove, as the
+    /// WinSxS cleanup does on a PC whose only reclaimable packages are the
+    /// 24H2 checkpoint update and its FoD metadata.
+    struct FindsNothing;
+
+    #[async_trait::async_trait]
+    impl DiagnosticModule for FindsNothing {
+        fn id(&self) -> &'static str {
+            "finds_nothing"
+        }
+        fn name(&self) -> &'static str {
+            "Finds nothing"
+        }
+        fn description(&self) -> &'static str {
+            ""
+        }
+        fn icon(&self) -> &'static str {
+            ""
+        }
+        async fn scan(
+            &self,
+            _progress_tx: Option<Sender<ModuleProgress>>,
+        ) -> Result<Vec<Issue>, String> {
+            Ok(Vec::new())
+        }
+        async fn fix(
+            &self,
+            _issue_id: &str,
+            _progress_tx: Option<Sender<FixProgress>>,
+        ) -> Result<String, String> {
+            Err("the engine asks repair(), not fix()".to_string())
+        }
+        async fn repair(
+            &self,
+            _issue_id: &str,
+            _progress_tx: Option<Sender<FixProgress>>,
+        ) -> Result<Repaired, String> {
+            Ok(Repaired::NothingToRemove(KEPT.to_string()))
+        }
+    }
+
+    /// A repair that found nothing to remove did not fail (#228): the finding
+    /// is settled and says why, nothing waits for a restart, and neither the
+    /// audit log nor the exit code counts a failure.
+    #[tokio::test]
+    async fn a_repair_with_nothing_to_remove_is_settled_not_failed() {
+        let dir = std::env::temp_dir().join(format!(
+            "winmedic_engine_nothing_to_remove_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let logger = AuditLogger::with_dir_and_size(dir.clone(), 5 * 1024 * 1024);
+        let engine = DiagnosticEngine::with_modules(vec![Arc::new(FindsNothing)])
+            .with_audit_log(logger.clone());
+        let mut issues = vec![Issue {
+            module_id: "finds_nothing".to_string(),
+            ..answered_issue().with_requires_reboot(true)
+        }];
+        let (tx, mut rx) = channel::<RepairEvent>(100);
+
+        let (fixed, failed) = engine
+            .run_repairs(&mut issues, LIVE, tx, CancellationToken::new())
+            .await;
+
+        assert_eq!((fixed, failed), (1, 0));
+        assert!(issues[0].is_fixed);
+        assert!(!issues[0].is_reboot_pending);
+        assert_eq!(issues[0].fix_error, None);
+        assert_eq!(issues[0].nothing_to_remove.as_deref(), Some(KEPT));
+
+        let mut finished = None;
+        while let Ok(evt) = rx.try_recv() {
+            if let RepairEvent::FixFinished { result, .. } = evt {
+                finished = Some(result);
+            }
+        }
+        assert_eq!(
+            finished,
+            Some(Ok(Repaired::NothingToRemove(KEPT.to_string())))
+        );
+
+        let history = logger.get_history();
+        assert!(
+            history.iter().any(|e| e.action_type == "FIX"
+                && e.status == "SUCCESS"
+                && e.details == format!("Nothing to remove: {KEPT}")),
+            "{history:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

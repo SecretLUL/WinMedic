@@ -507,15 +507,10 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
                 ),
                 RepairEvent::FixStarted { title, .. } => println!("Fix: {}", title),
                 RepairEvent::FixOutput { line, .. } => println!("   [LOG] {}", line),
-                RepairEvent::FixFinished {
-                    success, message, ..
-                } => {
-                    if success {
-                        println!("   [OK] {}", message);
-                    } else {
-                        println!("   [X] Failed: {}", message);
-                    }
-                }
+                RepairEvent::FixFinished { result, .. } => match result {
+                    Ok(repaired) => println!("   [OK] {}", repaired.message()),
+                    Err(message) => println!("   [X] Failed: {}", message),
+                },
                 RepairEvent::RepairsCancelled {
                     fixed_count,
                     failed_count,

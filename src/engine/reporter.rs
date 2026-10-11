@@ -57,10 +57,12 @@ fn escape_md(value: &str) -> String {
 /// The line a report adds when the user archived some of the findings.
 /// What a report says of a finding, decided as the window decides it: a
 /// repair that succeeded but waits for Windows to restart is neither fixed
-/// nor open, and the window marks it "Restart".
+/// nor open, and the window marks it "Restart". One that found nothing to
+/// remove is settled like a fixed one, but did not fix anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Status {
     Fixed,
+    NothingToRemove,
     Restart,
     Failed,
     Advice,
@@ -69,7 +71,9 @@ enum Status {
 
 impl Status {
     fn of(issue: &Issue) -> Self {
-        if issue.is_fixed {
+        if issue.nothing_to_remove.is_some() {
+            Self::NothingToRemove
+        } else if issue.is_fixed {
             Self::Fixed
         } else if issue.is_reboot_pending {
             Self::Restart
@@ -85,6 +89,7 @@ impl Status {
     fn label(self) -> &'static str {
         match self {
             Self::Fixed => "FIXED",
+            Self::NothingToRemove => "NOTHING TO REMOVE",
             Self::Restart => "RESTART",
             Self::Failed => "FAILED",
             Self::Advice => "ADVICE",
@@ -94,11 +99,12 @@ impl Status {
 }
 
 /// How many findings are fixed, how many wait for the restart, and how many
-/// are open: everything else.
+/// are open: everything else. Like the window, the fixed ones include those
+/// whose repair found nothing to remove.
 fn status_counts(issues: &[Issue]) -> (usize, usize, usize) {
     let fixed = issues
         .iter()
-        .filter(|i| Status::of(i) == Status::Fixed)
+        .filter(|i| matches!(Status::of(i), Status::Fixed | Status::NothingToRemove))
         .count();
     let restart = issues
         .iter()
@@ -429,7 +435,7 @@ impl DiagnosticReporter {
                     Status::Fixed => "status-fixed",
                     Status::Restart => "status-restart",
                     Status::Failed => "status-failed",
-                    Status::Advice | Status::Open => "status-open",
+                    Status::NothingToRemove | Status::Advice | Status::Open => "status-open",
                 };
                 let status_label = status.label();
 
@@ -1089,6 +1095,26 @@ mod tests {
         assert!(html.contains(">Fixed / open<"));
         assert!(!html.contains("status-pill status-restart"));
         assert!(!html.contains("<span class=\"val-warn\">"));
+    }
+
+    /// A repair that found nothing to remove is reported as that, not as
+    /// fixed (#228), and counts with the fixed ones, as in the window.
+    #[test]
+    fn a_repair_with_nothing_to_remove_is_reported_as_such() {
+        let mut issues = sample_issues();
+        issues[1].record_repair(&Ok(crate::modules::Repaired::NothingToRemove(
+            "Windows keeps both packages.".to_string(),
+        )));
+
+        let md = DiagnosticReporter::to_markdown(&issues, 80, &[], 0);
+        assert!(
+            md.contains("### 2. [!] WARNING [[NOTHING TO REMOVE]] Temp files"),
+            "{md}"
+        );
+        assert!(md.contains("- **Status:** 1 fixed, 1 open\n"), "{md}");
+        let html = DiagnosticReporter::to_html(&issues, 80, &[], 0);
+        assert!(html.contains(r#"<span class="status-pill status-open">NOTHING TO REMOVE</span>"#));
+        assert!(!html.contains(">FIXED</span>"));
     }
 
     #[test]

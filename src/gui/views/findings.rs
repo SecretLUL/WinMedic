@@ -241,7 +241,10 @@ fn row(ui: &mut egui::Ui, app: &mut App, issue_index: usize, highlighted: bool, 
                         // all three. Windows' own pending restart is advice,
                         // but the restart settles it.
                         let start = ui.cursor().min.x;
-                        let ticked = if issue.is_fixed {
+                        let ticked = if issue.nothing_to_remove.is_some() {
+                            ui.label(theme::muted("Done"));
+                            false
+                        } else if issue.is_fixed {
                             ui.colored_label(palette.green, "Fixed");
                             false
                         } else if waits_for_restart(issue) {
@@ -264,6 +267,7 @@ fn row(ui: &mut egui::Ui, app: &mut App, issue_index: usize, highlighted: bool, 
                         let category = issue.category.clone();
                         let title = if issue.is_fixed { title.weak() } else { title };
                         let failed = !issue.is_fixed && issue.fix_error.is_some();
+                        let nothing_to_remove = issue.nothing_to_remove.is_some();
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.allocate_ui_with_layout(
                                 egui::vec2(170.0, ui.available_height()),
@@ -272,6 +276,8 @@ fn row(ui: &mut egui::Ui, app: &mut App, issue_index: usize, highlighted: bool, 
                             );
                             if failed {
                                 ui.colored_label(palette.red, "Repair failed");
+                            } else if nothing_to_remove {
+                                ui.label(theme::muted("Nothing to remove"));
                             }
                             ui.with_layout(
                                 egui::Layout::left_to_right(egui::Align::Center),
@@ -379,6 +385,10 @@ fn detail(ui: &mut egui::Ui, app: &App, indices: &[usize]) -> Option<usize> {
             if let Some(error) = issue.fix_error.as_deref() {
                 ui.add_space(8.0);
                 ui.colored_label(palette.red, format!("Repair failed: {error}"));
+            }
+            if let Some(why) = issue.nothing_to_remove.as_deref() {
+                ui.add_space(8.0);
+                ui.label(format!("Nothing to remove: {why}"));
             }
 
             if !issue.technical_details.is_empty() {
@@ -547,6 +557,26 @@ mod tests {
         assert_eq!(harness.get_all_by_role(Role::CheckBox).count(), 2);
         harness.get_by_label("Advice");
         assert!(!harness.state().issues[1].is_selected);
+    }
+
+    /// A repair that found nothing to remove did not fail (#228): the row
+    /// offers no box and shows no red, and the details say why.
+    #[test]
+    fn a_repair_with_nothing_to_remove_is_no_failure() {
+        let mut app = triage_app();
+        app.issues[1].record_repair(&Ok(crate::modules::Repaired::NothingToRemove(
+            "Windows keeps both packages.".to_string(),
+        )));
+        let mut harness = harness(app);
+
+        harness.get_by_label("Temp bloat files").click();
+        harness.run();
+
+        assert_eq!(harness.get_all_by_role(Role::CheckBox).count(), 2);
+        harness.get_by_label("Done");
+        harness.get_by_label("Nothing to remove");
+        harness.get_by_label("Nothing to remove: Windows keeps both packages.");
+        assert!(harness.query_by_label_contains("Repair failed").is_none());
     }
 
     /// Every box is its own: ticking one must not tick the rest.

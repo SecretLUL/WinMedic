@@ -1,6 +1,6 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::{
-    DISM_NO_RESTART, DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress,
+    DISM_NO_RESTART, DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress, Repaired,
     SERVICING_TIMEOUT, console_lines,
 };
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
@@ -973,6 +973,67 @@ impl SystemCleanerModule {
         .map(|out| parse_winsxs_analysis(&out.stdout).reclaimable_packages)
     }
 
+    /// The WinSxS repair: StartComponentCleanup, with the reclaimable packages
+    /// counted before and after it.
+    ///
+    /// DISM also counts packages the cleanup never removes, such as the 24H2
+    /// checkpoint update (see [`WINSXS_PACKAGES_LEFT_FILE`]). A cleanup that
+    /// leaves as many as there were found nothing to remove: the finding was
+    /// a false alarm, not a failed repair (#228).
+    async fn clean_component_store(
+        &self,
+        issue_id: &str,
+        progress_tx: Option<Sender<FixProgress>>,
+    ) -> Result<Repaired, String> {
+        let dbg = DebugTrace::fix(issue_id, progress_tx.clone(), self.config.verbose_logging);
+        dbg.section("WinSxS component store cleanup").await;
+        dbg.hint("DISM refuses to touch the component store without Administrator rights")
+            .await;
+        let before = self.count_reclaimable_packages(&dbg).await;
+        // Streamed for its progress bar: the cleanup takes minutes.
+        let out = dbg
+            .run_streaming(
+                &self.runner,
+                "dism.exe",
+                DISM_CLEANUP_ARGS,
+                console_lines(issue_id, progress_tx.as_ref()),
+                SERVICING_TIMEOUT,
+            )
+            .await?;
+        if out.success {
+            let left = self.count_reclaimable_packages(&dbg).await;
+            if let Some(left) = left {
+                self.paths
+                    .remember_packages_left(Some(left).filter(|&n| n > 0));
+            }
+            Ok(match (before, left) {
+                // A failed verification must never turn a finished
+                // cleanup into a failed repair.
+                (_, None) => Repaired::Changed(
+                    "WinSxS component store cleaned successfully (StartComponentCleanup finished)."
+                        .to_string(),
+                ),
+                (_, Some(0)) => Repaired::Changed(
+                    "WinSxS component store cleaned successfully (StartComponentCleanup finished). The store now reports 0 reclaimable packages."
+                        .to_string(),
+                ),
+                (Some(before), Some(left)) if left >= before => Repaired::NothingToRemove(format!(
+                    "DISM still reports {left} reclaimable package(s) after StartComponentCleanup, which leaves them in place (for example a checkpoint cumulative update that later updates are built on). This finding comes back only when DISM reports a different number."
+                )),
+                (_, Some(left)) => Repaired::Changed(format!(
+                    "WinSxS component store cleaned (StartComponentCleanup finished). DISM still reports {left} reclaimable package(s), which the cleanup leaves in place; this is raised again only when DISM reports a different number."
+                )),
+            })
+        } else {
+            let err = if out.stderr.trim().is_empty() {
+                out.stdout
+            } else {
+                out.stderr
+            };
+            Err(format!("DISM error during StartComponentCleanup: {}", err))
+        }
+    }
+
     async fn send_progress(
         progress_tx: &Option<Sender<ModuleProgress>>,
         percent: u8,
@@ -1426,54 +1487,12 @@ impl DiagnosticModule for SystemCleanerModule {
         let dbg = DebugTrace::fix(issue_id, progress_tx.clone(), self.config.verbose_logging);
 
         match issue_id {
-            "sys_clean_winsxs" => {
-                dbg.section("WinSxS component store cleanup").await;
-                dbg.hint("DISM refuses to touch the component store without Administrator rights")
-                    .await;
-                let before = self.count_reclaimable_packages(&dbg).await;
-                // Streamed for its progress bar: the cleanup takes minutes.
-                let out = dbg
-                    .run_streaming(
-                        &self.runner,
-                        "dism.exe",
-                        DISM_CLEANUP_ARGS,
-                        console_lines(issue_id, progress_tx.as_ref()),
-                        SERVICING_TIMEOUT,
-                    )
-                    .await?;
-                if out.success {
-                    let left = self.count_reclaimable_packages(&dbg).await;
-                    if let Some(left) = left {
-                        self.paths
-                            .remember_packages_left(Some(left).filter(|&n| n > 0));
-                    }
-                    match (before, left) {
-                        // A failed verification must never turn a finished
-                        // cleanup into a failed repair.
-                        (_, None) => Ok(
-                            "WinSxS component store cleaned successfully (StartComponentCleanup finished)."
-                                .to_string(),
-                        ),
-                        (_, Some(0)) => Ok(
-                            "WinSxS component store cleaned successfully (StartComponentCleanup finished). The store now reports 0 reclaimable packages."
-                                .to_string(),
-                        ),
-                        (Some(before), Some(left)) if left >= before => Err(format!(
-                            "StartComponentCleanup finished but removed nothing: DISM still reports {left} reclaimable package(s), which the cleanup leaves in place (for example a checkpoint cumulative update that later updates are built on). This is raised again only when DISM reports a different number."
-                        )),
-                        (_, Some(left)) => Ok(format!(
-                            "WinSxS component store cleaned (StartComponentCleanup finished). DISM still reports {left} reclaimable package(s), which the cleanup leaves in place; this is raised again only when DISM reports a different number."
-                        )),
-                    }
-                } else {
-                    let err = if out.stderr.trim().is_empty() {
-                        out.stdout
-                    } else {
-                        out.stderr
-                    };
-                    Err(format!("DISM error during StartComponentCleanup: {}", err))
-                }
-            }
+            // The engine asks `repair`, which tells a cleanup that found
+            // nothing to remove apart; here that is only its message.
+            "sys_clean_winsxs" => self
+                .clean_component_store(issue_id, progress_tx)
+                .await
+                .map(|repaired| repaired.message()),
             "sys_clean_delivery_optimization" => {
                 // The cmdlet runs *first*: it asks the Delivery Optimization
                 // service to release and flush its own cache. Sweeping the
@@ -1602,6 +1621,17 @@ impl DiagnosticModule for SystemCleanerModule {
                 cleanup_result("Extended system temp directories cleaned", total_clean)
             }
             _ => Err(format!("Unknown issue ID: {}", issue_id)),
+        }
+    }
+
+    async fn repair(
+        &self,
+        issue_id: &str,
+        progress_tx: Option<Sender<FixProgress>>,
+    ) -> Result<Repaired, String> {
+        match issue_id {
+            "sys_clean_winsxs" => self.clean_component_store(issue_id, progress_tx).await,
+            _ => self.fix(issue_id, progress_tx).await.map(Repaired::Changed),
         }
     }
 }
@@ -2252,9 +2282,11 @@ The operation completed successfully.";
     /// and its FoD metadata package as reclaimable, and StartComponentCleanup
     /// leaves both. DISM says "the operation completed successfully" whether
     /// it removed twelve packages or none; every repair reported success, and
-    /// every scan raised the finding again.
+    /// every scan raised the finding again. Counting them before and after
+    /// made it a failed repair, though nothing had failed (#228): there was
+    /// nothing to remove.
     #[tokio::test]
-    async fn a_cleanup_that_removes_nothing_is_no_success_and_is_not_raised_again() {
+    async fn a_cleanup_that_removes_nothing_has_nothing_to_remove_and_is_not_raised_again() {
         let mock = MockCommandRunner::new();
         mock.add_response(
             "StartComponentCleanup",
@@ -2267,13 +2299,13 @@ The operation completed successfully.";
         let issues = module.scan(None).await.unwrap();
         assert!(issues.iter().any(|i| i.id == "sys_clean_winsxs"));
 
-        let err = module
-            .fix("sys_clean_winsxs", None)
-            .await
-            .expect_err("a cleanup that removed nothing is no successful repair");
-        assert!(err.contains("removed nothing"), "{err}");
-        assert!(err.contains("still reports 2 reclaimable"), "{err}");
-        assert!(!err.contains("grace period"), "{err}");
+        match module.repair("sys_clean_winsxs", None).await {
+            Ok(Repaired::NothingToRemove(why)) => {
+                assert!(why.contains("still reports 2 reclaimable"), "{why}");
+                assert!(!why.contains("grace period"), "{why}");
+            }
+            other => panic!("a cleanup that removed nothing, not {other:?}"),
+        }
         let dism: Vec<String> = mock
             .executed()
             .into_iter()
