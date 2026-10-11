@@ -643,16 +643,18 @@ fn run_gui() -> Result<u8, Box<dyn std::error::Error>> {
 
     if let Err(err) = result {
         // The console is gone by now, so the error `main` prints would reach
-        // nobody. A missing or broken graphics driver no longer gets here:
-        // Windows' software renderer draws the window then (`gui::renderer`).
-        // What is left is Direct3D 12 failing even there, which usually means
-        // damaged system files - and those the command line can repair.
+        // nobody. A missing or failing graphics driver no longer gets here:
+        // the window then draws with Windows' software renderer
+        // (`gui::renderer`). What is left is Direct3D 12 failing there too,
+        // which usually means damaged system files - and those the command
+        // line can repair.
         utils::console::show_error_dialog(
             "WinMedic could not open its window",
             &format!(
                 "WinMedic could not open its window:\n\n{err}\n\n\
-                 Not even Windows' own software renderer could draw it, which usually means \
-                 that Windows system files are damaged (Direct3D 12).\n\n\
+                 Direct3D 12 could not draw it, neither through the graphics card nor with \
+                 Windows' own software renderer. That usually means that Windows system files \
+                 are damaged.\n\n\
                  Every check and repair also runs without the window. From a Command Prompt \
                  started as Administrator,\n\n\
                  \x20   winmedic --scan --output report.html\n\n\

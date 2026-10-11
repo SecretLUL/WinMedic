@@ -79,6 +79,9 @@ eframe = { version = "0.36", default-features = false, features = [
 # backend on, so it must be the wgpu eframe uses: raise the two together. A
 # test fails when they part.
 wgpu = { version = "30", default-features = false, features = ["dx12"] }
+# Waits for wgpu's adapters and the window's device, which `gui::renderer`
+# makes before the window opens: the crate eframe waits for them with.
+pollster = "1"
 egui_extras = "0.36"
 # The window's handle, which its taskbar button is addressed by
 # (`gui::taskbar`). eframe hands it out through this crate's trait without

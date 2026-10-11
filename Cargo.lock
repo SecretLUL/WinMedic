@@ -4137,6 +4137,7 @@ dependencies = [
  "eframe",
  "egui_extras",
  "egui_kittest",
+ "pollster",
  "raw-window-handle",
  "regex",
  "serde",
