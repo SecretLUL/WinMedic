@@ -3153,6 +3153,7 @@ mod tests {
             instance_id: instance_id.to_string(),
             name: name.to_string(),
             service: service.to_string(),
+            driver: String::new(),
         }
     }
 
@@ -3791,6 +3792,7 @@ mod tests {
             instance_id: CAMERA.to_string(),
             name: "Brio 500".to_string(),
             service: "usbvideo".to_string(),
+            driver: String::new(),
         };
         for (problem, advice) in [
             (43, "Repair 'Brio 500' under Devices & Drivers"),
