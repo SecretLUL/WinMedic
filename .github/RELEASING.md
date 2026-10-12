@@ -76,11 +76,12 @@ it, usually within hours.
 
 1. A fork of microsoft/winget-pkgs under `SecretLUL`.
 2. The repository secret `WINGET_TOKEN`: a **classic** personal access token
-   with the `public_repo` and `workflow` scopes. komac brings the fork up to
-   date before it pushes, which needs `workflow` whenever upstream changed its
-   workflow files (it failed on that for v0.5.0). When the token expires, the
-   submission fails and says so: replace the secret and run `winget.yml` with
-   the tag.
+   with the `public_repo` and `workflow` scopes. The workflow first brings the
+   fork up to date, which needs `workflow` whenever upstream changed its
+   workflow files (it failed on that for v0.5.0). The submission does not
+   depend on that: komac branches from winget-pkgs' own head. So a failed sync
+   only warns (#144). When the token expires, the submission fails and says
+   so: replace the secret and run `winget.yml` with the tag.
 
 `./scripts/winget-manifest.ps1 <version>` builds and validates the three
 manifests by hand. It was needed once, for the first submission (0.3.4), because
