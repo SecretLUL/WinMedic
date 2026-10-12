@@ -344,7 +344,9 @@ pub async fn finding(
             .to_string(),
         steps,
     )
-    // Whether Windows takes the new entry before it restarts is not known.
+    // Windows reads the entries only as it starts: on the development PC,
+    // neither a broken entry nor the repaired one took effect before a
+    // restart.
     .with_requires_reboot(true);
     issue.is_selected = false;
     Ok(Some(issue))
