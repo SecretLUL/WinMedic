@@ -243,6 +243,17 @@ jobs:
           "$hash  $name" | Out-File -FilePath "target/release/$name.sha256" -Encoding ascii
           Write-Host "$name -> $hash"
 
+      # Not published: the PDB turns the offsets in a crash log back into
+      # functions and lines (scripts/resolve-crash-log.ps1). It matches only
+      # the binary built in this run. GitHub keeps it for 90 days.
+      - name: Keep the PDB for crash logs
+        uses: actions/upload-artifact@v7
+        with:
+          name: winmedic-${{ steps.v.outputs.tag }}-pdb
+          path: target/release/winmedic.pdb
+          if-no-files-found: error
+          retention-days: 90
+
       # Pushed only once the binary has been built and vetted, so a failed build
       # does not leave a tag behind that nothing was ever released under.
       #

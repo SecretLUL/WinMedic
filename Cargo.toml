@@ -100,6 +100,10 @@ codegen-units = 1
 # engine runs each in a task of its own and catches its panic, which an
 # aborting build cannot (#224). It costs 4.2 MB (12.4 to 16.5 MB for 0.11.0).
 panic = "unwind"
+# Line tables, in winmedic.pdb beside the binary, not in it: the release
+# workflow keeps the PDB, which turns the offsets in a crash log back into
+# functions and lines. The binary stays the size it was.
+debug = "line-tables-only"
 
 [dev-dependencies]
 egui_kittest = "0.36.1"
