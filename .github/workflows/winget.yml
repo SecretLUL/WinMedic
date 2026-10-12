@@ -168,9 +168,13 @@ jobs:
             mode=--dry-run
           else
             mode=--submit
-            # komac pushes the manifest branch to the fork, so bring the fork
-            # up to date with winget-pkgs first.
-            komac sync-fork
+            # This only tidies the fork: komac opens the manifest branch at
+            # winget-pkgs' own head, not at the fork's. So a failed sync warns
+            # instead of stopping the submission. For v0.8.0 GitHub answered
+            # it with "Something went wrong while executing your query", and
+            # only a re-run submitted the release (#144).
+            komac sync-fork ||
+              echo "::warning::The winget-pkgs fork was not brought up to date. The submission does not need it: komac branches from winget-pkgs itself."
           fi
           # The release assets are the binary and its .sha256; only the binary
           # is an installer. komac downloads it and hashes it itself, reads the
