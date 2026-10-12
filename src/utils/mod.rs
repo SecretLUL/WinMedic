@@ -3,6 +3,7 @@ pub mod admin;
 pub mod background_task;
 pub mod cmd;
 pub mod console;
+pub mod crash_log;
 pub mod debug_log;
 pub mod decode;
 pub mod event_xml;

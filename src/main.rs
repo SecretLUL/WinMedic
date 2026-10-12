@@ -98,9 +98,13 @@ impl CliArgs {
 fn main() -> ExitCode {
     load_dlls_from_system32_only();
     let args = CliArgs::parse();
+    if let Some(dir) = safety::audit::AuditLogger::real().log_dir() {
+        utils::crash_log::install(dir.to_path_buf(), crash_mode(&args));
+    }
 
-    // A panic nothing caught on its way here ends the run with the exit code
-    // for WinMedic itself failing, not the 101 Rust exits with.
+    // A panic nothing caught on its way here has left its crash log by now. It
+    // ends the run with the exit code for WinMedic itself failing, not the 101
+    // Rust exits with.
     match std::panic::catch_unwind(AssertUnwindSafe(move || run(args))) {
         Ok(Ok(code)) => ExitCode::from(code),
         Ok(Err(err)) => {
@@ -108,6 +112,23 @@ fn main() -> ExitCode {
             ExitCode::from(exit_code::INTERNAL_ERROR)
         }
         Err(_) => ExitCode::from(exit_code::INTERNAL_ERROR),
+    }
+}
+
+/// How this run was started, as a crash log says it.
+fn crash_mode(args: &CliArgs) -> &'static str {
+    if args.helper {
+        "helper"
+    } else if args.uninstall {
+        "--uninstall"
+    } else if args.auto_fix {
+        "--auto-fix"
+    } else if args.dry_run {
+        "--dry-run"
+    } else if args.is_headless() {
+        "--scan"
+    } else {
+        "window"
     }
 }
 
@@ -653,7 +674,8 @@ fn run_gui() -> Result<u8, Box<dyn std::error::Error>> {
         // Without this, the window would just be gone.
         utils::console::show_error_dialog(
             "WinMedic stopped",
-            "WinMedic ran into an error of its own and had to close.",
+            "WinMedic ran into an error of its own and had to close.\n\n\
+             A crash log is in %APPDATA%\\WinMedic\\logs.",
         );
         return Ok(exit_code::INTERNAL_ERROR);
     };

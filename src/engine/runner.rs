@@ -7,6 +7,7 @@ use crate::modules::{
 use crate::safety::audit::AuditLogger;
 use crate::safety::restore_point::{RestorePointOutcome, RestorePointService};
 use crate::utils::cmd::{CommandRunner, describe_os_error};
+use crate::utils::crash_log::Running;
 use crate::utils::debug_log::{
     DebugTag, extract_os_error_code, render_debug_kv, render_debug_line,
 };
@@ -350,8 +351,26 @@ impl DiagnosticEngine {
                 .await;
         }
 
+        // What a crash log names when a check panics: the check, and the step
+        // its progress last named.
+        let running: std::collections::HashMap<String, Running> = self
+            .modules
+            .iter()
+            .map(|m| {
+                (
+                    m.id().to_string(),
+                    Running::new(format!("check '{}'", m.id())),
+                )
+            })
+            .collect();
+        let steps = running.clone();
         let forward_handle = tokio::spawn(async move {
             while let Some(prog) = prog_rx.recv().await {
+                if !prog.is_log_only()
+                    && let Some(running) = steps.get(&prog.module_id)
+                {
+                    running.set_step(&prog.current_step);
+                }
                 let _ = evt_tx_clone
                     .send(ScanEvent::ModuleProgressUpdate(prog))
                     .await;
@@ -373,7 +392,11 @@ impl DiagnosticEngine {
                 .await;
 
             let named = (mod_id.clone(), mod_name.clone());
-            let task = set.spawn(async move {
+            let check = running
+                .get(&mod_id)
+                .cloned()
+                .unwrap_or_else(|| Running::new(format!("check '{mod_id}'")));
+            let task = set.spawn(check.scope(async move {
                 if verbose {
                     let _ = p_tx
                         .send(ModuleProgress {
@@ -389,7 +412,7 @@ impl DiagnosticEngine {
                 }
                 let result = module.scan(Some(p_tx)).await;
                 (mod_id, mod_name, result)
-            });
+            }));
             module_of_task.insert(task.id(), named);
         }
         // Drop the extra sender reference so prog_rx closes once all module tasks complete
@@ -778,10 +801,15 @@ impl DiagnosticEngine {
             let (prog_tx, mut prog_rx) = channel::<FixProgress>(50);
             let evt_tx_clone = event_tx.clone();
             let issue_id_clone = issue.id.clone();
+            // What a crash log names when the repair panics: the repair, and
+            // the line of its output it got to.
+            let running = Running::new(format!("repair '{}' of {}", issue.id, issue.module_id));
+            let steps = running.clone();
 
             let forward_handle = tokio::spawn(async move {
                 while let Some(prog) = prog_rx.recv().await {
                     if let Some(line) = prog.console_line {
+                        steps.set_step(&line);
                         let _ = evt_tx_clone
                             .send(RepairEvent::FixOutput {
                                 issue_id: issue_id_clone.clone(),
@@ -799,7 +827,9 @@ impl DiagnosticEngine {
             let mut repair = {
                 let module = Arc::clone(module);
                 let issue_id = issue.id.clone();
-                tokio::spawn(async move { module.repair(&issue_id, Some(prog_tx)).await })
+                tokio::spawn(
+                    running.scope(async move { module.repair(&issue_id, Some(prog_tx)).await }),
+                )
             };
             let outcome = tokio::select! {
                 biased;
@@ -924,6 +954,7 @@ impl DiagnosticEngine {
 mod tests {
     use super::*;
     use crate::engine::issue::{RiskScore, Severity};
+    use crate::utils::crash_log::running_now;
     use crate::utils::debug_log::parse_debug_line;
 
     /// Deliberately a literal rather than `get_all_modules().len()`: derived
@@ -1123,6 +1154,75 @@ mod tests {
         ) -> Result<String, String> {
             panic!("unexpected tool output")
         }
+    }
+
+    /// A module that reports what a crash log would name as running: in the
+    /// title of its finding, and as the message of its repair.
+    struct Names;
+
+    #[async_trait::async_trait]
+    impl DiagnosticModule for Names {
+        fn id(&self) -> &'static str {
+            "names"
+        }
+        fn name(&self) -> &'static str {
+            "Names"
+        }
+        fn description(&self) -> &'static str {
+            ""
+        }
+        fn icon(&self) -> &'static str {
+            ""
+        }
+        async fn scan(
+            &self,
+            _progress_tx: Option<Sender<ModuleProgress>>,
+        ) -> Result<Vec<Issue>, String> {
+            Ok(vec![Issue::new(
+                "names_issue",
+                "names",
+                running_now().unwrap_or_default(),
+                "Category",
+                Severity::Warning,
+                RiskScore::Low,
+                "",
+                "",
+                "",
+                vec![],
+            )])
+        }
+        async fn fix(
+            &self,
+            _issue_id: &str,
+            _progress_tx: Option<Sender<FixProgress>>,
+        ) -> Result<String, String> {
+            Ok(running_now().unwrap_or_default())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_check_and_a_repair_run_under_their_names_for_the_crash_log() {
+        let engine = DiagnosticEngine::with_modules(vec![Arc::new(Names)]);
+        let (tx, _rx) = channel::<ScanEvent>(50);
+        let mut issues = engine.run_scan(tx, CancellationToken::new()).await;
+        assert_eq!(issues[0].title, "check 'names'");
+
+        let (tx, mut rx) = channel::<RepairEvent>(50);
+        engine
+            .run_repairs(&mut issues, LIVE, tx, CancellationToken::new())
+            .await;
+        let mut finished = None;
+        while let Ok(evt) = rx.try_recv() {
+            if let RepairEvent::FixFinished { result, .. } = evt {
+                finished = Some(result);
+            }
+        }
+        assert_eq!(
+            finished,
+            Some(Ok(Repaired::Changed(
+                "repair 'names_issue' of names".to_string()
+            )))
+        );
     }
 
     /// A repair that panics fails like one that returned an error, and the
