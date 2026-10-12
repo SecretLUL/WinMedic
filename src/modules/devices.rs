@@ -786,8 +786,9 @@ impl DiagnosticModule for DevicesModule {
 mod tests {
     use super::*;
     use crate::modules::opengl_driver::test_support::{
-        ICD, ICD_WOW, KEY, Store, answer_for_the_key, card, pc,
+        ICD, ICD_WOW, KEY, Store, answer_for_the_key, card, pc, repairable,
     };
+    use crate::safety::reg_backup::RegBackupManager;
     use crate::utils::cmd::{CmdOutput, MockCommandRunner};
     use crate::utils::decode::decode_output;
     use crate::utils::service::test_support::{
@@ -1657,5 +1658,29 @@ mod tests {
                 .iter()
                 .any(|step| step.starts_with("reg add"))
         );
+    }
+
+    /// The repair is handed the module's backup folder, and nothing to back
+    /// up into while registry backups are switched off.
+    #[tokio::test]
+    async fn the_opengl_repair_backs_up_into_the_backup_folder_while_backups_are_on() {
+        let store = Store::new("devices_fix");
+        for backing_up in [true, false] {
+            let mock = repairable(&[]);
+            let done = module(&mock)
+                .with_driver_store(store.store())
+                .with_backup_dir(store.backups())
+                .backing_up_registry(backing_up)
+                .fix(&opengl_driver::issue_id(&card()), None)
+                .await
+                .unwrap();
+            let calls = mock.executed();
+            let count = |start: &str| calls.iter().filter(|c| c.starts_with(start)).count();
+            assert_eq!(count("reg.exe export"), if backing_up { 2 } else { 0 });
+            assert_eq!(count("reg.exe add"), 2, "{calls:?}");
+            assert_eq!(done.contains("registry backups"), backing_up, "{done}");
+        }
+        let backups = RegBackupManager::with_dir(store.backups()).list_backups();
+        assert_eq!(backups.len(), 2, "only the run with backups made them");
     }
 }
