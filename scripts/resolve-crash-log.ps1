@@ -97,7 +97,8 @@ try {
     }
 
     foreach ($text in Get-Content -LiteralPath $CrashLog) {
-        if ($text -notmatch '^(\s+)winmedic\.exe\+0x([0-9a-fA-F]+)\s*$') {
+        # winmedic.exe, or winmedic-v0.12.0.exe as the download is named.
+        if ($text -notmatch '^(\s+)winmedic[^\s+]*\.exe\+0x([0-9a-fA-F]+)\s*$') {
             $text
             continue
         }
