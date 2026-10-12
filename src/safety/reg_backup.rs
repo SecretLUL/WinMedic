@@ -885,8 +885,88 @@ fn key_name(path: &str) -> String {
     .to_lowercase()
 }
 
+/// A graphics card's driver key as `reg export` wrote it, and how to read and
+/// change such an export, for other modules' tests.
+#[cfg(test)]
+pub(crate) mod test_support {
+    /// The driver key of the development PC's graphics card.
+    pub const DISPLAY_KEY: &str =
+        r"HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000";
+
+    /// `reg export` of [`DISPLAY_KEY`] on Windows 11, up to its second subkey.
+    pub const DISPLAY_EXPORT: &[u8] =
+        include_bytes!("../../tests/fixtures/files/reg_export_display_driver_key.bin");
+
+    /// The text of a file `reg export` wrote.
+    pub fn text_of(export: &[u8]) -> String {
+        let units: Vec<u16> = export[2..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&pair| u16::from_le_bytes(pair))
+            .collect();
+        String::from_utf16(&units).unwrap()
+    }
+
+    /// `text` encoded the way `reg export` writes it.
+    pub fn utf16(text: &str) -> Vec<u8> {
+        let mut bytes = vec![0xFF, 0xFE];
+        bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        bytes
+    }
+
+    /// The lines of the first value `name` in the text of an export, joined
+    /// as they are.
+    pub fn value_lines(text: &str, name: &str) -> String {
+        let lines: Vec<&str> = text.split("\r\n").collect();
+        let start = format!("\"{name}\"=");
+        let first = lines
+            .iter()
+            .position(|line| line.starts_with(&start))
+            .unwrap_or_else(|| panic!("no {name} in the export"));
+        let mut last = first;
+        while lines[last].ends_with('\\') {
+            last += 1;
+        }
+        lines[first..=last].join("\r\n")
+    }
+
+    /// `text` as a one-string `REG_MULTI_SZ` after `prefix`, wrapped as `reg
+    /// export` wraps a value it writes in hex: after the comma that makes a
+    /// line longer than 76 characters.
+    pub fn hex7_lines(prefix: &str, text: &str) -> String {
+        let mut bytes: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        bytes.extend([0, 0, 0, 0]);
+        let mut out = String::from(prefix);
+        let mut column = prefix.len();
+        for (i, byte) in bytes.iter().enumerate() {
+            out.push_str(&format!("{byte:02x}"));
+            column += 2;
+            if i + 1 < bytes.len() {
+                out.push(',');
+                column += 1;
+                if column > 76 {
+                    out.push_str("\\\r\n  ");
+                    column = 2;
+                }
+            }
+        }
+        out
+    }
+
+    /// `export` with the multi-string `name` holding `path` alone, written as
+    /// `reg export` writes it.
+    pub fn with_path(export: &[u8], name: &str, path: &str) -> Vec<u8> {
+        let text = text_of(export);
+        let lines = value_lines(&text, name);
+        let changed = hex7_lines(&format!("\"{name}\"=hex(7):"), path);
+        utf16(&text.replacen(&lines, &changed, 1))
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::test_support::*;
     use super::*;
     use crate::utils::cmd::{CmdOutput, MockCommandRunner};
     use std::sync::Mutex;
@@ -923,23 +1003,6 @@ mod tests {
     const POWER_EXPORT: &[u8] =
         include_bytes!("../../tests/fixtures/files/reg_export_session_manager_power.bin");
     const POWER_KEY: &str = r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power";
-
-    fn text_of(export: &[u8]) -> String {
-        let units: Vec<u16> = export[2..]
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|&pair| u16::from_le_bytes(pair))
-            .collect();
-        String::from_utf16(&units).unwrap()
-    }
-
-    /// `text` encoded the way `reg export` writes it.
-    fn utf16(text: &str) -> Vec<u8> {
-        let mut bytes = vec![0xFF, 0xFE];
-        bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
-        bytes
-    }
 
     /// The export of the Fast Startup key with `extra` after its last value.
     fn power_export_and(extra: &str) -> Vec<u8> {
@@ -1453,35 +1516,49 @@ mod tests {
         }
     }
 
-    /// Every kind of value in the captured Fast Startup export cuts out as
-    /// the lines `reg export` wrote for it, under the key's own line: a
-    /// number, a QWORD, and binary values over several lines.
+    /// Every kind of value in the two captured exports cuts out as the lines
+    /// `reg export` wrote for it, under the key's own line: numbers, a QWORD
+    /// and binary values over several lines from the Fast Startup key; from a
+    /// graphics card's key strings, an empty one, an expandable one, a name
+    /// with a space, and multi-strings of one path and of four.
     #[test]
     fn a_value_is_cut_from_the_export_line_for_line() {
-        let export = text_of(POWER_EXPORT);
-        let lines: Vec<&str> = export.split("\r\n").collect();
-        let header = lines.iter().find(|line| line.starts_with('[')).unwrap();
-        for name in [
+        let display = [
+            "DriverDesc",
+            "LDA_ChainDescriptor",
+            "AMDKMPFD",
+            "Adaptive De-interlacing",
+            "OpenGLDriverName",
+            "OpenGLDriverNameWow",
+            "UserModeDriverName",
+        ];
+        let power = [
             "AcPolicy",
             "HiberbootEnabled",
             "KernelPagesWritten",
             "SystemPowerPolicy",
+        ];
+        for (export, key, names) in [
+            (POWER_EXPORT, POWER_KEY, &power[..]),
+            (DISPLAY_EXPORT, DISPLAY_KEY, &display[..]),
         ] {
-            let start = format!("\"{name}\"=");
-            let first = lines.iter().position(|l| l.starts_with(&start)).unwrap();
-            let mut last = first;
-            while lines[last].ends_with('\\') {
-                last += 1;
+            let text = text_of(export);
+            let header = text
+                .split("\r\n")
+                .find(|line| line.starts_with('['))
+                .unwrap();
+            for name in names {
+                let cut = cut_value(export, key, name).unwrap();
+                assert_eq!(
+                    text_of(&cut),
+                    format!(
+                        "{REG_EXPORT_SIGNATURE}\r\n\r\n{header}\r\n{}\r\n\r\n",
+                        value_lines(&text, name)
+                    ),
+                    "{name}"
+                );
+                assert_eq!(check_contents(&cut, key), Ok(()), "{name}");
             }
-            let value = lines[first..=last].join("\r\n");
-
-            let cut = cut_value(POWER_EXPORT, POWER_KEY, name).unwrap();
-            assert_eq!(
-                text_of(&cut),
-                format!("{REG_EXPORT_SIGNATURE}\r\n\r\n{header}\r\n{value}\r\n\r\n"),
-                "{name}"
-            );
-            assert_eq!(check_contents(&cut, POWER_KEY), Ok(()), "{name}");
         }
         // As in the registry, a value's name is the same in any case.
         assert!(cut_value(POWER_EXPORT, POWER_KEY, "hiberbootenabled").is_ok());
@@ -1495,6 +1572,38 @@ mod tests {
         assert!(cut_value(&below, POWER_KEY, "Extra").is_err());
         assert!(cut_value(&below, &format!("{POWER_KEY}\\PowerSettings"), "Extra").is_ok());
         assert!(cut_value(POWER_EXPORT, POWER_KEY, "NoSuchValue").is_err());
+        // The graphics card's first subkey, as captured.
+        assert!(cut_value(DISPLAY_EXPORT, DISPLAY_KEY, "KMD_ACR_State").is_err());
+        assert!(
+            cut_value(
+                DISPLAY_EXPORT,
+                &format!("{DISPLAY_KEY}\\ACR"),
+                "KMD_ACR_State"
+            )
+            .is_ok()
+        );
+    }
+
+    /// What the tests of other modules build a changed graphics card's export
+    /// with writes a multi-string as `reg export` wrote the captured ones.
+    #[test]
+    fn a_path_is_written_as_reg_export_writes_it() {
+        let text = text_of(DISPLAY_EXPORT);
+        for (name, path) in [("OpenGLDriverName", ICD), ("OpenGLDriverNameWow", ICD_WOW)] {
+            assert_eq!(
+                hex7_lines(&format!("\"{name}\"=hex(7):"), path),
+                value_lines(&text, name)
+            );
+            assert_eq!(with_path(DISPLAY_EXPORT, name, path), DISPLAY_EXPORT);
+        }
+        let elsewhere = with_path(DISPLAY_EXPORT, "OpenGLDriverName", r"C:\x\atig6pxx.dll");
+        assert_eq!(
+            text_of(&cut_value(&elsewhere, DISPLAY_KEY, "OpenGLDriverName").unwrap()),
+            format!(
+                "{REG_EXPORT_SIGNATURE}\r\n\r\n[{}]\r\n\"OpenGLDriverName\"=hex(7):43,00,3a,00,5c,00,78,00,5c,00,61,00,74,00,69,00,67,\\\r\n  00,36,00,70,00,78,00,78,00,2e,00,64,00,6c,00,6c,00,00,00,00,00\r\n\r\n",
+                registry::expand_hive(DISPLAY_KEY)
+            )
+        );
     }
 
     #[test]
@@ -1515,51 +1624,13 @@ mod tests {
         assert!(cut_value(b"no UTF-16", POWER_KEY, "AcPolicy").is_err());
     }
 
-    /// `text` as a one-string `REG_MULTI_SZ` after `prefix`, wrapped as the
-    /// Fast Startup export wraps its binary values.
-    fn hex7_lines(prefix: &str, text: &str) -> String {
-        let mut bytes: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
-        bytes.extend([0, 0, 0, 0]);
-        let mut out = String::from(prefix);
-        let mut column = prefix.len();
-        for (i, byte) in bytes.iter().enumerate() {
-            out.push_str(&format!("{byte:02x}"));
-            column += 2;
-            if i + 1 < bytes.len() {
-                out.push(',');
-                column += 1;
-                if column >= 76 {
-                    out.push_str("\\\r\n  ");
-                    column = 2;
-                }
-            }
-        }
-        out
-    }
-
-    const DISPLAY_KEY: &str =
-        r"HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0001";
-
-    /// The path the RX 9070 XT's entry should have had (the package's hash
-    /// as the incident report gave it).
+    /// The OpenGL drivers in the captured graphics card's key.
     const ICD: &str = r"C:\WINDOWS\System32\DriverStore\FileRepository\u0203304.inf_amd64_a6e5a337568ce3f0\B026373\atig6pxx.dll";
+    const ICD_WOW: &str = r"C:\WINDOWS\System32\DriverStore\FileRepository\u0203304.inf_amd64_a6e5a337568ce3f0\B026373\atiglpxx.dll";
 
-    /// The OpenGL driver's lines in [`display_export`].
-    fn icd_lines() -> String {
-        hex7_lines("\"OpenGLDriverName\"=hex(7):", ICD)
-    }
-
-    /// `reg export` of a graphics card's driver key, **constructed** in the
-    /// shape of the captured export until a capture of such a key is at
-    /// hand: strings, the OpenGL driver as a one-string multi-string over
-    /// several lines, and a key below with a value of the same name.
-    fn display_export() -> Vec<u8> {
-        let key = registry::expand_hive(DISPLAY_KEY);
-        utf16(&format!(
-            "{REG_EXPORT_SIGNATURE}\r\n\r\n[{key}]\r\n\"DriverDesc\"=\"AMD Radeon RX 9070 XT\"\r\n\"InfPath\"=\"oem23.inf\"\r\n{}\r\n\r\n[{key}\\Settings]\r\n\"OpenGLDriverName\"=\"x\"\r\n\r\n",
-            icd_lines()
-        ))
-    }
+    /// `reg query <DISPLAY_KEY> /v OpenGLDriverName` on Windows 11.
+    const ICD_QUERY: &[u8] =
+        include_bytes!("../../tests/fixtures/console/reg_query_display_opengl_driver_name.bin");
 
     /// `reg query ... /v SvcHostSplitThresholdInKB` on Windows 11, with the
     /// value a tuning tool had left on 2026-10-08: 32 GB.
@@ -1610,13 +1681,12 @@ mod tests {
         );
     }
 
-    /// `reg query <DISPLAY_KEY> /v OpenGLDriverName`, in the shape of the
-    /// captured answers: a blank line, the key, the value, a blank line.
-    fn display_query(kind: &str, data: &str) -> CmdOutput {
-        CmdOutput::ok(format!(
-            "\r\n{}\r\n    OpenGLDriverName    {kind}    {data}\r\n\r\n",
-            registry::expand_hive(DISPLAY_KEY)
-        ))
+    /// `reg query <DISPLAY_KEY> /v OpenGLDriverName` as captured, printing
+    /// `path` as the value.
+    fn icd_query(path: &str) -> CmdOutput {
+        let query = crate::utils::decode::decode_output(ICD_QUERY);
+        assert!(query.contains(ICD));
+        CmdOutput::ok(query.replace(ICD, path))
     }
 
     /// The backup holds the value as `reg export` wrote it, not as `reg
@@ -1626,10 +1696,10 @@ mod tests {
     async fn a_text_backup_is_the_values_lines_from_reg_export() {
         let dir = TempDir::new("text_value");
         let mgr = RegBackupManager::with_dir(dir.path.clone());
-        let runner = reg(&display_export());
+        let runner = reg(DISPLAY_EXPORT);
         runner.add_response(
             "/v OpenGLDriverName",
-            display_query("REG_MULTI_SZ", r"C:\Tr?ber\atig6pxx.dll"),
+            icd_query(&ICD.replace("B026373", "B0?6373")),
         );
 
         let record = mgr
@@ -1647,7 +1717,7 @@ mod tests {
             format!(
                 "{REG_EXPORT_SIGNATURE}\r\n\r\n[{}]\r\n{}\r\n\r\n",
                 registry::expand_hive(DISPLAY_KEY),
-                icd_lines()
+                value_lines(&text_of(DISPLAY_EXPORT), "OpenGLDriverName")
             )
         );
         assert_eq!(record.key_path, DISPLAY_KEY);
@@ -1673,20 +1743,22 @@ mod tests {
 
     #[tokio::test]
     async fn no_text_backup_is_kept_when_reg_export_does_not_give_the_value() {
-        let without_icd = utf16(&format!(
-            "{REG_EXPORT_SIGNATURE}\r\n\r\n[{}]\r\n\"InfPath\"=\"oem23.inf\"\r\n\r\n",
-            registry::expand_hive(DISPLAY_KEY)
+        let text = text_of(DISPLAY_EXPORT);
+        let without_icd = utf16(&text.replacen(
+            &format!("{}\r\n", value_lines(&text, "OpenGLDriverName")),
+            "",
+            1,
         ));
         let refused = CmdOutput::with_output(1, "", "FEHLER: Zugriff verweigert");
         for (case, export, answer) in [
-            ("refused", display_export(), refused),
+            ("refused", DISPLAY_EXPORT.to_vec(), refused),
             ("not in it", without_icd, CmdOutput::ok("")),
             ("not an export", b"no UTF-16".to_vec(), CmdOutput::ok("")),
         ] {
             let dir = TempDir::new("text_refused");
             let mgr = RegBackupManager::with_dir(dir.path.clone());
             let runner = MockCommandRunner::new();
-            runner.add_response("/v OpenGLDriverName", display_query("REG_SZ", ICD));
+            runner.add_response("/v OpenGLDriverName", icd_query(ICD));
             runner.add_written_file("reg.exe export", 2, export);
             runner.add_response("reg.exe export", answer);
 
