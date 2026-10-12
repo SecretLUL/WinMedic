@@ -652,7 +652,7 @@ impl DiagnosticModule for DevicesModule {
     }
 
     fn description(&self) -> &'static str {
-        "Finds devices that stopped working or have no driver, the warning signs in Device Manager, and restarts them; clears a stuck print queue"
+        "Finds devices that stopped working or have no driver, the warning signs in Device Manager, and restarts them; points a graphics card's OpenGL driver entry back at its own files; clears a stuck print queue"
     }
 
     fn icon(&self) -> &'static str {

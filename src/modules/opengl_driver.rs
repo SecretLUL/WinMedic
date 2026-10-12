@@ -153,8 +153,9 @@ struct Broken {
     /// `REG_MULTI_SZ` or `REG_SZ`, which the repair writes again.
     kind: String,
     path: String,
-    /// The file of the same name beside the card's Direct3D driver.
-    replacement: Option<String>,
+    /// The file of the same name beside the card's Direct3D driver, or why
+    /// there is none.
+    replacement: Result<String, String>,
 }
 
 /// The values of `key` itself, or why they could not be read.
@@ -188,25 +189,45 @@ fn broken_entries(store: &DriverStore, values: &RegKeyValues) -> Vec<Broken> {
                 name,
                 kind: value.kind.clone(),
                 path: value.data.clone(),
-                replacement: values
-                    .value(direct3d)
-                    .and_then(text)
-                    .and_then(|direct3d| beside(store, &direct3d.data, &value.data)),
+                replacement: beside(
+                    store,
+                    values.value(direct3d).and_then(text),
+                    direct3d,
+                    &value.data,
+                ),
             })
         })
         .collect()
 }
 
-/// The file named like `path` in the folder of the first file `direct3d`
-/// names, if both are files in the driver store.
-fn beside(store: &DriverStore, direct3d: &str, path: &str) -> Option<String> {
+/// The file named like `path` in the folder of the first file that
+/// `direct3d`, the Direct3D entry `entry`, names, when both are files in the
+/// driver store; or why there is none.
+fn beside(
+    store: &DriverStore,
+    direct3d: Option<&RegValue>,
+    entry: &str,
+    path: &str,
+) -> Result<String, String> {
     // A `\0` inside the first path (a folder `0409`) cuts it short, and what
     // is left of it is no file.
-    let first = direct3d.split(r"\0").next()?;
-    let (folder, _) = first.rsplit_once('\\')?;
-    let (_, name) = path.rsplit_once('\\')?;
+    let folder = direct3d
+        .and_then(|value| value.data.split(r"\0").next())
+        .filter(|first| store.is_file(first))
+        .and_then(|first| first.rsplit_once('\\'))
+        .map(|(folder, _)| folder)
+        .ok_or_else(|| {
+            format!("Its Direct3D driver ({entry}) is not a file in the driver store, so there is no folder to look in")
+        })?;
+    let name = path.rsplit_once('\\').map_or(path, |(_, name)| name);
     let replacement = format!(r"{folder}\{name}");
-    (store.is_file(first) && store.is_file(&replacement)).then_some(replacement)
+    if store.is_file(&replacement) {
+        Ok(replacement)
+    } else {
+        Err(format!(
+            "The folder of its Direct3D driver has no {name} either: {folder}"
+        ))
+    }
 }
 
 /// Who made the card's driver, after its key.
@@ -255,11 +276,17 @@ pub async fn finding(
             entry.kind,
             entry.path,
             match &entry.replacement {
-                Some(file) => format!("Beside its Direct3D driver: {file}"),
-                None => "Not beside its Direct3D driver either".to_string(),
+                Ok(file) => format!("Beside its Direct3D driver: {file}"),
+                Err(why) => why.clone(),
             }
         ));
     }
+    let broken_for = |name| broken.iter().any(|entry| entry.name == name);
+    let programs = match (broken_for(ENTRIES[0].0), broken_for(ENTRIES[1].0)) {
+        (true, true) => "Games and programs that draw with OpenGL, Minecraft among them,",
+        (true, false) => "64-bit games and programs that draw with OpenGL, Minecraft among them,",
+        _ => "32-bit games and programs that draw with OpenGL",
+    };
     let issue = |recommendation: String, steps| {
         Issue::new(
             issue_id(card),
@@ -268,7 +295,9 @@ pub async fn finding(
             "Devices & Drivers",
             Severity::Warning,
             RiskScore::High,
-            "Games and programs that draw with OpenGL, Minecraft among them, get only Windows' own OpenGL 1.1, which draws in software, and most of them do not start. Direct3D goes on working, and Device Manager shows nothing wrong. A driver Windows Update installs for a second graphics adapter, often an older one, can leave a card like this.",
+            format!(
+                "{programs} get only Windows' own OpenGL 1.1, which draws in software, and most of them do not start. Direct3D goes on working, and Device Manager shows nothing wrong. A driver Windows Update installs for a second graphics adapter, often an older one, can leave a card like this."
+            ),
             details.clone(),
             recommendation,
             steps,
@@ -278,7 +307,7 @@ pub async fn finding(
     let provider = provider(&values);
     let replacements: Option<Vec<&str>> = broken
         .iter()
-        .map(|entry| entry.replacement.as_deref())
+        .map(|entry| entry.replacement.as_deref().ok())
         .collect();
     let Some(replacements) = replacements else {
         return Ok(Some(
@@ -353,13 +382,16 @@ pub async fn repair(
     }
     let mut changes = Vec::new();
     for entry in &broken {
-        let Some(replacement) = entry.replacement.as_deref() else {
-            return Err(format!(
-                "{} of {label} names {}, which does not exist, and the folder of its Direct3D driver has no file of that name either. Install the graphics driver from {} again. Nothing was changed.",
-                entry.name,
-                entry.path,
-                provider(&values)
-            ));
+        let replacement = match &entry.replacement {
+            Ok(replacement) => replacement.as_str(),
+            Err(why) => {
+                return Err(format!(
+                    "{} of {label} names {}, which does not exist. {why}. Install the graphics driver from {} again. Nothing was changed.",
+                    entry.name,
+                    entry.path,
+                    provider(&values)
+                ));
+            }
         };
         changes.push((entry, replacement));
     }
@@ -579,6 +611,32 @@ pub(crate) mod test_support {
         export
     }
 
+    /// The PC with both entries pointed away, which takes `reg export` and
+    /// `reg add` and afterwards reads the entries as captured; `first` are
+    /// answers that come before those.
+    pub fn repairable(first: &[(&str, CmdOutput)]) -> MockCommandRunner {
+        let mock = MockCommandRunner::new();
+        mock.set_devices(vec![card()]);
+        for (pattern, answer) in first {
+            mock.add_response(*pattern, answer.clone());
+        }
+        mock.add_response_after(
+            "/v OpenGLDriverNameWow /t",
+            format!("query {KEY} /v OpenGLDriverNameWow"),
+            CmdOutput::ok(decode_output(ICD_WOW_QUERY)),
+        );
+        mock.add_response_after(
+            "/v OpenGLDriverName /t",
+            format!("query {KEY} /v OpenGLDriverName"),
+            CmdOutput::ok(decode_output(ICD_QUERY)),
+        );
+        answer_for_the_key(&mock, &[ICD, ICD_WOW]);
+        mock.add_written_file("reg.exe export", 2, export(&[ICD, ICD_WOW]));
+        mock.add_response("reg.exe export", CmdOutput::ok(""));
+        mock.add_response("reg.exe add", CmdOutput::ok(""));
+        mock
+    }
+
     /// A temporary folder with a driver store in it, holding the files the
     /// captured key names in the card's own folder, and AMD's OpenGL package
     /// with its own file only. Registry backups go into it too.
@@ -648,7 +706,6 @@ mod tests {
     use super::*;
     use crate::safety::reg_backup::test_support::{hex7_lines, text_of};
     use crate::utils::cmd::{CmdOutput, MockCommandRunner};
-    use crate::utils::decode::decode_output;
 
     async fn found(mock: &MockCommandRunner, store: &Store, backing_up: bool) -> Option<Issue> {
         finding(mock, &store.store(), &card(), "devices", backing_up)
@@ -742,6 +799,13 @@ mod tests {
             issue.title,
             "Windows cannot find the OpenGL driver of 'AMD Radeon RX 7700 XT'"
         );
+        assert!(
+            issue.description.starts_with(
+                "Games and programs that draw with OpenGL, Minecraft among them, get only"
+            ),
+            "{}",
+            issue.description
+        );
         assert_eq!(issue.severity, Severity::Warning);
         assert_eq!(issue.risk_score, RiskScore::High);
         assert!(issue.requires_reboot && !issue.is_selected && !issue.advice_only);
@@ -792,6 +856,13 @@ mod tests {
         let issue = found(&pc(&[ICD_WOW]), &store, true).await.unwrap();
         assert!(
             issue
+                .description
+                .starts_with("32-bit games and programs that draw with OpenGL get only"),
+            "{}",
+            issue.description
+        );
+        assert!(
+            issue
                 .technical_details
                 .contains("OpenGLDriverNameWow (REG_MULTI_SZ)")
         );
@@ -803,23 +874,38 @@ mod tests {
         assert_eq!(issue.fix_steps.len(), 4, "{:?}", issue.fix_steps);
     }
 
+    /// Without the file beside the Direct3D driver, or without a Direct3D
+    /// driver to look beside, there is nothing to point the entry at.
     #[tokio::test]
     async fn without_the_file_beside_the_direct3d_driver_it_is_advice() {
-        let store = Store::new("advice");
-        store.remove_own(ICD);
-        let issue = found(&pc(&[ICD, ICD_WOW]), &store, true).await.unwrap();
-        assert!(issue.advice_only && !issue.is_selected);
-        assert_eq!(
-            issue.recommended_fix,
-            "Install the graphics driver from Advanced Micro Devices, Inc. again"
-        );
-        assert!(
-            issue
-                .technical_details
-                .contains("Not beside its Direct3D driver either"),
-            "{}",
-            issue.technical_details
-        );
+        let folder = own(ICD).rsplit_once('\\').unwrap().0.to_string();
+        for (gone, why) in [
+            (
+                ICD,
+                format!("The folder of its Direct3D driver has no {ICD} either: {folder}"),
+            ),
+            (
+                "atidx9loader64.dll",
+                "Its Direct3D driver (UserModeDriverName) is not a file in the driver store, so there is no folder to look in".to_string(),
+            ),
+        ] {
+            let store = Store::new("advice");
+            store.remove_own(gone);
+            let issue = found(&pc(&[ICD, ICD_WOW]), &store, true).await.unwrap();
+            assert!(issue.advice_only && !issue.is_selected);
+            assert_eq!(
+                issue.recommended_fix,
+                "Install the graphics driver from Advanced Micro Devices, Inc. again"
+            );
+            assert!(
+                issue.technical_details.contains(&format!(
+                    "OpenGLDriverName (REG_MULTI_SZ): {} - does not exist\n  {why}",
+                    in_opengl_package(ICD)
+                )),
+                "{}",
+                issue.technical_details
+            );
+        }
     }
 
     /// The file is gone, but the entry is not one this check judges.
@@ -850,32 +936,6 @@ mod tests {
                     .is_err()
             );
         }
-    }
-
-    /// The PC with both entries pointed away, which takes `reg export` and
-    /// `reg add` and afterwards reads the entries as captured; `first` are
-    /// answers that come before those.
-    fn repairable(first: &[(&str, CmdOutput)]) -> MockCommandRunner {
-        let mock = MockCommandRunner::new();
-        mock.set_devices(vec![card()]);
-        for (pattern, answer) in first {
-            mock.add_response(*pattern, answer.clone());
-        }
-        mock.add_response_after(
-            "/v OpenGLDriverNameWow /t",
-            format!("query {KEY} /v OpenGLDriverNameWow"),
-            CmdOutput::ok(decode_output(ICD_WOW_QUERY)),
-        );
-        mock.add_response_after(
-            "/v OpenGLDriverName /t",
-            format!("query {KEY} /v OpenGLDriverName"),
-            CmdOutput::ok(decode_output(ICD_QUERY)),
-        );
-        answer_for_the_key(&mock, &[ICD, ICD_WOW]);
-        mock.add_written_file("reg.exe export", 2, export(&[ICD, ICD_WOW]));
-        mock.add_response("reg.exe export", CmdOutput::ok(""));
-        mock.add_response("reg.exe add", CmdOutput::ok(""));
-        mock
     }
 
     fn reg_calls(mock: &MockCommandRunner) -> Vec<String> {
