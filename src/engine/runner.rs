@@ -522,10 +522,11 @@ impl DiagnosticEngine {
                             }
                         }
                         Err(join_err) => {
-                            // A panic in a debug build, where it unwinds. The
-                            // module's findings are missing just as when its
-                            // check is refused, so it is reported the same way:
-                            // logged here, it left the run looking complete.
+                            // A check that panicked; the release build unwinds
+                            // too (#224). The module's findings are missing
+                            // just as when its check is refused, so it is
+                            // reported the same way: logged here, it left the
+                            // run looking complete.
                             let Some((mod_id, mod_name)) = module_of_task.remove(&join_err.id())
                             else {
                                 eprintln!("Scan task was aborted or failed: {}", join_err);
@@ -792,11 +793,26 @@ impl DiagnosticEngine {
             });
 
             let fix_started = Instant::now();
+            // In a task of its own, so that a repair that panics is reported
+            // as failed, as a check that panics is, and the run goes on to the
+            // next one (#224).
+            let mut repair = {
+                let module = Arc::clone(module);
+                let issue_id = issue.id.clone();
+                tokio::spawn(async move { module.repair(&issue_id, Some(prog_tx)).await })
+            };
             let outcome = tokio::select! {
                 biased;
                 _ = cancel.cancelled() => None,
-                result = module.repair(&issue.id, Some(prog_tx)) => Some(result),
+                joined = &mut repair => Some(joined.unwrap_or_else(|panicked| {
+                    Err(format!("The repair stopped unexpectedly: {panicked}"))
+                })),
             };
+            if outcome.is_none() {
+                // Dropped, the repair ends the commands it started.
+                repair.abort();
+                let _ = repair.await;
+            }
 
             let _ = forward_handle.await;
 
@@ -1076,8 +1092,8 @@ mod tests {
         }
     }
 
-    /// A module whose check panics, as a parser meeting output it did not
-    /// expect can.
+    /// A module whose check and repair panic, as a parser meeting output it
+    /// did not expect can.
     struct Panics;
 
     #[async_trait::async_trait]
@@ -1105,8 +1121,59 @@ mod tests {
             _issue_id: &str,
             _progress_tx: Option<Sender<FixProgress>>,
         ) -> Result<String, String> {
-            Err(String::new())
+            panic!("unexpected tool output")
         }
+    }
+
+    /// A repair that panics fails like one that returned an error, and the
+    /// run goes on to the next one (#224). The window waits for the run's end,
+    /// which a panic that took the run with it would never send.
+    #[tokio::test]
+    async fn a_repair_that_panics_is_reported_as_failed_and_the_run_goes_on() {
+        let engine = DiagnosticEngine::with_modules(vec![
+            Arc::new(Panics),
+            Arc::new(Answers(Ok("repaired"))),
+        ]);
+        let panicking = Issue::new(
+            "panics_issue",
+            "panics",
+            "Panicking issue",
+            "Category",
+            Severity::Warning,
+            RiskScore::Low,
+            "Description",
+            "Details",
+            "Fix",
+            vec![],
+        );
+        let mut issues = vec![panicking, answered_issue()];
+        let (tx, mut rx) = channel::<RepairEvent>(100);
+
+        let (fixed, failed) = engine
+            .run_repairs(&mut issues, LIVE, tx, CancellationToken::new())
+            .await;
+
+        assert_eq!((fixed, failed), (1, 1));
+        assert!(
+            issues[0].fix_error.as_deref().is_some_and(|e| {
+                e.starts_with("The repair stopped unexpectedly: ")
+                    && e.contains("unexpected tool output")
+            }),
+            "{:?}",
+            issues[0].fix_error
+        );
+        assert!(issues[1].is_fixed);
+        let mut completed = None;
+        while let Ok(evt) = rx.try_recv() {
+            if let RepairEvent::AllRepairsCompleted {
+                fixed_count,
+                failed_count,
+            } = evt
+            {
+                completed = Some((fixed_count, failed_count));
+            }
+        }
+        assert_eq!(completed, Some((1, 1)));
     }
 
     /// A check that panics counts as failed, like one that was refused, and
