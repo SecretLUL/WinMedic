@@ -21,6 +21,11 @@ pub struct PnpDevice {
     /// The service of its driver (`SPDRP_SERVICE`), the name `sc` knows it
     /// by; empty for a device without one.
     pub service: String,
+    /// Its driver's key under `HKLM\SYSTEM\CurrentControlSet\Control\Class`
+    /// (`SPDRP_DRIVER`): the setup class GUID and a number, such as
+    /// `{4d36e968-e325-11ce-bfc1-08002be10318}\0001` for a graphics card.
+    /// Empty for a device without a driver.
+    pub driver: String,
 }
 
 /// Every device that is connected now, with its problem code.
@@ -28,8 +33,8 @@ pub struct PnpDevice {
 pub fn connected_devices() -> Result<Vec<PnpDevice>, String> {
     use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
         CM_Get_DevNode_Status, CR_SUCCESS, DIGCF_ALLCLASSES, DIGCF_PRESENT, DN_HAS_PROBLEM,
-        SP_DEVINFO_DATA, SPDRP_CLASS, SPDRP_DEVICEDESC, SPDRP_FRIENDLYNAME, SPDRP_SERVICE,
-        SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW,
+        SP_DEVINFO_DATA, SPDRP_CLASS, SPDRP_DEVICEDESC, SPDRP_DRIVER, SPDRP_FRIENDLYNAME,
+        SPDRP_SERVICE, SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW,
         SetupDiGetDeviceInstanceIdW,
     };
 
@@ -85,6 +90,7 @@ pub fn connected_devices() -> Result<Vec<PnpDevice>, String> {
                     .or_else(|| text(SPDRP_DEVICEDESC))
                     .unwrap_or_default(),
                 service: text(SPDRP_SERVICE).unwrap_or_default(),
+                driver: text(SPDRP_DRIVER).unwrap_or_default(),
             });
         }
 
@@ -145,7 +151,8 @@ mod tests {
     }
 
     /// Reads, changes nothing: every Windows has devices, each has an
-    /// instance ID, and drivers are services.
+    /// instance ID, drivers are services, and a driver has its key under
+    /// `Control\Class`.
     #[cfg(windows)]
     #[test]
     fn windows_lists_its_devices() {
@@ -153,5 +160,22 @@ mod tests {
         assert!(!devices.is_empty());
         assert!(devices.iter().all(|d| !d.instance_id.is_empty()));
         assert!(devices.iter().any(|d| !d.service.is_empty()));
+        assert!(
+            devices.iter().any(|d| is_driver_key(&d.driver)),
+            "{devices:?}"
+        );
+    }
+
+    /// `{4d36e968-e325-11ce-bfc1-08002be10318}\0001`: a class GUID in
+    /// braces, a backslash and four digits.
+    #[cfg(windows)]
+    fn is_driver_key(key: &str) -> bool {
+        key.split_once('\\').is_some_and(|(class, number)| {
+            class.len() == 38
+                && class.starts_with('{')
+                && class.ends_with('}')
+                && number.len() == 4
+                && number.bytes().all(|b| b.is_ascii_digit())
+        })
     }
 }

@@ -17,6 +17,7 @@ pub enum Benefit {
     SystemFiles,
     Internet,
     Devices,
+    OpenGl,
     WindowsParts,
     Recovery,
     Disk,
@@ -33,6 +34,7 @@ impl Benefit {
             Benefit::SystemFiles => "Damaged Windows files are repaired",
             Benefit::Internet => "The internet connection is repaired",
             Benefit::Devices => "Stopped devices are started again",
+            Benefit::OpenGl => "Games and programs that use OpenGL work again",
             Benefit::WindowsParts => "Switched-off Windows services work again",
             Benefit::Recovery => "Restore points and recovery work again",
             Benefit::Disk => "The disk is checked for errors",
@@ -70,6 +72,7 @@ impl Benefit {
             _ if id.starts_with("net_no_dhcp_") => Benefit::Internet,
             // A missing driver is only looked for again, which promises nothing.
             _ if id.starts_with("dev_failed_") => Benefit::Devices,
+            _ if id.starts_with(crate::modules::opengl_driver::ID_PREFIX) => Benefit::OpenGl,
             "storage_dirty_bit" => Benefit::Disk,
             "clock_offset" => Benefit::Clock,
             _ if id.starts_with("reg_orphaned_") || id.starts_with("sched_orphaned_") => {
@@ -285,6 +288,26 @@ mod tests {
         assert_eq!(
             Benefit::of(&issue("dev_no_driver_acpi_amdi0204", Severity::Info)),
             None
+        );
+    }
+
+    /// Unticked, and advice where WinMedic has no file to point it at: only a
+    /// repair the user ticked promises anything.
+    #[test]
+    fn a_ticked_opengl_repair_promises_working_opengl() {
+        let id = "dev_opengl_pci_ven_1002_dev_747e";
+        assert_eq!(
+            Benefit::of(&issue(id, Severity::Warning)),
+            Some(Benefit::OpenGl)
+        );
+        let mut unticked = issue(id, Severity::Warning);
+        unticked.is_selected = false;
+        let advice = issue(id, Severity::Warning).with_advice_only();
+        assert!(
+            app_with(vec![unticked, advice])
+                .repair_preview()
+                .benefits
+                .is_empty()
         );
     }
 
