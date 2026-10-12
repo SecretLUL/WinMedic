@@ -675,7 +675,7 @@ fn run_gui() -> Result<u8, Box<dyn std::error::Error>> {
         utils::console::show_error_dialog(
             "WinMedic stopped",
             "WinMedic ran into an error of its own and had to close.\n\n\
-             A crash log is in %APPDATA%\\WinMedic\\logs.",
+             Start it again to send a report about it.",
         );
         return Ok(exit_code::INTERNAL_ERROR);
     };

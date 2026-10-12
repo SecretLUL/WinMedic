@@ -204,6 +204,11 @@ pub struct App {
     pub show_help: bool,
     pub pending_confirm: Option<ConfirmRequest>,
     pub available_update: Option<UpdateInfo>,
+    /// WinMedic's newest crash since the last start, in a banner until the
+    /// user sends or dismisses it.
+    pub crash_offer: Option<super::crash_offer::CrashOffer>,
+    /// The report on screen before it is sent.
+    pub crash_report: Option<crate::utils::crash_report::Report>,
     /// True from the moment the user accepts an update until the download has
     /// either been installed or given up on.
     pub is_updating: bool,
@@ -384,6 +389,8 @@ impl App {
             show_help: false,
             pending_confirm: None,
             available_update: None,
+            crash_offer: None,
+            crash_report: None,
             is_updating: false,
             restart_into: None,
             system_actions,

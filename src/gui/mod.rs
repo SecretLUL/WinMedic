@@ -83,6 +83,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
         banner_panel("update_banner", ui.visuals().selection.bg_fill)
             .show(ui, |ui| update_banner(ui, app, &update));
     }
+    if app.crash_offer.is_some() {
+        banner_panel("crash_banner", ui.visuals().faint_bg_color)
+            .show(ui, |ui| crash_banner(ui, app));
+    }
 
     egui::Panel::bottom("status_bar").show(ui, |ui| status_bar(ui, app));
 
@@ -110,6 +114,7 @@ impl WinMedicApp {
         app.enable_real_system_actions();
         app.reconcile_background_integration();
         app.start_update_check();
+        app.start_crash_check();
 
         Self {
             app,
@@ -276,6 +281,28 @@ fn restart_banner(ui: &mut egui::Ui, app: &mut App) {
             let restart = egui::Button::new(RichText::new("Restart now").strong());
             if ui.add_enabled(!app.is_busy(), restart).clicked() {
                 app.show_reboot_notice();
+            }
+        });
+    });
+}
+
+/// WinMedic's own last crash, offered once, at the start after it (#236). A
+/// banner and not a dialog: it takes no keys, and the window works on below it.
+fn crash_banner(ui: &mut egui::Ui, app: &mut App) {
+    let text = ui.visuals().strong_text_color();
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new("WinMedic ran into an error of its own last time.")
+                .strong()
+                .size(15.0)
+                .color(text),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("Dismiss").clicked() {
+                app.dismiss_crash_offer();
+            }
+            if ui.button(RichText::new("Send report").strong()).clicked() {
+                app.open_crash_report();
             }
         });
     });
@@ -1807,5 +1834,59 @@ mod tests {
                 .query_by_label_contains("Nothing matches the current filters.")
                 .is_some()
         );
+    }
+
+    /// `app` at the start after WinMedic crashed: the crash Windows logged in
+    /// the fixture, found a day later.
+    fn crashed(mut app: App) -> App {
+        use chrono::TimeZone;
+        let events = crate::utils::event_xml::parse_events(&crate::utils::decode::decode_output(
+            include_bytes!("../../tests/fixtures/events/wevtutil_app_error_1000_winmedic.bin"),
+        ));
+        app.offer_crashes(
+            &[],
+            &events,
+            chrono::Utc
+                .with_ymd_and_hms(2026, 10, 13, 22, 0, 0)
+                .unwrap(),
+        );
+        app
+    }
+
+    const CRASH_BANNER: &str = "WinMedic ran into an error of its own last time.";
+
+    /// The crash is offered in both modes, and gone once dismissed.
+    #[test]
+    fn a_crash_is_offered_in_a_banner_until_dismissed() {
+        for fixture in FIXTURES {
+            let mut harness = window(crashed(fixture()));
+            assert!(harness.query_by_label(CRASH_BANNER).is_some());
+            harness.get_by_label("Dismiss").click();
+            harness.run_steps(2);
+            assert!(harness.query_by_label(CRASH_BANNER).is_none());
+        }
+    }
+
+    /// "Send report" first shows what would go out; Esc closes it again,
+    /// sends nothing and leaves the offer standing.
+    #[test]
+    fn send_report_shows_the_report_before_anything_is_sent() {
+        let mut harness = window_with_keys(crashed(scanned_app()));
+        harness.get_by_label("Send report").click();
+        harness.run_steps(2);
+        assert!(harness.query_by_label("Send a crash report").is_some());
+        assert!(
+            harness
+                .state()
+                .crash_report
+                .as_ref()
+                .is_some_and(|report| report.preview().contains("winmedic.exe+0x1035"))
+        );
+
+        harness.key_press(egui::Key::Escape);
+        harness.run_steps(2);
+        assert!(harness.state().crash_report.is_none());
+        assert!(harness.state().crash_offer.is_some());
+        assert!(harness.query_by_label(CRASH_BANNER).is_some());
     }
 }
