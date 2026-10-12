@@ -10,6 +10,9 @@ pub mod feature_rollback;
 /// Windows installation media as the repair source for DISM.
 pub mod install_media;
 pub mod network;
+/// A graphics card whose OpenGL driver Windows cannot find, for the devices
+/// check.
+pub mod opengl_driver;
 pub mod page_file;
 pub mod registry_startup;
 pub mod scheduled_tasks;
@@ -289,7 +292,8 @@ fn all_modules(
         )),
         Arc::new(
             devices::DevicesModule::with_runner(runner)
-                .restarting_services(cfg.auto_restart_services),
+                .restarting_services(cfg.auto_restart_services)
+                .backing_up_registry(cfg.auto_backup_registry),
         ),
     ]
 }

@@ -10,8 +10,10 @@
 //! from the device manager itself, see [`crate::utils::pnp`].
 
 use crate::engine::issue::{Issue, RiskScore, Severity};
+use crate::modules::opengl_driver::{self, DriverStore};
 use crate::modules::tweaks::{WU_POLICY_KEY, drivers_excluded_from_updates};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
+use crate::safety::reg_backup::default_backup_dir;
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
 use crate::utils::pnp::PnpDevice;
 use crate::utils::registry;
@@ -61,18 +63,7 @@ impl Device {
             Remedy::Restart => FAILED_ID,
             Remedy::Advice => CANNOT_START_ID,
         };
-        let slug: String = self
-            .instance_id
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() {
-                    c.to_ascii_lowercase()
-                } else {
-                    '_'
-                }
-            })
-            .collect();
-        Some(format!("{prefix}{slug}"))
+        Some(format!("{prefix}{}", slug(&self.instance_id)))
     }
 
     fn details(&self) -> String {
@@ -93,6 +84,21 @@ impl Device {
             meaning(self.problem)
         )
     }
+}
+
+/// A device instance ID as part of a finding's id: lower case, with every
+/// character but a letter or a digit turned into `_`.
+pub(crate) fn slug(instance_id: &str) -> String {
+    instance_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 const NO_DRIVER_ID: &str = "dev_no_driver_";
@@ -227,6 +233,12 @@ pub struct DevicesModule {
     spool_dir: PathBuf,
     /// The setting "Restart services automatically".
     restart_services: bool,
+    /// The setting "Back up the registry before changing it".
+    backup_registry: bool,
+    /// Where registry backups go.
+    backup_dir: PathBuf,
+    /// Where the graphics cards' driver files are.
+    driver_store: DriverStore,
 }
 
 impl Default for DevicesModule {
@@ -246,6 +258,9 @@ impl DevicesModule {
             runner,
             spool_dir: PathBuf::from(root).join(r"System32\spool\PRINTERS"),
             restart_services: true,
+            backup_registry: true,
+            backup_dir: default_backup_dir(),
+            driver_store: DriverStore::of_this_windows(),
         }
     }
 
@@ -256,9 +271,28 @@ impl DevicesModule {
         self
     }
 
+    /// Whether a repair backs up a registry value before changing it: the
+    /// setting "Back up the registry before changing it".
+    pub fn backing_up_registry(mut self, on: bool) -> Self {
+        self.backup_registry = on;
+        self
+    }
+
     /// For tests: the print jobs are in this folder.
     pub fn with_spool_dir(mut self, dir: PathBuf) -> Self {
         self.spool_dir = dir;
+        self
+    }
+
+    /// For tests: registry backups go into this folder.
+    pub fn with_backup_dir(mut self, dir: PathBuf) -> Self {
+        self.backup_dir = dir;
+        self
+    }
+
+    /// For tests: the driver store is this one.
+    pub fn with_driver_store(mut self, store: DriverStore) -> Self {
+        self.driver_store = store;
         self
     }
 
@@ -636,7 +670,13 @@ impl DiagnosticModule for DevicesModule {
             Some("Device Manager's problem codes (SetupAPI, CfgMgr32)"),
         )
         .await;
-        let devices = self.problem_devices().await?;
+        // One look for the devices with a problem and the graphics cards.
+        let connected = self.runner.connected_devices().await?;
+        let devices: Vec<Device> = connected
+            .iter()
+            .filter(|d| d.problem != 0)
+            .cloned()
+            .collect();
         let mut issues: Vec<Issue> = devices.iter().filter_map(|d| self.finding(d)).collect();
         // Older pnputil does not know the switches: its "repair" failed and
         // the message blamed the device.
@@ -667,6 +707,43 @@ impl DiagnosticModule for DevicesModule {
             issues.push(self.drivers_excluded_finding(&without_driver));
         }
 
+        // After the pnputil check above, which is not theirs.
+        for card in opengl_driver::graphics_cards(&connected) {
+            Self::send_progress(
+                &progress_tx,
+                60,
+                "Checking the graphics cards' OpenGL drivers...",
+                Some(&format!(
+                    "OpenGL driver of {}: reg query of its driver key",
+                    card.label()
+                )),
+            )
+            .await;
+            match opengl_driver::finding(
+                &*self.runner,
+                &self.driver_store,
+                card,
+                self.id(),
+                self.backup_registry,
+            )
+            .await
+            {
+                Ok(found) => issues.extend(found),
+                Err(why) => {
+                    Self::send_progress(
+                        &progress_tx,
+                        60,
+                        "Checking the graphics cards' OpenGL drivers...",
+                        Some(&format!(
+                            "OpenGL driver of {} not checked: {why}",
+                            card.label()
+                        )),
+                    )
+                    .await
+                }
+            }
+        }
+
         Self::send_progress(
             &progress_tx,
             80,
@@ -691,6 +768,14 @@ impl DiagnosticModule for DevicesModule {
             self.find_driver(issue_id).await
         } else if issue_id == PRINT_QUEUE_STUCK {
             self.clear_print_queue().await
+        } else if issue_id.starts_with(opengl_driver::ID_PREFIX) {
+            opengl_driver::repair(
+                &*self.runner,
+                &self.driver_store,
+                issue_id,
+                self.backup_registry.then_some(self.backup_dir.as_path()),
+            )
+            .await
         } else {
             Err(format!("Unknown device issue id: {issue_id}"))
         }
@@ -700,6 +785,9 @@ impl DiagnosticModule for DevicesModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::opengl_driver::test_support::{
+        ICD, ICD_WOW, KEY, Store, answer_for_the_key, card, pc,
+    };
     use crate::utils::cmd::{CmdOutput, MockCommandRunner};
     use crate::utils::decode::decode_output;
     use crate::utils::service::test_support::{
@@ -1485,5 +1573,89 @@ mod tests {
         settle().await;
         assert_eq!(spooler_starts(&mock), 1, "{:?}", mock.executed());
         assert_eq!(files_in(&spool.0), 1);
+    }
+
+    /// The development PC's graphics card with both OpenGL entries pointed
+    /// into AMD's OpenGL package, where the files are not.
+    #[tokio::test]
+    async fn the_scan_finds_a_graphics_card_whose_opengl_driver_is_gone() {
+        let store = Store::new("devices_scan");
+        let mock = pc(&[ICD, ICD_WOW]);
+        let issues = module(&mock)
+            .with_driver_store(store.store())
+            .scan(None)
+            .await
+            .unwrap();
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].id, opengl_driver::issue_id(&card()));
+
+        let in_order = pc(&[]);
+        let issues = module(&in_order)
+            .with_driver_store(store.store())
+            .scan(None)
+            .await
+            .unwrap();
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    /// A key that cannot be read is said in the log, and the scan goes on.
+    #[tokio::test]
+    async fn a_graphics_card_whose_key_cannot_be_read_is_not_checked() {
+        let store = Store::new("devices_unread");
+        let mock = MockCommandRunner::new();
+        mock.set_devices(vec![card()]);
+        mock.add_response(
+            format!("query {KEY}"),
+            CmdOutput::with_output(1, "", "FEHLER: Zugriff verweigert"),
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let issues = module(&mock)
+            .with_driver_store(store.store())
+            .scan(Some(tx))
+            .await
+            .unwrap();
+        assert!(issues.is_empty(), "{issues:?}");
+        let mut log = Vec::new();
+        while let Ok(progress) = rx.try_recv() {
+            log.extend(progress.log_message);
+        }
+        assert!(
+            log.iter().any(
+                |line| line.starts_with("OpenGL driver of 'AMD Radeon RX 7700 XT' not checked")
+            ),
+            "{log:?}"
+        );
+    }
+
+    /// The OpenGL repair needs no pnputil, so a Windows whose pnputil cannot
+    /// restart devices leaves it a repair.
+    #[tokio::test]
+    async fn before_windows_10_2004_the_opengl_finding_stays_a_repair() {
+        let store = Store::new("devices_old_pnputil");
+        let mock = MockCommandRunner::new();
+        let mut devices = brio_reporting(43);
+        devices.push(card());
+        mock.set_devices(devices);
+        mock.add_response("CurrentBuild", current_build("18363"));
+        answer_for_the_key(&mock, &[ICD, ICD_WOW]);
+        let issues = module(&mock)
+            .with_driver_store(store.store())
+            .scan(None)
+            .await
+            .unwrap();
+
+        let brio = issues.iter().find(|i| i.id == brio_id(43)).unwrap();
+        assert!(brio.advice_only);
+        let opengl = issues
+            .iter()
+            .find(|i| i.id == opengl_driver::issue_id(&card()))
+            .unwrap();
+        assert!(!opengl.advice_only);
+        assert!(
+            opengl
+                .fix_steps
+                .iter()
+                .any(|step| step.starts_with("reg add"))
+        );
     }
 }
