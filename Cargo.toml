@@ -63,15 +63,25 @@ windows-sys = { version = "0.61", features = [
 
 # The desktop front end. Default features are off because most of them are for
 # platforms WinMedic does not target: `wayland` and `x11` are Linux display
-# servers, `web_screen_reader` is for the wasm build. What is left is the glow
-# (OpenGL) renderer, the bundled fonts, AccessKit for screen readers, and
-# `persistence` so the window comes back where the user left it.
+# servers, `web_screen_reader` is for the wasm build. What is left is the wgpu
+# renderer without the graphics APIs it brings by default (`wgpu` below picks
+# one), the bundled fonts, AccessKit for screen readers, and `persistence` so
+# the window comes back where the user left it.
 eframe = { version = "0.36", default-features = false, features = [
     "accesskit",
     "default_fonts",
-    "glow",
     "persistence",
+    "wgpu_no_default_features",
 ] }
+# The one graphics API the window draws with: Direct3D 12, which every Windows
+# 10 and 11 has, together with WARP, its software renderer for a PC whose
+# graphics driver offers none (see `gui::renderer`). Here only to switch that
+# backend on, so it must be the wgpu eframe uses: raise the two together. A
+# test fails when they part.
+wgpu = { version = "30", default-features = false, features = ["dx12"] }
+# Waits for wgpu's adapters and the window's device, which `gui::renderer`
+# makes before the window opens: the crate eframe waits for them with.
+pollster = "1"
 egui_extras = "0.36"
 # The window's handle, which its taskbar button is addressed by
 # (`gui::taskbar`). eframe hands it out through this crate's trait without

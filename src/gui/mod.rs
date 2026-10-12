@@ -15,9 +15,11 @@
 //! | [`views`] | The two views, the findings list and Easy mode's short list |
 //! | [`window`] | Locking the window's size in Easy mode, and handing it back |
 //! | [`taskbar`] | A scan's or a repair run's progress on the taskbar button |
+//! | [`renderer`] | Direct3D 12, and Windows' software renderer where no driver offers it |
 
 pub mod keys;
 pub mod modals;
+pub mod renderer;
 pub mod taskbar;
 pub mod theme;
 pub mod views;

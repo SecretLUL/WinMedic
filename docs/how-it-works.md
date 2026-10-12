@@ -114,7 +114,7 @@ The window has two views, and everything you need for a checkup is on the first 
 
 The window follows the Windows light / dark app theme.
 
-The window needs a graphics driver with OpenGL 2.0 or newer. On a PC whose driver has crashed back to the *Microsoft Basic Display Adapter*, and in some virtual machines and remote sessions, it cannot open; WinMedic then says so in a message box instead of silently doing nothing, and points to the command line below, where every check and repair still runs.
+The window draws with Direct3D 12, through the graphics card when its driver offers it. Where none does — the *Microsoft Basic Display Adapter* after a driver crash, a virtual machine, a remote session, a graphics driver that fails — Windows' own software renderer (WARP) draws it, slower but complete. WinMedic does not use OpenGL, which those PCs lack, and so does not depend on the OpenGL driver either. Only when Direct3D 12 fails in software too, which usually means damaged system files, does the window not open: WinMedic then says so in a message box instead of silently doing nothing, and points to the command line below, where every check and repair still runs. The graphics settings are WinMedic's own: no `WGPU_*` environment variable changes which graphics API or adapter it uses or which DLLs it loads.
 
 
 ## Keyboard Navigation & Shortcuts
