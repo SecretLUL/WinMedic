@@ -6,6 +6,7 @@ use winmedic::{app, config, engine, gui, modules, safety, utils};
 
 use clap::Parser;
 use std::collections::HashMap;
+use std::panic::AssertUnwindSafe;
 use std::process::ExitCode;
 use std::sync::Arc;
 use tokio::sync::mpsc::channel;
@@ -97,13 +98,37 @@ impl CliArgs {
 fn main() -> ExitCode {
     load_dlls_from_system32_only();
     let args = CliArgs::parse();
+    if let Some(dir) = safety::audit::AuditLogger::real().log_dir() {
+        utils::crash_log::install(dir.to_path_buf(), crash_mode(&args));
+    }
 
-    match run(args) {
-        Ok(code) => ExitCode::from(code),
-        Err(err) => {
+    // A panic nothing caught on its way here has left its crash log by now. It
+    // ends the run with the exit code for WinMedic itself failing, not the 101
+    // Rust exits with.
+    match std::panic::catch_unwind(AssertUnwindSafe(move || run(args))) {
+        Ok(Ok(code)) => ExitCode::from(code),
+        Ok(Err(err)) => {
             eprintln!("WinMedic: {}", err);
             ExitCode::from(exit_code::INTERNAL_ERROR)
         }
+        Err(_) => ExitCode::from(exit_code::INTERNAL_ERROR),
+    }
+}
+
+/// How this run was started, as a crash log says it.
+fn crash_mode(args: &CliArgs) -> &'static str {
+    if args.helper {
+        "helper"
+    } else if args.uninstall {
+        "--uninstall"
+    } else if args.auto_fix {
+        "--auto-fix"
+    } else if args.dry_run {
+        "--dry-run"
+    } else if args.is_headless() {
+        "--scan"
+    } else {
+        "window"
     }
 }
 
@@ -627,19 +652,33 @@ fn run_gui() -> Result<u8, Box<dyn std::error::Error>> {
         ..Default::default()
     };
 
+    // A panic in the window itself ends it. Caught here, and not in `main`, so
+    // that the runtime is still shut down below rather than dropped.
     let result = {
         let _guard = runtime.enter();
-        eframe::run_native(
-            "WinMedic",
-            options,
-            Box::new(move |cc| Ok(Box::new(gui::WinMedicApp::new(cc)))),
-        )
+        std::panic::catch_unwind(AssertUnwindSafe(|| {
+            eframe::run_native(
+                "WinMedic",
+                options,
+                Box::new(move |cc| Ok(Box::new(gui::WinMedicApp::new(cc)))),
+            )
+        }))
     };
 
     // Shut down rather than drop: a scan can still be in flight when the window
     // closes, and dropping the runtime would block on it. Closing the window
     // should not wait for a DISM call that has not come back yet.
     runtime.shutdown_background();
+
+    let Ok(result) = result else {
+        // Without this, the window would just be gone.
+        utils::console::show_error_dialog(
+            "WinMedic stopped",
+            "WinMedic ran into an error of its own and had to close.\n\n\
+             A crash log is in %APPDATA%\\WinMedic\\logs.",
+        );
+        return Ok(exit_code::INTERNAL_ERROR);
+    };
 
     if let Err(err) = result {
         // The console is gone by now, so the error `main` prints would reach
