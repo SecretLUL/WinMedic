@@ -97,6 +97,10 @@ WinMedic collects no data and has no telemetry. It goes online only for this:
   fault from no connection at all.
 - **Repair:** DISM takes intact system files from Windows Update, and the
   clock is set from `time.windows.com`.
+- **Crash report:** if WinMedic crashed, its next start offers once to send a
+  report. It shows the report first, with your user name, computer name and
+  user folder replaced, and only *Open on GitHub* opens GitHub's bug report
+  form with it in your browser, where you post it or not.
 
 ## For IT admins
 

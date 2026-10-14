@@ -53,6 +53,21 @@ It needs the repository secret `VIRUSTOTAL_API_KEY`, the API key of a free
 VirusTotal account (profile menu → *API key*). Without it the job says so and
 skips the scan. `./scripts/virustotal-scan.ps1 <file>` scans by hand.
 
+## Crash logs
+
+When WinMedic panics, it writes a `crash-*.log` into `%APPDATA%\WinMedic\logs`
+(the newest five stay). Its stack is a list of offsets such as
+`winmedic-v0.12.0.exe+0x1a2b3c`, because the release ships without symbols. `release.yml` keeps each release's
+PDB as the artifact `winmedic-<tag>-pdb` of its run, for 90 days;
+`gh run download <run id> -n winmedic-<tag>-pdb` fetches it. With that PDB and
+the release's `.exe`:
+
+```powershell
+./scripts/resolve-crash-log.ps1 crash-20261012-224107-1234-1.log -Exe winmedic-v0.12.0.exe -Pdb winmedic.pdb
+```
+
+A PDB matches only the binary built in its own run.
+
 ## WinGet
 
 `winget.yml` runs [komac](https://github.com/russellbanks/Komac), a pinned

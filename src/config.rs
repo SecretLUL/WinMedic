@@ -131,6 +131,9 @@ pub struct AppConfig {
     pub advanced_mode: bool,
     /// Findings the user archived, oldest first.
     pub archived_findings: Vec<ArchivedFinding>,
+    /// When the window last looked for WinMedic's own crashes, each of which
+    /// it offers once (#236). Not a setting.
+    pub crashes_offered_until: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl Default for AppConfig {
@@ -147,6 +150,7 @@ impl Default for AppConfig {
             helper_frequency_hours: 24,
             advanced_mode: false,
             archived_findings: Vec::new(),
+            crashes_offered_until: None,
         }
     }
 }
