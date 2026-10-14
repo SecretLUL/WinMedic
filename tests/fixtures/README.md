@@ -133,6 +133,14 @@ as WinMedic starts DISM: its input on NUL, a console without a window.
 | --- | --- | --- | --- |
 | `dism_checkhealth_healthy.bin` | `dism /English /Online /NoRestart /Cleanup-Image /CheckHealth`, the arguments WinMedic passes since #222 | ASCII | "No component store corruption detected.", exit 0. The same 192 bytes as without `/NoRestart`: with no restart needed, the switch changes nothing. |
 
+Captured on the development PC (Windows 11 Pro 25H2, 26200.9550, German),
+elevated, on 2026-10-14, while the month's updates waited for a restart
+(`RebootPending`, `pending.xml`), started the same way:
+
+| File | Command | Encoding | Notes |
+| --- | --- | --- | --- |
+| `dism_analyze_reboot_pending.bin` | `dism /Online /NoRestart /Cleanup-Image /AnalyzeComponentStore /English` | ASCII, CRLF | **Exit 3010**, not 0, after 85 seconds: the analysis is complete ("Number of Reclaimable Packages : 4", "The operation completed successfully."), and dism.log closes the session with `Reboot required=yes`. Without `/NoRestart`, the same analysis ends in "Do you want to restart the computer now? (Y/N)" and was still waiting after 240 seconds (#222). |
+
 Captured elevated on 2026-10-12 on the development PC (Windows 11 Pro 25H2,
 26200.9550), read-only commands. Its one graphics card is an AMD Radeon RX
 7700 XT (`PCI\VEN_1002&DEV_747E&SUBSYS_24141458`), driver 32.0.31041.1004
