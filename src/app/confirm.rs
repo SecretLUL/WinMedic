@@ -34,6 +34,9 @@ const UPDATE_TRANSFER_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 pub struct SystemActions {
     /// Hand a release URL to the OS so it opens in the default browser.
     pub open_release_page: fn(&str) -> Result<(), String>,
+    /// Open WinMedic's bug report form, filled in for a crash, in the default
+    /// browser.
+    pub open_issue_form: fn(&str) -> Result<(), String>,
     /// Download a release, verify it and replace this executable with it.
     /// Inert by default, for the same reason as the rest of this struct: a
     /// test that accepts the update dialog must not start downloading
@@ -126,6 +129,7 @@ impl SystemActions {
     pub fn real() -> Self {
         Self {
             open_release_page: updater::launch_browser,
+            open_issue_form: crate::utils::crash_report::launch_issue_form,
             self_update: SelfUpdateService::real(),
             start_installed_update: self_update::start_installed,
             restore_point: RestorePointService::real(),
@@ -143,6 +147,7 @@ impl SystemActions {
     pub fn inert() -> Self {
         Self {
             open_release_page: |_| Ok(()),
+            open_issue_form: |_| Ok(()),
             self_update: SelfUpdateService::inert(),
             start_installed_update: |_| Ok(()),
             restore_point: RestorePointService::inert(),

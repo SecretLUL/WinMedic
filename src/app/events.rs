@@ -389,6 +389,9 @@ impl App {
     fn process_bg_events(&mut self) {
         while let Ok(event) = self.bg_rx.try_recv() {
             match event {
+                BackgroundEvent::CrashesFound { logs, events } => {
+                    self.offer_crashes(&logs, &events, chrono::Utc::now());
+                }
                 BackgroundEvent::RestorePointsLoaded(points) => {
                     self.restore_points_loading = false;
                     self.status_message = Some(if points.is_empty() {

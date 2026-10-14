@@ -24,6 +24,7 @@ use std::collections::VecDeque;
 
 pub mod archive;
 pub mod confirm;
+pub mod crash_offer;
 pub mod events;
 pub mod filters;
 pub mod input;
@@ -81,6 +82,12 @@ pub enum BackgroundEvent {
         version: String,
         release_url: String,
         result: Result<InstalledUpdate, UpdateFailure>,
+    },
+    /// The crash logs, and what Windows logged of WinMedic's crashes, read
+    /// as the window starts (#236).
+    CrashesFound {
+        logs: Vec<String>,
+        events: Vec<crate::utils::event_xml::EventRecord>,
     },
 }
 

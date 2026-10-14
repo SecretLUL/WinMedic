@@ -1,9 +1,10 @@
-//! The three overlays, stacked in the order the terminal front end stacked them.
+//! The overlays, stacked in the order the terminal front end stacked them.
 //!
 //! Precedence matters and is not cosmetic: a pending confirmation is a question
 //! about the machine that must be answered before anything else happens, so it
-//! outranks a setting being edited, which in turn outranks the help sheet.
-//! [`crate::app::input`] enforces exactly the same order for the keyboard.
+//! outranks the crash report on screen, which outranks a setting being edited,
+//! which in turn outranks the help sheet. [`crate::app::input`] enforces
+//! exactly the same order for the keyboard.
 
 use crate::app::{App, ConfirmRequest};
 use crate::gui::theme;
@@ -12,6 +13,8 @@ use eframe::egui::{self, RichText};
 pub fn show(ctx: &egui::Context, app: &mut App) {
     if app.pending_confirm.is_some() {
         confirm(ctx, app);
+    } else if app.crash_report.is_some() {
+        crash_report(ctx, app);
     } else if app.setting_input.is_some() {
         setting_input(ctx, app);
     } else if app.show_help {
@@ -79,6 +82,70 @@ fn confirm(ctx: &egui::Context, app: &mut App) {
         app.confirm_pending_action();
     } else if dismissed {
         app.dismiss_confirm();
+    }
+}
+
+/// What a crash report will say, shown before anything leaves the PC (#236).
+fn crash_report(ctx: &egui::Context, app: &mut App) {
+    let Some(report) = app.crash_report.as_ref() else {
+        return;
+    };
+    let preview = report.preview();
+    let earlier = app.crash_offer.as_ref().map_or(0, |offer| offer.earlier);
+
+    let mut send = false;
+    let mut save = false;
+    let mut close = false;
+
+    modal_window("Send a crash report").show(ctx, |ui| {
+        ui.set_max_width(640.0);
+        ui.label(theme::heading(ui, "Send a crash report", 15.0));
+        ui.add_space(8.0);
+        ui.label(
+            "It becomes a public issue on GitHub. Your user name, your computer's name and your user folder are replaced.",
+        );
+        if earlier > 0 {
+            ui.label(format!(
+                "This is the newest of {} crashes; the crash logs are in %APPDATA%\\WinMedic\\logs.",
+                earlier + 1
+            ));
+        }
+        ui.add_space(6.0);
+        egui::ScrollArea::vertical()
+            .max_height(280.0)
+            .show(ui, |ui| {
+                let mut text = preview.as_str();
+                ui.add(
+                    egui::TextEdit::multiline(&mut text)
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(f32::INFINITY),
+                );
+            });
+        ui.add_space(8.0);
+        ui.separator();
+        ui.horizontal(|ui| {
+            if theme::primary_button(ui, true, RichText::new("Open on GitHub"), egui::Vec2::ZERO)
+                .clicked()
+            {
+                send = true;
+            }
+            if ui.button("Save to file").clicked() {
+                save = true;
+            }
+            if ui.button("Close").clicked() {
+                close = true;
+            }
+        });
+    });
+
+    if send {
+        if let Some(text) = app.send_crash_report() {
+            ctx.copy_text(text);
+        }
+    } else if save {
+        app.save_crash_report();
+    } else if close {
+        app.close_crash_report();
     }
 }
 

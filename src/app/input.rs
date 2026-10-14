@@ -99,6 +99,14 @@ pub fn handle_key(app: &mut App, code: Key) {
         return;
     }
 
+    // The crash report on screen swallows keys too: sending takes a click.
+    if app.crash_report.is_some() {
+        if code == Key::Esc {
+            app.close_crash_report();
+        }
+        return;
+    }
+
     // A pending setting numeric input modal captures typing until saved or cancelled.
     if let Some(input) = app.setting_input.as_mut() {
         match code {
