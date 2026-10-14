@@ -3,7 +3,7 @@ use crate::modules::{
     DISM_NO_RESTART, DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress, Repaired,
     SERVICING_TIMEOUT, console_lines,
 };
-use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
+use crate::utils::cmd::{CmdOutput, CommandRunner, SystemCommandRunner};
 use crate::utils::debug_log::DebugTrace;
 use crate::utils::fs_stats::{dir_stats_recursive, measure_dirs};
 use std::path::{Path, PathBuf};
@@ -288,6 +288,18 @@ const DISM_ANALYZE_ARGS: &[&str] = &[
     "/AnalyzeComponentStore",
     "/English",
 ];
+
+/// DISM's exit code for "done, and Windows waits for a restart"
+/// (`ERROR_SUCCESS_REBOOT_REQUIRED`). While an installed update waits for one,
+/// the analysis ends with it, its figures complete: on the development PC on
+/// 2026-10-14, after 85 seconds and with "Reboot required=yes" in dism.log
+/// (#222).
+const DISM_DONE_RESTART_PENDING: i32 = 3010;
+
+/// Whether the analysis finished, so its figures can be read.
+fn analysis_finished(out: &CmdOutput) -> bool {
+    out.success || out.exit_code == Some(DISM_DONE_RESTART_PENDING)
+}
 
 /// Remove the superseded packages the analysis above counted.
 const DISM_CLEANUP_ARGS: &[&str] = &[
@@ -969,7 +981,7 @@ impl SystemCleanerModule {
         )
         .await
         .ok()
-        .filter(|out| out.success)
+        .filter(analysis_finished)
         .map(|out| parse_winsxs_analysis(&out.stdout).reclaimable_packages)
     }
 
@@ -1379,8 +1391,9 @@ impl DiagnosticModule for SystemCleanerModule {
         // A non-zero exit still yields `Ok(CmdOutput { success: false, .. })`, and
         // DISM prints partial store figures to stdout before it errors out — so
         // the exit status has to gate the parse, or an aborted run (error 740,
-        // "elevated permissions required") gets reported as real analysis.
-        if let Some(out) = dism_check.ok().filter(|out| out.success) {
+        // "elevated permissions required") gets reported as real analysis. A
+        // finished one is 0, or 3010 while Windows waits for a restart.
+        if let Some(out) = dism_check.ok().filter(analysis_finished) {
             let analysis = parse_winsxs_analysis(&out.stdout);
             // The reclaimable package count, not DISM's own recommendation, is
             // what decides this. `StartComponentCleanup` — the one repair
@@ -2486,6 +2499,64 @@ The operation completed successfully.";
         let issues = module.scan(None).await.unwrap();
 
         assert!(issues.iter().all(|i| i.id != "sys_clean_winsxs"));
+    }
+
+    /// The analysis on the development PC while an update waited for a
+    /// restart, with `/NoRestart`, exit code 3010; see tests/fixtures/README.md.
+    const ANALYSIS_RESTART_PENDING: &[u8] =
+        include_bytes!("../../tests/fixtures/console/dism_analyze_reboot_pending.bin");
+
+    fn analysis_restart_pending() -> CmdOutput {
+        CmdOutput::with_output(
+            3010,
+            crate::utils::decode::decode_output(ANALYSIS_RESTART_PENDING),
+            "",
+        )
+    }
+
+    /// While an update waits for a restart, DISM ends a complete analysis
+    /// with 3010, not 0. The scan read only 0, so the finding was gone for as
+    /// long as the restart was pending (#222).
+    #[tokio::test]
+    async fn the_analysis_is_read_while_a_restart_is_pending() {
+        let mock = MockCommandRunner::new();
+        mock.add_response("AnalyzeComponentStore", analysis_restart_pending());
+
+        let td = TestDir::new("winsxs_restart_pending");
+        let issues = sandboxed(&td, Arc::new(mock)).scan(None).await.unwrap();
+
+        let winsxs = issues.iter().find(|i| i.id == "sys_clean_winsxs");
+        assert!(
+            winsxs.is_some_and(|i| i.title.contains("(4 reclaimable packages)")),
+            "{issues:?}"
+        );
+    }
+
+    /// The repair counts before and after the cleanup with the same analysis,
+    /// so a pending restart must not leave it without its numbers.
+    #[tokio::test]
+    async fn the_repair_counts_while_a_restart_is_pending() {
+        let mock = MockCommandRunner::new();
+        mock.add_response("AnalyzeComponentStore", analysis_restart_pending());
+        mock.add_response(
+            "StartComponentCleanup",
+            CmdOutput::ok("The operation completed successfully."),
+        );
+        mock.add_response_after(
+            "StartComponentCleanup",
+            "AnalyzeComponentStore",
+            CmdOutput::with_output(3010, "Number of Reclaimable Packages : 0\n", ""),
+        );
+
+        let td = TestDir::new("winsxs_restart_pending_fix");
+        let module = sandboxed(&td, Arc::new(mock));
+        module.scan(None).await.unwrap();
+        let repaired = module.fix("sys_clean_winsxs", None).await.unwrap();
+
+        assert!(
+            repaired.contains("The store now reports 0 reclaimable packages."),
+            "{repaired}"
+        );
     }
 
     #[tokio::test]
