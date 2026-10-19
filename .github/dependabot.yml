@@ -17,6 +17,17 @@ updates:
     # that already exist in the repository — naming one that does not exist
     # silently produces unlabelled pull requests.
     groups:
+      # eframe and egui_kittest are built on the same egui, and wgpu and
+      # raw-window-handle have to be the ones eframe uses (Cargo.toml says
+      # why). One pull request each mixes two versions and cannot pass
+      # (#242-#244), so every update of the four, of any size, lands as one.
+      # First, because a dependency goes to the first group it matches.
+      egui:
+        patterns:
+          - "eframe"
+          - "egui_kittest"
+          - "wgpu"
+          - "raw-window-handle"
       # Patch and minor bumps across the whole tree land as one pull request
       # instead of a dozen; majors stay separate because they need review.
       minor-and-patch:
