@@ -68,7 +68,7 @@ windows-sys = { version = "0.61", features = [
 # renderer without the graphics APIs it brings by default (`wgpu` below picks
 # one), the bundled fonts, AccessKit for screen readers, and `persistence` so
 # the window comes back where the user left it.
-eframe = { version = "0.36", default-features = false, features = [
+eframe = { version = "0.37", default-features = false, features = [
     "accesskit",
     "default_fonts",
     "persistence",
