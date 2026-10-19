@@ -83,7 +83,6 @@ wgpu = { version = "30", default-features = false, features = ["dx12"] }
 # Waits for wgpu's adapters and the window's device, which `gui::renderer`
 # makes before the window opens: the crate eframe waits for them with.
 pollster = "1"
-egui_extras = "0.37"
 # The window's handle, which its taskbar button is addressed by
 # (`gui::taskbar`). eframe hands it out through this crate's trait without
 # re-exporting it; the crate is in the tree already, through eframe.
