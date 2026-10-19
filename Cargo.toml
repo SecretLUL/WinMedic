@@ -106,4 +106,4 @@ panic = "unwind"
 debug = "line-tables-only"
 
 [dev-dependencies]
-egui_kittest = "0.36.1"
+egui_kittest = "0.37.0"
