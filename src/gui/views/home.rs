@@ -423,8 +423,8 @@ enum LogKind {
 /// Both are raw command-level detail. The header and the findings already say
 /// what happened; the log is for when the user wants to know how.
 fn log_panel(ui: &mut egui::Ui, app: &mut App) {
-    let open_id = egui::Id::new("log_panel_open");
-    let kind_id = egui::Id::new("log_panel_kind");
+    let open_id = egui::Id::unique("log_panel_open");
+    let kind_id = egui::Id::unique("log_panel_kind");
     let mut open = ui.data_mut(|d| *d.get_persisted_mut_or(open_id, false));
     // Until the user picks one, show whichever run happened last. Only a pick
     // is stored: stored on every frame, the default of the first frame, before

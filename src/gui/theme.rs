@@ -305,7 +305,7 @@ pub fn severity_mark(ui: &mut egui::Ui, severity: Severity, size: f32) -> egui::
     let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::hover());
     severity_icon(ui, rect, severity);
     let name = severity.name();
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, name));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, name));
     response.on_hover_text(name)
 }
 
@@ -426,7 +426,7 @@ pub fn checkbox(
     }
     response.widget_info(|| {
         egui::WidgetInfo::selected(
-            egui::WidgetType::Checkbox,
+            egui::Role::CheckBox,
             ui.is_enabled(),
             *checked,
             galley.as_ref().map_or("", |galley| galley.text()),

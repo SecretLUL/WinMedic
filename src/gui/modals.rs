@@ -24,7 +24,7 @@ pub fn show(ctx: &egui::Context, app: &mut App) {
 
 /// The frame every overlay shares: modal, centred, not resizable.
 fn modal_window(title: &str) -> egui::Modal {
-    egui::Modal::new(egui::Id::new(title))
+    egui::Modal::new(egui::Id::unique(title))
 }
 
 fn confirm(ctx: &egui::Context, app: &mut App) {

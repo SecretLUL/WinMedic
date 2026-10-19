@@ -139,6 +139,8 @@ fn module_filter(ui: &mut egui::Ui, app: &mut App) {
         .map_or_else(|| "All modules".to_string(), name_of);
 
     let mut choice = None;
+    // Nothing on screen names the box; what it shows is its value, the module
+    // picked. A screen reader is told what it is for.
     egui::ComboBox::from_id_salt("module_filter")
         .selected_text(selected_text)
         .width(220.0)
@@ -159,7 +161,9 @@ fn module_filter(ui: &mut egui::Ui, app: &mut App) {
                     choice = Some(Some(id.clone()));
                 }
             }
-        });
+        })
+        .response
+        .accessible_name("Module");
     if let Some(choice) = choice {
         app.module_filter = choice;
         app.clamp_filtered_selection();
@@ -256,7 +260,12 @@ fn row(ui: &mut egui::Ui, app: &mut App, issue_index: usize, highlighted: bool, 
                             );
                             false
                         } else {
-                            theme::checkbox(ui, &mut issue.is_selected, "").changed()
+                            // The box has no text of its own: the title further
+                            // along the row says what it selects, and its name
+                            // says the same to a screen reader.
+                            theme::checkbox(ui, &mut issue.is_selected, "")
+                                .accessible_name(format!("Select {}", issue.title))
+                                .changed()
                         };
                         // A fixed-width first column, so the titles line up
                         // whether a row carries a checkbox or a word.
@@ -626,6 +635,28 @@ mod tests {
                 Some(Toggled::False),
                 Some(Toggled::True),
                 Some(Toggled::False)
+            ]
+        );
+    }
+
+    /// Nothing beside the box names it, so without a name of its own a screen
+    /// reader could say only "check box", not which finding it selects.
+    #[test]
+    fn a_checkbox_tells_a_screen_reader_which_finding_it_selects() {
+        use egui_kittest::kittest::NodeT;
+
+        let harness = harness(triage_app());
+
+        let names: Vec<_> = harness
+            .get_all_by_role(Role::CheckBox)
+            .map(|node| node.accesskit_node().label())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                Some("Select CBS log corrupt".to_string()),
+                Some("Select Temp bloat files".to_string()),
+                Some("Select DNS cache full".to_string())
             ]
         );
     }
