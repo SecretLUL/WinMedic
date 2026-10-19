@@ -68,7 +68,7 @@ windows-sys = { version = "0.61", features = [
 # renderer without the graphics APIs it brings by default (`wgpu` below picks
 # one), the bundled fonts, AccessKit for screen readers, and `persistence` so
 # the window comes back where the user left it.
-eframe = { version = "0.36", default-features = false, features = [
+eframe = { version = "0.37", default-features = false, features = [
     "accesskit",
     "default_fonts",
     "persistence",
@@ -83,7 +83,7 @@ wgpu = { version = "30", default-features = false, features = ["dx12"] }
 # Waits for wgpu's adapters and the window's device, which `gui::renderer`
 # makes before the window opens: the crate eframe waits for them with.
 pollster = "1"
-egui_extras = "0.36"
+egui_extras = "0.37"
 # The window's handle, which its taskbar button is addressed by
 # (`gui::taskbar`). eframe hands it out through this crate's trait without
 # re-exporting it; the crate is in the tree already, through eframe.
@@ -106,4 +106,4 @@ panic = "unwind"
 debug = "line-tables-only"
 
 [dev-dependencies]
-egui_kittest = "0.36.1"
+egui_kittest = "0.37.0"
