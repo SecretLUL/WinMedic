@@ -440,8 +440,7 @@ impl WindowsUpdatesModule {
     }
 
     pub fn with_runner(config: ModuleConfig, runner: Arc<dyn CommandRunner>) -> Self {
-        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
-        let root = PathBuf::from(root);
+        let root = crate::utils::cmd::windows_root();
         Self {
             config,
             runner,

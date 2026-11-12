@@ -896,19 +896,13 @@ pub struct TweaksModule {
     ram: RamSource,
 }
 
-fn system_root() -> PathBuf {
-    std::env::var_os("SystemRoot")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
-}
-
 impl TweaksModule {
     pub fn new(config: ModuleConfig) -> Self {
         Self::with_runner(config, Arc::new(SystemCommandRunner::new()))
     }
 
     pub fn with_runner(config: ModuleConfig, runner: Arc<dyn CommandRunner>) -> Self {
-        let root = system_root();
+        let root = crate::utils::cmd::windows_root();
         Self::with_paths(
             config,
             runner,

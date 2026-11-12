@@ -253,10 +253,10 @@ impl DevicesModule {
     }
 
     pub fn with_runner(runner: Arc<dyn CommandRunner>) -> Self {
-        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+        let root = crate::utils::cmd::windows_root();
         Self {
             runner,
-            spool_dir: PathBuf::from(root).join(r"System32\spool\PRINTERS"),
+            spool_dir: root.join(r"System32\spool\PRINTERS"),
             restart_services: true,
             backup_registry: true,
             backup_dir: default_backup_dir(),

@@ -576,6 +576,13 @@ fn powershell_module_path(program: &Path) -> Option<std::ffi::OsString> {
     Some(modules)
 }
 
+/// The Windows folder as Windows reports it, for every path WinMedic deletes,
+/// renames or writes under. `%SystemRoot%` is only what the environment calls
+/// it, and a program of the user can set that for the elevated WinMedic.
+pub fn windows_root() -> PathBuf {
+    windows_dir().map_or_else(|| PathBuf::from(r"C:\Windows"), Path::to_path_buf)
+}
+
 /// Ask one of the `Get...DirectoryW` functions for its folder. They return
 /// the length without the terminating null, or the size needed with it when
 /// the buffer was too small, or 0 on failure.
