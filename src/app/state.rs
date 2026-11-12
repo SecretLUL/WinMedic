@@ -627,6 +627,15 @@ impl App {
         self.is_scanning || self.is_fixing
     }
 
+    /// Whether a dialog is on screen that takes the keyboard for itself:
+    /// the ones `handle_key` answers before anything else.
+    pub fn dialog_open(&self) -> bool {
+        self.pending_confirm.is_some()
+            || self.crash_report.is_some()
+            || self.setting_input.is_some()
+            || self.show_help
+    }
+
     /// Advance to the next tab in cyclic order (BIOS-style right navigation).
     pub fn next_tab(&mut self) {
         self.active_tab = (self.active_tab + 1) % TAB_COUNT;
