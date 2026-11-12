@@ -175,35 +175,62 @@ impl Identity {
     }
 }
 
+/// `text` with every `needle` replaced by `with`, whatever its letters' case.
+///
+/// The search walks the text itself and lowercases one character at a time.
+/// It used to look in a lowercased copy and, when that copy's length
+/// differed, give up on case: `İ` (U+0130) grows from two bytes to three, so
+/// one such letter anywhere in a crash log, as in Turkish tool output or an
+/// account called İbrahim, left the profile path, the user name and the
+/// computer name in the report (#270).
 fn replace_ignoring_case(text: &str, needle: &str, with: &str, whole_word: bool) -> String {
+    let needle: Vec<char> = needle.chars().flat_map(char::to_lowercase).collect();
     if needle.is_empty() {
         return text.to_string();
     }
     let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
-    let lower = text.to_lowercase();
-    let needle = needle.to_lowercase();
-    // Lowercasing can change byte lengths outside ASCII; then the positions
-    // would not line up, and the text is scrubbed as it is.
-    if lower.len() != text.len() {
-        return text.replace(&needle, with);
-    }
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
     let mut out = String::with_capacity(text.len());
-    let mut rest = 0;
-    let mut from = 0;
-    while let Some(found) = lower[from..].find(&needle) {
-        let start = from + found;
-        let end = start + needle.len();
-        let alone = !whole_word
-            || (!word(text[..start].chars().last()) && !word(text[end..].chars().next()));
-        if alone {
-            out.push_str(&text[rest..start]);
-            out.push_str(with);
-            rest = end;
+    let mut copied = 0;
+    let mut at = 0;
+    while at < chars.len() {
+        if let Some(length) = matches_at(&chars[at..], &needle) {
+            let start = chars[at].0;
+            let end = chars
+                .get(at + length)
+                .map_or(text.len(), |(offset, _)| *offset);
+            let alone = !whole_word
+                || (!word(text[..start].chars().last()) && !word(text[end..].chars().next()));
+            if alone {
+                out.push_str(&text[copied..start]);
+                out.push_str(with);
+                copied = end;
+                at += length;
+                continue;
+            }
         }
-        from = end;
+        at += 1;
     }
-    out.push_str(&text[rest..]);
+    out.push_str(&text[copied..]);
     out
+}
+
+/// How many characters at the start of `chars` spell `needle`, which is in
+/// lower case, when lowercased; `None` when they do not.
+fn matches_at(chars: &[(usize, char)], needle: &[char]) -> Option<usize> {
+    let mut matched = 0;
+    for (count, (_, c)) in chars.iter().enumerate() {
+        for lower in c.to_lowercase() {
+            if needle.get(matched) != Some(&lower) {
+                return None;
+            }
+            matched += 1;
+        }
+        if matched == needle.len() {
+            return Some(count + 1);
+        }
+    }
+    None
 }
 
 /// The bug report form, filled in for `crash`, and what the user has to paste
@@ -536,6 +563,36 @@ mod tests {
             ..Identity::default()
         };
         assert_eq!(short.scrub("Win runs Windows"), "<user> runs Windows");
+    }
+
+    /// #270. Letters whose lower case has another length in UTF-8: `İ` grows,
+    /// the Kelvin sign shrinks. Neither switches the replacing off, and
+    /// neither moves it.
+    #[test]
+    fn a_letter_that_changes_length_in_lower_case_hides_no_name() {
+        let turkish = "\u{130}\u{15f}lem ba\u{15f}ar\u{131}yla tamamland\u{131}.";
+        let scrubbed = identity().scrub(&format!(
+            r"{turkish} C:\Users\AMMAR-PC\x on DESKTOP-416752K, 300 {} for AMMAR-PC",
+            '\u{212a}'
+        ));
+        assert_eq!(
+            scrubbed,
+            format!(
+                r"{turkish} %USERPROFILE%\x on <computer>, 300 {} for <user>",
+                '\u{212a}'
+            )
+        );
+
+        // The name itself holds such a letter, in either case.
+        let ibrahim = Identity {
+            profile: "C:\\Users\\\u{130}brahim".to_string(),
+            user: "\u{130}brahim".to_string(),
+            computer: "PC-1".to_string(),
+        };
+        assert_eq!(
+            ibrahim.scrub("C:\\USERS\\\u{130}BRAHIM\\Downloads, \u{130}brahim on pc-1"),
+            r"%USERPROFILE%\Downloads, <user> on <computer>"
+        );
     }
 
     #[test]
