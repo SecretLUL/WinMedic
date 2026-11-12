@@ -555,22 +555,34 @@ impl DiagnosticModule for PageFileModule {
             ).with_advice_only());
         }
 
-        // 3. A manually sized page file whose maximum is too small to be useful.
+        // 3. Manually sized page files whose maximum is too small to be
+        // useful. What counts is what all of them hold together, which is
+        // what Windows can commit: a small fixed file on one drive for crash
+        // dumps next to a large one on another is a layout somebody chose,
+        // and each file was judged on its own (#275). With a system-managed
+        // file among them Windows grows that one as it needs.
         let recommended_min = Self::recommended_min_page_file_mb(ram_mb);
+        let system_managed = |s: &PageFileSetting| s.maximum_mb == 0 && s.initial_mb == 0;
+        let together_mb: u64 = settings.iter().map(|s| s.maximum_mb).sum();
+        let all_too_small = !settings.iter().any(system_managed) && together_mb < recommended_min;
         for setting in &settings {
             let Some(drive) = Self::drive_letter(&setting.name) else {
                 continue;
             };
             // Both sizes at zero is how a system-managed file is spelled.
-            if setting.maximum_mb == 0 && setting.initial_mb == 0 {
+            if system_managed(setting) {
                 continue;
             }
 
             let inverted = setting.maximum_mb < setting.initial_mb;
-            let too_small = setting.maximum_mb < recommended_min;
-            if !inverted && !too_small {
+            if !inverted && !all_too_small {
                 continue;
             }
+            let with_the_others = if together_mb == setting.maximum_mb {
+                String::new()
+            } else {
+                format!(", {together_mb} MB with the other page files,")
+            };
 
             // An inverted range can still have a generous maximum, so it is not
             // the same finding as one that is merely too small.
@@ -592,8 +604,9 @@ impl DiagnosticModule for PageFileModule {
                         drive.to_ascii_uppercase()
                     ),
                     format!(
-                        "its maximum of {} MB is below the {} MB this machine's {} of RAM calls for",
+                        "its maximum of {} MB{} is below the {} MB this machine's {} of RAM calls for",
                         setting.maximum_mb,
+                        with_the_others,
                         recommended_min,
                         format_bytes(mb_to_bytes(ram_mb))
                     ),
@@ -932,6 +945,47 @@ mod tests {
         assert_eq!(issue.risk_score, RiskScore::High);
         assert!(!issue.is_selected);
         assert!(issue.technical_details.contains("Recommended minimum"));
+    }
+
+    /// #275. Windows can commit what all page files hold together. A small
+    /// fixed file for crash dumps next to a large one is no finding; two
+    /// small ones are, and a system-managed one beside a small one is not.
+    #[tokio::test]
+    async fn fixed_page_files_are_judged_together() {
+        let scan = |settings: &'static str| async move {
+            let usage = r"C:\pagefile.sys|1024|400|500";
+            let module = module(mock_system(AUTOMATIC, usage, settings, ROOMY_DISK), 32);
+            let issues = module.scan(None).await.unwrap();
+            issues
+                .into_iter()
+                .filter(|i| i.id.starts_with("pagefile_fixed_size_"))
+                .collect::<Vec<_>>()
+        };
+
+        // 32 GB of RAM calls for 4096 MB.
+        let small_and_large = "C:\\pagefile.sys|1024|1024\r\nD:\\pagefile.sys|16384|16384";
+        assert!(scan(small_and_large).await.is_empty());
+
+        let two_small = "C:\\pagefile.sys|1024|1024\r\nD:\\pagefile.sys|2048|2048";
+        let issues = scan(two_small).await;
+        let ids: Vec<&str> = issues.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["pagefile_fixed_size_c", "pagefile_fixed_size_d"]);
+        assert!(
+            issues[0]
+                .description
+                .contains("3072 MB with the other page files"),
+            "{}",
+            issues[0].description
+        );
+
+        let small_and_managed = "C:\\pagefile.sys|1024|1024\r\nD:\\pagefile.sys|0|0";
+        assert!(scan(small_and_managed).await.is_empty());
+
+        // An unusable range is one whatever the others hold.
+        let inverted_and_large = "C:\\pagefile.sys|2048|1024\r\nD:\\pagefile.sys|16384|16384";
+        let issues = scan(inverted_and_large).await;
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].title.contains("Invalid"));
     }
 
     #[tokio::test]
