@@ -187,6 +187,15 @@ pub struct UpdateInfo {
     pub download: Option<UpdateDownload>,
 }
 
+/// curl's `-q`, which has to be its first argument: no config file is read.
+///
+/// Without it curl reads `.curlrc` or `_curlrc` from `%USERPROFILE%`,
+/// `%APPDATA%` and a few more places any program of the user can write. An
+/// `output` line there makes the elevated curl write a file wherever it says,
+/// and `proxy` with `insecure` sends the update check and the download
+/// somewhere else.
+pub const CURL_NO_CONFIG: &str = "-q";
+
 /// Query GitHub for the latest release and determine if a newer version is available.
 ///
 /// Uses `curl.exe` through `CommandRunner` with timeout and required GitHub API headers.
@@ -198,6 +207,7 @@ pub async fn check_for_update(
     let max_time_str = timeout_dur.as_secs().max(1).to_string();
     let user_agent_header = format!("User-Agent: {}", GITHUB_USER_AGENT);
     let args = [
+        CURL_NO_CONFIG,
         "-s",
         "--max-time",
         &max_time_str,
@@ -602,6 +612,8 @@ mod tests {
 
         let executed = mock.executed();
         assert_eq!(executed.len(), 1);
+        // First, or curl has read the user's .curlrc by then.
+        assert!(executed[0].starts_with("curl.exe -q "), "{}", executed[0]);
         assert!(executed[0].contains("User-Agent: WinMedic"));
         assert!(executed[0].contains("Accept: application/vnd.github.v3+json"));
         assert!(executed[0].contains(GITHUB_LATEST_RELEASE_URL));

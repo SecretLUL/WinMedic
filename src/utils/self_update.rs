@@ -33,8 +33,8 @@
 
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner, ps_single_quoted};
 use crate::utils::updater::{
-    GITHUB_RELEASE_DOWNLOAD_PREFIX, GITHUB_USER_AGENT, MAX_UPDATE_BYTES, SemVer, UpdateDownload,
-    is_safe_asset_name, is_safe_download_url, parse_sha256_manifest,
+    CURL_NO_CONFIG, GITHUB_RELEASE_DOWNLOAD_PREFIX, GITHUB_USER_AGENT, MAX_UPDATE_BYTES, SemVer,
+    UpdateDownload, is_safe_asset_name, is_safe_download_url, parse_sha256_manifest,
 };
 
 use sha2::{Digest, Sha256};
@@ -259,6 +259,7 @@ pub async fn curl_download(
     let max_filesize = request.max_bytes.to_string();
     let user_agent = format!("User-Agent: {}", GITHUB_USER_AGENT);
     let args = [
+        CURL_NO_CONFIG,
         // Silent, but still report transport errors, and treat an HTTP error
         // as a failure instead of writing the error page to disk as if it were
         // the binary.
@@ -1341,6 +1342,8 @@ mod tests {
         let executed = mock.executed();
         assert_eq!(executed.len(), 1);
         let cmd = &executed[0];
+        // First, or curl has read the user's .curlrc by then.
+        assert!(cmd.starts_with("curl.exe -q "), "{}", cmd);
         assert!(cmd.contains("-sSf"), "{}", cmd);
         assert!(cmd.contains("--proto =https"), "{}", cmd);
         // Without this a redirect could drop the transfer onto plain HTTP.
