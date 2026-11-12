@@ -313,6 +313,7 @@ fn row(ui: &mut egui::Ui, app: &mut App, issue_index: usize, highlighted: bool, 
             // text colour at its left edge as well as by its tint.
             if highlighted {
                 let rect = shown.response.rect;
+                theme::keep_in_view(ui, "findings", (0, position), rect);
                 ui.painter().rect_filled(
                     egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height())),
                     1,
