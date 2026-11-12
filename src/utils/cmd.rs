@@ -550,6 +550,32 @@ fn windows_dir() -> Option<&'static Path> {
     dir.as_deref()
 }
 
+/// The `PSModulePath` for a Windows PowerShell started from `program`; `None`
+/// for any other program.
+///
+/// Left with the one it inherits, or with none, PowerShell searches
+/// `<Documents>\WindowsPowerShell\Modules` first and loads the first module
+/// there that exports a command the script calls: a `Get-NetAdapter` put
+/// there by any program of the user would run in the elevated WinMedic.
+/// `-NoProfile` does not turn that off. Given its own folder under System32
+/// alone, PowerShell adds the one under Program Files by itself and leaves
+/// the user's out (seen on Windows 11 with Windows PowerShell 5.1).
+///
+/// The separator at the end is deliberate. PowerShell puts the user's folder
+/// in front of a value that equals the machine's own `PSModulePath`, which is
+/// never spelled like this.
+fn powershell_module_path(program: &Path) -> Option<std::ffi::OsString> {
+    let name = program.file_name()?.to_str()?;
+    if !name.eq_ignore_ascii_case("powershell.exe") {
+        return None;
+    }
+    let mut modules = system_dir()?
+        .join(r"WindowsPowerShell\v1.0\Modules")
+        .into_os_string();
+    modules.push("\\");
+    Some(modules)
+}
+
 /// Ask one of the `Get...DirectoryW` functions for its folder. They return
 /// the length without the terminating null, or the size needed with it when
 /// the buffer was too small, or 0 on failure.
@@ -628,8 +654,12 @@ struct Started {
 /// Start `program` without a window, its input empty and its output in two
 /// pipes of [`output_pipe`], in a [`Job`] of its own.
 fn start(program: &str, args: &[&str]) -> Result<Started, String> {
-    let mut cmd = TokioCommand::new(system_program(program)?);
+    let path = system_program(program)?;
+    let mut cmd = TokioCommand::new(&path);
     cmd.args(args);
+    if let Some(modules) = powershell_module_path(&path) {
+        cmd.env("PSModulePath", modules);
+    }
     // No command reads its input. Inherited, a command run from the command
     // line would read the terminal.
     cmd.stdin(Stdio::null());
@@ -1295,6 +1325,106 @@ mod tests {
         std::fs::rename(&named, &report).expect("the report is named");
         std::thread::sleep(Duration::from_secs(60));
         drop(started);
+    }
+
+    /// Turns the test binary into [`asks_powershell_for_the_date`] and names
+    /// the file it writes PowerShell's answer to.
+    const DATE_REPORT: &str = "WINMEDIC_DATE_REPORT";
+
+    /// A module in a folder the user can write, first on the module path
+    /// WinMedic inherits, is not loaded: its `Get-Date` would answer
+    /// "PLANTED". The test binary starts itself as
+    /// [`asks_powershell_for_the_date`] with that path in the child's
+    /// environment only; `set_var` would change it for every test running in
+    /// this process. No window.
+    #[test]
+    fn powershell_loads_no_module_from_the_path_it_inherits() {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        let dir = std::env::temp_dir().join(format!("winmedic_psmodule_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let module = dir.join("Modules").join("Planted");
+        std::fs::create_dir_all(&module).expect("a scratch folder");
+        std::fs::write(
+            module.join("Planted.psm1"),
+            "function Get-Date { 'PLANTED' }\nExport-ModuleMember -Function Get-Date\n",
+        )
+        .expect("the module is written");
+        let mut module_path = dir.join("Modules").into_os_string();
+        if let Some(inherited) = std::env::var_os("PSModulePath") {
+            module_path.push(";");
+            module_path.push(inherited);
+        }
+        let report = dir.join("answer.txt");
+
+        // libtest names a test by its path inside the crate.
+        let (_, test_module) = module_path!().split_once("::").expect("a crate path");
+        let status = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args([
+                "--exact",
+                &format!("{test_module}::asks_powershell_for_the_date"),
+                "--ignored",
+                "--test-threads=1",
+                "-q",
+            ])
+            .env(DATE_REPORT, &report)
+            .env("PSModulePath", &module_path)
+            // A script module is refused under Windows' default policy, and
+            // the test would then pass whatever WinMedic hands down.
+            .env("PSExecutionPolicyPreference", "Bypass")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .expect("the test binary starts");
+        let answer = std::fs::read_to_string(&report);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(status.success(), "the child test failed");
+        let answer = answer.expect("PowerShell answered");
+        assert!(!answer.trim().is_empty(), "PowerShell printed no date");
+        assert!(!answer.contains("PLANTED"), "the planted module answered");
+    }
+
+    /// The child half of
+    /// [`powershell_loads_no_module_from_the_path_it_inherits`]: asks
+    /// PowerShell for the date as WinMedic asks it anything, and writes down
+    /// the answer. Does nothing unless that test started it.
+    #[test]
+    #[ignore = "started by powershell_loads_no_module_from_the_path_it_inherits"]
+    fn asks_powershell_for_the_date() {
+        let Some(report) = std::env::var_os(DATE_REPORT).map(PathBuf::from) else {
+            return;
+        };
+        let runtime = tokio::runtime::Runtime::new().expect("a runtime");
+        let out = runtime
+            .block_on(run_powershell(
+                "Get-Date | Out-String",
+                Duration::from_secs(60),
+            ))
+            .expect("PowerShell starts");
+        std::fs::write(report, out.stdout).expect("the report is written");
+    }
+
+    /// PowerShell gets its own module folder and nothing else; any other
+    /// program gets no module path.
+    #[test]
+    fn only_powershell_is_given_a_module_path() {
+        let powershell = system_program("powershell").unwrap();
+        let modules = PathBuf::from(powershell_module_path(&powershell).expect("a module path"));
+        assert_eq!(
+            modules,
+            system_dir()
+                .unwrap()
+                .join(r"WindowsPowerShell\v1.0\Modules")
+        );
+        assert!(modules.is_dir(), "no {}", modules.display());
+        assert_eq!(
+            powershell_module_path(&system_program("cmd.exe").unwrap()),
+            None
+        );
     }
 
     /// Where PowerShell writes the process id of the ping it starts.
