@@ -116,10 +116,21 @@ impl WinMedicApp {
         app.start_update_check();
         app.start_crash_check();
 
+        // Opening in Advanced mode, the window is where eframe put it back.
+        let window = if app.config.advanced_mode {
+            window::WindowLock::default()
+        } else {
+            window::WindowLock::remembering(
+                cc.storage
+                    .and_then(|storage| storage.get_string(window::KEPT_AS))
+                    .and_then(|stored| window::Geometry::from_stored(&stored)),
+            )
+        };
+
         Self {
             app,
             last_poll: Instant::now(),
-            window: window::WindowLock::default(),
+            window,
             taskbar: taskbar::Taskbar::of(cc),
         }
     }
@@ -370,6 +381,13 @@ impl eframe::App for WinMedicApp {
         } else {
             IDLE_REPAINT
         });
+    }
+
+    /// eframe saves the window's own size, which in Easy mode is the locked
+    /// one. What Advanced mode gets back goes beside it.
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        let kept = self.window.kept().map(|geometry| geometry.stored());
+        storage.set_string(window::KEPT_AS, kept.unwrap_or_default());
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {

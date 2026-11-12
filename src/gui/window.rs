@@ -39,7 +39,43 @@ impl Geometry {
     }
 }
 
+/// The name the Advanced window's geometry is stored under, in eframe's own
+/// storage beside the window's position.
+pub const KEPT_AS: &str = "winmedic_advanced_window";
+
 impl Geometry {
+    /// `1600 1000 0`: width, height and whether it was maximized.
+    pub fn stored(&self) -> String {
+        format!(
+            "{} {} {}",
+            self.size.x.round(),
+            self.size.y.round(),
+            u8::from(self.maximized)
+        )
+    }
+
+    /// What [`Self::stored`] wrote. Anything else, a size no window has
+    /// included, is no geometry.
+    pub fn from_stored(text: &str) -> Option<Self> {
+        let mut parts = text.split_whitespace();
+        let width: f32 = parts.next()?.parse().ok()?;
+        let height: f32 = parts.next()?.parse().ok()?;
+        let maximized = match parts.next()? {
+            "0" => false,
+            "1" => true,
+            _ => return None,
+        };
+        let sane = |length: f32, least: f32| (least..=16384.0).contains(&length);
+        (parts.next().is_none() && sane(width, MIN_SIZE.x) && sane(height, MIN_SIZE.y)).then_some(
+            Self {
+                size: egui::vec2(width, height),
+                maximized,
+                monitor: None,
+                scale: 1.0,
+            },
+        )
+    }
+
     /// The root window's geometry this frame, once the platform has said.
     pub fn of(ctx: &egui::Context) -> Option<Self> {
         ctx.input(|input| {
@@ -70,6 +106,26 @@ pub struct WindowLock {
 }
 
 impl WindowLock {
+    /// The lock of a window that opens in Easy mode, with the geometry the
+    /// Advanced window had when the last session ended in Easy mode.
+    ///
+    /// `before_lock` lived in memory only. Quitting in Easy mode, the
+    /// default, left eframe with the locked 960 x 640 as the window's size,
+    /// and from the next start on F7 opened Advanced at that size instead of
+    /// the one the user had chosen.
+    pub fn remembering(advanced_window: Option<Geometry>) -> Self {
+        Self {
+            applied: None,
+            before_lock: advanced_window,
+        }
+    }
+
+    /// The Advanced window's geometry while Easy mode has the window locked,
+    /// for the next session.
+    pub fn kept(&self) -> Option<Geometry> {
+        self.before_lock
+    }
+
     /// What the window has to be told to match `advanced`: nothing while it
     /// already does, which is every frame but the first and the ones right
     /// after a switch.
@@ -123,7 +179,10 @@ impl WindowLock {
             }
             commands
         } else {
-            if was_advanced != Some(false) {
+            // Coming from Advanced mode, or opening in Easy mode with nothing
+            // remembered from the last session.
+            if was_advanced == Some(true) || (was_advanced.is_none() && self.before_lock.is_none())
+            {
                 self.before_lock = current;
             }
             vec![
@@ -286,6 +345,47 @@ mod tests {
         assert!(lock.commands(false, at(MIN_SIZE.x, MIN_SIZE.y)).is_empty());
         assert!(!lock.commands(true, at(MIN_SIZE.x, MIN_SIZE.y)).is_empty());
         assert!(lock.commands(true, at(1200.0, 800.0)).is_empty());
+    }
+
+    /// Quit in Easy mode, start again, press F7: Advanced opens as it was.
+    #[test]
+    fn the_advanced_window_is_remembered_across_a_quit_in_easy_mode() {
+        let mut first = WindowLock::default();
+        first.commands(true, at(1600.0, 1000.0));
+        assert_eq!(first.kept(), None, "nothing to keep while Advanced is open");
+        first.commands(false, at(1600.0, 1000.0));
+        let stored = first.kept().unwrap().stored();
+        assert_eq!(stored, "1600 1000 0");
+
+        // The next session opens locked, at the size eframe saved.
+        let mut second = WindowLock::remembering(Geometry::from_stored(&stored));
+        second.commands(false, at(MIN_SIZE.x, MIN_SIZE.y));
+        assert_eq!(second.kept().unwrap().stored(), stored);
+        let commands = second.commands(true, at(MIN_SIZE.x, MIN_SIZE.y));
+        assert!(commands.contains(&ViewportCommand::InnerSize(egui::vec2(1600.0, 1000.0))));
+
+        let maximized = Geometry::from_stored("2560 1400 1").unwrap();
+        assert!(maximized.maximized);
+        let mut third = WindowLock::remembering(Some(maximized));
+        third.commands(false, at(MIN_SIZE.x, MIN_SIZE.y));
+        assert!(
+            third
+                .commands(true, at(MIN_SIZE.x, MIN_SIZE.y))
+                .contains(&ViewportCommand::Maximized(true))
+        );
+
+        for unusable in [
+            "",
+            "1600",
+            "1600 1000",
+            "1600 1000 2",
+            "10 10 0",
+            "NaN 1000 0",
+            "1e9 1000 0",
+            "1600 1000 0 7",
+        ] {
+            assert_eq!(Geometry::from_stored(unusable), None, "{unusable:?}");
+        }
     }
 
     #[test]
