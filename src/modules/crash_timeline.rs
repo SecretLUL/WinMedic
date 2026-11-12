@@ -94,7 +94,7 @@ pub fn xpath_time(t: DateTime<Utc>) -> String {
 
 /// Crash events closer together than this are one crash: a bugcheck logs its
 /// event 1001 and a Kernel-Power 41 at the same start.
-const SAME_CRASH_MINUTES: i64 = 15;
+pub const SAME_CRASH_MINUTES: i64 = 15;
 /// A series takes at least this many crashes. One unexpected shutdown, a
 /// power cut say, starts none.
 pub const MIN_SERIES: usize = 2;

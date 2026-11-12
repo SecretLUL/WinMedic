@@ -289,3 +289,25 @@ const SHORTCUTS: &[(&str, &str, bool)] = &[
     ),
     ("Q", "Quit", false),
 ];
+
+#[cfg(test)]
+mod tests {
+    /// #251: `ctx.copy_text` reaches Windows only through arboard, which
+    /// eframe's `clipboard` feature brings. Built without it, egui copies
+    /// into a clipboard of its own: "The crash log is on the clipboard" was
+    /// shown while Windows still held whatever the user had copied before.
+    #[test]
+    fn the_windows_clipboard_is_built_in() {
+        let manifest = include_str!("../../Cargo.toml");
+        let eframe = manifest
+            .split("\neframe = ")
+            .nth(1)
+            .and_then(|rest| rest.split(']').next())
+            .expect("eframe's features");
+        assert!(eframe.contains("\"clipboard\""), "{eframe}");
+        assert!(
+            include_str!("../../Cargo.lock").contains("name = \"arboard\""),
+            "no clipboard backend in Cargo.lock"
+        );
+    }
+}

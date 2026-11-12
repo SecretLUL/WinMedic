@@ -54,7 +54,12 @@ impl App {
             }
         }
 
-        let mut scan_ended = false;
+        #[derive(PartialEq)]
+        enum ScanEnd {
+            Completed,
+            Cancelled,
+        }
+        let mut scan_ended = None;
         for event in batch {
             match event {
                 ScanEvent::ModuleStarted(mod_id) => {
@@ -141,8 +146,15 @@ impl App {
                     total_modules,
                 } => {
                     self.is_scanning = false;
-                    scan_ended = true;
-                    self.health_score = DiagnosticEngine::calculate_health_score(&self.issues);
+                    scan_ended = Some(ScanEnd::Cancelled);
+                    // Some checks never ran, so what the others found is no
+                    // result: the last complete scan comes back.
+                    if let Some(before) = self.before_scan.take() {
+                        self.issues = before.issues;
+                        self.archived_issues = before.archived_issues;
+                        self.module_statuses = before.module_statuses;
+                        self.health_score = before.health_score;
+                    }
                     for item in &mut self.module_statuses {
                         if item.3 == ModuleStatus::Scanning {
                             item.3 = ModuleStatus::Idle;
@@ -157,10 +169,14 @@ impl App {
                         }
                     }
                     let msg = format!(
-                        "Scan cancelled after {}/{} modules ({} partial findings kept).",
+                        "Scan cancelled after {} of {} checks. {}",
                         completed_modules,
                         total_modules,
-                        self.issues.len()
+                        if self.last_scan_timestamp.is_some() {
+                            "The last complete scan is shown."
+                        } else {
+                            "Nothing was scanned to the end yet."
+                        }
                     );
                     push_bounded_log(&mut self.scan_log_messages, format!("[STOP] {}", msg));
                     self.status_message = Some(msg);
@@ -170,7 +186,8 @@ impl App {
                     self.health_score = DiagnosticEngine::calculate_health_score(&self.issues);
                     self.scan_overall_progress = 100;
                     self.is_scanning = false;
-                    scan_ended = true;
+                    scan_ended = Some(ScanEnd::Completed);
+                    self.before_scan = None;
                     self.status_message = Some(format!(
                         "Scan finished: {} issues found (health: {}/100)",
                         self.issues.len(),
@@ -179,18 +196,25 @@ impl App {
                 }
             }
         }
-        if scan_ended {
-            // Freeze the clock. Left running, "DIAGNOSTICS COMPLETE" would go
-            // on counting up for as long as the app stayed open.
-            self.scan_duration = self.scan_started_at.map(|start| start.elapsed());
-            self.last_scan_timestamp =
-                Some(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
+        if let Some(end) = scan_ended {
+            // Only a scan that ran to its end is one: it gets a time and a
+            // duration and is saved. A cancelled one leaves those of the
+            // last complete scan, on screen and on disk.
+            if end == ScanEnd::Completed {
+                // Freeze the clock. Left running, "DIAGNOSTICS COMPLETE"
+                // would go on counting up for as long as the app stayed open.
+                self.scan_duration = self.scan_started_at.map(|start| start.elapsed());
+                self.last_scan_timestamp =
+                    Some(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
+            }
             self.scan_started_at = None;
             self.last_findings.clear();
             self.scan_event_rx = None;
             self.cancel_token = None;
             self.audit_entries = self.audit_logger.get_history();
-            self.save_scan_state();
+            if end == ScanEnd::Completed {
+                self.save_scan_state();
+            }
         }
     }
 
@@ -227,6 +251,7 @@ impl App {
 
     fn process_repair_events(&mut self) {
         let mut repair_ended = false;
+        let mut repair_recorded = false;
         // Taken out while it drains, so that handling an event can reach the
         // rest of `App`; see `process_scan_events`.
         if let Some(mut rx) = self.repair_event_rx.take() {
@@ -296,6 +321,10 @@ impl App {
                             && let Some(issue) = self.issues.iter_mut().find(|i| i.id == issue_id)
                         {
                             issue.record_repair(&result);
+                            // Now, not when the run ends: what this repair
+                            // did stays on record whatever ends WinMedic
+                            // before the last one is through.
+                            repair_recorded = true;
                         }
                         match result {
                             Ok(repaired) => {
@@ -364,6 +393,9 @@ impl App {
             }
             self.repair_event_rx = Some(rx);
         }
+        if repair_recorded && !repair_ended {
+            self.save_scan_state();
+        }
         if repair_ended {
             self.current_fix_title.clear();
             self.end_repair_step();
@@ -373,6 +405,9 @@ impl App {
             self.backup_records = self.reg_backup_mgr.list_backups();
             self.clamp_backup_selection();
             self.save_scan_state();
+            if self.quit_when_repairs_end {
+                self.should_quit = true;
+            }
         }
     }
 
@@ -1226,6 +1261,129 @@ mod tests {
         .await
         .unwrap();
         app.process_background_events();
+    }
+
+    /// #255: Q, or the close button, while repairs run. The window does not
+    /// close under the repair: the run is cancelled, and it closes when the
+    /// run has ended and its outcome is on record.
+    #[tokio::test]
+    async fn quitting_during_repairs_cancels_the_run_and_closes_once_it_has_ended() {
+        let mut app = App::new();
+        let (tx, rx) = channel::<RepairEvent>(8);
+        app.repair_event_rx = Some(rx);
+        app.is_fixing = true;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        app.cancel_token = Some(cancel.clone());
+
+        app.request_quit();
+        assert!(cancel.is_cancelled(), "the run is told to stop");
+        app.process_background_events();
+        assert!(!app.should_quit, "not while the repair still runs");
+        assert!(app.status_message.as_deref().unwrap().contains("closes"));
+
+        tx.send(RepairEvent::RepairsCancelled {
+            fixed_count: 1,
+            failed_count: 0,
+            remaining: 2,
+        })
+        .await
+        .unwrap();
+        app.process_background_events();
+        assert!(!app.is_fixing);
+        assert_eq!(app.last_repair, Some((1, 0)), "the run is on record");
+        assert!(app.should_quit);
+    }
+
+    /// With no repair running there is nothing to wait for; a scan changes
+    /// nothing and is left behind.
+    #[test]
+    fn quitting_closes_at_once_when_no_repair_runs() {
+        let mut app = App::new();
+        app.request_quit();
+        assert!(app.should_quit);
+
+        let mut app = App::new();
+        app.is_scanning = true;
+        app.request_quit();
+        assert!(app.should_quit);
+    }
+
+    /// #249: "Scan again", then Cancel after one check that found nothing.
+    /// The other checks never ran, so the finding of the last complete scan
+    /// is back, with its score, badge and time; the page read "Your PC is
+    /// in good shape", and that was saved over the last scan.
+    #[tokio::test]
+    async fn a_cancelled_scan_brings_the_last_complete_scan_back() {
+        let scanned_at = "2026-11-01 10:00:00";
+        let mut app = App::new();
+        app.issues = vec![dirty_bit()];
+        app.health_score = DiagnosticEngine::calculate_health_score(&app.issues);
+        app.last_scan_timestamp = Some(scanned_at.to_string());
+        app.scan_duration = Some(std::time::Duration::from_secs(42));
+        let storage = app
+            .module_statuses
+            .iter()
+            .position(|m| m.0 == "storage")
+            .expect("the storage check");
+        app.module_statuses[storage].3 = ModuleStatus::Critical(1);
+        let health = app.health_score;
+        assert!(health < 100);
+
+        let (mut app, tx) = scanning_again(app);
+        assert!(app.issues.is_empty(), "off the screen while the scan runs");
+        tx.send(ScanEvent::ModuleFinished {
+            module_id: "network".to_string(),
+            issues: Vec::new(),
+        })
+        .await
+        .unwrap();
+        tx.send(ScanEvent::ScanCancelled {
+            completed_modules: 1,
+            total_modules: 14,
+        })
+        .await
+        .unwrap();
+        app.process_background_events();
+
+        assert!(!app.is_scanning);
+        let shown: Vec<&str> = app.issues.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(shown, [dirty_bit().id.as_str()]);
+        assert_eq!(app.health_score, health);
+        assert_eq!(app.module_statuses[storage].3, ModuleStatus::Critical(1));
+        assert_eq!(app.last_scan_timestamp.as_deref(), Some(scanned_at));
+        assert_eq!(app.scan_duration, Some(std::time::Duration::from_secs(42)));
+        let message = app.status_message.clone().unwrap();
+        assert!(
+            message.contains("1 of 14") && message.contains("last complete scan"),
+            "{message}"
+        );
+        // What would be saved is still that scan.
+        let saved = app.scan_to_save().expect("a scan to save");
+        assert_eq!(saved.timestamp, scanned_at);
+        assert_eq!(saved.issues.len(), 1);
+    }
+
+    /// A first scan that is cancelled leaves no scan: no time, nothing to
+    /// save, and no badge left spinning.
+    #[tokio::test]
+    async fn a_cancelled_first_scan_is_no_scan() {
+        let (mut app, tx) = scanning_again(App::new());
+        tx.send(ScanEvent::ScanCancelled {
+            completed_modules: 0,
+            total_modules: 14,
+        })
+        .await
+        .unwrap();
+        app.process_background_events();
+
+        assert!(!app.is_scanning);
+        assert_eq!(app.last_scan_timestamp, None);
+        assert!(app.scan_to_save().is_none());
+        assert!(
+            app.module_statuses
+                .iter()
+                .all(|m| m.3 != ModuleStatus::Scanning)
+        );
     }
 
     /// #158: the dirty bit stays set until Windows checks the drive at the

@@ -91,6 +91,18 @@ pub trait CommandRunner: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// The string values of a registry key, read from the registry itself
+    /// with every character as it is stored: see
+    /// [`crate::utils::registry::read_string_values`]. `None` from a runner
+    /// that has no registry, such as a test's; the caller asks it for
+    /// `reg query` instead.
+    fn registry_string_values(
+        &self,
+        _key: &str,
+    ) -> Option<Result<Vec<crate::utils::registry::RegValue>, String>> {
+        None
+    }
+
     /// Waits until the PowerShell calls asked for so far have finished, for a
     /// command that keeps the disk busy for minutes.
     ///
@@ -215,6 +227,13 @@ impl CommandRunner for SystemCommandRunner {
             timeout_duration,
         )
         .await
+    }
+
+    fn registry_string_values(
+        &self,
+        key: &str,
+    ) -> Option<Result<Vec<crate::utils::registry::RegValue>, String>> {
+        Some(crate::utils::registry::read_string_values(key))
     }
 
     async fn after_pending_powershell(&self) {

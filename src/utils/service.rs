@@ -284,15 +284,49 @@ impl Drop for StartAgain {
         let runner = self.runner.clone();
         let stopped = std::mem::take(&mut self.stopped);
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(async move {
+            let starting = runtime.spawn(async move {
                 for svc in stopped.iter().rev() {
                     let _ = runner
                         .run("net.exe", &["start", svc], Duration::from_secs(30))
                         .await;
                 }
             });
+            if let Ok(mut pending) = STARTING_AGAIN.lock() {
+                pending.retain(|task| !task.is_finished());
+                pending.push(starting);
+            }
         }
     }
+}
+
+/// The tasks in which a dropped [`StartAgain`] starts its services again.
+static STARTING_AGAIN: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// How long [`started_again`] is given where WinMedic is about to end: each
+/// `net start` gets 30 seconds, and the update repairs stop three services
+/// and the ones that depend on them.
+pub const START_AGAIN_LIMIT: Duration = Duration::from_secs(120);
+
+/// Wait, at most `limit`, until the services a repair left stopped when it
+/// ended early have been started again.
+///
+/// A dropped [`StartAgain`] can only hand that work to the runtime. When the
+/// program ends right after - Ctrl+C in a headless run, the window closing -
+/// the runtime is gone within milliseconds, the task is dropped with it and
+/// its `net.exe` ended: the update services or the print queue stayed stopped
+/// until Windows restarted. Whoever ends the program waits here first.
+pub async fn started_again(limit: Duration) {
+    let pending = STARTING_AGAIN
+        .lock()
+        .map(|mut pending| std::mem::take(&mut *pending))
+        .unwrap_or_default();
+    let all = async {
+        for task in pending {
+            let _ = task.await;
+        }
+    };
+    let _ = tokio::time::timeout(limit, all).await;
 }
 
 /// Real `sc` output, and a service manager that answers with it, for other
@@ -650,6 +684,31 @@ mod tests {
         assert_eq!(one.len(), 1);
         assert_eq!(one[0].name, "AppVClient");
         assert_eq!(one[0].state, SERVICE_STOPPED);
+    }
+
+    /// #255: a repair dropped between stopping the print queue and starting
+    /// it again only hands the start to the runtime. Whoever is about to end
+    /// the program waits in `started_again`, and the service runs when that
+    /// returns; without the wait the runtime, and `net start` with it, was
+    /// gone first.
+    #[tokio::test]
+    async fn a_service_left_stopped_runs_once_started_again_returns() {
+        let manager = Arc::new(
+            test_support::ServiceManager::running(&["spooler"])
+                .enumdepend("spooler", test_support::enumdepend_none()),
+        );
+        let mut services = StartAgain::new(manager.clone());
+        services.stop("spooler").await.unwrap();
+        assert!(!manager.runs("spooler"));
+
+        drop(services);
+        assert!(!manager.runs("spooler"), "the start is only a task so far");
+        started_again(Duration::from_secs(30)).await;
+        assert!(manager.runs("spooler"));
+        assert_eq!(
+            manager.net_commands(),
+            ["net.exe stop spooler", "net.exe start spooler"]
+        );
     }
 
     /// `sc enumdepend cryptsvc` in Windows Sandbox, the three services that

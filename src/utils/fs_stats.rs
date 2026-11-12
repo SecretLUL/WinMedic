@@ -85,7 +85,10 @@ fn tree_stats(path: &Path) -> DirStats {
 /// cancelling a scan (`JoinSet::shutdown`) would wait for the whole walk. The
 /// caller awaits the blocking task instead, which can be aborted; the walk runs
 /// to its end on its own thread.
-pub async fn measure_dirs(dirs: Vec<PathBuf>, measure: fn(&Path) -> DirStats) -> DirStats {
+pub async fn measure_dirs<F>(dirs: Vec<PathBuf>, measure: F) -> DirStats
+where
+    F: Fn(&Path) -> DirStats + Send + 'static,
+{
     tokio::task::spawn_blocking(move || {
         let mut total = DirStats::default();
         for dir in &dirs {

@@ -551,6 +551,9 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         let (fixed_issues, (fixed, failed)) = fix_handle.await?;
         issues = fixed_issues;
         failed_fixes = failed;
+        // A run cut short by Ctrl+C may have left services stopped; they are
+        // started again in a task this function must not outrun.
+        utils::service::started_again(utils::service::START_AGAIN_LIMIT).await;
 
         if !quiet {
             println!(
@@ -664,6 +667,12 @@ fn run_gui() -> Result<u8, Box<dyn std::error::Error>> {
             )
         }))
     };
+
+    // A repair the window cancelled to close may have left services stopped;
+    // they are started again on this runtime, which has to live that long.
+    runtime.block_on(utils::service::started_again(
+        utils::service::START_AGAIN_LIMIT,
+    ));
 
     // Shut down rather than drop: a scan can still be in flight when the window
     // closes, and dropping the runtime would block on it. Closing the window

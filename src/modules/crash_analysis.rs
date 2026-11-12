@@ -533,15 +533,11 @@ impl DiagnosticModule for CrashAnalysisModule {
         .await;
 
         // Merge dump + event crash instances. A bugcheck usually leaves both a
-        // dump and an Event 1001 naming that dump; it is one crash.
+        // dump and an Event 1001; it is one crash.
         let mut crashes: Vec<CrashInstance> = dump_crashes;
+        let dumps = crashes.len();
         for e in &bugcheck_events {
-            let already_counted = e.dump_file.as_deref().is_some_and(|dump| {
-                crashes
-                    .iter()
-                    .any(|c| c.source_file.eq_ignore_ascii_case(dump))
-            });
-            if already_counted {
+            if crashes[..dumps].iter().any(|dump| is_the_dump_of(dump, e)) {
                 continue;
             }
             crashes.push(CrashInstance {
@@ -1067,6 +1063,30 @@ pub fn bugcheck_info(code: u32) -> Option<BugcheckInfo> {
 /// (bugcheck Event 1001 with its stop code, Kernel-Power Event 41).
 pub fn parse_crash_events(raw_output: &str) -> Vec<CrashEventRecord> {
     crash_events(parse_events(raw_output))
+}
+
+/// Whether `dump`, a minidump, was written for the crash `event` reports.
+///
+/// The event names the dump Windows wrote. With "Automatic memory dump",
+/// Windows' default, that is `C:\Windows\MEMORY.DMP`, and the minidump of the
+/// same crash lies next to it under another name: by the name alone the two
+/// were two crashes, "Recurring BSOD history (2 crashes)" after one blue
+/// screen. So a minidump with the event's stop code, written within
+/// [`crash_timeline::SAME_CRASH_MINUTES`] of the event, is that crash too.
+/// Windows writes both at the start after the crash.
+fn is_the_dump_of(dump: &CrashInstance, event: &CrashEventRecord) -> bool {
+    let named = event
+        .dump_file
+        .as_deref()
+        .is_some_and(|name| dump.source_file.eq_ignore_ascii_case(name));
+    let same_stop = event.bugcheck_code == Some(dump.bugcheck_code);
+    let same_start = matches!(
+        (dump.logged, event.logged),
+        (Some(written), Some(logged))
+            if (written - logged).abs()
+                <= chrono::TimeDelta::minutes(crash_timeline::SAME_CRASH_MINUTES)
+    );
+    named || (same_stop && same_start)
 }
 
 /// The bugcheck and Kernel-Power 41 events among `events`.
@@ -1847,6 +1867,84 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The captured event, as Windows logs it with "Automatic memory dump":
+    /// naming `MEMORY.DMP`, logged at `at`. Only those two were changed.
+    fn event_naming_memory_dmp(at: DateTime<Utc>) -> String {
+        let event = WER_BUGCHECK
+            .replace(
+                r"C:\WINDOWS\Minidump\072726-7843-01.dmp",
+                r"C:\WINDOWS\MEMORY.DMP",
+            )
+            .replace(
+                "2026-07-27T19:36:21.1903531Z",
+                &at.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string(),
+            );
+        assert!(event.contains("MEMORY.DMP") && !event.contains("2026-07-27T19:36"));
+        event
+    }
+
+    /// The stop codes the history finding lists for `dump` in the dump
+    /// folder and `event` in the log.
+    async fn history_of(tag: &str, dump: &[u8], event: String) -> String {
+        let dir = temp_dump_dir(tag);
+        write_dump(&dir, "111226-9000-01.dmp", dump);
+        let mock = MockCommandRunner::new();
+        mock.add_response("wevtutil.exe", CmdOutput::ok(event));
+        let module = CrashAnalysisModule::with_runner_and_dump_dir(
+            ModuleConfig::default(),
+            Arc::new(mock),
+            &dir,
+        );
+        let issues = module.scan(None).await.expect("scan failed");
+        let _ = std::fs::remove_dir_all(&dir);
+        issues
+            .into_iter()
+            .find(|i| i.id == "crash_bugcheck_history")
+            .map(|i| format!("{} | {}", i.title, i.technical_details))
+            .expect("bugcheck history")
+    }
+
+    /// #254: one blue screen leaves MEMORY.DMP and a minidump, and the event
+    /// names MEMORY.DMP. The minidump written at the same start with the
+    /// same stop code is that crash, not a second one.
+    #[tokio::test]
+    async fn a_crash_whose_event_names_memory_dmp_is_counted_once() {
+        let now = Utc::now();
+        let history = history_of(
+            "memory_dmp",
+            &synth_dump64(0x9F, b""),
+            event_naming_memory_dmp(now - chrono::TimeDelta::minutes(2)),
+        )
+        .await;
+        assert!(history.contains("0x0000009F x1"), "{history}");
+        assert!(!history.contains("Recurring"), "{history}");
+    }
+
+    /// A minidump from another day, or with another stop code, is another
+    /// crash.
+    #[tokio::test]
+    async fn a_minidump_of_another_crash_still_counts() {
+        let now = Utc::now();
+        let another_day = history_of(
+            "memory_dmp_day",
+            &synth_dump64(0x9F, b""),
+            event_naming_memory_dmp(now - chrono::TimeDelta::days(3)),
+        )
+        .await;
+        assert!(another_day.contains("0x0000009F x2"), "{another_day}");
+
+        let another_stop = history_of(
+            "memory_dmp_stop",
+            &synth_dump64(0xD1, b""),
+            event_naming_memory_dmp(now),
+        )
+        .await;
+        assert!(
+            another_stop.contains("Recurring BSOD history (2 crashes)"),
+            "{another_stop}"
+        );
     }
 
     #[tokio::test]

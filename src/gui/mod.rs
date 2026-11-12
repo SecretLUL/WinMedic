@@ -384,6 +384,14 @@ impl eframe::App for WinMedicApp {
 
         show(ui, &mut self.app);
 
+        // The close button, Alt+F4 or the taskbar: while repairs run, the
+        // window stays until the run it cancels has ended.
+        if self.app.is_fixing && ui.ctx().input(|i| i.viewport().close_requested()) {
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.app.request_quit();
+        }
+
         if self.app.should_quit {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }

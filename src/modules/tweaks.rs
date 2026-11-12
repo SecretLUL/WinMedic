@@ -461,8 +461,15 @@ const DEFAULT_SPLIT_THRESHOLD_KB: u64 = 3_670_016;
 /// against what is installed. On the development PC the tuning tool had
 /// set exactly the installed 32 GB, 33554432 KB, above the 33119136 KB
 /// Windows has, and the services ran grouped.
+///
+/// Only where Windows' own value would split them. On a PC with less memory
+/// than [`DEFAULT_SPLIT_THRESHOLD_KB`] - 2 or 3 GB, or 4 GB with part of it
+/// reserved for graphics - the default groups the services too, by design:
+/// there it was a finding on an untouched Windows, and the repair wrote the
+/// same value back, so the next scan raised it again.
 pub fn keeps_services_grouped(threshold_kb: u64, ram_bytes: u64) -> bool {
-    threshold_kb > ram_bytes / 1024
+    let ram_kb = ram_bytes / 1024;
+    threshold_kb > ram_kb && ram_kb >= DEFAULT_SPLIT_THRESHOLD_KB
 }
 
 pub const WU_POLICY_KEY: &str = r"HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate";
@@ -3534,6 +3541,25 @@ mod tests {
         assert!(!keeps_services_grouped(DEV_PC_RAM / 1024, DEV_PC_RAM));
     }
 
+    /// #257: with under 3.5 GB Windows groups its services by its own
+    /// default, so neither that default nor a higher value changes anything
+    /// there. Where the default would split them, a higher value still does.
+    #[test]
+    fn a_pc_whose_services_windows_groups_anyway_has_no_finding() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        // 4 GB installed, 3.4 GB left to Windows beside the graphics memory.
+        let small = 3 * GB + 400 * 1024 * 1024;
+        assert!(small / 1024 < DEFAULT_SPLIT_THRESHOLD_KB);
+        assert!(!keeps_services_grouped(DEFAULT_SPLIT_THRESHOLD_KB, small));
+        assert!(!keeps_services_grouped(DEFAULT_SPLIT_THRESHOLD_KB, 2 * GB));
+        assert!(!keeps_services_grouped(TUNED_THRESHOLD, small));
+        // Exactly 3.5 GB and more: the default splits, a higher value does not.
+        let enough = DEFAULT_SPLIT_THRESHOLD_KB * 1024;
+        assert!(!keeps_services_grouped(DEFAULT_SPLIT_THRESHOLD_KB, enough));
+        assert!(keeps_services_grouped(TUNED_THRESHOLD, enough));
+        assert!(keeps_services_grouped(TUNED_THRESHOLD, 4_293_857_280));
+    }
+
     /// `reg query` of the threshold as captured (3.5 GB), or with `kb`.
     fn split_threshold_output(kb: u64) -> CmdOutput {
         CmdOutput::ok(
@@ -3583,6 +3609,31 @@ mod tests {
         ] {
             let issues = scan_split_threshold(answer).await;
             assert!(issues.is_empty(), "{issues:?}");
+        }
+    }
+
+    /// #257: a PC with 3 GB. Windows' own value is above its memory, and so
+    /// is a tuned one: neither is a finding, and a repair kept from an
+    /// earlier scan writes nothing.
+    #[tokio::test]
+    async fn on_a_small_pc_no_threshold_is_a_finding_or_repaired() {
+        const THREE_GB: u64 = 3 * 1024 * 1024 * 1024;
+        for kb in [DEFAULT_SPLIT_THRESHOLD_KB, TUNED_THRESHOLD] {
+            let dir = sandbox("split_small");
+            let mock = MockCommandRunner::new();
+            mock.add_response("/v SvcHostSplitThresholdInKB", split_threshold_output(kb));
+            healthy(&mock);
+            let module = module(mock.clone(), &dir, b"").with_ram(Arc::new(|| THREE_GB));
+            let issues = module.scan(None).await.unwrap();
+            assert!(issues.is_empty(), "{kb}: {issues:?}");
+
+            let msg = module.fix(SPLIT_THRESHOLD_ID, None).await.unwrap();
+            assert!(msg.contains("nothing to change"), "{msg}");
+            assert!(
+                !mock.executed().iter().any(|c| c.contains("reg.exe add")),
+                "{:?}",
+                mock.executed()
+            );
         }
     }
 
