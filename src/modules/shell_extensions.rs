@@ -94,15 +94,13 @@ pub fn shell_extension_crashes(events: &[EventRecord], windows_dir: &str) -> Vec
         windows_dir.trim_end_matches('\\').to_ascii_lowercase()
     );
     let mut found: Vec<ShellExtCrash> = Vec::new();
-    for event in events
+    for crash in events
         .iter()
         .filter(|e| e.provider == APP_ERROR_PROVIDER && e.event_id == 1000)
-        .filter(|e| {
-            e.data("AppName")
-                .is_some_and(|app| app.eq_ignore_ascii_case("explorer.exe"))
-        })
+        .filter_map(EventRecord::app_crash)
+        .filter(|crash| crash.app.eq_ignore_ascii_case("explorer.exe"))
     {
-        let Some(path) = event.data("ModulePath").map(str::trim) else {
+        let Some(path) = crash.module_path.map(str::trim) else {
             continue;
         };
         if path.is_empty() || path.to_ascii_lowercase().starts_with(&windows) {
@@ -438,6 +436,22 @@ mod tests {
         assert_eq!(crashes[0].module_path, VISSHE);
         assert!(crashes[0].crashes >= MIN_CRASHES);
         assert_eq!(crashes[0].issue_id(), "crash_shellext_visshe_dll");
+    }
+
+    /// #260. Windows 10, and some Windows 11 PCs, log the event without
+    /// field names, in two shapes. Constructed; see tests/fixtures/README.md.
+    #[test]
+    fn explorer_crashing_is_found_in_events_without_field_names() {
+        let events = parse_events(include_str!(
+            "../../tests/fixtures/events/app_error_1000_unnamed_constructed.xml"
+        ));
+        assert_eq!(events.len(), 3);
+        assert!(events.iter().all(|e| e.data("AppName").is_none()));
+
+        let crashes = shell_extension_crashes(&events, r"C:\Windows");
+        assert_eq!(crashes.len(), 1, "{crashes:?}");
+        assert_eq!(crashes[0].module_path, VISSHE);
+        assert_eq!(crashes[0].crashes, 2, "one of each shape");
     }
 
     #[test]
