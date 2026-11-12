@@ -104,13 +104,13 @@ pub fn cleanup_result(label: &str, stats: CleanStats) -> Result<String, String> 
 
 /// Clean files and subdirectories within a path, safely skipping locked files.
 pub fn clean_path_contents(path: &Path) -> CleanStats {
-    clean_filtered(path, |_| false)
+    clean_filtered(path, &|_| false)
 }
 
 /// The sweep behind [`clean_path_contents`], leaving alone whatever `skip`
 /// claims, and everything when `path` is a link or lies behind one: see
 /// [`reached_without_link`].
-fn clean_filtered(path: &Path, skip: fn(&Path) -> bool) -> CleanStats {
+fn clean_filtered(path: &Path, skip: &dyn Fn(&Path) -> bool) -> CleanStats {
     if !reached_without_link(path) {
         return CleanStats::default();
     }
@@ -118,7 +118,7 @@ fn clean_filtered(path: &Path, skip: fn(&Path) -> bool) -> CleanStats {
 }
 
 /// The walk behind [`clean_filtered`], for a folder that is no link.
-fn sweep_tree(path: &Path, skip: fn(&Path) -> bool) -> CleanStats {
+fn sweep_tree(path: &Path, skip: &dyn Fn(&Path) -> bool) -> CleanStats {
     let mut stats = CleanStats::default();
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
@@ -456,7 +456,7 @@ fn is_recreated_shell_stub(path: &Path) -> bool {
 }
 
 /// Measure a tree, leaving out whatever `skip` claims.
-fn dir_stats_filtered(path: &Path, skip: fn(&Path) -> bool) -> DirStats {
+fn dir_stats_filtered(path: &Path, skip: &dyn Fn(&Path) -> bool) -> DirStats {
     let mut stats = DirStats::default();
     let Ok(entries) = std::fs::read_dir(path) else {
         return stats;
@@ -522,7 +522,7 @@ fn recycle_bin_stats(path: &Path) -> DirStats {
         if name_starts_with(&name, "$R") {
             stats.files += 1;
             stats.bytes += if meta.is_dir() {
-                dir_stats_filtered(&p, is_recreated_shell_stub).bytes
+                dir_stats_filtered(&p, &is_recreated_shell_stub).bytes
             } else {
                 meta.len()
             };
@@ -546,7 +546,55 @@ fn recycle_bin_stats(path: &Path) -> DirStats {
 /// localised name until Explorer notices, and changes nothing about the next
 /// scan — since the scan no longer counts it either.
 pub fn clean_recycle_bin_contents(path: &Path) -> CleanStats {
-    clean_filtered(path, is_recreated_shell_stub)
+    clean_filtered(path, &is_recreated_shell_stub)
+}
+
+/// How long a file in a temp folder is left alone after it was written.
+///
+/// The temp folders hold what running programs work with: an installer's
+/// unpacked payload, files staged for the next restart, a document opened
+/// out of an archive. Few of those are locked. Deleting whatever was not
+/// took them along, and most of what a scan counted had been written in
+/// the hours before: a sweep of 6.92 GB was followed by 6.10 GB four hours
+/// later.
+pub const TEMP_FILE_MIN_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Whether the file at `path` was created or changed less than `min_age`
+/// ago. A folder never was: it is walked, and removed once it is empty.
+///
+/// Both times count. A file unpacked from an archive keeps the archive's
+/// old modification time and is new all the same.
+fn written_within(path: &Path, min_age: Duration) -> bool {
+    let Ok(meta) = path.symlink_metadata() else {
+        return false;
+    };
+    if meta.is_dir() {
+        return false;
+    }
+    let now = std::time::SystemTime::now();
+    [meta.created(), meta.modified()]
+        .into_iter()
+        .flatten()
+        // A time in the future is no age to go by: the file stays.
+        .any(|written| {
+            now.duration_since(written)
+                .map_or(true, |age| age < min_age)
+        })
+}
+
+/// Measure a temp folder: what [`clean_temp_dir`] would delete, so files
+/// written within `min_age` ([`TEMP_FILE_MIN_AGE`]) are not counted.
+pub fn scan_temp_dir(path: &Path, min_age: Duration) -> DirStats {
+    if !reached_without_link(path) {
+        return DirStats::default();
+    }
+    dir_stats_filtered(path, &|entry| written_within(entry, min_age))
+}
+
+/// Empty a temp folder of everything that is neither in use nor written
+/// within `min_age` ([`TEMP_FILE_MIN_AGE`]).
+pub fn clean_temp_dir(path: &Path, min_age: Duration) -> CleanStats {
+    clean_filtered(path, &|entry| written_within(entry, min_age))
 }
 
 pub fn discover_delivery_optimization_dirs(sys_root: &Path) -> Vec<PathBuf> {
@@ -793,6 +841,10 @@ pub struct CleanerPaths {
     /// The folder WinMedic remembers the last component store cleanup in;
     /// `None` remembers nothing. See [`WINSXS_PACKAGES_LEFT_FILE`].
     pub data_dir: Option<PathBuf>,
+    /// How long a file in the system temp folders is left alone after it
+    /// was written: [`TEMP_FILE_MIN_AGE`] on the real machine, no time
+    /// under [`Self::rooted_at`], whose files a test has just written.
+    pub temp_min_age: Duration,
 }
 
 /// How many reclaimable packages the last `StartComponentCleanup` left, as a
@@ -820,6 +872,7 @@ impl CleanerPaths {
             user_profile: get_user_profile(),
             recycle_bins: discover_recycle_bin_dirs(),
             data_dir: None,
+            temp_min_age: TEMP_FILE_MIN_AGE,
         }
     }
 
@@ -846,6 +899,7 @@ impl CleanerPaths {
             user_profile: base.join("UserProfile"),
             recycle_bins: vec![base.join("$Recycle.Bin")],
             data_dir: Some(base.join("AppData").join("Roaming").join("WinMedic")),
+            temp_min_age: Duration::ZERO,
         }
     }
 
@@ -934,11 +988,10 @@ impl SystemCleanerModule {
     /// Per-directory tracing is what tells those three apart. With tracing off
     /// this falls straight through to the batched sweep, which keeps the common
     /// case on one blocking task instead of one per directory.
-    async fn clean_dirs_reporting(
-        dirs: Vec<PathBuf>,
-        sweep: fn(&Path) -> CleanStats,
-        dbg: &DebugTrace,
-    ) -> CleanStats {
+    async fn clean_dirs_reporting<F>(dirs: Vec<PathBuf>, sweep: F, dbg: &DebugTrace) -> CleanStats
+    where
+        F: Fn(&Path) -> CleanStats + Send + Copy + 'static,
+    {
         if !dbg.is_enabled() {
             return tokio::task::spawn_blocking(move || {
                 let mut total = CleanStats::default();
@@ -1374,7 +1427,9 @@ impl DiagnosticModule for SystemCleanerModule {
         .await;
 
         let system_temp_dirs = discover_system_temp_dirs(&sys_root);
-        let system_temp_stats = Self::scan_dirs(system_temp_dirs).await;
+        let min_age = self.paths.temp_min_age;
+        let system_temp_stats =
+            measure_dirs(system_temp_dirs, move |dir| scan_temp_dir(dir, min_age)).await;
 
         if worth_reporting(system_temp_stats, MIN_REPORTABLE_CLEANUP_BYTES) {
             issues.push(Issue::new(
@@ -1394,7 +1449,7 @@ impl DiagnosticModule for SystemCleanerModule {
                     format_bytes(system_temp_stats.bytes),
                     system_temp_stats.files
                 ),
-                "Clean the extended system temp directories (locked files are skipped)",
+                "Clean the extended system temp directories (files in use and files written in the last day are skipped)",
                 vec!["Clean systemprofile\\AppData\\Local\\Temp and SystemTemp".to_string()],
             ).with_reclaimable_bytes(system_temp_stats.bytes));
         }
@@ -1667,8 +1722,13 @@ impl DiagnosticModule for SystemCleanerModule {
             "sys_clean_system_temp" => {
                 dbg.section("extended system temp directories").await;
                 let system_temp_dirs = discover_system_temp_dirs(&self.paths.sys_root);
-                let total_clean =
-                    Self::clean_dirs_reporting(system_temp_dirs, clean_path_contents, &dbg).await;
+                let min_age = self.paths.temp_min_age;
+                let total_clean = Self::clean_dirs_reporting(
+                    system_temp_dirs,
+                    move |dir| clean_temp_dir(dir, min_age),
+                    &dbg,
+                )
+                .await;
                 cleanup_result("Extended system temp directories cleaned", total_clean)
             }
             _ => Err(format!("Unknown issue ID: {}", issue_id)),
@@ -1873,7 +1933,7 @@ fn failure_reason(out: &crate::utils::cmd::CmdOutput) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::utils::cmd::{CmdOutput, MockCommandRunner};
     use std::fs::{File, create_dir_all};
@@ -2947,6 +3007,60 @@ The operation completed successfully.";
         let msg = fix_res.unwrap();
         assert!(msg.contains("DirectX shader & certificate caches cleaned"));
         assert!(msg.contains("locked files skipped"));
+    }
+
+    /// `path` as if it had been created and last changed `created` and
+    /// `modified` ago.
+    pub(crate) fn written_ago(path: &Path, created: Duration, modified: Duration) {
+        use std::os::windows::fs::FileTimesExt;
+
+        let now = std::time::SystemTime::now();
+        let times = std::fs::FileTimes::new()
+            .set_created(now - created)
+            .set_modified(now - modified);
+        File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(times)
+            .unwrap();
+    }
+
+    /// #250: only what was written more than a day ago is counted and
+    /// deleted. A file just unpacked from an archive carries an old
+    /// modification time and is new all the same.
+    #[test]
+    fn a_temp_file_written_in_the_last_day_is_neither_counted_nor_deleted() {
+        const DAY: Duration = Duration::from_secs(24 * 60 * 60);
+        let td = TestDir::new("temp_age");
+        let old = td.create_file("old.tmp", &[0u8; 100]);
+        let old_below = td.create_file("stale/old.tmp", &[0u8; 20]);
+        let fresh = td.create_file("fresh.tmp", &[0u8; 3000]);
+        let fresh_below = td.create_file("working/fresh.tmp", &[0u8; 4000]);
+        let unpacked = td.create_file("unpacked.bin", &[0u8; 5000]);
+        written_ago(&old, 3 * DAY, 2 * DAY);
+        written_ago(&old_below, 3 * DAY, 2 * DAY);
+        written_ago(&unpacked, Duration::from_secs(60), 700 * DAY);
+
+        let stats = scan_temp_dir(&td.path, TEMP_FILE_MIN_AGE);
+        assert_eq!((stats.files, stats.bytes), (2, 120));
+        let swept = clean_temp_dir(&td.path, TEMP_FILE_MIN_AGE);
+        assert_eq!((swept.deleted_files, swept.freed_bytes), (2, 120));
+        assert_eq!(swept.skipped_locked, 0, "a fresh file is not a locked one");
+        assert!(!old.exists() && !td.path.join("stale").exists());
+        assert!(fresh.exists() && fresh_below.exists() && unpacked.exists());
+
+        // With no age to wait for, as under a test's own folders, all goes.
+        let all = scan_temp_dir(&td.path, Duration::ZERO);
+        assert_eq!((all.files, all.bytes), (3, 12000));
+        assert_eq!(clean_temp_dir(&td.path, Duration::ZERO).deleted_files, 3);
+    }
+
+    /// The real machine waits the day; only a test's own folders do not.
+    #[test]
+    fn the_real_temp_folders_keep_what_was_written_in_the_last_day() {
+        assert_eq!(CleanerPaths::from_env().temp_min_age, TEMP_FILE_MIN_AGE);
+        assert_eq!(TEMP_FILE_MIN_AGE, Duration::from_secs(86400));
     }
 
     #[tokio::test]

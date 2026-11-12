@@ -1,12 +1,12 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::system_cleaner::{
-    CleanStats, clean_path_contents, cleanup_result, format_bytes,
+    CleanStats, TEMP_FILE_MIN_AGE, clean_temp_dir, cleanup_result, format_bytes, scan_temp_dir,
 };
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner, ps_single_quoted};
 use crate::utils::debug_log::DebugTrace;
 use crate::utils::event_xml::{EventRecord, read_events, system_log_query};
-use crate::utils::fs_stats::{dir_stats_recursive, measure_dirs, reached_without_link};
+use crate::utils::fs_stats::{measure_dirs, reached_without_link};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,6 +20,8 @@ pub struct StorageModule {
     temp_dirs: Vec<PathBuf>,
     /// `%LOCALAPPDATA%\Microsoft\Windows\Explorer`, where the icon cache is.
     explorer_dir: Option<PathBuf>,
+    /// How long a temp file is left alone after it was written.
+    temp_min_age: Duration,
 }
 
 /// The icon cache files Explorer keeps: `iconcache_16.db`,
@@ -202,6 +204,7 @@ impl StorageModule {
         let explorer_dir = std::env::var_os("LOCALAPPDATA")
             .map(|local| PathBuf::from(local).join(r"Microsoft\Windows\Explorer"));
         Self::with_paths(config, runner, temp_dirs, explorer_dir)
+            .with_temp_min_age(TEMP_FILE_MIN_AGE)
     }
 
     /// Build a module that measures and deletes under explicit folders: a
@@ -218,7 +221,16 @@ impl StorageModule {
             runner,
             temp_dirs,
             explorer_dir,
+            // The files under such folders were written a moment ago.
+            temp_min_age: Duration::ZERO,
         }
+    }
+
+    /// Leave alone, and do not count, a temp file written less than
+    /// `min_age` ago; [`TEMP_FILE_MIN_AGE`] on the real machine.
+    pub fn with_temp_min_age(mut self, min_age: Duration) -> Self {
+        self.temp_min_age = min_age;
+        self
     }
 
     /// The icon cache files and their size together; nothing for a folder
@@ -446,7 +458,11 @@ impl DiagnosticModule for StorageModule {
 
         // Walked on a blocking thread, so that cancelling the scan does not wait
         // for the walk to finish.
-        let temp = measure_dirs(self.temp_dirs.clone(), dir_stats_recursive).await;
+        let min_age = self.temp_min_age;
+        let temp = measure_dirs(self.temp_dirs.clone(), move |dir| {
+            scan_temp_dir(dir, min_age)
+        })
+        .await;
         let (temp_bytes, temp_files) = (temp.bytes, temp.files);
         let temp_size = format_bytes(temp_bytes);
 
@@ -460,7 +476,7 @@ impl DiagnosticModule for StorageModule {
                     Severity::Warning,
                     RiskScore::Low,
                     format!(
-                        "The temp folders hold {temp_size} of temporary files taking up disk space."
+                        "The temp folders hold {temp_size} of temporary files older than a day, taking up disk space."
                     ),
                     format!(
                         "Temp size: {temp_size} across {temp_files} files\n{}",
@@ -470,7 +486,7 @@ impl DiagnosticModule for StorageModule {
                             .collect::<Vec<_>>()
                             .join("\n")
                     ),
-                    "Clean the temporary files (files in use are skipped)",
+                    "Clean the temporary files (files in use and files written in the last day are skipped)",
                     self.temp_dirs
                         .iter()
                         .map(|d| format!("Clean {}", d.display()))
@@ -610,7 +626,8 @@ impl DiagnosticModule for StorageModule {
                 for dir in &self.temp_dirs {
                     dbg.path("directory", dir).await;
                     let dir = dir.clone();
-                    let stats = tokio::task::spawn_blocking(move || clean_path_contents(&dir))
+                    let min_age = self.temp_min_age;
+                    let stats = tokio::task::spawn_blocking(move || clean_temp_dir(&dir, min_age))
                         .await
                         .map_err(|e| format!("The temp sweep stopped: {e}"))?;
                     total.freed_bytes += stats.freed_bytes;
@@ -1248,6 +1265,37 @@ mod tests {
         let msg = module.fix("storage_temp_bloat", None).await.unwrap();
         assert!(msg.contains("3 files deleted (300.0 KB freed"), "{msg}");
         assert_eq!(std::fs::read_dir(&temp.0).unwrap().count(), 0);
+    }
+
+    /// #250: the finding counts, and the repair deletes, only what was
+    /// written more than a day ago. The module for the real machine waits
+    /// that day.
+    #[tokio::test]
+    async fn temp_files_written_in_the_last_day_stay() {
+        const DAY: Duration = Duration::from_secs(24 * 60 * 60);
+        let temp = Sandbox::new("temp_age");
+        let old = temp.0.join("old.tmp");
+        let fresh = temp.0.join("fresh.tmp");
+        std::fs::write(&old, vec![0u8; 100 * 1024]).unwrap();
+        std::fs::write(&fresh, vec![0u8; 900 * 1024]).unwrap();
+        crate::modules::system_cleaner::tests::written_ago(&old, 3 * DAY, 2 * DAY);
+        let mock = MockCommandRunner::with_default_success();
+        let module = sandboxed(&temp, None, &mock).with_temp_min_age(TEMP_FILE_MIN_AGE);
+
+        let issues = module.scan(None).await.unwrap();
+        let issue = issues
+            .iter()
+            .find(|i| i.id == "storage_temp_bloat")
+            .unwrap();
+        assert_eq!(issue.reclaimable_bytes, Some(100 * 1024));
+        assert!(issue.title.contains("(1 files)"), "{}", issue.title);
+
+        let msg = module.fix("storage_temp_bloat", None).await.unwrap();
+        assert!(msg.contains("1 files deleted (100.0 KB freed"), "{msg}");
+        assert!(!old.exists() && fresh.exists());
+
+        let real = StorageModule::with_runner(ModuleConfig::default(), Arc::new(mock));
+        assert_eq!(real.temp_min_age, TEMP_FILE_MIN_AGE);
     }
 
     /// A folder under a base that does not exist, so only its spelling counts.
