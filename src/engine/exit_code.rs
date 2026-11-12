@@ -22,6 +22,15 @@ pub const INTERNAL_ERROR: u8 = 5;
 pub const CANCELLED: u8 = 6;
 /// At least one check could not run, so the findings are incomplete.
 pub const INCOMPLETE: u8 = 7;
+/// The command line was not understood; nothing was run.
+pub const USAGE: u8 = 8;
+
+/// The exit code of a command line clap did not turn into a run. `is_error`
+/// is clap's `use_stderr`: false for `--help` and `--version`, which are
+/// answered and are no failure.
+pub fn from_command_line(is_error: bool) -> u8 {
+    if is_error { USAGE } else { OK }
+}
 
 /// Derive an exit code from the state of the issue list.
 ///
@@ -50,6 +59,8 @@ pub fn from_issues(issues: &[Issue], failed_fixes: usize, failed_modules: usize)
     }
 }
 
+>>>>
+
 /// One-line explanation of a code, printed at the end of a headless run.
 pub fn describe(code: u8) -> &'static str {
     match code {
@@ -61,6 +72,7 @@ pub fn describe(code: u8) -> &'static str {
         INTERNAL_ERROR => "Internal WinMedic error.",
         CANCELLED => "Run aborted - results are incomplete.",
         INCOMPLETE => "At least one check could not run, so the findings are incomplete.",
+        USAGE => "The command line was not understood; nothing was run.",
         _ => "Unknown status.",
     }
 }
@@ -84,6 +96,16 @@ mod tests {
             vec!["Step".to_string()],
         )
     }
+
+    #[test]
+    fn a_command_line_that_was_not_understood_is_not_a_critical_finding() {
+        assert_eq!(from_command_line(true), USAGE);
+        assert_ne!(USAGE, CRITICAL);
+        // --help and --version were answered.
+        assert_eq!(from_command_line(false), OK);
+    }
+
+>>>>
 
     #[test]
     fn test_clean_system_is_zero() {

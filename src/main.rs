@@ -37,6 +37,7 @@ Exit codes (headless mode):
   5  internal error
   6  aborted with Ctrl+C
   7  at least one check could not run, so the findings are incomplete
+  8  the command line was not understood; nothing was run
 
 2 and 3 can also come with an incomplete scan; without --json, the console output names each failed module (\"[X] Module ... failed\")."
 )]
@@ -97,7 +98,16 @@ impl CliArgs {
 
 fn main() -> ExitCode {
     load_dlls_from_system32_only();
-    let args = CliArgs::parse();
+    // clap ends a command line it does not understand with its own 2, which
+    // here means "open critical issues": a typo in a script opened a ticket.
+    let args = match CliArgs::try_parse() {
+        Ok(args) => args,
+        Err(error) => {
+            // The message, or the text --help and --version asked for.
+            let _ = error.print();
+            return ExitCode::from(exit_code::from_command_line(error.use_stderr()));
+        }
+    };
     if let Some(dir) = safety::audit::AuditLogger::real().log_dir() {
         utils::crash_log::install(dir.to_path_buf(), crash_mode(&args));
     }
