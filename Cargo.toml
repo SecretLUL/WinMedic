@@ -66,10 +66,12 @@ windows-sys = { version = "0.61", features = [
 # platforms WinMedic does not target: `wayland` and `x11` are Linux display
 # servers, `web_screen_reader` is for the wasm build. What is left is the wgpu
 # renderer without the graphics APIs it brings by default (`wgpu` below picks
-# one), the bundled fonts, AccessKit for screen readers, and `persistence` so
-# the window comes back where the user left it.
+# one), the bundled fonts, AccessKit for screen readers, `persistence` so the
+# window comes back where the user left it, and `clipboard`: without it egui
+# copies into a clipboard of its own that no other program can paste from.
 eframe = { version = "0.37", default-features = false, features = [
     "accesskit",
+    "clipboard",
     "default_fonts",
     "persistence",
     "wgpu_no_default_features",
