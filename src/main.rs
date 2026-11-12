@@ -685,9 +685,23 @@ fn run_gui() -> Result<u8, Box<dyn std::error::Error>> {
         viewport = viewport.with_icon(icon);
     }
 
+    // Listing the adapters runs the graphics driver's code, and wgpu unwraps
+    // what the driver answers (GetDesc2, CheckFeatureSupport). A driver that
+    // fails one of them panics here, before the window and outside the catch
+    // below: WinMedic was simply gone, with a crash log and exit code 5 and
+    // nothing on screen, the console having been released already.
+    let Ok(wgpu_options) = std::panic::catch_unwind(gui::renderer::wgpu_configuration) else {
+        runtime.shutdown_background();
+        could_not_open_window(
+            "The graphics driver failed while WinMedic asked it which graphics cards there are.",
+            "That usually means a damaged or outdated graphics driver.",
+        );
+        return Ok(exit_code::INTERNAL_ERROR);
+    };
+
     let options = eframe::NativeOptions {
         viewport,
-        wgpu_options: gui::renderer::wgpu_configuration(),
+        wgpu_options,
         ..Default::default()
     };
 
@@ -732,21 +746,29 @@ fn run_gui() -> Result<u8, Box<dyn std::error::Error>> {
         // (`gui::renderer`). What is left is Direct3D 12 failing there too,
         // which usually means damaged system files - and those the command
         // line can repair.
-        utils::console::show_error_dialog(
-            "WinMedic could not open its window",
-            &format!(
-                "WinMedic could not open its window:\n\n{err}\n\n\
-                 Direct3D 12 could not draw it, neither through the graphics card nor with \
-                 Windows' own software renderer. That usually means that Windows system files \
-                 are damaged.\n\n\
-                 Every check and repair also runs without the window. From a Command Prompt \
-                 started as Administrator,\n\n\
-                 \x20   winmedic --scan --output report.html\n\n\
-                 writes a report you can open in any browser, and winmedic --auto-fix repairs \
-                 what is safe to repair; winmedic --help lists the rest."
-            ),
+        could_not_open_window(
+            &err.to_string(),
+            "Direct3D 12 could not draw it, neither through the graphics card nor with \
+             Windows' own software renderer. That usually means that Windows system files \
+             are damaged.",
         );
         return Err(err.into());
     }
     Ok(exit_code::OK)
+}
+
+/// Say that there will be no window, why, and that everything also runs
+/// without one. A message box: the console is gone by now.
+fn could_not_open_window(what_happened: &str, what_it_means: &str) {
+    utils::console::show_error_dialog(
+        "WinMedic could not open its window",
+        &format!(
+            "WinMedic could not open its window:\n\n{what_happened}\n\n{what_it_means}\n\n\
+             Every check and repair also runs without the window. From a Command Prompt \
+             started as Administrator,\n\n\
+             \x20   winmedic --scan --output report.html\n\n\
+             writes a report you can open in any browser, and winmedic --auto-fix repairs \
+             what is safe to repair; winmedic --help lists the rest."
+        ),
+    );
 }
