@@ -245,6 +245,9 @@ pub struct App {
     /// Set by [`App::request_quit`] while repairs run: the window closes
     /// once the run it cancelled has ended.
     pub(super) quit_when_repairs_end: bool,
+    /// A setting was changed while a scan or repair ran; the engine is
+    /// rebuilt with it when the run ends. See [`App::catch_up_on_settings`].
+    pub(super) settings_changed_while_busy: bool,
 
     // Internal async event channels
     pub scan_event_rx: Option<Receiver<ScanEvent>>,
@@ -419,6 +422,7 @@ impl App {
             system_actions,
             should_quit: false,
             quit_when_repairs_end: false,
+            settings_changed_while_busy: false,
             scan_event_rx: None,
             repair_event_rx: None,
             cancel_token: None,
@@ -457,6 +461,14 @@ impl App {
                 .with_restore_points(self.system_actions.restore_point)
                 .with_audit_log(self.audit_logger.clone()),
         );
+    }
+
+    /// Give the modules the settings changed while the run that just ended
+    /// was using the engine.
+    pub(super) fn catch_up_on_settings(&mut self) {
+        if std::mem::take(&mut self.settings_changed_while_busy) {
+            self.rebuild_engine();
+        }
     }
 
     /// Kick off the background GitHub release check.
