@@ -20,7 +20,22 @@ use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 use tokio::time::sleep;
 
-const DEFAULT_DUMP_DIR: &str = r"C:\Windows\Minidump";
+/// Where Windows writes its minidumps: `Minidump` in the Windows folder, as
+/// Windows reports that folder. It was `C:\Windows\Minidump` whatever drive
+/// Windows is on: elsewhere no dump was read, crashes older than the event
+/// window were invisible and old dumps were never offered for cleanup
+/// (#278).
+fn minidump_dir() -> PathBuf {
+    minidump_dir_in(crate::utils::cmd::windows_dir())
+}
+
+fn minidump_dir_in(windows: Option<&Path>) -> PathBuf {
+    windows
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(windows_dir()))
+        .join("Minidump")
+}
+
 /// Above this many old dump files the triage suggests cleaning up.
 const STALE_DUMP_THRESHOLD: usize = 5;
 /// Dumps younger than this are the crash analysis' evidence and are kept;
@@ -149,7 +164,7 @@ impl CrashAnalysisModule {
         Self {
             config,
             runner,
-            dump_dir: PathBuf::from(DEFAULT_DUMP_DIR),
+            dump_dir: minidump_dir(),
             user_dump_dir: std::env::var_os("LOCALAPPDATA")
                 .map(|local| Path::new(&local).join("CrashDumps")),
             windows_dir: windows_dir(),
@@ -437,14 +452,18 @@ impl DiagnosticModule for CrashAnalysisModule {
         Self::send_progress(
             &progress_tx,
             15,
-            &format!("Reading kernel minidumps from {}...", DEFAULT_DUMP_DIR),
+            &format!(
+                "Reading kernel minidumps from {}...",
+                self.dump_dir.display()
+            ),
             Some("Parsing dump headers for stop codes..."),
         )
         .await;
         sleep(Duration::from_millis(150)).await;
 
         dbg.section("Minidump Directory").await;
-        dbg.kv("dump_dir", DEFAULT_DUMP_DIR).await;
+        dbg.kv("dump_dir", self.dump_dir.display().to_string())
+            .await;
         dbg.kv("lookback_hours", window_hours.to_string()).await;
 
         let (dump_crashes, stale_kernel) = self.collect_dump_crashes().await;
@@ -1389,6 +1408,22 @@ mod tests {
                 f.set_modified(std::time::SystemTime::now() - Duration::from_secs(days * 86_400))
             })
             .expect("failed to age dump");
+    }
+
+    /// #278. The minidumps are in the Windows folder, on whatever drive.
+    #[test]
+    fn the_minidump_folder_is_in_the_windows_folder() {
+        assert_eq!(
+            minidump_dir_in(Some(Path::new(r"D:\Windows"))),
+            PathBuf::from(r"D:\Windows\Minidump")
+        );
+        let here = minidump_dir();
+        assert!(here.ends_with("Minidump"));
+        assert_eq!(
+            here.parent(),
+            crate::utils::cmd::windows_dir(),
+            "the Windows folder of this PC"
+        );
     }
 
     #[test]

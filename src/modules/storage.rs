@@ -22,6 +22,8 @@ pub struct StorageModule {
     explorer_dir: Option<PathBuf>,
     /// How long a temp file is left alone after it was written.
     temp_min_age: Duration,
+    /// The drive Windows is on, as `C:`.
+    system_drive: String,
 }
 
 /// The icon cache files Explorer keeps: `iconcache_16.db`,
@@ -296,6 +298,7 @@ impl StorageModule {
             .map(|local| PathBuf::from(local).join(r"Microsoft\Windows\Explorer"));
         Self::with_paths(config, runner, temp_dirs, explorer_dir)
             .with_temp_min_age(TEMP_FILE_MIN_AGE)
+            .with_system_drive(&system_drive())
     }
 
     /// Build a module that measures and deletes under explicit folders: a
@@ -314,7 +317,17 @@ impl StorageModule {
             explorer_dir,
             // The files under such folders were written a moment ago.
             temp_min_age: Duration::ZERO,
+            system_drive: "C:".to_string(),
         }
+    }
+
+    /// The drive whose dirty bit is read and which `chkdsk` checks, a letter
+    /// and a colon. Anything else is not taken: it goes into a WMI filter.
+    pub fn with_system_drive(mut self, drive: &str) -> Self {
+        if let Some(drive) = drive_of(drive).filter(|_| drive.len() == 2) {
+            self.system_drive = drive;
+        }
+        self
     }
 
     /// Leave alone, and do not count, a temp file written less than
@@ -403,8 +416,14 @@ impl DiagnosticModule for StorageModule {
         Self::send_progress(
             &progress_tx,
             15,
-            "Checking file system integrity (dirty bit on drive C:)...",
-            Some("Reading the dirty bit of C: (WMI, then fsutil)..."),
+            &format!(
+                "Checking file system integrity (dirty bit on drive {})...",
+                self.system_drive
+            ),
+            Some(&format!(
+                "Reading the dirty bit of {} (WMI, then fsutil)...",
+                self.system_drive
+            )),
         )
         .await;
         sleep(Duration::from_millis(150)).await;
@@ -422,15 +441,24 @@ impl DiagnosticModule for StorageModule {
                     Issue::new(
                         "storage_dirty_bit",
                         self.id(),
-                        "File system inconsistency on system drive C: (dirty bit set)",
+                        format!(
+                            "File system inconsistency on system drive {} (dirty bit set)",
+                            self.system_drive
+                        ),
                         "Storage & File System",
                         Severity::Critical,
                         RiskScore::Medium,
-                        "Drive C: has the file system integrity flag ('dirty bit') set. That points to incompletely written sectors or abrupt shutdowns.",
+                        format!(
+                            "Drive {} has the file system integrity flag ('dirty bit') set. That points to incompletely written sectors or abrupt shutdowns.",
+                            self.system_drive
+                        ),
                         evidence,
-                        "Check the drive with 'chkdsk C: /scan', then restart so Windows checks it before it starts",
+                        format!(
+                            "Check the drive with 'chkdsk {} /scan', then restart so Windows checks it before it starts",
+                            self.system_drive
+                        ),
                         vec![
-                            "Run chkdsk C: /scan online".to_string(),
+                            format!("Run chkdsk {} /scan online", self.system_drive),
                             "Restart Windows".to_string(),
                         ],
                     )
@@ -662,7 +690,7 @@ impl DiagnosticModule for StorageModule {
                 for candidate in chkdsk_candidates() {
                     dbg.path("chkdsk image", &candidate).await;
                 }
-                dbg.kv("target volume", "C:").await;
+                dbg.kv("target volume", &self.system_drive).await;
                 dbg.kv("mode", "/scan (online, no dismount, no repair)")
                     .await;
 
@@ -670,7 +698,7 @@ impl DiagnosticModule for StorageModule {
                     .run(
                         &self.runner,
                         "chkdsk.exe",
-                        &["C:", "/scan"],
+                        &[&self.system_drive, "/scan"],
                         crate::modules::SERVICING_TIMEOUT,
                     )
                     .await
@@ -810,7 +838,11 @@ impl StorageModule {
     /// for a machine whose WMI does not answer.
     async fn dirty_bit(&self, dbg: &DebugTrace) -> Option<(bool, String)> {
         let wmi_verdict = dbg
-            .run_powershell(&self.runner, DIRTY_BIT_SCRIPT, Duration::from_secs(10))
+            .run_powershell(
+                &self.runner,
+                &dirty_bit_script(&self.system_drive),
+                Duration::from_secs(10),
+            )
             .await
             .ok()
             .filter(|out| out.success)
@@ -819,7 +851,8 @@ impl StorageModule {
             Some(dirty) => Some((
                 dirty,
                 format!(
-                    "Win32_Volume C: DirtyBitSet = {}",
+                    "Win32_Volume {} DirtyBitSet = {}",
+                    self.system_drive,
                     if dirty { "True" } else { "False" }
                 ),
             )),
@@ -827,7 +860,7 @@ impl StorageModule {
                 .run(
                     &self.runner,
                     "fsutil.exe",
-                    &["dirty", "query", "C:"],
+                    &["dirty", "query", &self.system_drive],
                     Duration::from_secs(6),
                 )
                 .await
@@ -839,11 +872,34 @@ impl StorageModule {
     }
 }
 
-/// Asks WMI for the system drive's dirty bit. Prints `True` or `False`, or
-/// nothing when WMI does not know — which it does not without elevation.
-const DIRTY_BIT_SCRIPT: &str = "Get-CimInstance -ClassName Win32_Volume -Filter \"DriveLetter='C:'\" | ForEach-Object { $_.DirtyBitSet }";
+/// Asks WMI for the dirty bit of `drive`, a letter and a colon. Prints `True`
+/// or `False`, or nothing when WMI does not know — which it does not without
+/// elevation.
+fn dirty_bit_script(drive: &str) -> String {
+    format!(
+        "Get-CimInstance -ClassName Win32_Volume -Filter \"DriveLetter='{drive}'\" | ForEach-Object {{ $_.DirtyBitSet }}"
+    )
+}
 
-/// The verdict in [`DIRTY_BIT_SCRIPT`]'s output, if it gave one.
+/// The drive Windows is on, `C:` on nearly every PC, from the Windows
+/// folder as Windows reports it. The dirty-bit check, its `fsutil` fallback
+/// and `chkdsk` all named `C:`: where Windows is on another letter its
+/// volume was never checked, and a `C:` that exists was reported as the
+/// system drive (#278).
+pub fn system_drive() -> String {
+    crate::utils::cmd::windows_dir()
+        .and_then(|dir| drive_of(&dir.to_string_lossy()))
+        .unwrap_or_else(|| "C:".to_string())
+}
+
+/// `D:` for `D:\Windows`; `None` for a path that starts with no drive letter.
+fn drive_of(path: &str) -> Option<String> {
+    let mut chars = path.chars();
+    let letter = chars.next().filter(char::is_ascii_alphabetic)?;
+    (chars.next() == Some(':')).then(|| format!("{}:", letter.to_ascii_uppercase()))
+}
+
+/// The verdict in [`dirty_bit_script`]'s output, if it gave one.
 pub fn parse_dirty_bit_set(output: &str) -> Option<bool> {
     match output.trim() {
         "True" => Some(true),
@@ -1189,6 +1245,56 @@ mod tests {
         let dirty_issue = issues.iter().find(|i| i.id == "storage_dirty_bit");
         assert!(dirty_issue.is_some());
         assert_eq!(dirty_issue.unwrap().severity, Severity::Critical);
+    }
+
+    /// #278. Where Windows is on D:, it is D: that is read, reported and
+    /// checked, by WMI, by fsutil and by chkdsk.
+    #[tokio::test]
+    async fn the_dirty_bit_is_that_of_the_drive_windows_is_on() {
+        assert_eq!(drive_of(r"D:\Windows").as_deref(), Some("D:"));
+        assert_eq!(drive_of(r"c:\WINDOWS").as_deref(), Some("C:"));
+        assert_eq!(drive_of(r"\\server\share\Windows"), None);
+        assert_eq!(drive_of(""), None);
+        assert_eq!(system_drive().len(), 2);
+
+        let on_d = |mock: &MockCommandRunner| {
+            StorageModule::with_paths(
+                ModuleConfig::default(),
+                Arc::new(mock.clone()),
+                Vec::new(),
+                None,
+            )
+            .with_system_drive("D:")
+        };
+
+        // WMI answers for D:.
+        let mock = MockCommandRunner::new();
+        mock.add_response("DriveLetter='D:'", CmdOutput::ok("True\r\n"));
+        mock.add_response("Get-PhysicalDisk", CmdOutput::ok(PHYSICAL_DISKS));
+        mock.add_response("wevtutil.exe", CmdOutput::ok(""));
+        let issues = on_d(&mock).scan(None).await.unwrap();
+        let issue = issues.iter().find(|i| i.id == "storage_dirty_bit").unwrap();
+        assert!(issue.title.contains("system drive D:"), "{}", issue.title);
+        assert_eq!(issue.fix_steps[0], "Run chkdsk D: /scan online");
+        assert!(issue.technical_details.contains("Win32_Volume D:"));
+
+        // WMI does not know: fsutil is asked about D:, and chkdsk checks D:.
+        let mock = MockCommandRunner::new();
+        mock.add_response("DriveLetter='D:'", CmdOutput::ok("\r\n"));
+        mock.add_response("dirty query D:", CmdOutput::ok("Volume - D: is Dirty"));
+        mock.add_response("chkdsk.exe", CmdOutput::ok(""));
+        let module = on_d(&mock);
+        let _ = module.fix("storage_dirty_bit", None).await;
+        let executed = mock.executed();
+        assert!(
+            executed.iter().any(|c| c == "chkdsk.exe D: /scan"),
+            "{executed:?}"
+        );
+        assert!(!executed.iter().any(|c| c.contains("C:")), "{executed:?}");
+
+        // Only a drive letter is taken.
+        let module = on_d(&mock).with_system_drive("E:' or '1'='1");
+        assert_eq!(module.system_drive, "D:");
     }
 
     #[tokio::test]
