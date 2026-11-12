@@ -128,6 +128,57 @@ pub async fn query_value(
     }
 }
 
+/// The string values (`REG_SZ` and `REG_EXPAND_SZ`) of the key `path`
+/// (`HKLM\...` or `HKCU\...`), read from the registry itself; none when the
+/// key does not exist. The unnamed default value is left out.
+///
+/// For data WinMedic judges character by character, such as the path of a
+/// program. `reg query` writes into a pipe in the console code page and
+/// replaces what that page lacks with `?` or with a look-alike letter:
+/// `C:\Users\Łukasz\app.exe` arrives as `C:\Users\Lukasz\app.exe`, a file
+/// that does not exist.
+pub fn read_string_values(path: &str) -> Result<Vec<RegValue>, String> {
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ};
+
+    let (hive, subkey) = path.split_once('\\').unwrap_or((path, ""));
+    let root = match hive.to_ascii_uppercase().as_str() {
+        "HKLM" | "HKEY_LOCAL_MACHINE" => HKEY_LOCAL_MACHINE,
+        "HKCU" | "HKEY_CURRENT_USER" => HKEY_CURRENT_USER,
+        _ => return Err(format!("{path} is in no registry hive WinMedic reads")),
+    };
+    match winreg::RegKey::predef(root).open_subkey_with_flags(subkey, KEY_READ) {
+        Ok(key) => Ok(string_values_of(&key)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(format!("{path} could not be read: {e}")),
+    }
+}
+
+/// The named string values directly under `key`, as [`read_string_values`]
+/// returns them.
+fn string_values_of(key: &winreg::RegKey) -> Vec<RegValue> {
+    use winreg::enums::RegType::{REG_EXPAND_SZ, REG_SZ};
+    use winreg::types::FromRegValue;
+
+    key.enum_values()
+        .flatten()
+        .filter_map(|(name, value)| {
+            let kind = match value.vtype {
+                REG_SZ => "REG_SZ",
+                REG_EXPAND_SZ => "REG_EXPAND_SZ",
+                _ => return None,
+            };
+            if name.is_empty() {
+                return None;
+            }
+            Some(RegValue {
+                name,
+                kind: kind.to_string(),
+                data: String::from_reg_value(&value).ok()?,
+            })
+        })
+        .collect()
+}
+
 /// The value `name` under exactly `key` among `keys`.
 pub fn find<'a>(keys: &'a [RegKeyValues], key: &str, name: &str) -> Option<&'a RegValue> {
     let wanted = expand_hive(key);
@@ -251,6 +302,68 @@ mod tests {
         assert_eq!(query_value(&mock, CONTROL_KEY, "Missing").await, Ok(None));
         // No answer configured: the command could not be run at all.
         assert!(query_value(&mock, CONTROL_KEY, "Other").await.is_err());
+    }
+
+    /// A private hive in a temp file, so that no key of this PC is written.
+    /// `reg query` of this value on a PC with code page 850 printed
+    /// `Lukasz` and `?` for the first two.
+    #[test]
+    fn string_values_are_read_as_they_are_stored() {
+        use winreg::enums::RegType::REG_EXPAND_SZ;
+
+        let dir = std::env::temp_dir().join(format!("winmedic_registry_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = winreg::RegKey::load_app_key(dir.join("run.dat"), false).unwrap();
+        let (key, _) = root.create_subkey("Run").unwrap();
+
+        let program = "\"C:\\Users\\\u{141}ukasz\\\u{20ac} \u{65e5}\u{672c}\\tool.exe\" --tray";
+        key.set_value("Tool", &program).unwrap();
+        key.set_value("", &"the unnamed default value").unwrap();
+        key.set_value("Count", &1u32).unwrap();
+        let expand: Vec<u8> = "%windir%\\x.exe\0"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        key.set_raw_value(
+            "Expand",
+            &winreg::RegValue {
+                bytes: expand.into(),
+                vtype: REG_EXPAND_SZ,
+            },
+        )
+        .unwrap();
+
+        let mut values = string_values_of(&key);
+        values.sort_by(|a, b| a.name.cmp(&b.name));
+        let value = |name: &str, kind: &str, data: &str| RegValue {
+            name: name.to_string(),
+            kind: kind.to_string(),
+            data: data.to_string(),
+        };
+        assert_eq!(
+            values,
+            [
+                value("Expand", "REG_EXPAND_SZ", "%windir%\\x.exe"),
+                value("Tool", "REG_SZ", program),
+            ]
+        );
+
+        drop((key, root));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The Run key of this PC is read without starting `reg.exe`; a key
+    /// that does not exist has no values. Only reads.
+    #[test]
+    fn a_key_is_read_from_the_registry_and_a_missing_one_is_empty() {
+        let run = read_string_values(r"HKLM\Software\Microsoft\Windows\CurrentVersion\Run");
+        assert!(run.is_ok(), "{run:?}");
+        assert_eq!(
+            read_string_values(r"HKCU\Software\WinMedic-no-such-key"),
+            Ok(Vec::new())
+        );
+        assert!(read_string_values(r"HKU\.DEFAULT").is_err());
     }
 
     #[tokio::test]

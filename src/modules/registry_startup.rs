@@ -86,7 +86,7 @@ pub(crate) fn on_fixed_drive(path: &Path, drive_type: &dyn Fn(char) -> u32) -> b
 fn missing_target(value: &RegValue, drive_type: &dyn Fn(char) -> u32) -> Option<PathBuf> {
     // `reg` prints the unnamed default value as "(Default)" in the display
     // language; deleting a value of that name would hit the wrong one.
-    if value.name.starts_with('(') && value.name.ends_with(')') {
+    if value.name.is_empty() || (value.name.starts_with('(') && value.name.ends_with(')')) {
         return None;
     }
     let path = RegistryStartupModule::extract_exe_path(&value.data)?;
@@ -142,7 +142,16 @@ impl RegistryStartupModule {
     }
 
     /// The values of the Run key `key`; none when it does not exist.
+    ///
+    /// Read from the registry itself. Through `reg query` a path with a
+    /// character the console code page lacks arrived changed, the file it
+    /// then named did not exist, and a working entry was reported as
+    /// orphaned and deleted. Only a runner without the registry, a test's,
+    /// is asked for `reg query`.
     async fn run_values(&self, key: &str) -> Result<Vec<RegValue>, String> {
+        if let Some(values) = self.runner.registry_string_values(key) {
+            return values;
+        }
         let keys = registry::query(&*self.runner, key, false)
             .await?
             .unwrap_or_default();
@@ -571,12 +580,101 @@ mod tests {
 
     #[test]
     fn the_default_value_is_never_judged() {
-        let value = RegValue {
-            name: "(Standard)".to_string(),
-            kind: "REG_SZ".to_string(),
-            data: r"C:\WinMedic-no-such-dir\tool.exe".to_string(),
+        for name in ["(Standard)", ""] {
+            let value = RegValue {
+                name: name.to_string(),
+                kind: "REG_SZ".to_string(),
+                data: r"C:\WinMedic-no-such-dir\tool.exe".to_string(),
+            };
+            assert_eq!(missing_target(&value, &drives), None);
+        }
+    }
+
+    /// A runner that has the registry, as the real one does: the Run key
+    /// under HKLM holds `values`, the one under HKCU nothing.
+    struct WithRegistry {
+        commands: MockCommandRunner,
+        values: Vec<RegValue>,
+    }
+
+    #[async_trait::async_trait]
+    impl CommandRunner for WithRegistry {
+        async fn run(
+            &self,
+            program: &str,
+            args: &[&str],
+            timeout: Duration,
+        ) -> Result<CmdOutput, String> {
+            self.commands.run(program, args, timeout).await
+        }
+
+        async fn run_streaming(
+            &self,
+            program: &str,
+            args: &[&str],
+            log_tx: Option<Sender<String>>,
+            timeout: Duration,
+        ) -> Result<CmdOutput, String> {
+            self.commands
+                .run_streaming(program, args, log_tx, timeout)
+                .await
+        }
+
+        fn registry_string_values(&self, key: &str) -> Option<Result<Vec<RegValue>, String>> {
+            Some(Ok(if key.starts_with("HKLM") {
+                self.values.clone()
+            } else {
+                Vec::new()
+            }))
+        }
+    }
+
+    /// A program under a folder whose name the console code page lacks is
+    /// there, and its entry stays. `reg query` printed the path as
+    /// `...Lukasz_?...` on a PC with code page 850: a file that does not
+    /// exist, and the entry was deleted.
+    #[tokio::test]
+    async fn an_entry_under_a_folder_the_code_page_lacks_is_not_orphaned() {
+        let dir = std::env::temp_dir().join(format!(
+            "winmedic_run_\u{141}ukasz_\u{20ac}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let program = dir.join("tool.exe");
+        std::fs::write(&program, b"").unwrap();
+        let on_c = program.to_string_lossy().starts_with(['C', 'c']);
+
+        let commands = MockCommandRunner::new();
+        let runner = WithRegistry {
+            commands: commands.clone(),
+            values: vec![RegValue {
+                name: "Tool".to_string(),
+                kind: "REG_SZ".to_string(),
+                data: format!("\"{}\" --tray", program.display()),
+            }],
         };
-        assert_eq!(missing_target(&value, &drives), None);
+        let config = ModuleConfig {
+            auto_backup_registry: false,
+            ..ModuleConfig::default()
+        };
+        let module = RegistryStartupModule::with_runner(config, Arc::new(runner))
+            .with_drive_type(Arc::new(drives));
+        let issues = module.scan(None).await.unwrap();
+        assert!(issues.is_empty(), "{:?}", issues[0].title);
+        assert!(commands.executed().is_empty(), "{:?}", commands.executed());
+
+        // What `reg query` made of the same path is a file that is not there.
+        let as_printed = RegValue {
+            name: "Tool".to_string(),
+            kind: "REG_SZ".to_string(),
+            data: format!("\"{}\" --tray", program.display())
+                .replace('\u{141}', "L")
+                .replace('\u{20ac}', "?"),
+        };
+        assert_eq!(missing_target(&as_printed, &drives).is_some(), on_c);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // Some letters change their length in UTF-8 when lowercased: U+0130 grows
