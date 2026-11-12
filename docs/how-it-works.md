@@ -133,8 +133,8 @@ Every shortcut is also a button in the window; `[?]` lists them. Easy mode draws
 | **`[m]`** | Filter findings by diagnostic module (cycle through modules) |
 | **`[/]`** | Fulltext live search across findings, details & descriptions |
 | **`[x]`** | Reset all active filters and search queries |
-| **`[A]`** | Toggle select / deselect all visible detected issues (1-Click Auto-Fix) |
-| **`[N]`** | Deselect all issues |
+| **`[A]`** | On Scan & Repair: toggle select / deselect all visible detected issues (1-Click Auto-Fix) |
+| **`[N]`** | On Scan & Repair: deselect all issues |
 | **`[F]`** | Repair the ticked findings |
 | **`[D]`** | Toggle dry-run mode — repairs are shown, not executed |
 | **`[E]`** | Export diagnostic & repair report as self-contained HTML |

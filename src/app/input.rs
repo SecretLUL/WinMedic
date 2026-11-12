@@ -182,14 +182,14 @@ pub fn handle_key(app: &mut App, code: Key) {
             }
         }
 
-        Key::Char('a') | Key::Char('A') => {
-            if app.active_tab == TAB_HOME {
-                app.toggle_select_all_issues();
-            } else {
-                app.select_all_issues();
-            }
+        // Only where the ticks are drawn. From Settings a stray `a` ticked
+        // every finding, the ones that start unticked on purpose included,
+        // and `n`, which also answers the dialogs Settings raises, unticked
+        // them all: nothing on that page showed it, and it was saved.
+        Key::Char('a') | Key::Char('A') if app.active_tab == TAB_HOME => {
+            app.toggle_select_all_issues()
         }
-        Key::Char('n') | Key::Char('N') => app.deselect_all_issues(),
+        Key::Char('n') | Key::Char('N') if app.active_tab == TAB_HOME => app.deselect_all_issues(),
 
         Key::Char('u') | Key::Char('U') => {
             if app.active_tab == TAB_SETTINGS {
@@ -428,6 +428,26 @@ mod tests {
     }
 
     /// `/` asks for the search box; it does not start capturing text itself.
+    #[test]
+    fn a_and_n_change_the_ticks_only_where_the_ticks_are_drawn() {
+        let mut app = app_with_issues();
+        app.issues[0].is_selected = false;
+        let ticks = |app: &App| -> Vec<bool> { app.issues.iter().map(|i| i.is_selected).collect() };
+        let before = ticks(&app);
+
+        app.active_tab = TAB_SETTINGS;
+        handle_key(&mut app, Key::Char('a'));
+        assert_eq!(ticks(&app), before, "a on Settings");
+        handle_key(&mut app, Key::Char('n'));
+        assert_eq!(ticks(&app), before, "n on Settings");
+
+        app.active_tab = TAB_HOME;
+        handle_key(&mut app, Key::Char('a'));
+        assert!(ticks(&app).iter().all(|ticked| *ticked));
+        handle_key(&mut app, Key::Char('n'));
+        assert!(ticks(&app).iter().all(|ticked| !*ticked));
+    }
+
     #[test]
     fn slash_requests_the_search_box_only_on_the_findings_view() {
         let mut app = app_with_issues();
