@@ -13,8 +13,17 @@ get a higher bar than the rest.
 
 ## Before you push
 
-CI runs exactly this, on every pull request into any branch that is not
-labelled `documentation`:
+Run what is quick, and the tests of what you changed:
+
+```powershell
+cargo fmt -- --check
+cargo check --locked --all-targets
+cargo test --locked <name>           # part of a test's name or module, e.g. system_cleaner
+```
+
+The whole list runs once, in CI, on every pull request into any branch that
+is not labelled `documentation`. That run is the one that counts; nobody has
+to repeat it before pushing:
 
 ```powershell
 cargo fmt -- --check
@@ -23,6 +32,9 @@ cargo test --locked
 cargo check --locked --all-targets   # with the toolchain from rust-version (MSRV)
 cargo run --locked -- --scan         # a real scan: no "[X] Module" line
 ```
+
+A test that fails in CI is run again locally by its name, not by pushing
+another attempt.
 
 `--locked` because CI builds against the committed `Cargo.lock`. A lint that
 is wrong for one item gets a targeted `#[allow(...)]` with a comment, never a

@@ -26,8 +26,8 @@ If it modifies the system:
 ## Checks
 
 - [ ] `cargo fmt -- --check`
-- [ ] `cargo clippy --locked --all-targets -- -D warnings`
-- [ ] `cargo test --locked`
+- [ ] `cargo check --locked --all-targets`
+- [ ] The tests of what changed (`cargo test --locked <name>`); CI runs the rest
 - [ ] New behaviour is covered by tests using `MockCommandRunner`, not real commands
 
 ## What was verified, and how
