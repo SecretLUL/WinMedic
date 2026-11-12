@@ -658,6 +658,15 @@ impl DiagnosticEngine {
                     pending
                 ),
             );
+        } else if pending == 0 {
+            // The restore point comes before the first repair, and there is
+            // none. `--auto-fix` on a PC with nothing ticked switched System
+            // Protection on and created a point on every run, pushing older
+            // ones out, and reported "Nothing was repaired" when Windows
+            // created none (#264).
+            run_trace
+                .hint("nothing is selected, so no restore point is created")
+                .await;
         } else if options.create_vss {
             let _ = event_tx.send(RepairEvent::VssStarted).await;
             let vss_started = Instant::now();
@@ -1339,6 +1348,40 @@ mod tests {
             "{:?}",
             issues[0].fix_error
         );
+    }
+
+    /// #264. A run with nothing to repair asks Windows for no restore point:
+    /// advice is not repaired, and neither is an unticked finding.
+    #[tokio::test]
+    async fn a_run_with_nothing_to_repair_creates_no_restore_point() {
+        let engine = DiagnosticEngine::with_modules(vec![Arc::new(Answers(Ok("repaired")))])
+            .with_restore_points(RestorePointService::declined());
+        let mut unticked = answered_issue();
+        unticked.is_selected = false;
+        let mut issues = vec![answered_issue().with_advice_only(), unticked];
+        let (tx, mut rx) = channel(50);
+        let options = RepairOptions {
+            create_vss: true,
+            ..LIVE
+        };
+
+        let counts = engine
+            .run_repairs(&mut issues, options, tx, CancellationToken::new())
+            .await;
+
+        assert_eq!(counts, (0, 0));
+        let mut completed = false;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                RepairEvent::VssStarted | RepairEvent::RestorePointMissing { .. } => {
+                    panic!("a restore point was asked for: {event:?}")
+                }
+                RepairEvent::AllRepairsCompleted { .. } => completed = true,
+                _ => {}
+            }
+        }
+        assert!(completed);
+        assert!(issues.iter().all(|i| i.fix_error.is_none()));
     }
 
     /// Told to go on without one, the run repairs.
