@@ -2817,7 +2817,7 @@ mod tests {
         let line_end = repaired[complete..]
             .find('\n')
             .map_or(repaired.len(), |at| complete + at + 1);
-        repaired[line_start..line_end].as_bytes().to_vec()
+        repaired.as_bytes()[line_start..line_end].to_vec()
     }
 
     /// No clean `/scannow` was captured: the lines of the clean verify run,
