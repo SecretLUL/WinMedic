@@ -1,7 +1,7 @@
 //! Starting, cancelling and simulating scans and repair runs.
 
 use super::TAB_HOME;
-use super::state::{App, repair_waits_for_restart};
+use super::state::{App, BeforeScan, repair_waits_for_restart};
 use crate::engine::runner::{RepairEvent, RepairOptions, ScanEvent};
 use crate::modules::ModuleStatus;
 use std::time::Instant;
@@ -18,18 +18,7 @@ impl App {
         self.scan_overall_progress = 0;
         self.scan_started_at = Some(Instant::now());
         self.active_tab = TAB_HOME;
-        // What was decided against the findings on screen carries over to
-        // the new scan's, see `carry_over`. A repair that waits for the
-        // restart stays: no restart can have happened while this process
-        // ran, and the scan may no longer report it.
-        self.last_findings = self
-            .issues
-            .iter()
-            .chain(&self.archived_issues)
-            .cloned()
-            .collect();
-        self.issues.retain(repair_waits_for_restart);
-        self.archived_issues.retain(repair_waits_for_restart);
+        self.set_findings_aside();
         self.selected_issue_index = 0;
         self.selected_filtered_index = 0;
         self.scan_log_messages.clear();
@@ -54,6 +43,29 @@ impl App {
         });
 
         self.status_message = Some("Diagnostic scan running... [Esc] cancels".to_string());
+    }
+
+    /// Take the findings off the screen for the scan that starts now, and
+    /// remember them in case it is cancelled.
+    pub(super) fn set_findings_aside(&mut self) {
+        self.before_scan = Some(BeforeScan {
+            issues: self.issues.clone(),
+            archived_issues: self.archived_issues.clone(),
+            module_statuses: self.module_statuses.clone(),
+            health_score: self.health_score,
+        });
+        // What was decided against the findings on screen carries over to
+        // the new scan's, see `carry_over`. A repair that waits for the
+        // restart stays: no restart can have happened while this process
+        // ran, and the scan may no longer report it.
+        self.last_findings = self
+            .issues
+            .iter()
+            .chain(&self.archived_issues)
+            .cloned()
+            .collect();
+        self.issues.retain(repair_waits_for_restart);
+        self.archived_issues.retain(repair_waits_for_restart);
     }
 
     pub fn start_repairs(&mut self) {

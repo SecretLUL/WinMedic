@@ -114,6 +114,22 @@ pub struct SettingInput {
     pub error_msg: Option<String>,
 }
 
+/// The result of the last complete scan as it stood when a new scan
+/// started: the findings shown and archived, each check's badge and the
+/// score.
+///
+/// A scan clears them to fill them again. One that is cancelled has run
+/// only some of the checks, and what it gathered is no result: shown, it
+/// read "Your PC is in good shape" over the checks that never ran, and
+/// saved, it replaced the last complete scan. A cancelled scan puts this
+/// back instead.
+pub(super) struct BeforeScan {
+    pub issues: Vec<Issue>,
+    pub archived_issues: Vec<Issue>,
+    pub module_statuses: Vec<(String, String, String, ModuleStatus)>,
+    pub health_score: u8,
+}
+
 pub struct App {
     pub active_tab: usize,
     pub config: AppConfig,
@@ -129,6 +145,9 @@ pub struct App {
     /// The findings shown and archived when the running scan started, for
     /// what was decided against them; see [`carry_over`].
     pub(super) last_findings: Vec<Issue>,
+    /// What the running scan took off the screen, for a scan that is
+    /// cancelled; see [`BeforeScan`].
+    pub(super) before_scan: Option<BeforeScan>,
     pub selected_issue_index: usize,
     pub health_score: u8,
 
@@ -338,6 +357,7 @@ impl App {
             issues: saved_issues,
             archived_issues,
             last_findings: Vec::new(),
+            before_scan: None,
             selected_issue_index: 0,
             health_score: saved_health,
             severity_filter: None,
