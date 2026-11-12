@@ -839,8 +839,13 @@ impl DiagnosticModule for WindowsUpdatesModule {
             None
         };
 
-        if issue_id.starts_with("wu_svc_disabled_") {
-            let svc = issue_id.trim_start_matches("wu_svc_disabled_");
+        if let Some(svc) = issue_id.strip_prefix("wu_svc_disabled_") {
+            // The id can come from a saved scan, a file any program of the
+            // user can write, and what follows the prefix goes to `sc config`
+            // and `net start`: only the services the scan checks.
+            if !CACHE_SERVICES.contains(&svc) {
+                return Err(format!("Unknown issue ID: {}", issue_id));
+            }
             let config = self
                 .runner
                 .run(
@@ -1001,6 +1006,49 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("still disabled"), "{err}");
+    }
+
+    /// A finding from a saved scan can name any service after the prefix.
+    /// Only the three the scan checks are set to Manual and started.
+    #[tokio::test]
+    async fn a_disabled_service_finding_for_another_service_is_not_repaired() {
+        for id in [
+            "wu_svc_disabled_RemoteRegistry",
+            "wu_svc_disabled_",
+            "wu_svc_disabled_wu_svc_disabled_wuauserv",
+            "wu_svc_disabled_wuauserv start= auto",
+            "wu_svc_disabled_WUAUSERV",
+        ] {
+            let mock = MockCommandRunner::with_default_success();
+            let module =
+                WindowsUpdatesModule::with_runner(ModuleConfig::default(), Arc::new(mock.clone()));
+            let err = module.fix(id, None).await.unwrap_err();
+            assert_eq!(err, format!("Unknown issue ID: {id}"));
+            assert!(mock.executed().is_empty(), "{:?}", mock.executed());
+        }
+    }
+
+    /// Every finding the scan raises for a disabled service is one the repair
+    /// knows. Here Windows keeps each service disabled, so the repairs fail,
+    /// but not as unknown.
+    #[tokio::test]
+    async fn every_disabled_service_the_scan_reports_can_be_repaired() {
+        let mock = MockCommandRunner::with_default_success();
+        for svc in ["wuauserv", "bits", "cryptsvc"] {
+            mock.add_response(format!("qc {svc}"), CmdOutput::ok(sc_qc_output(svc, 4)));
+        }
+        let module = WindowsUpdatesModule::with_runner(ModuleConfig::default(), Arc::new(mock));
+        let issues = module.scan(None).await.unwrap();
+        let disabled: Vec<&str> = issues
+            .iter()
+            .map(|i| i.id.as_str())
+            .filter(|id| id.starts_with("wu_svc_disabled_"))
+            .collect();
+        assert_eq!(disabled.len(), 3, "{disabled:?}");
+        for id in disabled {
+            let err = module.fix(id, None).await.unwrap_err();
+            assert!(err.contains("still disabled"), "{id}: {err}");
+        }
     }
 
     /// The false positive this detection was rewritten for. Windows leaves the
