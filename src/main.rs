@@ -34,7 +34,7 @@ Exit codes (headless mode):
   2  open critical issues
   3  at least one repair failed
   4  started without Administrator privileges
-  5  internal error
+  5  internal error, or the --output report could not be written
   6  aborted with Ctrl+C
   7  at least one check could not run, so the findings are incomplete
   8  the command line was not understood; nothing was run
@@ -595,7 +595,18 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         );
     }
 
-    if let Some(ref out_path) = args.output {
+    // The report --output asked for is part of the run's result: without it
+    // the exit code must not say the run went well.
+    let mut report_missing = false;
+    if let Some(ref out_path) = args.output
+        && scan_cancelled
+    {
+        // Half a scan must not replace the complete report of the last run.
+        eprintln!(
+            "The report was not written to '{}': the scan was cancelled.",
+            out_path.display()
+        );
+    } else if let Some(ref out_path) = args.output {
         let health = DiagnosticEngine::calculate_health_score(&issues);
         let audit_entries = this_run();
         match DiagnosticReporter::save_report(
@@ -611,6 +622,7 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
                 }
             }
             Err(e) => {
+                report_missing = true;
                 eprintln!(
                     "Could not save the report to '{}': {}",
                     out_path.display(),
@@ -629,6 +641,11 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         exit_code::OK
     } else {
         exit_code::from_issues(&issues, failed_fixes, failed_modules.len())
+    };
+    let code = if report_missing {
+        exit_code::without_report(code)
+    } else {
+        code
     };
 
     if !quiet {

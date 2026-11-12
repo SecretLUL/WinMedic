@@ -1,7 +1,7 @@
 use crate::engine::issue::{Issue, Severity};
 use crate::safety::audit::AuditEntry;
 use colored::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub struct DiagnosticReporter;
 
@@ -929,6 +929,10 @@ impl DiagnosticReporter {
     /// Save report to `path` detecting format by extension (`.html`, `.md`, `.json`).
     /// The HTML and Markdown reports say how many `archived` findings they
     /// leave out; the JSON report is for scripts and stays as it was.
+    ///
+    /// The report is written beside its place and then renamed there, so a
+    /// write that fails partway (a full disk, a share that went away) leaves
+    /// the report of the last run as it was instead of an empty file.
     pub fn save_report(
         path: &Path,
         issues: &[Issue],
@@ -939,7 +943,7 @@ impl DiagnosticReporter {
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)?;
         }
 
         let extension = path
@@ -954,7 +958,14 @@ impl DiagnosticReporter {
             _ => Self::to_html(issues, health_score, audit_entries, archived),
         };
 
-        std::fs::write(path, content)
+        let mut beside = path.as_os_str().to_owned();
+        beside.push(format!(".tmp-{}", std::process::id()));
+        let beside = PathBuf::from(beside);
+        std::fs::write(&beside, content)
+            .and_then(|()| std::fs::rename(&beside, path))
+            .inspect_err(|_| {
+                let _ = std::fs::remove_file(&beside);
+            })
     }
 }
 
@@ -1115,6 +1126,38 @@ mod tests {
         let html = DiagnosticReporter::to_html(&issues, 80, &[], 0);
         assert!(html.contains(r#"<span class="status-pill status-open">NOTHING TO REMOVE</span>"#));
         assert!(!html.contains(">FIXED</span>"));
+    }
+
+    #[test]
+    fn a_report_that_cannot_be_written_is_an_error_and_a_saved_one_leaves_nothing_beside_it() {
+        let dir =
+            std::env::temp_dir().join(format!("winmedic_test_report_place_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let issues = sample_issues();
+
+        // The folder cannot be made: its place is taken by a file.
+        std::fs::write(dir.join("taken"), "a file").unwrap();
+        let below_a_file = dir.join("taken").join("report.html");
+        assert!(DiagnosticReporter::save_report(&below_a_file, &issues, 80, &[], 0).is_err());
+
+        // A second report replaces the first, and only the report is there.
+        let report = dir.join("report.json");
+        DiagnosticReporter::save_report(&report, &issues, 80, &[], 0).unwrap();
+        DiagnosticReporter::save_report(&report, &issues, 55, &[], 0).unwrap();
+        assert!(
+            std::fs::read_to_string(&report)
+                .unwrap()
+                .contains("\"health_score\": 55")
+        );
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["report.json", "taken"]);
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

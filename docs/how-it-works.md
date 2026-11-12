@@ -190,7 +190,7 @@ winmedic.exe --uninstall --purge
 
 Findings archived in the window stay out here as well: the health score, the exit code, the console report, `--json` and `--auto-fix` count only the others. The HTML and Markdown reports say how many they leave out.
 
-A running headless job can be aborted with `Ctrl+C`; WinMedic terminates the child process it is currently waiting on instead of leaving an orphaned `DISM` or `chkdsk` behind.
+A running headless job can be aborted with `Ctrl+C`; WinMedic terminates the child process it is currently waiting on instead of leaving an orphaned `DISM` or `chkdsk` behind. A scan aborted that way writes no `--output` report, so the report of the last complete run stays.
 
 ### Exit Codes
 
@@ -203,7 +203,7 @@ Headless runs report their outcome through `%ERRORLEVEL%`, so scripts and monito
 | `2` | Open critical issues |
 | `3` | At least one repair failed |
 | `4` | Started without Administrator privileges |
-| `5` | Internal WinMedic error |
+| `5` | Internal WinMedic error, or the report asked for with `--output` could not be written |
 | `6` | Run aborted with `Ctrl+C`; findings are incomplete |
 | `7` | At least one check could not run, so the findings are incomplete |
 | `8` | The command line was not understood (a mistyped option); nothing was run |
