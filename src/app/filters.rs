@@ -58,7 +58,18 @@ impl App {
         }
     }
 
+    /// Whether the ticks may change now. A repair run works on the findings
+    /// as they were ticked when it started, so a tick changed during the run
+    /// changed only the list on screen: a finding unticked while DISM ran
+    /// was repaired anyway (#262).
+    pub fn selection_locked(&self) -> bool {
+        self.is_fixing
+    }
+
     pub fn toggle_selected_issue(&mut self) {
+        if self.selection_locked() {
+            return;
+        }
         let indices = self.filtered_issue_indices();
         if let Some(&orig_idx) = indices.get(self.selected_filtered_index)
             && let Some(issue) = self.issues.get_mut(orig_idx)
@@ -70,6 +81,9 @@ impl App {
     }
 
     pub fn toggle_select_all_issues(&mut self) {
+        if self.selection_locked() {
+            return;
+        }
         let indices = self.filtered_issue_indices();
         let any_unselected = indices.iter().any(|&idx| {
             if let Some(issue) = self.issues.get(idx) {
@@ -90,6 +104,9 @@ impl App {
     }
 
     pub fn select_all_issues(&mut self) {
+        if self.selection_locked() {
+            return;
+        }
         let indices = self.filtered_issue_indices();
         for &orig_idx in &indices {
             if let Some(issue) = self.issues.get_mut(orig_idx)
@@ -102,6 +119,9 @@ impl App {
     }
 
     pub fn deselect_all_issues(&mut self) {
+        if self.selection_locked() {
+            return;
+        }
         let indices = self.filtered_issue_indices();
         for &orig_idx in &indices {
             if let Some(issue) = self.issues.get_mut(orig_idx) {
@@ -343,6 +363,33 @@ mod tests {
         assert!(!app.issues[0].is_selected, "critical stays untouched");
         assert!(app.issues[1].is_selected, "the visible warning is selected");
         assert!(!app.issues[2].is_selected, "info stays untouched");
+    }
+
+    /// #262. The run repairs what was ticked when it started.
+    #[test]
+    fn the_ticks_stay_as_they_are_while_repairs_run() {
+        let mut app = app_with_issues();
+        app.deselect_all_issues();
+        app.issues[1].is_selected = true;
+        app.is_fixing = true;
+
+        app.select_all_issues();
+        app.toggle_select_all_issues();
+        app.selected_filtered_index = 0;
+        app.toggle_selected_issue();
+        assert_eq!(
+            app.issues.iter().map(|i| i.is_selected).collect::<Vec<_>>(),
+            [false, true, false]
+        );
+        app.deselect_all_issues();
+        assert!(app.issues[1].is_selected);
+
+        app.is_fixing = false;
+        app.deselect_all_issues();
+        assert!(
+            !app.issues[1].is_selected,
+            "free again once the run is over"
+        );
     }
 
     #[test]
