@@ -146,7 +146,7 @@ pub fn handle_key(app: &mut App, code: Key) {
     }
 
     match code {
-        Key::Char('q') | Key::Char('Q') => app.should_quit = true,
+        Key::Char('q') | Key::Char('Q') => app.request_quit(),
         Key::Char('?') => app.show_help = true,
         Key::F7 => app.toggle_advanced_mode(),
 

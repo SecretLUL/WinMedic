@@ -251,6 +251,7 @@ impl App {
 
     fn process_repair_events(&mut self) {
         let mut repair_ended = false;
+        let mut repair_recorded = false;
         // Taken out while it drains, so that handling an event can reach the
         // rest of `App`; see `process_scan_events`.
         if let Some(mut rx) = self.repair_event_rx.take() {
@@ -320,6 +321,10 @@ impl App {
                             && let Some(issue) = self.issues.iter_mut().find(|i| i.id == issue_id)
                         {
                             issue.record_repair(&result);
+                            // Now, not when the run ends: what this repair
+                            // did stays on record whatever ends WinMedic
+                            // before the last one is through.
+                            repair_recorded = true;
                         }
                         match result {
                             Ok(repaired) => {
@@ -388,6 +393,9 @@ impl App {
             }
             self.repair_event_rx = Some(rx);
         }
+        if repair_recorded && !repair_ended {
+            self.save_scan_state();
+        }
         if repair_ended {
             self.current_fix_title.clear();
             self.end_repair_step();
@@ -397,6 +405,9 @@ impl App {
             self.backup_records = self.reg_backup_mgr.list_backups();
             self.clamp_backup_selection();
             self.save_scan_state();
+            if self.quit_when_repairs_end {
+                self.should_quit = true;
+            }
         }
     }
 
@@ -1250,6 +1261,51 @@ mod tests {
         .await
         .unwrap();
         app.process_background_events();
+    }
+
+    /// #255: Q, or the close button, while repairs run. The window does not
+    /// close under the repair: the run is cancelled, and it closes when the
+    /// run has ended and its outcome is on record.
+    #[tokio::test]
+    async fn quitting_during_repairs_cancels_the_run_and_closes_once_it_has_ended() {
+        let mut app = App::new();
+        let (tx, rx) = channel::<RepairEvent>(8);
+        app.repair_event_rx = Some(rx);
+        app.is_fixing = true;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        app.cancel_token = Some(cancel.clone());
+
+        app.request_quit();
+        assert!(cancel.is_cancelled(), "the run is told to stop");
+        app.process_background_events();
+        assert!(!app.should_quit, "not while the repair still runs");
+        assert!(app.status_message.as_deref().unwrap().contains("closes"));
+
+        tx.send(RepairEvent::RepairsCancelled {
+            fixed_count: 1,
+            failed_count: 0,
+            remaining: 2,
+        })
+        .await
+        .unwrap();
+        app.process_background_events();
+        assert!(!app.is_fixing);
+        assert_eq!(app.last_repair, Some((1, 0)), "the run is on record");
+        assert!(app.should_quit);
+    }
+
+    /// With no repair running there is nothing to wait for; a scan changes
+    /// nothing and is left behind.
+    #[test]
+    fn quitting_closes_at_once_when_no_repair_runs() {
+        let mut app = App::new();
+        app.request_quit();
+        assert!(app.should_quit);
+
+        let mut app = App::new();
+        app.is_scanning = true;
+        app.request_quit();
+        assert!(app.should_quit);
     }
 
     /// #249: "Scan again", then Cancel after one check that found nothing.

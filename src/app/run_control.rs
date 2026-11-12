@@ -68,6 +68,28 @@ impl App {
         self.archived_issues.retain(repair_waits_for_restart);
     }
 
+    /// Q, or the window's close button.
+    ///
+    /// While repairs run, WinMedic does not close under them: the tool that
+    /// is running would be ended where it stands, the services it stopped
+    /// would stay stopped, and what the repairs before it did would not be
+    /// saved. The run is cancelled instead, as Esc cancels it, and the
+    /// window closes once it has ended. A scan changes nothing and is left
+    /// behind at once.
+    pub fn request_quit(&mut self) {
+        if !self.is_fixing {
+            self.should_quit = true;
+            return;
+        }
+        self.quit_when_repairs_end = true;
+        if let Some(cancel) = &self.cancel_token {
+            cancel.cancel();
+        }
+        self.status_message = Some(
+            "Stopping the repair that is running. WinMedic closes once it has stopped.".to_string(),
+        );
+    }
+
     pub fn start_repairs(&mut self) {
         self.start_repairs_with(self.config.create_vss_before_repair);
     }

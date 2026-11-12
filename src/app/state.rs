@@ -242,6 +242,9 @@ pub struct App {
     /// does — see [`SystemActions`].
     pub system_actions: SystemActions,
     pub should_quit: bool,
+    /// Set by [`App::request_quit`] while repairs run: the window closes
+    /// once the run it cancelled has ended.
+    pub(super) quit_when_repairs_end: bool,
 
     // Internal async event channels
     pub scan_event_rx: Option<Receiver<ScanEvent>>,
@@ -415,6 +418,7 @@ impl App {
             restart_into: None,
             system_actions,
             should_quit: false,
+            quit_when_repairs_end: false,
             scan_event_rx: None,
             repair_event_rx: None,
             cancel_token: None,
