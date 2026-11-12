@@ -224,9 +224,13 @@ impl RegBackupManager {
     ) -> Result<BackupRecord, String> {
         let now = Local::now();
         let safe_key = key_path.replace(['\\', '/'], "_");
-        let name = format!("reg_{}_{safe_key}.reg", now.format("%Y%m%d_%H%M%S"));
         // Held until the file is anchored, so the folder stays where it is.
         let (_folder, real) = self.open_folder_to_write()?;
+        let name = free_name(
+            &real,
+            &format!("reg_{}_{safe_key}", now.format("%Y%m%d_%H%M%S")),
+            "reg",
+        );
         let file = real.join(&name);
 
         let output = runner
@@ -291,11 +295,15 @@ impl RegBackupManager {
         let now = Local::now();
         let safe_key = key_path.replace(['\\', '/'], "_");
         let safe_value = value_name.replace(|c: char| !c.is_ascii_alphanumeric(), "_");
-        let name = format!(
-            "reg_{}_{safe_key}_{safe_value}.reg",
-            now.format("%Y%m%d_%H%M%S")
-        );
         let (_folder, real) = self.open_folder_to_write()?;
+        let name = free_name(
+            &real,
+            &format!(
+                "reg_{}_{safe_key}_{safe_value}",
+                now.format("%Y%m%d_%H%M%S")
+            ),
+            "reg",
+        );
         let export = match number {
             Some(export) => export,
             None => self
@@ -306,9 +314,7 @@ impl RegBackupManager {
                 })?,
         };
         let file = real.join(&name);
-        if let Err(e) = std::fs::write(&file, export) {
-            // A partial file is not a backup.
-            let _ = std::fs::remove_file(&file);
+        if let Err(e) = write_new(&file, &export) {
             return Err(format!("{} could not be written: {e}", file.display()));
         }
         self.keep(&real, name, key_path, description, now)
@@ -580,16 +586,49 @@ impl RegBackupManager {
     /// Write `bytes` into the backup folder as `name`, for a copy that
     /// WinMedic never reads back, such as the hosts file's. Its path is
     /// named like a backup's, from the folder as this manager was given it.
+    ///
+    /// A copy of that name that is there already stays: the new one gets a
+    /// number, as [`free_name`] gives it.
     pub fn save_copy(&self, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
         let (_folder, real) = self.open_folder_to_write()?;
-        let path = real.join(name);
-        std::fs::write(&path, bytes).map_err(|e| {
-            // A partial copy is not a backup.
-            let _ = std::fs::remove_file(&path);
-            format!("{} could not be written ({e})", path.display())
-        })?;
+        let name = match name.rsplit_once('.') {
+            Some((stem, extension)) => free_name(&real, stem, extension),
+            None => name.to_string(),
+        };
+        let path = real.join(&name);
+        write_new(&path, bytes)
+            .map_err(|e| format!("{} could not be written ({e})", path.display()))?;
         Ok(self.backup_dir.join(name))
     }
+}
+
+/// `stem.extension`, or `stem_2.extension`, `stem_3.extension` and so on
+/// when `folder` holds a file of that name already.
+///
+/// A backup's name carries the time to the second. Two findings in the same
+/// key are repaired a few hundred milliseconds apart, each after an export
+/// of the whole key: the second export took the first one's name, replaced
+/// its file and its anchor, and the only backup left had been taken after
+/// the first deletion. No backup is ever written over another.
+fn free_name(folder: &Path, stem: &str, extension: &str) -> String {
+    let mut name = format!("{stem}.{extension}");
+    let mut number = 1;
+    while folder.join(&name).symlink_metadata().is_ok() {
+        number += 1;
+        name = format!("{stem}_{number}.{extension}");
+    }
+    name
+}
+
+/// Write `bytes` to `path`, which must not exist yet. A file that could not
+/// be written whole is removed: a partial file is not a backup.
+fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut file = File::options().write(true).create_new(true).open(path)?;
+    file.write_all(bytes).inspect_err(|_| {
+        let _ = std::fs::remove_file(path);
+    })
 }
 
 /// Delete `HKLM\SOFTWARE\WinMedic` with every anchor in it, for
@@ -1135,6 +1174,55 @@ mod tests {
             runner.executed().last(),
             Some(&format!("reg.exe import {}", resolved(&record.file_path)))
         );
+    }
+
+    /// #252: two dead entries in the same Run key are repaired within the
+    /// same second, each after an export of the key. Both backups are kept,
+    /// under their own names, and both can be rolled back.
+    #[tokio::test]
+    async fn a_second_backup_of_the_same_key_does_not_replace_the_first() {
+        let dir = TempDir::new("same_second");
+        let mgr = RegBackupManager::with_dir(dir.path.clone());
+        let runner = reg(POWER_EXPORT);
+        let first = mgr
+            .export_key_with(&runner, POWER_KEY, "before the first repair")
+            .await
+            .unwrap();
+        let second = mgr
+            .export_key_with(&runner, POWER_KEY, "before the second repair")
+            .await
+            .unwrap();
+
+        assert_ne!(first.id, second.id);
+        assert!(Path::new(&first.file_path).is_file());
+        assert!(Path::new(&second.file_path).is_file());
+        let listed: Vec<String> = mgr.list_backups().into_iter().map(|r| r.id).collect();
+        assert!(
+            listed.contains(&first.id) && listed.contains(&second.id),
+            "{listed:?}"
+        );
+    }
+
+    /// The name a backup gets when its second is taken already, whatever the
+    /// clock did between the two exports of the test above.
+    #[test]
+    fn a_name_that_is_taken_gets_a_number() {
+        let dir = TempDir::new("free_name");
+        assert_eq!(free_name(&dir.path, "reg_1_key", "reg"), "reg_1_key.reg");
+        std::fs::write(dir.path.join("reg_1_key.reg"), b"first").unwrap();
+        assert_eq!(free_name(&dir.path, "reg_1_key", "reg"), "reg_1_key_2.reg");
+        std::fs::write(dir.path.join("reg_1_key_2.reg"), b"second").unwrap();
+        assert_eq!(free_name(&dir.path, "reg_1_key", "reg"), "reg_1_key_3.reg");
+
+        // A copy does not replace the one before it either.
+        let mgr = RegBackupManager::with_dir(dir.path.clone());
+        let one = mgr.save_copy("hosts_1.bak", b"one").unwrap();
+        let two = mgr.save_copy("hosts_1.bak", b"two").unwrap();
+        assert_ne!(one, two);
+        assert_eq!(std::fs::read(&one).unwrap(), b"one");
+        assert_eq!(std::fs::read(&two).unwrap(), b"two");
+        assert!(write_new(&one, b"three").is_err());
+        assert_eq!(std::fs::read(&one).unwrap(), b"one");
     }
 
     #[tokio::test]
