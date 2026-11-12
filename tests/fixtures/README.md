@@ -199,6 +199,12 @@ author was replaced with `PC\User`, the account's SID with
 | `schtasks_query_xml_helper.bin` | `schtasks /query /tn <name> /xml` of a task registered with `/tr` `C:\WINDOWS\system32\conhost.exe --headless "C:\Program Files\Tom & Jerry\winmedic.exe" --helper` | ASCII | The XML calls itself UTF-16 and is written in the console code page. `Command` is the path as given, `Arguments` the rest, with `&amp;`. Given the path in quotes, schtasks keeps the quotes in `Command`. Registered without `/rl highest`, which needs elevation, so the principal has no `RunLevel`: the tests add `<RunLevel>HighestAvailable</RunLevel>`, which is **constructed**. |
 | `schtasks_query_xml_helper_systemroot.bin` | the same with `/tr` `%SystemRoot%\System32\conhost.exe --headless ...`, as WinMedic up to 0.12.0 registered it | ASCII | `Command` is `%SystemRoot%\System32\conhost.exe`, not expanded. |
 
+Captured unelevated on 2026-11-12 on the same machine, a read-only command:
+
+| File | Command | Encoding | Notes |
+| --- | --- | --- | --- |
+| `powershell_physical_disks.bin` | The storage module's disk query (`Get-PhysicalDisk`: `SerialNumber`, `UniqueId`, `HealthStatus`, `OperationalStatus`, `FriendlyName`) | UTF-8 | One NVMe disk, `Healthy` and `OK`: enum names, printed in English on a German Windows. The serial number ends in a dot, as the disk reports it. Its digits and those of the unique id were replaced (`0025_3800_0000_0001.`, `eui.0025380000000001`). The tests set the health to `Warning` and `Unhealthy`: no failing disk was at hand. |
+
 ## Files — `files/`
 
 | File | Content |

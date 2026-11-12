@@ -59,6 +59,97 @@ pub fn storage_errors_query() -> Vec<String> {
     )
 }
 
+/// Every physical disk as `serial number|unique id|health|status|name`, e.g.
+/// `0025_38B3_31B2_867A.|eui.002538B331B2867A|Healthy|OK|Samsung SSD 980 PRO
+/// 2TB`. `HealthStatus` and `OperationalStatus` are enum names, the same in
+/// every display language. The name comes last, so one with a `|` in it
+/// still parses.
+const PHYSICAL_DISKS_SCRIPT: &str = "Get-PhysicalDisk -ErrorAction Stop | ForEach-Object { '{0}|{1}|{2}|{3}|{4}' -f $_.SerialNumber, $_.UniqueId, $_.HealthStatus, $_.OperationalStatus, $_.FriendlyName }";
+
+/// One line of [`PHYSICAL_DISKS_SCRIPT`]'s output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalDisk {
+    pub serial: String,
+    pub unique_id: String,
+    pub health: String,
+    pub status: String,
+    pub name: String,
+}
+
+/// The disks [`PHYSICAL_DISKS_SCRIPT`] printed.
+pub fn parse_physical_disks(output: &str) -> Vec<PhysicalDisk> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.trim().splitn(5, '|').map(str::trim);
+            Some(PhysicalDisk {
+                serial: fields.next()?.to_string(),
+                unique_id: fields.next()?.to_string(),
+                health: fields.next()?.to_string(),
+                status: fields.next()?.to_string(),
+                name: fields.next()?.to_string(),
+            })
+        })
+        .collect()
+}
+
+impl PhysicalDisk {
+    /// Windows calls the disk's health `Warning` or `Unhealthy`.
+    pub fn degraded(&self) -> bool {
+        ["Warning", "Unhealthy"]
+            .iter()
+            .any(|health| self.health.eq_ignore_ascii_case(health))
+    }
+
+    fn summary(&self) -> String {
+        format!(
+            "{} | Health: {} | Status: {}",
+            self.name, self.health, self.status
+        )
+    }
+
+    /// The finding's id, which names this disk: by its serial number, or
+    /// else its unique id, or else its name. With one id for every disk,
+    /// archiving the warning of an old data disk hid every later one, the
+    /// system drive's included (#266).
+    pub fn issue_id(&self) -> String {
+        let key = [&self.serial, &self.unique_id, &self.name]
+            .into_iter()
+            .find(|part| part.chars().any(|c| c.is_ascii_alphanumeric()))
+            .map_or("", String::as_str);
+        let slug: String = key
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        format!("storage_smart_warning_{}", slug.trim_matches('_'))
+    }
+
+    fn finding(&self, module_id: &str) -> Issue {
+        Issue::new(
+            self.issue_id(),
+            module_id,
+            format!("SMART hardware warning reported for '{}'", self.name),
+            "Storage & File System",
+            Severity::Critical,
+            RiskScore::High,
+            format!(
+                "A physical disk reports a degraded health status: {}",
+                self.summary()
+            ),
+            format!("{}\nSerial number: {}", self.summary(), self.serial),
+            "Back up important data and run the vendor's drive diagnostics",
+            vec!["Back up important data immediately".to_string()],
+        )
+        .with_advice_only()
+    }
+}
+
 /// The data-loss events among them, newest first. A disk or controller that
 /// keeps resetting logs bursts of 129 and 153, which fill the
 /// [`STORAGE_ERROR_LIMIT`] of the first query and push an older bad block out
@@ -374,43 +465,45 @@ impl DiagnosticModule for StorageModule {
         .await;
         sleep(Duration::from_millis(150)).await;
 
-        let disk_script = r#"Get-PhysicalDisk | Select-Object -Property DeviceId, FriendlyName, MediaType, HealthStatus, OperationalStatus | ForEach-Object { "$($_.FriendlyName) | Health: $($_.HealthStatus) | Status: $($_.OperationalStatus)" }"#;
-        if let Ok(disk_out) = self
+        // A query that did not answer is "not checked", and says so: at scan
+        // start every module asks PowerShell something, and a dying disk is
+        // the likeliest to answer late. It used to leave no trace (#266).
+        let disks = match self
             .runner
-            .run_powershell(disk_script, Duration::from_secs(8))
+            .query_powershell(PHYSICAL_DISKS_SCRIPT, Duration::from_secs(20))
             .await
         {
-            let output_str = disk_out.stdout.trim();
-            for line in output_str.lines() {
-                let l = line.trim();
-                if !l.is_empty() {
+            Ok(out) if out.success => Ok(parse_physical_disks(&out.stdout)),
+            Ok(out) => Err(format!(
+                "Get-PhysicalDisk failed (exit code {:?}): {}",
+                out.exit_code,
+                out.stderr.lines().next().unwrap_or("").trim()
+            )),
+            Err(err) => Err(err),
+        };
+        match disks {
+            Ok(disks) => {
+                for disk in &disks {
                     Self::send_progress(
                         &progress_tx,
                         60,
                         "SMART status checked",
-                        Some(&format!("Drive: {}", l)),
+                        Some(&format!("Drive: {}", disk.summary())),
                     )
                     .await;
-                    if l.to_lowercase().contains("unhealthy")
-                        || l.to_lowercase().contains("warning")
-                    {
-                        issues.push(
-                            Issue::new(
-                                "storage_smart_warning",
-                                self.id(),
-                                "SMART hardware warning reported for a physical drive",
-                                "Storage & File System",
-                                Severity::Critical,
-                                RiskScore::High,
-                                format!("A physical disk reports a degraded health status: {}", l),
-                                l.to_string(),
-                                "Back up important data and run the vendor's drive diagnostics",
-                                vec!["Back up important data immediately".to_string()],
-                            )
-                            .with_advice_only(),
-                        );
+                    if disk.degraded() {
+                        issues.push(disk.finding(self.id()));
                     }
                 }
+            }
+            Err(err) => {
+                Self::send_progress(
+                    &progress_tx,
+                    60,
+                    "SMART status not checked",
+                    Some(&format!("The drives' health could not be read: {err}")),
+                )
+                .await;
             }
         }
 
@@ -830,6 +923,102 @@ mod tests {
         crate::utils::event_xml::parse_events(STORAGE_ERRORS_XML)
     }
 
+    /// The disk query as captured: one healthy NVMe disk.
+    const PHYSICAL_DISKS: &str =
+        include_str!("../../tests/fixtures/console/powershell_physical_disks.bin");
+
+    /// A scan whose disk query answers `disks`, with the progress lines.
+    async fn scan_disks(disks: Result<CmdOutput, ()>) -> (Vec<Issue>, Vec<String>) {
+        let mock = MockCommandRunner::new();
+        mock.add_response("DirtyBitSet", CmdOutput::ok("False\r\n"));
+        if let Ok(disks) = disks {
+            mock.add_response("Get-PhysicalDisk", disks);
+        }
+        mock.add_response("wevtutil.exe", CmdOutput::ok(""));
+        let module =
+            StorageModule::with_paths(ModuleConfig::default(), Arc::new(mock), Vec::new(), None);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(100);
+        let issues = module.scan(Some(tx)).await.unwrap();
+        let mut steps = Vec::new();
+        while let Ok(progress) = rx.try_recv() {
+            steps.push(format!(
+                "{}: {}",
+                progress.current_step,
+                progress.log_message.unwrap_or_default()
+            ));
+        }
+        (issues, steps)
+    }
+
+    #[test]
+    fn the_captured_disk_is_read_field_by_field() {
+        let disks = parse_physical_disks(PHYSICAL_DISKS);
+        assert_eq!(
+            disks,
+            [PhysicalDisk {
+                serial: "0025_3800_0000_0001.".to_string(),
+                unique_id: "eui.0025380000000001".to_string(),
+                health: "Healthy".to_string(),
+                status: "OK".to_string(),
+                name: "Samsung SSD 980 PRO 2TB".to_string(),
+            }]
+        );
+        assert!(!disks[0].degraded());
+        assert_eq!(
+            disks[0].issue_id(),
+            "storage_smart_warning_0025_3800_0000_0001"
+        );
+    }
+
+    /// #266. Each disk has a finding of its own, named after it, so that
+    /// archiving one leaves the other standing.
+    #[tokio::test]
+    async fn each_unhealthy_disk_has_its_own_finding() {
+        let (healthy, _) = scan_disks(Ok(CmdOutput::ok(PHYSICAL_DISKS))).await;
+        assert!(healthy.is_empty(), "{healthy:?}");
+
+        let two = PHYSICAL_DISKS.replace("|Healthy|", "|Warning|")
+            + "WD-WX12A34B5C6D|5000C500A1B2C3D4|Unhealthy|Predictive Failure|WDC WD20EZRZ\r\n"
+            + "||Warning|OK|Generic | USB Disk\r\n";
+        let (issues, _) = scan_disks(Ok(CmdOutput::ok(two))).await;
+
+        let ids: Vec<&str> = issues.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "storage_smart_warning_0025_3800_0000_0001",
+                "storage_smart_warning_wd_wx12a34b5c6d",
+                "storage_smart_warning_generic___usb_disk",
+            ]
+        );
+        assert!(issues.iter().all(|i| i.advice_only));
+        assert!(
+            issues[1].title.contains("'WDC WD20EZRZ'"),
+            "{}",
+            issues[1].title
+        );
+        assert!(issues[2].title.contains("'Generic | USB Disk'"));
+    }
+
+    /// #266. A query that fails or never answers is said to be unchecked.
+    #[tokio::test]
+    async fn a_disk_query_that_fails_is_not_a_clean_bill_of_health() {
+        for answer in [
+            Ok(CmdOutput::failed(1, "Get-PhysicalDisk : Access denied")),
+            Err(()),
+        ] {
+            let (issues, steps) = scan_disks(answer).await;
+            assert!(issues.is_empty());
+            assert!(
+                steps
+                    .iter()
+                    .any(|s| s.starts_with("SMART status not checked: ")),
+                "{steps:?}"
+            );
+            assert!(!steps.iter().any(|s| s.starts_with("SMART status checked")));
+        }
+    }
+
     #[test]
     fn named_storage_errors_are_listed_with_their_device() {
         let issue = storage_errors_finding("storage", &storage_errors(), &[]).unwrap();
@@ -992,10 +1181,7 @@ mod tests {
     async fn test_storage_detects_dirty_bit() {
         let mock = MockCommandRunner::new();
         mock.add_response("dirty query C:", CmdOutput::ok("Volume - C: is Dirty"));
-        mock.add_response(
-            "Get-PhysicalDisk",
-            CmdOutput::ok("NVMe SSD | Health: Healthy | Status: OK"),
-        );
+        mock.add_response("Get-PhysicalDisk", CmdOutput::ok(PHYSICAL_DISKS));
 
         let module = StorageModule::with_runner(ModuleConfig::default(), Arc::new(mock));
         let issues = module.scan(None).await.unwrap();
@@ -1010,7 +1196,7 @@ mod tests {
         for (answer, dirty) in [("True\r\n", true), ("False\r\n", false)] {
             let mock = MockCommandRunner::new();
             mock.add_response("DirtyBitSet", CmdOutput::ok(answer));
-            mock.add_response("Get-PhysicalDisk", CmdOutput::ok("SSD | Health: Healthy"));
+            mock.add_response("Get-PhysicalDisk", CmdOutput::ok(PHYSICAL_DISKS));
 
             let module =
                 StorageModule::with_runner(ModuleConfig::default(), Arc::new(mock.clone()));
@@ -1034,7 +1220,7 @@ mod tests {
         // Unelevated, WMI leaves DirtyBitSet empty.
         mock.add_response("DirtyBitSet", CmdOutput::ok("\r\n"));
         mock.add_response("dirty query C:", CmdOutput::ok("Volume - C: is Dirty"));
-        mock.add_response("Get-PhysicalDisk", CmdOutput::ok("SSD | Health: Healthy"));
+        mock.add_response("Get-PhysicalDisk", CmdOutput::ok(PHYSICAL_DISKS));
 
         let module = StorageModule::with_runner(ModuleConfig::default(), Arc::new(mock));
         let issues = module.scan(None).await.unwrap();
@@ -1100,7 +1286,7 @@ mod tests {
         ] {
             let mock = MockCommandRunner::new();
             mock.add_response("dirty query C:", CmdOutput::ok(output));
-            mock.add_response("Get-PhysicalDisk", CmdOutput::ok("SSD | Health: Healthy"));
+            mock.add_response("Get-PhysicalDisk", CmdOutput::ok(PHYSICAL_DISKS));
 
             let module = StorageModule::with_runner(ModuleConfig::default(), Arc::new(mock));
             let issues = module.scan(None).await.unwrap();
@@ -1120,7 +1306,7 @@ mod tests {
             "dirty query C:",
             CmdOutput::failed(1, "Fehler 5: Zugriff verweigert"),
         );
-        mock.add_response("Get-PhysicalDisk", CmdOutput::ok("SSD | Health: Healthy"));
+        mock.add_response("Get-PhysicalDisk", CmdOutput::ok(PHYSICAL_DISKS));
 
         let module = StorageModule::with_runner(ModuleConfig::default(), Arc::new(mock));
         let issues = module.scan(None).await.unwrap();

@@ -1691,7 +1691,7 @@ mod tests {
         mock.add_response("qc bits", CmdOutput::ok(sc_qc_output("bits", 2)));
         mock.add_response("qc cryptsvc", CmdOutput::ok(sc_qc_output("cryptsvc", 2)));
         mock.add_response("dirty query C:", CmdOutput::ok("Volume - C: is clean"));
-        mock.add_response("Get-PhysicalDisk", CmdOutput::ok("SSD | Health: Healthy"));
+        mock.add_response("Get-PhysicalDisk", CmdOutput::ok("S1|eui.1|Healthy|OK|SSD"));
         mock.add_response("Resolve-DnsName", CmdOutput::ok("8.8.8.8"));
         mock.add_response("show catalog", CmdOutput::ok("Winsock Provider"));
         mock.add_response("Level=1", CmdOutput::ok(""));
