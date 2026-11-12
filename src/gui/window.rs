@@ -25,6 +25,8 @@ pub struct Geometry {
     pub maximized: bool,
     /// The screen the window is on, in points, once the platform has said.
     pub monitor: Option<egui::Vec2>,
+    /// Pixels per point on that screen: 2.0 at 200 % scaling.
+    pub scale: f32,
 }
 
 impl Geometry {
@@ -46,6 +48,7 @@ impl Geometry {
                 size: rect.size(),
                 maximized: viewport.maximized.unwrap_or(false),
                 monitor: viewport.monitor_size,
+                scale: input.pixels_per_point,
             })
         })
     }
@@ -54,8 +57,15 @@ impl Geometry {
 /// Which mode the window was last set up for.
 #[derive(Debug, Default)]
 pub struct WindowLock {
-    /// The mode, and whether [`MIN_SIZE`] fitted on the screen, last set up.
-    applied: Option<(bool, bool)>,
+    /// The mode, whether [`MIN_SIZE`] fitted on the screen, and the screen's
+    /// scaling, last set up.
+    ///
+    /// The scaling, because the window takes its smallest size in pixels,
+    /// worked out when it is told: 960 x 640 points told at 200 % stayed
+    /// 1920 x 1280 pixels on a screen at 100 %, taller than a 1080p monitor
+    /// and, in Easy mode, not resizable. Moved the other way, the Advanced
+    /// window could be shrunk to half its smallest size.
+    applied: Option<(bool, bool, f32)>,
     before_lock: Option<Geometry>,
 }
 
@@ -65,11 +75,16 @@ impl WindowLock {
     /// after a switch.
     pub fn commands(&mut self, advanced: bool, current: Option<Geometry>) -> Vec<ViewportCommand> {
         let fits = current.is_none_or(|c| c.min_size_fits());
-        if self.applied == Some((advanced, fits)) {
+        // An unknown window keeps the scaling it was set up for.
+        let scale = current
+            .map(|c| c.scale)
+            .or(self.applied.map(|(_, _, scale)| scale))
+            .unwrap_or(1.0);
+        if self.applied == Some((advanced, fits, scale)) {
             return Vec::new();
         }
-        let was_advanced = self.applied.map(|(mode, _)| mode);
-        self.applied = Some((advanced, fits));
+        let was_advanced = self.applied.map(|(mode, _, _)| mode);
+        self.applied = Some((advanced, fits, scale));
 
         if !fits {
             let screen = current.and_then(|c| c.monitor).unwrap_or(MIN_SIZE);
@@ -88,7 +103,8 @@ impl WindowLock {
 
         if advanced {
             if was_advanced == Some(true) {
-                // Only the screen changed, to one MIN_SIZE fits on.
+                // Only the screen changed: to one MIN_SIZE fits on, or to
+                // one with another scaling.
                 return vec![ViewportCommand::MinInnerSize(MIN_SIZE)];
             }
             let mut commands = vec![
@@ -135,7 +151,37 @@ mod tests {
             size: egui::vec2(width, height),
             maximized: false,
             monitor: Some(egui::vec2(1920.0, 1080.0)),
+            scale: 1.0,
         })
+    }
+
+    /// The window dragged from a laptop panel at 200 % to a monitor at 100 %:
+    /// the smallest size is told again, since Windows holds it in pixels.
+    #[test]
+    fn another_scaling_tells_the_smallest_size_again() {
+        let at_scale = |scale| {
+            Some(Geometry {
+                scale,
+                ..at(MIN_SIZE.x, MIN_SIZE.y).unwrap()
+            })
+        };
+
+        let mut easy = WindowLock::default();
+        easy.commands(false, at_scale(2.0));
+        assert!(easy.commands(false, at_scale(2.0)).is_empty());
+        let commands = easy.commands(false, at_scale(1.0));
+        assert!(commands.contains(&ViewportCommand::MinInnerSize(MIN_SIZE)));
+        assert!(commands.contains(&ViewportCommand::InnerSize(MIN_SIZE)));
+        assert_eq!(resizable(&commands), Some(false));
+
+        let mut advanced = WindowLock::default();
+        advanced.commands(true, at_scale(1.0));
+        assert_eq!(
+            advanced.commands(true, at_scale(2.0)),
+            [ViewportCommand::MinInnerSize(MIN_SIZE)],
+            "the size the user chose stays"
+        );
+        assert!(advanced.commands(true, at_scale(2.0)).is_empty());
     }
 
     /// 1920 x 1080 at 175 %.
@@ -144,6 +190,7 @@ mod tests {
             size: MIN_SIZE,
             maximized: false,
             monitor: Some(egui::vec2(1097.0, 617.0)),
+            scale: 1.75,
         })
     }
 
@@ -223,6 +270,7 @@ mod tests {
                 size: egui::vec2(2560.0, 1400.0),
                 maximized: true,
                 monitor: Some(egui::vec2(2560.0, 1440.0)),
+                scale: 1.0,
             }),
         );
         let commands = lock.commands(true, at(MIN_SIZE.x, MIN_SIZE.y));
