@@ -75,6 +75,15 @@ pub(crate) fn on_fixed_drive(path: &Path, drive_type: &dyn Fn(char) -> u32) -> b
     drive_type(char::from(letter).to_ascii_uppercase()) == DRIVE_FIXED
 }
 
+/// Whether Windows says the file at `path` is not there. Any other answer
+/// leaves it open: a BitLocker volume that is still locked or a disk with a
+/// damaged file system is a fixed drive too, and `Path::exists` is false for
+/// every error. A program that could not be looked at counted as deleted,
+/// and its autostart entry was deleted or its task switched off (#268).
+pub(crate) fn is_gone(path: &Path) -> bool {
+    matches!(path.try_exists(), Ok(false))
+}
+
 /// The file a Run value starts, if it names one by an absolute path on a
 /// fixed drive of this PC and that file is not there.
 ///
@@ -90,7 +99,7 @@ fn missing_target(value: &RegValue, drive_type: &dyn Fn(char) -> u32) -> Option<
         return None;
     }
     let path = RegistryStartupModule::extract_exe_path(&value.data)?;
-    (path.is_absolute() && on_fixed_drive(&path, drive_type) && !path.exists()).then_some(path)
+    (path.is_absolute() && on_fixed_drive(&path, drive_type) && is_gone(&path)).then_some(path)
 }
 
 pub struct RegistryStartupModule {
@@ -664,15 +673,22 @@ mod tests {
         assert!(issues.is_empty(), "{:?}", issues[0].title);
         assert!(commands.executed().is_empty(), "{:?}", commands.executed());
 
-        // What `reg query` made of the same path is a file that is not there.
-        let as_printed = RegValue {
+        // What `reg query` made of the same path, a look-alike letter for
+        // one that the code page lacks, is a file that is not there.
+        let with = |from: char, to: &str| RegValue {
             name: "Tool".to_string(),
             kind: "REG_SZ".to_string(),
-            data: format!("\"{}\" --tray", program.display())
-                .replace('\u{141}', "L")
-                .replace('\u{20ac}', "?"),
+            data: format!("\"{}\" --tray", program.display()).replace(from, to),
         };
-        assert_eq!(missing_target(&as_printed, &drives).is_some(), on_c);
+        assert_eq!(
+            missing_target(&with('\u{141}', "L"), &drives).is_some(),
+            on_c
+        );
+        // #268. Its `?` for a character without a look-alike is no name a
+        // file can have: Windows answers with an error, not with "not
+        // found", as it does for a volume that is locked or damaged. A
+        // program that cannot be looked at is not a deleted one.
+        assert_eq!(missing_target(&with('\u{20ac}', "?"), &drives), None);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
