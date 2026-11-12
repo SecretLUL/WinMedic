@@ -186,6 +186,19 @@ with `user`.
 | `dism_restorehealth_repair_content_missing.bin` | `dism /English /Online /Cleanup-Image /RestoreHealth /Source:wim:D:\sources\install.wim:5 /LimitAccess` | ASCII | Exit -2146498283, `Error: 0x800f0915` "The repair content could not be found anywhere.", after 81 seconds. CBS.log: 328 damaged payloads, all in 10.0.26100.1591 components that .9278 ones had replaced; the ISO holds neither version, so none was repaired. |
 | `dism_get_wiminfo_not_a_wim.bin` | `dism /English /Get-WimInfo /WimFile:C:\Windows\notepad.exe` | ASCII | Exit 11 for `Error: 11`: DISM exits with the code it prints, an HRESULT as the negative number above. |
 
+Captured unelevated on 2026-11-12 on the development PC (Windows 11 Pro,
+26300.9974, German). Each task was registered for the signed-in account with
+`schtasks /create /tn <name> /tr <command> /sc once /st 00:00 /f`, a time
+already past, so that it never started, and deleted after the query. The
+author was replaced with `PC\User`, the account's SID with
+`S-1-5-21-1111111111-2222222222-3333333333-1001` and the task's name with
+`WinMedicCapture`.
+
+| File | Command | Encoding | Notes |
+| --- | --- | --- | --- |
+| `schtasks_query_xml_helper.bin` | `schtasks /query /tn <name> /xml` of a task registered with `/tr` `C:\WINDOWS\system32\conhost.exe --headless "C:\Program Files\Tom & Jerry\winmedic.exe" --helper` | ASCII | The XML calls itself UTF-16 and is written in the console code page. `Command` is the path as given, `Arguments` the rest, with `&amp;`. Given the path in quotes, schtasks keeps the quotes in `Command`. Registered without `/rl highest`, which needs elevation, so the principal has no `RunLevel`: the tests add `<RunLevel>HighestAvailable</RunLevel>`, which is **constructed**. |
+| `schtasks_query_xml_helper_systemroot.bin` | the same with `/tr` `%SystemRoot%\System32\conhost.exe --headless ...`, as WinMedic up to 0.12.0 registered it | ASCII | `Command` is `%SystemRoot%\System32\conhost.exe`, not expanded. |
+
 ## Files — `files/`
 
 | File | Content |

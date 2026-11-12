@@ -55,12 +55,34 @@ pub fn helper_schedule(frequency_hours: u32) -> Option<(&'static str, u32)> {
 /// WinMedic is a console-subsystem binary, so started directly the task would
 /// open a console window on the user's desktop on every run. `conhost
 /// --headless` hosts that console without one.
+///
+/// `conhost` is its full path. schtasks stores the command as it is given,
+/// and Task Scheduler expands a `%SystemRoot%` in it only when the task
+/// starts: with a `SystemRoot` of the user's in that environment, a program
+/// of the user would decide which conhost.exe starts with the highest
+/// rights, without a prompt.
 #[cfg(windows)]
-fn helper_command(exe: &Path) -> String {
+fn helper_command(conhost: &Path, exe: &Path) -> String {
     format!(
-        r#"%SystemRoot%\System32\conhost.exe --headless "{}" --helper"#,
+        r#"{} --headless "{}" --helper"#,
+        conhost.display(),
         exe.display()
     )
+}
+
+/// conhost.exe by its full path, from the system folder Windows reports.
+#[cfg(windows)]
+fn conhost() -> Result<std::path::PathBuf, String> {
+    let path = crate::utils::cmd::system_program("conhost.exe")?;
+    // schtasks cuts a command that is not quoted at the first blank, and one
+    // that is quoted keeps its quotes in the task.
+    if path.to_string_lossy().contains(char::is_whitespace) {
+        return Err(format!(
+            "The scheduled task was not created: the path of conhost.exe has a blank in it ({})",
+            path.display()
+        ));
+    }
+    Ok(path)
 }
 
 #[cfg(windows)]
@@ -133,7 +155,7 @@ fn register_helper_task(exe: &Path, frequency_hours: u32) -> Result<(), String> 
         "/tn",
         &helper_task_name(),
         "/tr",
-        &helper_command(exe),
+        &helper_command(&conhost()?, exe),
         "/sc",
         schedule,
         "/mo",
@@ -183,12 +205,15 @@ pub fn sync_helper_task(enabled: bool, frequency_hours: u32) -> Result<(), Strin
 /// Whether the helper task exists and runs `exe`.
 #[cfg(windows)]
 fn helper_task_is_current(exe: &Path) -> bool {
-    query_helper_task(&helper_task_name()).is_some_and(|xml| task_runs(&xml, exe))
+    let Ok(conhost) = conhost() else {
+        return false;
+    };
+    query_helper_task(&helper_task_name()).is_some_and(|xml| task_runs(&xml, &conhost, exe))
 }
 
 /// Whether the task `xml` describes, as `schtasks /query /xml` prints it,
-/// starts `exe` with the highest rights.
-fn task_runs(xml: &str, exe: &Path) -> bool {
+/// starts `exe` through `conhost` with the highest rights.
+fn task_runs(xml: &str, conhost: &Path, exe: &Path) -> bool {
     let exe = exe.display().to_string();
     // The path is text in the XML, where `&` reads `&amp;`: compared as it
     // was, a path with one never matched, and the task was registered again,
@@ -197,6 +222,13 @@ fn task_runs(xml: &str, exe: &Path) -> bool {
     // A task an older WinMedic registered with limited rights cannot start
     // this one, so it is registered again with the highest.
     if !xml.contains("<runlevel>highestavailable</runlevel>") {
+        return false;
+    }
+    // WinMedic up to 0.12.0 registered `%SystemRoot%\System32\conhost.exe`,
+    // which is expanded when the task starts. Such a task is registered
+    // again, with the full path.
+    let command = format!("<command>{}</command>", conhost.display()).to_lowercase();
+    if !xml.contains(&command) {
         return false;
     }
     // schtasks writes the XML in the console code page, so a path outside ASCII
@@ -311,22 +343,67 @@ mod tests {
         assert!(!name.contains(['\\', '/', ':', '*', '?', '"', '<', '>', '|']));
     }
 
+    /// The task as captured, registered without `/rl highest` and so without
+    /// a run level; WinMedic's own carries the one added here.
+    fn captured_task(capture: &[u8]) -> String {
+        let xml = crate::utils::decode::decode_output(capture);
+        assert!(!xml.contains("RunLevel"), "captured with limited rights");
+        xml.replace(
+            "</LogonType>",
+            "</LogonType><RunLevel>HighestAvailable</RunLevel>",
+        )
+    }
+
+    /// What `schtasks /query /xml` prints for the task WinMedic registers.
+    const TASK: &[u8] =
+        include_bytes!("../../tests/fixtures/console/schtasks_query_xml_helper.bin");
+    /// The same for the task WinMedic up to 0.12.0 registered.
+    const TASK_WITH_SYSTEMROOT: &[u8] =
+        include_bytes!("../../tests/fixtures/console/schtasks_query_xml_helper_systemroot.bin");
+    const CONHOST: &str = r"C:\WINDOWS\system32\conhost.exe";
+    const EXE: &str = r"C:\Program Files\Tom & Jerry\winmedic.exe";
+
+    #[cfg(windows)]
+    #[test]
+    fn the_task_starts_conhost_by_its_full_path() {
+        // The command line the capture was registered with.
+        assert_eq!(
+            helper_command(Path::new(CONHOST), Path::new(EXE)),
+            r#"C:\WINDOWS\system32\conhost.exe --headless "C:\Program Files\Tom & Jerry\winmedic.exe" --helper"#
+        );
+        let conhost = conhost().expect("Windows names its system folder");
+        assert!(conhost.is_absolute());
+        assert!(conhost.is_file(), "no {}", conhost.display());
+    }
+
     #[test]
     fn a_path_with_an_ampersand_is_found_in_the_task() {
-        let xml = r#"<Task><Principals><Principal id="Author"><RunLevel>HighestAvailable</RunLevel></Principal></Principals><Actions Context="Author"><Exec><Command>%SystemRoot%\System32\conhost.exe</Command><Arguments>--headless "C:\Program Files\Tom &amp; Jerry\winmedic.exe" --helper</Arguments></Exec></Actions></Task>"#;
+        let xml = captured_task(TASK);
+        assert!(xml.contains("Tom &amp; Jerry"));
+        assert!(task_runs(&xml, Path::new(CONHOST), Path::new(EXE)));
+        // Windows spells its folder in more than one letter case.
         assert!(task_runs(
-            xml,
-            Path::new(r"C:\Program Files\Tom & Jerry\winmedic.exe")
+            &xml,
+            Path::new(r"C:\Windows\System32\conhost.exe"),
+            Path::new(EXE)
         ));
         assert!(!task_runs(
-            xml,
+            &xml,
+            Path::new(CONHOST),
             Path::new(r"C:\Program Files\WinMedic\winmedic.exe")
         ));
-        let limited = xml.replace("HighestAvailable", "LeastPrivilege");
-        assert!(!task_runs(
-            &limited,
-            Path::new(r"C:\Program Files\Tom & Jerry\winmedic.exe")
-        ));
+        // As captured: limited rights.
+        let limited = crate::utils::decode::decode_output(TASK);
+        assert!(!task_runs(&limited, Path::new(CONHOST), Path::new(EXE)));
+    }
+
+    /// A task whose command Task Scheduler expands from `%SystemRoot%` when
+    /// it starts is not current, so it is registered again.
+    #[test]
+    fn a_task_that_starts_conhost_through_systemroot_is_not_current() {
+        let xml = captured_task(TASK_WITH_SYSTEMROOT);
+        assert!(xml.contains(r"<Command>%SystemRoot%\System32\conhost.exe</Command>"));
+        assert!(!task_runs(&xml, Path::new(CONHOST), Path::new(EXE)));
     }
 
     /// What 0.5.0 to 0.6.0 wrote is removed; another program's value under
