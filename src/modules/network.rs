@@ -673,6 +673,15 @@ impl NetworkModule {
                 adapter.name
             ));
         }
+        // The finding may be older than the state it described, or come from
+        // a scan that asked the servers while names resolved.
+        if self.resolver_works().await.0 {
+            return Ok(format!(
+                "Names resolve with the DNS servers of '{}' ({}) - nothing was changed.",
+                adapter.name,
+                servers.join(", ")
+            ));
+        }
         let key = format!(r"{TCPIP_INTERFACES_KEY}\{}", adapter.guid);
         RegBackupManager::with_dir(self.backup_dir.clone())
             .export_key_with(
@@ -1016,13 +1025,28 @@ impl DiagnosticModule for NetworkModule {
             }
         };
 
+        // 2. DNS Resolution Check
+        Self::send_progress(
+            &progress_tx,
+            20,
+            "Testing DNS name resolution...",
+            Some("Asking the machine's own resolver for two independent names..."),
+        )
+        .await;
+        sleep(Duration::from_millis(150)).await;
+
+        let (dns_healthy, probe_log) = self.resolver_works().await;
+
         // DNS servers typed in on a connected adapter, left behind by a VPN
-        // or an ad blocker that is gone. Judged only while the internet
-        // answers by address, since a router that is off answers nothing
-        // either, and only when none of them answers.
+        // or an ad blocker that is gone. Judged only while names do not
+        // resolve: asked directly, a server does not answer either where a
+        // VPN keeps DNS inside its tunnel or the network lets only DNS over
+        // HTTPS through, and there the servers are the ones that work. Then
+        // only while the internet answers by address, since a router that
+        // is off answers nothing either, and only when none of them answers.
         let mut dead_static_dns = false;
         let up: Vec<&PhysicalAdapter> = physical.iter().filter(|a| a.status == "Up").collect();
-        if !up.is_empty() {
+        if !dns_healthy && !up.is_empty() {
             match self.tcpip_interfaces().await {
                 Ok(interfaces) => {
                     for adapter in up {
@@ -1081,18 +1105,6 @@ impl DiagnosticModule for NetworkModule {
                 }
             }
         }
-
-        // 2. DNS Resolution Check
-        Self::send_progress(
-            &progress_tx,
-            20,
-            "Testing DNS name resolution...",
-            Some("Asking the machine's own resolver for two independent names..."),
-        )
-        .await;
-        sleep(Duration::from_millis(150)).await;
-
-        let (dns_healthy, probe_log) = self.resolver_works().await;
 
         if !dns_healthy {
             let ip_reachable = self.ip_reachable().await;
@@ -2427,6 +2439,96 @@ mod tests {
         );
     }
 
+    /// #256: a VPN that keeps DNS in its tunnel, or a network that lets only
+    /// DNS over HTTPS through. The servers typed in do not answer when asked
+    /// directly, and names resolve: no finding, and the servers are not even
+    /// asked.
+    #[tokio::test]
+    async fn dns_servers_are_not_judged_while_names_resolve() {
+        let mock = static_dns_mock(
+            tcpip_with_static_dns("10.0.0.53,10.0.0.54"),
+            server_timeout(),
+            ping_answers(),
+        );
+        // Asked before the `not_resolved` of the mock above.
+        let resolving = MockCommandRunner::new();
+        resolving.add_response(SERVER_PROBE, server_timeout());
+        resolving.add_response(PROBE, resolved());
+        let runner = Arc::new(FirstThen(resolving.clone(), mock.clone()));
+
+        let issues = NetworkModule::with_runner(runner).scan(None).await.unwrap();
+        assert!(
+            !issues
+                .iter()
+                .any(|i| i.id.starts_with("net_static_dns_dead_")),
+            "{issues:?}"
+        );
+        assert!(
+            !resolving
+                .executed()
+                .iter()
+                .any(|c| c.contains(SERVER_PROBE)),
+            "{:?}",
+            resolving.executed()
+        );
+    }
+
+    /// Answers from the first runner where it knows an answer, else from the
+    /// second.
+    struct FirstThen(MockCommandRunner, MockCommandRunner);
+
+    #[async_trait::async_trait]
+    impl CommandRunner for FirstThen {
+        async fn run(
+            &self,
+            program: &str,
+            args: &[&str],
+            timeout: Duration,
+        ) -> Result<CmdOutput, String> {
+            match self.0.run(program, args, timeout).await {
+                Ok(out) => Ok(out),
+                Err(_) => self.1.run(program, args, timeout).await,
+            }
+        }
+
+        async fn run_streaming(
+            &self,
+            program: &str,
+            args: &[&str],
+            _: Option<Sender<String>>,
+            timeout: Duration,
+        ) -> Result<CmdOutput, String> {
+            self.run(program, args, timeout).await
+        }
+    }
+
+    /// A finding kept from an earlier scan, ticked, while names resolve: the
+    /// repair leaves the servers the user set.
+    #[tokio::test]
+    async fn the_dns_reset_changes_nothing_while_names_resolve() {
+        let backups = Backups::new("dnsresolves");
+        let mock = MockCommandRunner::new();
+        mock.add_response(PHYSICAL, CmdOutput::ok(real_physical_adapters()));
+        mock.add_response(
+            "reg.exe query",
+            CmdOutput::ok(tcpip_with_static_dns("10.0.0.53")),
+        );
+        mock.add_response(PROBE, resolved());
+        let msg = NetworkModule::with_runner(Arc::new(mock.clone()))
+            .with_backup_dir(backups.0.clone())
+            .fix("net_static_dns_dead_ethernet", None)
+            .await
+            .unwrap();
+        assert!(msg.contains("nothing was changed"), "{msg}");
+        let executed = mock.executed();
+        assert!(
+            !executed
+                .iter()
+                .any(|c| c.contains("ResetServerAddresses") || c.contains("reg.exe export")),
+            "{executed:?}"
+        );
+    }
+
     /// A sandbox for registry backups, removed when the test ends.
     struct Backups(std::path::PathBuf);
 
@@ -2463,7 +2565,9 @@ mod tests {
         }
         mock.add_response("reg.exe export", export);
         mock.add_response("ResetServerAddresses", CmdOutput::ok(""));
-        mock.add_response(PROBE, resolved());
+        // Names resolve once the servers are the router's again.
+        mock.add_response(PROBE, not_resolved());
+        mock.add_response_after("ResetServerAddresses", PROBE, resolved());
         mock
     }
 
