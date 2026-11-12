@@ -54,6 +54,29 @@ pub const SERVICING_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 /// as the restart was pending (#222).
 pub const DISM_NO_RESTART: &str = "/NoRestart";
 
+/// DISM's exit code for "done, and Windows waits for a restart"
+/// (`ERROR_SUCCESS_REBOOT_REQUIRED`). While an installed update waits for one,
+/// a run with [`DISM_NO_RESTART`] ends with it instead of 0, its work
+/// complete: on the development PC on 2026-10-14 `/AnalyzeComponentStore`
+/// did after 85 seconds, with "Reboot required=yes" in dism.log (#222).
+pub const DISM_DONE_RESTART_PENDING: i32 = 3010;
+
+/// Whether a DISM run finished, so that its output is its result: exit code
+/// 0, or [`DISM_DONE_RESTART_PENDING`]. Every DISM call is judged by this.
+pub fn dism_finished(out: &crate::utils::cmd::CmdOutput) -> bool {
+    out.success || out.exit_code == Some(DISM_DONE_RESTART_PENDING)
+}
+
+/// For the message of a DISM repair that finished: what is left to do when
+/// it ended with [`DISM_DONE_RESTART_PENDING`], and nothing otherwise.
+pub fn dism_restart_note(out: &crate::utils::cmd::CmdOutput) -> &'static str {
+    if out.exit_code == Some(DISM_DONE_RESTART_PENDING) {
+        " Restart Windows to finish it."
+    } else {
+        ""
+    }
+}
+
 /// The subset of [`AppConfig`] that diagnostic modules need at scan/fix time.
 ///
 /// Modules receive this at construction, so changing a setting means rebuilding

@@ -1,9 +1,9 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::{
     DISM_NO_RESTART, DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress, Repaired,
-    SERVICING_TIMEOUT, console_lines,
+    SERVICING_TIMEOUT, console_lines, dism_finished, dism_restart_note,
 };
-use crate::utils::cmd::{CmdOutput, CommandRunner, SystemCommandRunner};
+use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
 use crate::utils::debug_log::DebugTrace;
 use crate::utils::fs_stats::{dir_stats_recursive, measure_dirs, reached_without_link};
 use std::path::{Path, PathBuf};
@@ -313,18 +313,6 @@ const DISM_ANALYZE_ARGS: &[&str] = &[
     "/AnalyzeComponentStore",
     "/English",
 ];
-
-/// DISM's exit code for "done, and Windows waits for a restart"
-/// (`ERROR_SUCCESS_REBOOT_REQUIRED`). While an installed update waits for one,
-/// the analysis ends with it, its figures complete: on the development PC on
-/// 2026-10-14, after 85 seconds and with "Reboot required=yes" in dism.log
-/// (#222).
-const DISM_DONE_RESTART_PENDING: i32 = 3010;
-
-/// Whether the analysis finished, so its figures can be read.
-fn analysis_finished(out: &CmdOutput) -> bool {
-    out.success || out.exit_code == Some(DISM_DONE_RESTART_PENDING)
-}
 
 /// Remove the superseded packages the analysis above counted.
 const DISM_CLEANUP_ARGS: &[&str] = &[
@@ -1072,7 +1060,7 @@ impl SystemCleanerModule {
         )
         .await
         .ok()
-        .filter(analysis_finished)
+        .filter(dism_finished)
         .map(|out| parse_winsxs_analysis(&out.stdout).reclaimable_packages)
     }
 
@@ -1103,23 +1091,22 @@ impl SystemCleanerModule {
                 SERVICING_TIMEOUT,
             )
             .await?;
-        if out.success {
+        if dism_finished(&out) {
             let left = self.count_reclaimable_packages(&dbg).await;
             if let Some(left) = left {
                 self.paths
                     .remember_packages_left(Some(left).filter(|&n| n > 0));
             }
+            let restart = dism_restart_note(&out);
             Ok(match (before, left) {
                 // A failed verification must never turn a finished
                 // cleanup into a failed repair.
-                (_, None) => Repaired::Changed(
-                    "WinSxS component store cleaned successfully (StartComponentCleanup finished)."
-                        .to_string(),
-                ),
-                (_, Some(0)) => Repaired::Changed(
-                    "WinSxS component store cleaned successfully (StartComponentCleanup finished). The store now reports 0 reclaimable packages."
-                        .to_string(),
-                ),
+                (_, None) => Repaired::Changed(format!(
+                    "WinSxS component store cleaned successfully (StartComponentCleanup finished).{restart}"
+                )),
+                (_, Some(0)) => Repaired::Changed(format!(
+                    "WinSxS component store cleaned successfully (StartComponentCleanup finished). The store now reports 0 reclaimable packages.{restart}"
+                )),
                 (Some(before), Some(left)) if left >= before => Repaired::NothingToRemove(format!(
                     "DISM still reports {left} reclaimable package(s) after StartComponentCleanup, which leaves them in place (for example a checkpoint cumulative update that later updates are built on). This finding comes back only when DISM reports a different number."
                 )),
@@ -1486,7 +1473,7 @@ impl DiagnosticModule for SystemCleanerModule {
         // the exit status has to gate the parse, or an aborted run (error 740,
         // "elevated permissions required") gets reported as real analysis. A
         // finished one is 0, or 3010 while Windows waits for a restart.
-        if let Some(out) = dism_check.ok().filter(analysis_finished) {
+        if let Some(out) = dism_check.ok().filter(dism_finished) {
             let analysis = parse_winsxs_analysis(&out.stdout);
             // The reclaimable package count, not DISM's own recommendation, is
             // what decides this. `StartComponentCleanup` — the one repair
@@ -2653,6 +2640,32 @@ The operation completed successfully.";
 
         assert!(
             repaired.contains("The store now reports 0 reclaimable packages."),
+            "{repaired}"
+        );
+    }
+
+    /// #253: while a restart is pending the cleanup itself ends with 3010,
+    /// its work done. Constructed: only the analysis is captured ending so.
+    #[tokio::test]
+    async fn a_cleanup_that_ends_with_a_restart_pending_is_a_repair() {
+        let mock = MockCommandRunner::new();
+        mock.add_response("AnalyzeComponentStore", analysis_restart_pending());
+        mock.add_response(
+            "StartComponentCleanup",
+            CmdOutput::with_output(3010, "The operation completed successfully.\r\n", ""),
+        );
+        mock.add_response_after(
+            "StartComponentCleanup",
+            "AnalyzeComponentStore",
+            CmdOutput::with_output(3010, "Number of Reclaimable Packages : 0\n", ""),
+        );
+
+        let td = TestDir::new("winsxs_cleanup_restart_pending");
+        let module = sandboxed(&td, Arc::new(mock));
+        module.scan(None).await.unwrap();
+        let repaired = module.fix("sys_clean_winsxs", None).await.unwrap();
+        assert!(
+            repaired.ends_with("0 reclaimable packages. Restart Windows to finish it."),
             "{repaired}"
         );
     }

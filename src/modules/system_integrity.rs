@@ -5,7 +5,7 @@ use crate::modules::service_chain;
 use crate::modules::tweaks::device_name;
 use crate::modules::{
     DISM_NO_RESTART, DiagnosticModule, FixProgress, ModuleProgress, SERVICING_TIMEOUT,
-    console_lines,
+    console_lines, dism_finished, dism_restart_note,
 };
 use crate::utils::cmd::{CmdOutput, CommandRunner, SystemCommandRunner};
 use crate::utils::service::{self, SERVICE_DISABLED, SERVICE_RUNNING};
@@ -236,7 +236,8 @@ pub enum ComponentStoreHealth {
 
 impl ComponentStoreHealth {
     pub fn from_dism(output: &CmdOutput) -> Self {
-        if !output.success {
+        // 3010 is a finished run too: the verdict is in its output.
+        if !dism_finished(output) {
             return Self::Unknown(match output.exit_code {
                 Some(740) => "DISM needs Administrator rights".to_string(),
                 Some(code) => format!("DISM exited with code {code}"),
@@ -1080,9 +1081,10 @@ impl SystemIntegrityModule {
             .runner
             .run_streaming("dism.exe", &args, log_tx, SERVICING_TIMEOUT)
             .await?;
-        if out.success {
+        if dism_finished(&out) {
             Ok(format!(
-                "DISM repaired the component store from {origin}; Windows Update could not deliver the files."
+                "DISM repaired the component store from {origin}; Windows Update could not deliver the files.{}",
+                dism_restart_note(&out)
             ))
         } else if install_media::source_missing(&out) {
             match self.only_backups_left_since(before) {
@@ -1517,11 +1519,11 @@ impl DiagnosticModule for SystemIntegrityModule {
                         SERVICING_TIMEOUT,
                     )
                     .await?;
-                if out.success {
-                    Ok(
-                        "DISM /RestoreHealth completed successfully. Component store repaired."
-                            .to_string(),
-                    )
+                if dism_finished(&out) {
+                    Ok(format!(
+                        "DISM /RestoreHealth completed successfully. Component store repaired.{}",
+                        dism_restart_note(&out)
+                    ))
                 } else if install_media::source_missing(&out) {
                     // No source holds backup copies DISM never wrote, so an
                     // ISO is not looked for then.
@@ -2343,6 +2345,55 @@ mod tests {
         assert_eq!(issues[0].id, "sys_dism_unrepairable");
         assert_eq!(issues[0].risk_score, RiskScore::High);
         assert!(issues[0].advice_only, "only a repair install clears it");
+    }
+
+    /// #253: with a restart pending DISM ends with 3010 instead of 0, and
+    /// its verdict is in the output all the same; a damaged store went
+    /// unreported until the restart. Constructed from the captured verdicts:
+    /// only the WinSxS analysis is captured ending with 3010 (#222).
+    #[test]
+    fn a_verdict_given_while_a_restart_is_pending_is_read() {
+        let pending = |verdict| CmdOutput::with_output(3010, dism_says(verdict).stdout, "");
+        assert_eq!(
+            ComponentStoreHealth::from_dism(&pending(REPAIRABLE)),
+            ComponentStoreHealth::Repairable
+        );
+        assert_eq!(
+            ComponentStoreHealth::from_dism(&pending(NOT_REPAIRABLE)),
+            ComponentStoreHealth::NotRepairable
+        );
+        assert_eq!(
+            ComponentStoreHealth::from_dism(&pending(HEALTHY)),
+            ComponentStoreHealth::Healthy
+        );
+        // Any other code is still no verdict, whatever the text says.
+        let failed = CmdOutput::with_output(87, dism_says(REPAIRABLE).stdout, "");
+        assert!(matches!(
+            ComponentStoreHealth::from_dism(&failed),
+            ComponentStoreHealth::Unknown(_)
+        ));
+    }
+
+    /// The repair that ends so worked, and says what is left to do.
+    #[tokio::test]
+    async fn a_restore_health_that_ends_with_a_restart_pending_is_a_repair() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "RestoreHealth",
+            CmdOutput::with_output(
+                3010,
+                "The restore operation completed successfully.\r\n",
+                "",
+            ),
+        );
+        let message = module_with(mock)
+            .fix("sys_dism_corrupt", None)
+            .await
+            .unwrap();
+        assert!(
+            message.ends_with("Component store repaired. Restart Windows to finish it."),
+            "{message}"
+        );
     }
 
     #[tokio::test]
