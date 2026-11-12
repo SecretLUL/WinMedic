@@ -705,6 +705,7 @@ impl DiagnosticModule for ScheduledTasksModule {
         //    a task that fails while its program is still installed may well be
         //    something the user wants repaired rather than switched off.
         let mut failing = 0;
+        let mut left_to_their_owner = 0;
         for task in &tasks {
             if task.is_disabled() {
                 continue;
@@ -714,6 +715,33 @@ impl DiagnosticModule for ScheduledTasksModule {
             }
             // Already reported above, with a more specific explanation.
             if Self::missing_target(&task.execute, &*self.drive_type).is_some() {
+                continue;
+            }
+            // A failing task of Windows or of Office is no finding. WinMedic
+            // leaves it on: switched off, Windows' upkeep stops (#172), and
+            // Office switches its own back on with every update (#171). So
+            // there was nothing to repair and nothing for the user to do,
+            // and Windows rarely resets a task's last result: a dozen such
+            // findings stayed for good, each two points off the health score
+            // (#259). It is named in the scan's log instead.
+            let owner = match task.owner() {
+                TaskOwner::Windows => Some("Windows"),
+                TaskOwner::Office => Some("Office"),
+                TaskOwner::Other => None,
+            };
+            if let Some(owner) = owner {
+                left_to_their_owner += 1;
+                Self::send_progress(
+                    &progress_tx,
+                    75,
+                    "Checking the last run results...",
+                    Some(&format!(
+                        "Not a finding: '{}', a task of {owner} itself, ended its last run with 0x{:X}.",
+                        task.full_path(),
+                        task.last_result.unwrap_or_default()
+                    )),
+                )
+                .await;
                 continue;
             }
             failing += 1;
@@ -759,39 +787,6 @@ impl DiagnosticModule for ScheduledTasksModule {
                 code,
                 task.missed_runs
             );
-            let advice = match task.owner() {
-                TaskOwner::Windows => Some((
-                    "It is one of Windows' own tasks; switched off, what it looks after would stop, so WinMedic leaves it on.",
-                    format!(
-                        "Leave the task on. If it keeps failing, look up 0x{:X} together with the task's name",
-                        code
-                    ),
-                )),
-                TaskOwner::Office => Some((
-                    "Office registers its tasks again with every update, which switches a disabled one back on, so WinMedic leaves it on.",
-                    "Leave the task to Office. If it keeps failing, repair Office (Settings > Apps, Office, Modify)".to_string(),
-                )),
-                TaskOwner::Other => None,
-            };
-            if let Some((why, what_to_do)) = advice {
-                issues.push(
-                    Issue::new(
-                        id,
-                        self.id(),
-                        title,
-                        "Scheduled Tasks",
-                        severity,
-                        RiskScore::Low,
-                        format!("{} {}", failed, why),
-                        details,
-                        what_to_do,
-                        Vec::new(),
-                    )
-                    .with_advice_only(),
-                );
-                continue;
-            }
-
             let mut issue = Issue::new(
                 id,
                 self.id(),
@@ -819,10 +814,11 @@ impl DiagnosticModule for ScheduledTasksModule {
             100,
             "Scheduled task diagnostics complete",
             Some(&format!(
-                "{} tasks checked: {} with a missing target, {} with a failed last run, {} already disabled (skipped).",
+                "{} tasks checked: {} with a missing target, {} with a failed last run, {} of Windows' or Office's own with a failed last run (not reported), {} already disabled (skipped).",
                 tasks.len(),
                 orphaned,
                 failing,
+                left_to_their_owner,
                 already_disabled
             )),
         )
@@ -1239,7 +1235,7 @@ mod tests {
     /// 0x80040154, and no program: the inventory reads none for a task whose
     /// action is a COM handler.
     #[tokio::test]
-    async fn a_failing_windows_task_is_advice_and_never_switched_off() {
+    async fn a_failing_windows_task_is_no_finding_and_never_switched_off() {
         let mock = MockCommandRunner::new();
         mock.add_response(
             "Disable-ScheduledTask",
@@ -1253,24 +1249,34 @@ mod tests {
         );
         let module = ScheduledTasksModule::with_runner(Arc::new(mock.clone()));
 
-        let issues = module.scan(None).await.unwrap();
-        assert_eq!(issues.len(), 1);
-        let issue = &issues[0];
-        assert!(issue.title.contains("0x80040154"));
-        assert!(issue.advice_only && !issue.is_selected);
+        // #259: nothing to repair and nothing the user could do, so it is
+        // no finding; the scan's log names it.
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let issues = module.scan(Some(tx)).await.unwrap();
+        assert!(issues.is_empty(), "{issues:?}");
+        let mut log = Vec::new();
+        while let Ok(progress) = rx.try_recv() {
+            log.extend(progress.log_message);
+        }
         assert!(
-            !issue
-                .fix_steps
-                .iter()
-                .any(|s| s.contains("Disable-ScheduledTask"))
+            log.iter().any(|line| line.contains(
+                r"'\Microsoft\Windows\DiskFootprint\StorageSense', a task of Windows itself, ended its last run with 0x80040154"
+            )),
+            "{log:?}"
         );
-        assert!(!issue.recommended_fix.to_lowercase().contains("disabl"));
-        // It has no program to be still installed.
-        assert!(!issue.description.contains("still installed"));
-        assert!(issue.technical_details.contains("Action: (no program)"));
+        assert!(
+            log.iter().any(|line| line.contains(
+                "0 with a failed last run, 1 of Windows' or Office's own with a failed last run (not reported)"
+            )),
+            "{log:?}"
+        );
 
         // Not even a finding ticked by an older WinMedic switches it off.
-        let err = module.fix(&issue.id, None).await.unwrap_err();
+        let id = ScheduledTasksModule::issue_id(
+            "sched_failing",
+            r"\Microsoft\Windows\DiskFootprint\StorageSense",
+        );
+        let err = module.fix(&id, None).await.unwrap_err();
         assert!(err.contains("Windows' own tasks"), "{err}");
         assert!(
             !mock
@@ -1290,14 +1296,18 @@ mod tests {
         )]);
         assert!(module.scan(None).await.unwrap().is_empty());
 
-        // With a run that did fail it is Windows' own task, not the user's.
+        // With a run that did fail it is Windows' own task, not a task of
+        // the user's to switch off: no finding either (#259).
         let module = module_with(vec![format!(
             r"\|CreateExplorerShellUnelevatedTask|Ready|1|0|{}",
             live_exe()
         )]);
+        assert!(module.scan(None).await.unwrap().is_empty());
+        // The same result on somebody else's task in the root folder is one.
+        let module = module_with(vec![format!(r"\|Some Updater|Ready|1|0|{}", live_exe())]);
         let issues = module.scan(None).await.unwrap();
         assert_eq!(issues.len(), 1);
-        assert!(issues[0].advice_only);
+        assert!(!issues[0].advice_only);
     }
 
     #[tokio::test]
@@ -1318,7 +1328,7 @@ mod tests {
     /// development PC, 0x800710E0, after an Office update had switched it
     /// back on.
     #[tokio::test]
-    async fn a_failing_office_task_is_advice_since_office_switches_it_back_on() {
+    async fn a_failing_office_task_is_no_finding_since_office_switches_it_back_on() {
         let mock = MockCommandRunner::new();
         mock.add_response(
             "Disable-ScheduledTask",
@@ -1333,20 +1343,16 @@ mod tests {
         );
         let module = ScheduledTasksModule::with_runner(Arc::new(mock.clone()));
 
+        // #259: no finding. One an older WinMedic saved, and ticked, still
+        // does not switch the task off.
         let issues = module.scan(None).await.unwrap();
-        assert_eq!(issues.len(), 1);
-        let issue = &issues[0];
-        assert!(issue.title.contains("0x800710E0"));
-        assert!(issue.advice_only && !issue.is_selected);
-        assert!(issue.fix_steps.is_empty());
-        assert!(issue.description.contains("every update"));
-        assert!(
-            !issue
-                .recommended_fix
-                .contains("stops the recurring failure")
-        );
+        assert!(issues.is_empty(), "{issues:?}");
 
-        let err = module.fix(&issue.id, None).await.unwrap_err();
+        let id = ScheduledTasksModule::issue_id(
+            "sched_failing",
+            r"\Microsoft\Office\Office Feature Updates",
+        );
+        let err = module.fix(&id, None).await.unwrap_err();
         assert!(err.contains("next update"), "{err}");
         assert!(
             !mock
