@@ -147,12 +147,33 @@ impl ScheduledTask {
     }
 
     /// Whether the last run reported a real failure rather than a status code.
+    ///
+    /// Not every other number is one. A value whose two top bits are 01 is
+    /// informational, as an NTSTATUS and as an HRESULT:
+    /// `CreateExplorerShellUnelevatedTask` ends with 0x40010004
+    /// (`DBG_TERMINATE_PROCESS`) whenever Explorer is closed. And a task
+    /// without a program runs a COM handler, whose result is an HRESULT:
+    /// without the failure bit (0x80000000) it reports no failure, such as
+    /// the 0x10000000 of `BgTaskRegistrationMaintenanceTask`. Both were
+    /// "last run failed" on every PC.
     fn last_run_failed(&self) -> bool {
-        match self.last_result {
-            Some(SERVICE_ALREADY_RUNNING) if self.runs_sc() => false,
-            Some(code) => !BENIGN_TASK_RESULTS.contains(&code),
-            None => false,
+        let Some(result) = self.last_result else {
+            return false;
+        };
+        if BENIGN_TASK_RESULTS.contains(&result)
+            || (result == SERVICE_ALREADY_RUNNING && self.runs_sc())
+        {
+            return false;
         }
+        // Task Scheduler stores 32 bits; the inventory prints them unsigned.
+        let code = result as u32;
+        if code >> 30 == 0b01 {
+            return false;
+        }
+        if self.execute.trim().is_empty() {
+            return code & 0x8000_0000 != 0;
+        }
+        true
     }
 
     /// Whether the action's program is `sc.exe`, with or without a folder.
@@ -936,6 +957,36 @@ mod tests {
         assert!(task.last_run_failed());
     }
 
+    /// #258: the lines the inventory printed for these tasks on the
+    /// development PC on 2026-11-12. Neither result is a failure.
+    #[test]
+    fn results_that_report_no_failure_are_not_failed_runs() {
+        for line in [
+            // 0x40010004, Explorer's own task: informational.
+            r"\|CreateExplorerShellUnelevatedTask|Ready|1073807364|0|C:\WINDOWS\explorer.exe",
+            // 0x10000000 from a COM handler: an HRESULT without the failure bit.
+            r"\Microsoft\Windows\BrokerInfrastructure\|BgTaskRegistrationMaintenanceTask|Ready|268435456|0|",
+        ] {
+            let task = ScheduledTasksModule::parse_task_line(line).unwrap();
+            assert!(!task.last_run_failed(), "{line}");
+        }
+        // Informational from a COM handler too (WDI\ResolutionHost in the issue).
+        let task = ScheduledTasksModule::parse_task_line(r"\V\|T|Ready|1073807364|0|").unwrap();
+        assert!(!task.last_run_failed());
+
+        // A COM handler that failed says so with the failure bit:
+        // 0x80070005, access denied.
+        let task = ScheduledTasksModule::parse_task_line(r"\V\|T|Ready|2147942405|0|").unwrap();
+        assert!(task.last_run_failed());
+        // A program's exit code is its own: 0x10000000 from one is no HRESULT.
+        let task =
+            ScheduledTasksModule::parse_task_line(r"\V\|T|Ready|268435456|0|C:\t.exe").unwrap();
+        assert!(task.last_run_failed());
+        // And an exit code of 1 still is a failed run.
+        let task = ScheduledTasksModule::parse_task_line(r"\V\|T|Ready|1|0|C:\t.exe").unwrap();
+        assert!(task.last_run_failed());
+    }
+
     #[test]
     fn a_service_already_running_is_a_success_only_for_sc() {
         for program in [
@@ -1232,12 +1283,18 @@ mod tests {
     #[tokio::test]
     async fn explorers_own_task_in_the_root_folder_is_advice() {
         // CreateExplorerShellUnelevatedTask with its last result from the
-        // development PC, 0x40010004.
+        // development PC, 0x40010004: informational, so no finding (#258).
         let module = module_with(vec![format!(
             r"\|CreateExplorerShellUnelevatedTask|Ready|1073807364|0|{}",
             live_exe()
         )]);
+        assert!(module.scan(None).await.unwrap().is_empty());
 
+        // With a run that did fail it is Windows' own task, not the user's.
+        let module = module_with(vec![format!(
+            r"\|CreateExplorerShellUnelevatedTask|Ready|1|0|{}",
+            live_exe()
+        )]);
         let issues = module.scan(None).await.unwrap();
         assert_eq!(issues.len(), 1);
         assert!(issues[0].advice_only);
