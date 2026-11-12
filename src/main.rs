@@ -263,7 +263,10 @@ fn run_uninstall(purge: bool) -> u8 {
     } else {
         // Leave the settings saying what is now true; otherwise the next
         // start of the window registers the task again.
-        let (mut config, _) = AppConfig::load_reporting();
+        let (mut config, config_status) = AppConfig::load_reporting();
+        if let Some(warning) = config_status.warning() {
+            eprintln!("       {warning}");
+        }
         config.helper_enabled = false;
         report(
             "Turned the background scan off",
@@ -289,7 +292,9 @@ fn run_uninstall(purge: bool) -> u8 {
 // ---------------------------------------------------------------- headless
 
 async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
-    let (config, config_status) = AppConfig::load_reporting();
+    // Read, not loaded: a damaged file stays where it is for the window, the
+    // one place that can show the user what happened to their settings.
+    let (config, config_status) = AppConfig::read_reporting();
     // Goes to stderr so it cannot corrupt `--json` output being piped into
     // something. A run using default settings the user did not choose is worth
     // knowing about even in a scripted context.
