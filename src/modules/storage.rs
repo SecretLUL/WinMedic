@@ -1,6 +1,7 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::system_cleaner::{
     CleanStats, TEMP_FILE_MIN_AGE, clean_temp_dir, cleanup_result, format_bytes, scan_temp_dir,
+    sweep_blocking,
 };
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner, ps_single_quoted};
@@ -748,9 +749,9 @@ impl DiagnosticModule for StorageModule {
                     dbg.path("directory", dir).await;
                     let dir = dir.clone();
                     let min_age = self.temp_min_age;
-                    let stats = tokio::task::spawn_blocking(move || clean_temp_dir(&dir, min_age))
+                    let stats = sweep_blocking(move || clean_temp_dir(&dir, min_age))
                         .await
-                        .map_err(|e| format!("The temp sweep stopped: {e}"))?;
+                        .ok_or("The temp sweep stopped before it was through.")?;
                     total.freed_bytes += stats.freed_bytes;
                     total.deleted_files += stats.deleted_files;
                     total.skipped_locked += stats.skipped_locked;

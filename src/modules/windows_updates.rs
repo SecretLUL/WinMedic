@@ -1,6 +1,8 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::crash_timeline::{DEFENDER_SIGNATURES, STORE_SERVICE, WU_PROVIDER, logged_at};
-use crate::modules::system_cleaner::{clean_path_contents, cleanup_result, format_bytes};
+use crate::modules::system_cleaner::{
+    clean_path_contents, cleanup_result, format_bytes, sweep_blocking,
+};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
 use crate::utils::event_xml::{EventRecord, read_events, system_log_query};
@@ -564,9 +566,9 @@ impl WindowsUpdatesModule {
 
         say("Emptying SoftwareDistribution\\Download...").await;
         let dir = self.download_dir.clone();
-        let stats = tokio::task::spawn_blocking(move || clean_path_contents(&dir))
+        let stats = sweep_blocking(move || clean_path_contents(&dir))
             .await
-            .map_err(|e| format!("The cache sweep stopped: {e}"))?;
+            .ok_or("The cache sweep stopped before it was through.")?;
 
         say("Starting the Windows Update services again...").await;
         let not_running = self.start_services(guard).await?;
