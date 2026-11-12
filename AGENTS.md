@@ -37,8 +37,8 @@ for it. Talk to the maintainer in the language they write in.
   switches on the real one.
 - A test that starts a real process starts a harmless one, such as
   `ping 127.0.0.1`, without a window.
-- Run the suite under a time limit, e.g. `timeout 400 cargo test --locked`. A
-  test that deadlocks otherwise hangs until the agent's tool gives up.
+- Run tests under a time limit, e.g. `timeout 400 cargo test --locked <name>`.
+  A test that deadlocks otherwise hangs until the agent's tool gives up.
 
 ## What Windows prints
 
@@ -51,9 +51,12 @@ for it. Talk to the maintainer in the language they write in.
 
 ## Before pushing
 
-- Run everything under "Before you push" in CONTRIBUTING.md. CI lints with
-  the newest stable Rust, which can be newer than the local one: run clippy
-  with the newest installed toolchain, and check with the MSRV.
+- Run what "Before you push" in CONTRIBUTING.md asks: format, check, and the
+  tests of what changed, the new ones included. The whole suite, clippy, the
+  MSRV check and the real scan run once, in the pull request's CI: do not
+  repeat them on the maintainer's desktop.
+- When CI fails, run that test or lint locally before pushing a fix. CI lints
+  with the newest stable Rust, which can be newer than the local one.
 - Look at a UI change, not only at the accessibility tree. Render it, for
   example off screen with `ViewportCommand::Screenshot`, in dark and light and
   at the smallest window size.
