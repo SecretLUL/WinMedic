@@ -1829,6 +1829,37 @@ mod tests {
         assert!(harness.state().setting_input.is_none());
     }
 
+    /// Enter on a setting that takes a number opens its dialog. The dialog
+    /// read the same Enter as "save" and closed in the frame it opened.
+    #[test]
+    fn enter_opens_the_number_dialog_and_a_second_enter_saves_it() {
+        let mut app = scanned_app();
+        app.active_tab = TAB_SETTINGS;
+        app.selected_setting_index = 4;
+        let mut harness = window_with_keys(app);
+
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        assert!(
+            harness.state().setting_input.is_some(),
+            "the dialog is open: {:?}",
+            harness.state().status_message
+        );
+
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        assert!(harness.state().setting_input.is_none());
+        assert!(
+            harness
+                .state()
+                .status_message
+                .as_deref()
+                .is_some_and(|message| message.starts_with("Setting ")),
+            "{:?}",
+            harness.state().status_message
+        );
+    }
+
     /// #269. A key held down is one press, unless holding it means "go on":
     /// F7 held does not flip the mode back and forth.
     #[test]
