@@ -15,6 +15,26 @@ pub struct DirStats {
     pub files: usize,
 }
 
+/// Whether `path` is reached without a link: neither it nor a folder above it
+/// is a symbolic link or a junction.
+///
+/// Every walk that measures or deletes asks this about the folder it starts
+/// in. The walks never follow a link they find inside a folder, but the
+/// folder they were sent to was opened as it was. Several of those sit in
+/// the user's profile (`%LOCALAPPDATA%\CrashDumps`, the browser caches,
+/// `%TEMP%`), where any program of the user can put a junction to another
+/// folder in their place or on the way to them. The scan then measured that
+/// folder and the repair emptied it, as Administrator.
+///
+/// A folder that is reached through a link somebody set up on purpose, such
+/// as a profile moved to another drive with a junction, is left alone as
+/// well: the two cannot be told apart.
+pub fn reached_without_link(path: &Path) -> bool {
+    path.ancestors()
+        .filter(|part| !part.as_os_str().is_empty())
+        .all(|part| !part.symlink_metadata().is_ok_and(|meta| meta.is_symlink()))
+}
+
 /// Recursively total the file count and byte size under `path`.
 ///
 /// Deliberate behaviours, relied on by every caller:
@@ -22,11 +42,21 @@ pub struct DirStats {
 /// - `symlink_metadata` is used rather than `metadata`, so symlinks and Windows
 ///   directory junctions are measured as the links they are and never followed.
 ///   A junction pointing back at an ancestor would otherwise recurse forever.
+/// - A `path` that is itself a link, or lies behind one, counts as empty; see
+///   [`reached_without_link`].
 /// - An unreadable directory contributes zero instead of failing the walk.
 ///   Callers measure system locations where access-denied subtrees are routine.
 /// - Totals are returned in bytes; rounding to larger units is the caller's job,
 ///   so per-file truncation can never silently discard small files.
 pub fn dir_stats_recursive(path: &Path) -> DirStats {
+    if !reached_without_link(path) {
+        return DirStats::default();
+    }
+    tree_stats(path)
+}
+
+/// The walk behind [`dir_stats_recursive`], for a folder that is no link.
+fn tree_stats(path: &Path) -> DirStats {
     let mut stats = DirStats::default();
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
@@ -36,7 +66,7 @@ pub fn dir_stats_recursive(path: &Path) -> DirStats {
                     stats.bytes += meta.len();
                     stats.files += 1;
                 } else if meta.is_dir() {
-                    let sub = dir_stats_recursive(&p);
+                    let sub = tree_stats(&p);
                     stats.bytes += sub.bytes;
                     stats.files += sub.files;
                 }
@@ -104,6 +134,54 @@ mod tests {
     fn test_dir_stats_recursive_missing_path_is_zero() {
         let stats = dir_stats_recursive(Path::new(r"Z:\winmedic\does\not\exist"));
         assert_eq!(stats, DirStats::default());
+    }
+
+    /// A junction made with `mklink /J`, which needs no special rights. No
+    /// window.
+    fn junction(link: &Path, target: &Path) {
+        use std::os::windows::process::CommandExt;
+
+        let made =
+            std::process::Command::new(crate::utils::cmd::system_program("cmd.exe").unwrap())
+                .args(["/c", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+                .output()
+                .unwrap();
+        assert!(made.status.success(), "{made:?}");
+    }
+
+    /// A folder that is a junction, or lies behind one, is not measured: what
+    /// it points at is somebody else's.
+    #[test]
+    fn a_folder_reached_through_a_junction_is_not_measured() {
+        let root =
+            std::env::temp_dir().join(format!("winmedic_fs_stats_link_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        create_dir_all(root.join("victim/inner")).unwrap();
+        File::create(root.join("victim/inner/keep.docx"))
+            .unwrap()
+            .write_all(&[0u8; 10])
+            .unwrap();
+        junction(&root.join("link"), &root.join("victim"));
+
+        assert!(reached_without_link(&root.join("victim/inner")));
+        assert_eq!(dir_stats_recursive(&root.join("victim")).files, 1);
+        // The junction itself, and a folder on the far side of it.
+        assert!(!reached_without_link(&root.join("link")));
+        assert!(!reached_without_link(&root.join("link/inner")));
+        assert_eq!(dir_stats_recursive(&root.join("link")), DirStats::default());
+        assert_eq!(
+            dir_stats_recursive(&root.join("link/inner")),
+            DirStats::default()
+        );
+        // A path that does not exist is no link.
+        assert!(reached_without_link(&root.join("missing/deeper")));
+
+        // The junction itself, not what it points at.
+        std::fs::remove_dir(root.join("link")).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The blocking walk totals exactly what the synchronous one does, and

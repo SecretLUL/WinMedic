@@ -676,3 +676,70 @@ async fn adv_test_diagnostic_engine_full_integration_with_system_cleaner() {
             .is_fixed
     );
 }
+
+/// A junction made with `mklink /J`, which needs no special rights. No window.
+fn junction(link: &std::path::Path, target: &std::path::Path) {
+    use std::os::windows::process::CommandExt;
+
+    let made = std::process::Command::new(winmedic::utils::cmd::system_program("cmd.exe").unwrap())
+        .args(["/c", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "{made:?}");
+}
+
+/// Any program of the user can put a junction where a folder of the profile
+/// is swept: here in place of `%LOCALAPPDATA%\CrashDumps`, and on the way to
+/// the DirectX shader cache. What the junctions point at is neither measured
+/// nor emptied.
+#[tokio::test]
+async fn adv_test_a_junction_in_place_of_a_swept_folder_is_left_alone() {
+    let (fixture, module) = sandboxed_cleaner(
+        "junction_root",
+        Arc::new(MockCommandRunner::with_default_success()),
+    );
+    // Above the floor a cleanup finding needs, so that only the junction
+    // keeps the finding away.
+    let big = 11 * 1024 * 1024;
+    let document = fixture.create_file("victim/keep.docx", b"");
+    let shader = fixture.create_file("elsewhere/ShaderCache/keep.bin", b"");
+    for file in [&document, &shader] {
+        File::options()
+            .write(true)
+            .open(file)
+            .unwrap()
+            .set_len(big)
+            .unwrap();
+    }
+    let local = fixture.path.join("AppData").join("Local");
+    create_dir_all(local.join("Microsoft")).unwrap();
+    let dumps = local.join("CrashDumps");
+    let directx = local.join("Microsoft").join("DirectX");
+    junction(&dumps, &fixture.path.join("victim"));
+    junction(&directx, &fixture.path.join("elsewhere"));
+
+    // Reached directly the folder counts; through the junction it does not.
+    assert_eq!(scan_path_recursive(&fixture.path.join("victim")).bytes, big);
+    assert_eq!(scan_path_recursive(&dumps).files, 0);
+    assert_eq!(scan_path_recursive(&directx.join("ShaderCache")).files, 0);
+
+    let issues = module.scan(None).await.unwrap();
+    let raised: Vec<&str> = issues.iter().map(|i| i.id.as_str()).collect();
+    assert!(!raised.contains(&"sys_clean_error_reporting"), "{raised:?}");
+    assert!(!raised.contains(&"sys_clean_shader_certs"), "{raised:?}");
+
+    for id in ["sys_clean_error_reporting", "sys_clean_shader_certs"] {
+        module.fix(id, None).await.unwrap();
+    }
+    let swept = winmedic::modules::system_cleaner::clean_path_contents(&dumps);
+    assert_eq!(swept.deleted_files, 0);
+    assert!(document.exists(), "the document behind CrashDumps is gone");
+    assert!(shader.exists(), "the file behind DirectX is gone");
+
+    // The junctions themselves, not what they point at.
+    std::fs::remove_dir(&dumps).unwrap();
+    std::fs::remove_dir(&directx).unwrap();
+}

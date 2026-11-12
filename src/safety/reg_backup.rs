@@ -56,7 +56,7 @@ pub fn default_backup_dir() -> PathBuf {
 /// `C:\ProgramData`, wherever this Windows keeps it. Asked from Windows rather
 /// than read from `%ProgramData%`, which each account can set for itself.
 #[cfg(windows)]
-fn program_data() -> PathBuf {
+pub(crate) fn program_data() -> PathBuf {
     use std::os::windows::ffi::OsStringExt;
     use windows_sys::Win32::System::Com::CoTaskMemFree;
     use windows_sys::Win32::UI::Shell::{FOLDERID_ProgramData, SHGetKnownFolderPath};
@@ -76,7 +76,7 @@ fn program_data() -> PathBuf {
 }
 
 #[cfg(not(windows))]
-fn program_data() -> PathBuf {
+pub(crate) fn program_data() -> PathBuf {
     PathBuf::from(r"C:\ProgramData")
 }
 

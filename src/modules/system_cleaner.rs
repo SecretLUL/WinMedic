@@ -5,7 +5,7 @@ use crate::modules::{
 };
 use crate::utils::cmd::{CmdOutput, CommandRunner, SystemCommandRunner};
 use crate::utils::debug_log::DebugTrace;
-use crate::utils::fs_stats::{dir_stats_recursive, measure_dirs};
+use crate::utils::fs_stats::{dir_stats_recursive, measure_dirs, reached_without_link};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -108,8 +108,17 @@ pub fn clean_path_contents(path: &Path) -> CleanStats {
 }
 
 /// The sweep behind [`clean_path_contents`], leaving alone whatever `skip`
-/// claims.
+/// claims, and everything when `path` is a link or lies behind one: see
+/// [`reached_without_link`].
 fn clean_filtered(path: &Path, skip: fn(&Path) -> bool) -> CleanStats {
+    if !reached_without_link(path) {
+        return CleanStats::default();
+    }
+    sweep_tree(path, skip)
+}
+
+/// The walk behind [`clean_filtered`], for a folder that is no link.
+fn sweep_tree(path: &Path, skip: fn(&Path) -> bool) -> CleanStats {
     let mut stats = CleanStats::default();
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
@@ -128,7 +137,7 @@ fn clean_filtered(path: &Path, skip: fn(&Path) -> bool) -> CleanStats {
                         stats.locked_bytes += len;
                     }
                 } else if meta.is_dir() {
-                    let sub = clean_filtered(&p, skip);
+                    let sub = sweep_tree(&p, skip);
                     stats.freed_bytes += sub.freed_bytes;
                     stats.deleted_files += sub.deleted_files;
                     stats.skipped_locked += sub.skipped_locked;
@@ -217,6 +226,14 @@ fn is_reclaimable_log(path: &Path) -> bool {
 /// own repair forever. [`clean_log_dir_files`] skips exactly the same files, so
 /// what is measured is what gets removed.
 pub fn scan_log_dir_files(path: &Path) -> DirStats {
+    if !reached_without_link(path) {
+        return DirStats::default();
+    }
+    log_tree_stats(path)
+}
+
+/// The walk behind [`scan_log_dir_files`], for a folder that is no link.
+fn log_tree_stats(path: &Path) -> DirStats {
     let mut stats = DirStats::default();
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
@@ -228,7 +245,7 @@ pub fn scan_log_dir_files(path: &Path) -> DirStats {
                         stats.files += 1;
                     }
                 } else if meta.is_dir() {
-                    let sub = scan_log_dir_files(&p);
+                    let sub = log_tree_stats(&p);
                     stats.bytes += sub.bytes;
                     stats.files += sub.files;
                 }
@@ -241,6 +258,14 @@ pub fn scan_log_dir_files(path: &Path) -> DirStats {
 /// Clean log and diagnostic archive files in a directory, leaving alone the
 /// logs a service holds open and the CBS logs System Integrity reads.
 pub fn clean_log_dir_files(path: &Path) -> CleanStats {
+    if !reached_without_link(path) {
+        return CleanStats::default();
+    }
+    sweep_log_tree(path)
+}
+
+/// The walk behind [`clean_log_dir_files`], for a folder that is no link.
+fn sweep_log_tree(path: &Path) -> CleanStats {
     let mut stats = CleanStats::default();
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
@@ -261,7 +286,7 @@ pub fn clean_log_dir_files(path: &Path) -> CleanStats {
                         }
                     }
                 } else if meta.is_dir() {
-                    let sub = clean_log_dir_files(&p);
+                    let sub = sweep_log_tree(&p);
                     stats.freed_bytes += sub.freed_bytes;
                     stats.deleted_files += sub.deleted_files;
                     stats.skipped_locked += sub.skipped_locked;
@@ -358,17 +383,16 @@ pub fn parse_winsxs_analysis(output: &str) -> WinSxSAnalysis {
 }
 
 // System path discovery helper functions
+
+/// The Windows folder and `C:\ProgramData`, as Windows reports them, not as
+/// `%SystemRoot%` and `%ProgramData%` say: see
+/// [`crate::utils::cmd::windows_root`].
 pub fn get_system_root() -> PathBuf {
-    std::env::var("SystemRoot")
-        .or_else(|_| std::env::var("WINDIR"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(r"C:\Windows"))
+    crate::utils::cmd::windows_root()
 }
 
 pub fn get_program_data() -> PathBuf {
-    std::env::var("ProgramData")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(r"C:\ProgramData"))
+    crate::safety::reg_backup::program_data()
 }
 
 pub fn get_local_app_data() -> PathBuf {
@@ -472,6 +496,15 @@ fn name_starts_with(name: &str, prefix: &str) -> bool {
 /// its files plus one. Each `$R` entry is one item; the `$I` stubs, orphaned
 /// ones included, add their bytes and no item.
 pub fn scan_recycle_bin_contents(path: &Path) -> DirStats {
+    if !reached_without_link(path) {
+        return DirStats::default();
+    }
+    recycle_bin_stats(path)
+}
+
+/// The walk behind [`scan_recycle_bin_contents`], for a folder that is no
+/// link.
+fn recycle_bin_stats(path: &Path) -> DirStats {
     let mut stats = DirStats::default();
     let Ok(entries) = std::fs::read_dir(path) else {
         return stats;
@@ -494,7 +527,7 @@ pub fn scan_recycle_bin_contents(path: &Path) -> DirStats {
                 meta.len()
             };
         } else if meta.is_dir() {
-            let sub = scan_recycle_bin_contents(&p);
+            let sub = recycle_bin_stats(&p);
             stats.bytes += sub.bytes;
             stats.files += sub.files;
         } else {
@@ -925,6 +958,11 @@ impl SystemCleanerModule {
         let mut total = CleanStats::default();
         for dir in dirs {
             dbg.path("sweeping", &dir).await;
+            if !reached_without_link(&dir) {
+                dbg.warn("  -> left alone: the path is a link or lies behind one")
+                    .await;
+                continue;
+            }
             if !dir.exists() {
                 dbg.data("  -> nothing to do, the path does not exist on this machine")
                     .await;

@@ -6,7 +6,7 @@ use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner, ps_single_quoted};
 use crate::utils::debug_log::DebugTrace;
 use crate::utils::event_xml::{EventRecord, read_events, system_log_query};
-use crate::utils::fs_stats::{dir_stats_recursive, measure_dirs};
+use crate::utils::fs_stats::{dir_stats_recursive, measure_dirs, reached_without_link};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -194,7 +194,7 @@ impl StorageModule {
         let temp_dirs = distinct_folders(
             [
                 std::env::var_os("TEMP").map(PathBuf::from),
-                std::env::var_os("SystemRoot").map(|root| PathBuf::from(root).join("Temp")),
+                Some(crate::utils::cmd::windows_root().join("Temp")),
             ]
             .into_iter()
             .flatten(),
@@ -221,9 +221,14 @@ impl StorageModule {
         }
     }
 
-    /// The icon cache files and their size together.
+    /// The icon cache files and their size together; nothing for a folder
+    /// that is a link or lies behind one ([`reached_without_link`]).
     fn icon_cache(&self) -> (usize, u64) {
-        let Some(dir) = &self.explorer_dir else {
+        let Some(dir) = self
+            .explorer_dir
+            .as_ref()
+            .filter(|dir| reached_without_link(dir))
+        else {
             return (0, 0);
         };
         std::fs::read_dir(dir)
@@ -625,6 +630,12 @@ impl DiagnosticModule for StorageModule {
                     );
                 };
                 dbg.path("icon cache", dir).await;
+                if !reached_without_link(dir) {
+                    return Err(format!(
+                        "{} is a link or lies behind one, so nothing in it was deleted.",
+                        dir.display()
+                    ));
+                }
                 let out = dbg
                     .run_powershell(
                         &self.runner,
@@ -1380,6 +1391,47 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("2 icon cache file(s) stayed in use"), "{err}");
+    }
+
+    /// A junction where Explorer keeps the icon cache, to a folder holding a
+    /// file of that name: not measured, and the repair starts nothing.
+    #[tokio::test]
+    async fn an_icon_cache_folder_that_is_a_link_is_left_alone() {
+        use std::os::windows::process::CommandExt;
+
+        let temp = Sandbox::new("icon_link_temp");
+        let target = Sandbox::new("icon_link_target");
+        let big = std::fs::File::create(target.0.join("iconcache_256.db")).unwrap();
+        big.set_len(ICON_CACHE_LIMIT_BYTES + 1).unwrap();
+        drop(big);
+        // Dropped, the junction itself is removed, not what it points at.
+        let link = Sandbox::new("icon_link_explorer");
+        std::fs::remove_dir(&link.0).unwrap();
+        let made =
+            std::process::Command::new(crate::utils::cmd::system_program("cmd.exe").unwrap())
+                .args(["/c", "mklink", "/J"])
+                .arg(&link.0)
+                .arg(&target.0)
+                .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+                .output()
+                .unwrap();
+        assert!(made.status.success(), "{made:?}");
+
+        let mock = MockCommandRunner::with_default_success();
+        let issues = sandboxed(&temp, Some(&link), &mock)
+            .scan(None)
+            .await
+            .unwrap();
+        assert!(!issues.iter().any(|i| i.id == "storage_icon_cache_bloated"));
+
+        let mock = MockCommandRunner::new();
+        let err = sandboxed(&temp, Some(&link), &mock)
+            .fix("storage_icon_cache_bloated", None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("is a link"), "{err}");
+        assert!(mock.executed().is_empty(), "{:?}", mock.executed());
+        assert!(target.0.join("iconcache_256.db").exists());
     }
 
     #[tokio::test]
