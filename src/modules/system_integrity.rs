@@ -413,6 +413,18 @@ pub fn sfc_outcome(run_log: &str) -> SfcOutcome {
     }
 }
 
+/// Whether a `sfc /scannow` ran to its end: it closes its last batch of
+/// files with this line, as in `cbs_sfc_scannow_repaired.bin`.
+/// `/verifyonly` never writes it, so it says nothing about a scan.
+///
+/// A run that stops partway has logged `[SR] Verify` lines for the files it
+/// got to and no line that gives up on one. That read as "left none
+/// damaged", and the next scan took the run for SFC's last word and cleared
+/// the finding (#276).
+fn scannow_finished(run_log: &str) -> bool {
+    run_log.contains("[SR] Repair complete")
+}
+
 /// What SFC printed after its progress bar, or all of it when it had none:
 /// the paragraph that says why it checked nothing, in the display language.
 fn sfc_message(stdout: &str) -> String {
@@ -1616,6 +1628,11 @@ impl DiagnosticModule for SystemIntegrityModule {
                     .await?;
                 let run_log = read_since(&self.cbs_log, before).unwrap_or_default();
                 match sfc_outcome(&run_log) {
+                    SfcOutcome::Intact { .. } if !scannow_finished(&run_log) => Err(format!(
+                        "SFC stopped before it had checked every file (exit code {:?}): {}",
+                        out.exit_code,
+                        sfc_message(&out.stdout)
+                    )),
                     SfcOutcome::Intact { repaired } if repaired.is_empty() => Ok(
                         "SFC checked every protected system file and left none damaged."
                             .to_string(),
@@ -2790,14 +2807,52 @@ mod tests {
         );
     }
 
+    /// How `sfc /scannow` closes its last batch of files, from the captured
+    /// run: "Repairing 0 components" up to "Repair complete".
+    fn scannow_end() -> Vec<u8> {
+        let repaired = text(CBS_SFC_REPAIRED);
+        let from = repaired.rfind("[SR] Repairing 0 components").unwrap();
+        let line_start = repaired[..from].rfind('\n').map_or(0, |at| at + 1);
+        let complete = repaired.rfind("[SR] Repair complete").unwrap();
+        let line_end = repaired[complete..]
+            .find('\n')
+            .map_or(repaired.len(), |at| complete + at + 1);
+        repaired[line_start..line_end].as_bytes().to_vec()
+    }
+
+    /// No clean `/scannow` was captured: the lines of the clean verify run,
+    /// closed as the captured `/scannow` closes.
     #[tokio::test]
     async fn an_sfc_run_with_nothing_to_repair_says_so() {
-        let msg = repair_with_sfc("clean", b"", CBS_SFC_CLEAN, b"")
-            .await
-            .unwrap();
+        let clean = [CBS_SFC_CLEAN, &scannow_end()].concat();
+        let msg = repair_with_sfc("clean", b"", &clean, b"").await.unwrap();
         assert_eq!(
             msg,
             "SFC checked every protected system file and left none damaged."
+        );
+    }
+
+    /// #276. A run that stopped partway logged the files it got to and no
+    /// damage: that is no clean bill, and SFC's own words say why it ended.
+    #[tokio::test]
+    async fn an_sfc_run_that_stopped_partway_is_a_failure() {
+        assert!(scannow_finished(&text(CBS_SFC_REPAIRED)));
+        assert!(!scannow_finished(&text(CBS_SFC_CLEAN)));
+
+        // The captured run, cut off before it closed its last batch.
+        let whole = text(CBS_SFC_REPAIRED);
+        let cut = &whole[..whole.rfind("[SR] Repairing 0 components").unwrap()];
+        assert!(cut.contains("[SR] Verifying"));
+        let err = repair_with_sfc("stopped", b"", cut.as_bytes(), SFC_NOT_ELEVATED)
+            .await
+            .unwrap_err();
+        assert!(
+            err.starts_with("SFC stopped before it had checked every file"),
+            "{err}"
+        );
+        assert!(
+            err.contains("Sie müssen als Administrator angemeldet sein"),
+            "SFC's own message: {err}"
         );
     }
 
