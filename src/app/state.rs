@@ -825,6 +825,12 @@ pub(crate) fn repair_waits_for_restart(issue: &Issue) -> bool {
 ///
 /// Only while Windows has not restarted since `known` was scanned: after a
 /// restart nothing waits for it any more.
+///
+/// The tick is a decision about a finding that is still open. One that was
+/// repaired keeps the tick it was repaired with, and a finding that comes
+/// back after its repair is a new one: it starts as its check ticks it. The
+/// Recycle Bin, emptied once, came back ticked as soon as it had refilled,
+/// and the next repair run emptied it unasked (#261).
 pub(crate) fn carry_over(fresh: &mut [Issue], known: &[Issue]) {
     for issue in fresh {
         let Some(known) = known.iter().find(|i| i.id == issue.id) else {
@@ -833,7 +839,7 @@ pub(crate) fn carry_over(fresh: &mut [Issue], known: &[Issue]) {
         if known.is_reboot_pending {
             issue.is_reboot_pending = true;
             issue.is_selected = false;
-        } else {
+        } else if !known.is_fixed {
             issue.is_selected = known.is_selected && !issue.advice_only;
         }
         if issue.fix_error.is_none() {
@@ -907,6 +913,32 @@ mod tests {
         app.issues = vec![finding("chkdsk")];
         app.issues[0].is_reboot_pending = true;
         assert!(app.restart_pending(), "a repair waiting for it");
+    }
+
+    /// #261. The tick of a finding that is still open carries over; the
+    /// tick a finding was repaired with does not.
+    #[test]
+    fn only_an_open_finding_hands_its_tick_to_the_next_scan() {
+        // Unticked by the user and still open: stays unticked.
+        let mut left_out = finding("dns");
+        left_out.is_selected = false;
+        // The Recycle Bin starts unticked; ticked once and emptied.
+        let mut emptied = finding("sys_clean_recycle_bin");
+        emptied.is_selected = true;
+        emptied.is_fixed = true;
+        // Ticked by default, repaired after its restart, unticked by then.
+        let mut settled = finding("storage_dirty_bit");
+        settled.is_selected = false;
+        settled.is_fixed = true;
+
+        let mut bin_again = finding("sys_clean_recycle_bin");
+        bin_again.is_selected = false;
+        let mut fresh = vec![finding("dns"), bin_again, finding("storage_dirty_bit")];
+        carry_over(&mut fresh, &[left_out, emptied, settled]);
+
+        assert!(!fresh[0].is_selected, "the user's own choice");
+        assert!(!fresh[1].is_selected, "the bin is not emptied unasked");
+        assert!(fresh[2].is_selected, "as its check ticks it");
     }
 
     /// A restart settles what waited for it, and nothing else.
