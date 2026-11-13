@@ -395,7 +395,7 @@ mod tests {
             }
         }
         // The entries were still written, to the file that could not move.
-        assert_eq!(logger.get_history().len(), MAX_ROTATED_FILES as usize + 2);
+        assert_eq!(logger.get_history().len(), MAX_ROTATED_FILES + 2);
 
         // Let go, the next entry rotates as it always did.
         drop(held);
