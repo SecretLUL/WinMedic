@@ -11,6 +11,7 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::registry_startup::{DriveTypeSource, is_gone, on_fixed_drive, real_drive_type};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
+use crate::safety::audit::{AuditEntry, AuditLogger};
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner, ps_single_quoted};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -144,6 +145,42 @@ const NO_DETAIL: &str = "PowerShell reported no detail";
 /// failure the user can act on.
 const STATE_MARKER: &str = "WINMEDIC_TASK_STATE=";
 
+/// How a repair here reports the task it switched off or back on: the
+/// details of its `FIX` entry in the audit log, the same in every language.
+/// The scan reads them back to learn what WinMedic itself switched off.
+const TASK_MESSAGE_START: &str = "Scheduled task '";
+const SWITCHED_OFF_MESSAGE_END: &str =
+    "' disabled. Re-enable it at any time with 'Enable-ScheduledTask'.";
+const SWITCHED_ON_MESSAGE_END: &str = "' switched back on.";
+
+/// The tasks WinMedic switched off and has not switched back on since, by
+/// their full path in lower case, with the day it switched them off.
+///
+/// `entries` are the audit log's, oldest first. Only a repair of this module
+/// that succeeded counts, so a simulation, a refused repair and a task the
+/// user or another tool switched off are not in here.
+fn switched_off_by_winmedic(entries: &[AuditEntry]) -> HashMap<String, String> {
+    let mut off = HashMap::new();
+    for entry in entries {
+        if entry.action_type != "FIX"
+            || entry.module_id != "scheduled_tasks"
+            || entry.status != "SUCCESS"
+        {
+            continue;
+        }
+        let Some(rest) = entry.details.strip_prefix(TASK_MESSAGE_START) else {
+            continue;
+        };
+        if let Some(task) = rest.strip_suffix(SWITCHED_OFF_MESSAGE_END) {
+            let day = entry.timestamp.get(..10).unwrap_or(&entry.timestamp);
+            off.insert(task.to_lowercase(), day.to_string());
+        } else if let Some(task) = rest.strip_suffix(SWITCHED_ON_MESSAGE_END) {
+            off.remove(&task.to_lowercase());
+        }
+    }
+    off
+}
+
 /// A task as the inventory script reported it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ScheduledTask {
@@ -238,6 +275,10 @@ pub struct ScheduledTasksModule {
     /// Which drive letters are fixed disks of this PC; see
     /// [`Self::missing_target`].
     drive_type: DriveTypeSource,
+    /// The audit log that says which tasks WinMedic itself switched off.
+    /// Inert unless [`Self::reading_history`] names one, so a module built
+    /// in a test never reads the log of the PC it runs on.
+    history: AuditLogger,
 }
 
 impl Default for ScheduledTasksModule {
@@ -256,7 +297,15 @@ impl ScheduledTasksModule {
             runner,
             known_tasks: Arc::new(Mutex::new(HashMap::new())),
             drive_type: real_drive_type(),
+            history: AuditLogger::inert(),
         }
+    }
+
+    /// Read what WinMedic switched off from `history`, to offer switching
+    /// Windows' own tasks back on.
+    pub fn reading_history(mut self, history: AuditLogger) -> Self {
+        self.history = history;
+        self
     }
 
     /// For tests: drives other than the machine's own.
@@ -495,25 +544,18 @@ impl ScheduledTasksModule {
                         path: path.to_string(),
                         name: name.to_string(),
                     };
-                    let orphaned_id = Self::issue_id("sched_orphaned", &full);
-                    let failing_id = Self::issue_id("sched_failing", &full);
-                    known.insert(orphaned_id, task_ref.clone());
-                    known.insert(failing_id, task_ref);
+                    for prefix in ["sched_orphaned", "sched_failing", "sched_reenable"] {
+                        known.insert(Self::issue_id(prefix, &full), task_ref.clone());
+                    }
                 }
             }
         }
         Ok(())
     }
 
-    /// What an orphaned task's program looks like now, read again from Task
-    /// Scheduler: `Ok(None)` while the task still points at a missing file,
-    /// and otherwise why there is nothing to switch off any more.
-    ///
-    /// The repair acted on the scan's verdict. The window offers the last
-    /// scan from disk, hours or days old, or the background scan's: a program
-    /// reinstalled since still had its task switched off. The Run-key repair
-    /// and the tweaks look again; this one now does too.
-    async fn settled_since_the_scan(&self, task: &TaskRef) -> Result<Option<String>, String> {
+    /// `task` as Task Scheduler lists it now; `None` once it is no longer
+    /// registered.
+    async fn task_now(&self, task: &TaskRef) -> Result<Option<ScheduledTask>, String> {
         let out = self
             .runner
             .query_powershell(TASK_INVENTORY_SCRIPT, Duration::from_secs(45))
@@ -525,11 +567,38 @@ impl ScheduledTasksModule {
                 out.stderr.trim()
             ));
         }
-        let now = out
+        Ok(out
             .stdout
             .lines()
             .filter_map(Self::parse_task_line)
-            .find(|now| now.path == task.path && now.name == task.name);
+            .find(|now| now.path == task.path && now.name == task.name))
+    }
+
+    /// What the audit log says WinMedic switched off and has not switched
+    /// back on; see [`switched_off_by_winmedic`]. Off the runtime: the log
+    /// and its rotated files are up to 30 MB.
+    async fn switched_off(&self) -> HashMap<String, String> {
+        if !self.history.is_live() {
+            return HashMap::new();
+        }
+        let history = self.history.clone();
+        tokio::task::spawn_blocking(move || {
+            switched_off_by_winmedic(&history.history_mentioning(TASK_MESSAGE_START))
+        })
+        .await
+        .unwrap_or_default()
+    }
+
+    /// What an orphaned task's program looks like now, read again from Task
+    /// Scheduler: `Ok(None)` while the task still points at a missing file,
+    /// and otherwise why there is nothing to switch off any more.
+    ///
+    /// The repair acted on the scan's verdict. The window offers the last
+    /// scan from disk, hours or days old, or the background scan's: a program
+    /// reinstalled since still had its task switched off. The Run-key repair
+    /// and the tweaks look again; this one now does too.
+    async fn settled_since_the_scan(&self, task: &TaskRef) -> Result<Option<String>, String> {
+        let now = self.task_now(task).await?;
         Ok(match now {
             None => Some(format!(
                 "'{}{}' is no longer registered. Nothing was changed.",
@@ -600,7 +669,7 @@ impl ScheduledTasksModule {
                 ));
             }
             return Ok(format!(
-                "Scheduled task '{}{}' disabled. Re-enable it at any time with 'Enable-ScheduledTask'.",
+                "{TASK_MESSAGE_START}{}{}{SWITCHED_OFF_MESSAGE_END}",
                 task.path, task.name
             ));
         }
@@ -610,6 +679,76 @@ impl ScheduledTasksModule {
         Err(format!(
             "Could not disable '{}{}': {}. Windows protects some of its own tasks; those are best left alone.",
             task.path, task.name, detail
+        ))
+    }
+
+    /// Switch on one of Windows' own tasks that WinMedic switched off, if
+    /// that is still what it is: registered, disabled, and in the audit log
+    /// as switched off by a repair here.
+    ///
+    /// Without a scan before it, every task has such an id (see
+    /// [`Self::refresh_known_tasks`]). The log is what keeps this from
+    /// switching on a task the user switched off.
+    async fn switch_back_on(&self, task: &TaskRef) -> Result<String, String> {
+        let full = format!("{}{}", task.path, task.name);
+        let Some(now) = self.task_now(task).await? else {
+            return Ok(format!(
+                "'{full}' is no longer registered. Nothing was changed."
+            ));
+        };
+        if !now.is_disabled() {
+            return Ok(format!("'{full}' is on already. Nothing was changed."));
+        }
+        if now.owner() != TaskOwner::Windows
+            || !self.switched_off().await.contains_key(&full.to_lowercase())
+        {
+            return Err(format!(
+                "WinMedic's log does not say that it switched off '{full}'. The task was left off."
+            ));
+        }
+        self.enable_task(task).await
+    }
+
+    /// `Enable-ScheduledTask` for `task`, then its state for WinMedic to
+    /// read. Folder and name are quoted as in [`Self::disable_task`].
+    fn enable_script(task: &TaskRef) -> String {
+        format!(
+            concat!(
+                "Enable-ScheduledTask -TaskPath {0} -TaskName {1} -ErrorAction Stop | Out-Null; ",
+                "$state = (Get-ScheduledTask -TaskPath {0} -TaskName {1} -ErrorAction SilentlyContinue).State; ",
+                "Write-Output \"WINMEDIC_TASK_STATE=$state\""
+            ),
+            ps_single_quoted(&task.path),
+            ps_single_quoted(&task.name),
+        )
+    }
+
+    /// Enable a task by its exact folder and name, and read its state back
+    /// as [`Self::disable_task`] does.
+    async fn enable_task(&self, task: &TaskRef) -> Result<String, String> {
+        let out = self
+            .runner
+            .run_powershell(&Self::enable_script(task), Duration::from_secs(25))
+            .await?;
+        if !out.success {
+            let detail = out.stderr.trim();
+            let detail = if detail.is_empty() { NO_DETAIL } else { detail };
+            return Err(format!(
+                "Could not switch '{}{}' back on: {}. It can be switched on in Task Scheduler.",
+                task.path, task.name, detail
+            ));
+        }
+        if let Some(state) = Self::parse_reported_state(&out.stdout)
+            && state.eq_ignore_ascii_case("Disabled")
+        {
+            return Err(format!(
+                "'{}{}' is still disabled after Enable-ScheduledTask. Windows accepted the command without applying it; switch the task on in Task Scheduler.",
+                task.path, task.name
+            ));
+        }
+        Ok(format!(
+            "{TASK_MESSAGE_START}{}{}{SWITCHED_ON_MESSAGE_END}",
+            task.path, task.name
         ))
     }
 }
@@ -625,7 +764,7 @@ impl DiagnosticModule for ScheduledTasksModule {
     }
 
     fn description(&self) -> &'static str {
-        "Checks for scheduled tasks pointing at deleted programs and tasks whose last run failed"
+        "Checks for scheduled tasks pointing at deleted programs, tasks whose last run failed, and Windows' own tasks an earlier WinMedic switched off"
     }
 
     fn icon(&self) -> &'static str {
@@ -877,17 +1016,83 @@ impl DiagnosticModule for ScheduledTasksModule {
             issues.push(issue);
         }
 
+        // 3. Windows' own tasks that WinMedic switched off. Up to 0.9.0 that
+        //    was the only repair for a task that failed, Windows' own
+        //    included, and the two checks above skip a disabled task: what
+        //    those versions switched off stayed off, and nothing said so
+        //    (#217). A task the audit log does not name is the user's or
+        //    another tool's doing and is left alone.
+        let switched_off = self.switched_off().await;
+        let mut to_switch_on = 0;
+        for task in &tasks {
+            if !task.is_disabled() || task.owner() != TaskOwner::Windows {
+                continue;
+            }
+            let full = task.full_path();
+            let Some(day) = switched_off.get(&full.to_lowercase()) else {
+                continue;
+            };
+            // Windows registers some tasks for a program it does not ship.
+            // Switched back on, such a task only fails at every trigger and
+            // becomes the advice above, for good: no finding, but the log
+            // says so.
+            if let Some(missing) = Self::missing_target(&task.execute, &*self.drive_type) {
+                Self::send_progress(
+                    &progress_tx,
+                    90,
+                    "Checking what WinMedic switched off...",
+                    Some(&format!(
+                        "Not a finding: WinMedic switched off '{full}' on {day}, but its program '{}' does not exist, so switched back on it would only fail.",
+                        missing.display()
+                    )),
+                )
+                .await;
+                continue;
+            }
+            to_switch_on += 1;
+
+            let id = Self::issue_id("sched_reenable", &full);
+            self.remember(&id, task);
+            issues.push(Issue::new(
+                id,
+                self.id(),
+                format!("WinMedic switched off Windows' own task '{}'", task.name),
+                "Scheduled Tasks",
+                Severity::Warning,
+                // It puts back what Windows set up itself.
+                RiskScore::Low,
+                format!(
+                    "WinMedic switched off '{full}' on {day}. Versions up to 0.9.0 did that to Windows' own tasks too. While it is off, the upkeep it does stops."
+                ),
+                format!(
+                    "Task: {full}\nState: {}\nAction: {}\nSwitched off by WinMedic: {day} (audit log)",
+                    task.state,
+                    if task.execute.is_empty() {
+                        "(no program)"
+                    } else {
+                        &task.execute
+                    },
+                ),
+                "Switch the task back on",
+                vec![format!(
+                    "Run Enable-ScheduledTask -TaskPath '{}' -TaskName '{}'",
+                    task.path, task.name
+                )],
+            ));
+        }
+
         Self::send_progress(
             &progress_tx,
             100,
             "Scheduled task diagnostics complete",
             Some(&format!(
-                "{} tasks checked: {} with a missing target, {} with a failed last run, {} of Windows' or Office's own with a failed last run (not reported), {} already disabled (skipped).",
+                "{} tasks checked: {} with a missing target, {} with a failed last run, {} of Windows' or Office's own with a failed last run (not reported), {} already disabled (skipped), {} of them Windows' own that WinMedic switched off.",
                 tasks.len(),
                 orphaned,
                 failing,
                 left_to_their_owner,
-                already_disabled
+                already_disabled,
+                to_switch_on
             )),
         )
         .await;
@@ -900,7 +1105,11 @@ impl DiagnosticModule for ScheduledTasksModule {
         issue_id: &str,
         _progress_tx: Option<Sender<FixProgress>>,
     ) -> Result<String, String> {
-        if !issue_id.starts_with("sched_orphaned_") && !issue_id.starts_with("sched_failing_") {
+        let switches_on = issue_id.starts_with("sched_reenable_");
+        if !switches_on
+            && !issue_id.starts_with("sched_orphaned_")
+            && !issue_id.starts_with("sched_failing_")
+        {
             return Err(format!("Unknown issue id: {}", issue_id));
         }
 
@@ -910,6 +1119,10 @@ impl DiagnosticModule for ScheduledTasksModule {
                 issue_id
             ));
         };
+
+        if switches_on {
+            return self.switch_back_on(&task).await;
+        }
 
         // The scan offers no repair for these. A finding saved by an older
         // WinMedic may still be ticked, and must not switch one off either.
@@ -1792,5 +2005,385 @@ mod tests {
         let script = mock.executed().remove(0);
         assert!(!script.contains("takeown") && !script.contains("icacls"));
         assert_eq!(crate::utils::cmd::powershell_parse_errors(&script).await, 0);
+    }
+
+    /// Every repair of this module in the development PC's `history.jsonl`:
+    /// 24 tasks switched off between 2026-08-22 and 2026-10-09, 19 different
+    /// ones, 14 of them Windows' own.
+    const SWITCHED_OFF_HISTORY: &[u8] =
+        include_bytes!("../../tests/fixtures/files/history_scheduled_tasks_switched_off.bin");
+
+    const SECURE_BOOT_UPDATE: &str = r"\Microsoft\Windows\PI\Secure-Boot-Update";
+
+    /// The development PC's inventory lines of 2026-11-13, elevated. Secure-
+    /// Boot-Update has no program: its action is a COM handler.
+    fn secure_boot_update(state: &str) -> String {
+        format!(r"\Microsoft\Windows\PI\|Secure-Boot-Update|{state}|2147944153|0|")
+    }
+
+    /// A log folder of its own, with `history` as the active file.
+    fn log_dir(name: &str, history: &[u8]) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("winmedic_tasks_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("history.jsonl"), history).unwrap();
+        dir
+    }
+
+    fn logger(dir: &std::path::Path) -> AuditLogger {
+        AuditLogger::with_dir_and_size(dir.to_path_buf(), crate::safety::audit::MAX_LOG_FILE_BYTES)
+    }
+
+    /// A module over `lines` that reads the development PC's history.
+    fn module_with_history(
+        name: &str,
+        lines: Vec<String>,
+    ) -> (ScheduledTasksModule, MockCommandRunner, PathBuf) {
+        let dir = log_dir(name, SWITCHED_OFF_HISTORY);
+        let mock = MockCommandRunner::new();
+        mock.add_response("Schedule.Service", inventory(lines));
+        let module =
+            ScheduledTasksModule::with_runner(Arc::new(mock.clone())).reading_history(logger(&dir));
+        (module, mock, dir)
+    }
+
+    fn entry(action: &str, module: &str, status: &str, details: &str) -> AuditEntry {
+        AuditEntry {
+            timestamp: "2026-11-13 10:00:00".to_string(),
+            action_type: action.to_string(),
+            module_id: module.to_string(),
+            title: "x".to_string(),
+            status: status.to_string(),
+            details: details.to_string(),
+        }
+    }
+
+    #[test]
+    fn the_real_history_names_every_task_winmedic_switched_off() {
+        let dir = log_dir("history_real", SWITCHED_OFF_HISTORY);
+        let entries = logger(&dir).history_mentioning(TASK_MESSAGE_START);
+        assert_eq!(entries.len(), 24);
+        let off = switched_off_by_winmedic(&entries);
+        assert_eq!(off.len(), 19, "{off:?}");
+        let day = |task: &str| off.get(&task.to_lowercase()).map(String::as_str);
+        assert_eq!(day(SECURE_BOOT_UPDATE), Some("2026-08-22"));
+        assert_eq!(
+            day(r"\Microsoft\Windows\Time Synchronization\SynchronizeTime"),
+            Some("2026-08-22")
+        );
+        assert_eq!(
+            day(r"\CreateExplorerShellUnelevatedTask"),
+            Some("2026-08-22")
+        );
+        assert_eq!(
+            day(r"\Microsoft\Windows\WDI\ResolutionHost"),
+            Some("2026-09-06")
+        );
+        // Switched off four times: the last time counts.
+        assert_eq!(
+            day(r"\Microsoft\Office\Office Startup Maintenance"),
+            Some("2026-10-09")
+        );
+        assert_eq!(day(r"\Microsoft\Windows\Defrag\ScheduledDefrag"), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn only_a_repair_that_succeeded_and_was_not_taken_back_counts() {
+        let off = format!("{TASK_MESSAGE_START}\\A\\Task{SWITCHED_OFF_MESSAGE_END}");
+        let on = format!("{TASK_MESSAGE_START}\\A\\Task{SWITCHED_ON_MESSAGE_END}");
+        let is_off =
+            |entries: &[AuditEntry]| switched_off_by_winmedic(entries).contains_key(r"\a\task");
+
+        assert!(is_off(&[entry("FIX", "scheduled_tasks", "SUCCESS", &off)]));
+        // A simulation, a repair that failed, another module's entry.
+        assert!(!is_off(&[entry(
+            "DRYRUN",
+            "scheduled_tasks",
+            "SUCCESS",
+            &off
+        )]));
+        assert!(!is_off(&[entry("FIX", "scheduled_tasks", "FAILED", &off)]));
+        assert!(!is_off(&[entry(
+            "FIX",
+            "registry_startup",
+            "SUCCESS",
+            &off
+        )]));
+        // Switched back on since, and switched off once more after that.
+        let fix = |details: &str| entry("FIX", "scheduled_tasks", "SUCCESS", details);
+        assert!(!is_off(&[fix(&off), fix(&on)]));
+        assert!(is_off(&[fix(&off), fix(&on), fix(&off)]));
+        // A name with a quote in it is read whole.
+        let quoted = format!("{TASK_MESSAGE_START}\\A\\It's{SWITCHED_OFF_MESSAGE_END}");
+        assert!(switched_off_by_winmedic(&[fix(&quoted)]).contains_key(r"\a\it's"));
+    }
+
+    /// Secure-Boot-Update as it was on the development PC until someone
+    /// switched it back on by hand: off since WinMedic's repair of
+    /// 2026-08-22.
+    #[tokio::test]
+    async fn a_windows_task_winmedic_switched_off_is_offered_to_switch_back_on() {
+        let (module, _mock, dir) =
+            module_with_history("reenable_scan", vec![secure_boot_update("Disabled")]);
+        let issues = module.scan(None).await.unwrap();
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        let issue = &issues[0];
+        assert!(issue.id.starts_with("sched_reenable_"), "{}", issue.id);
+        assert_eq!(
+            issue.title,
+            "WinMedic switched off Windows' own task 'Secure-Boot-Update'"
+        );
+        assert_eq!(
+            issue.description,
+            r"WinMedic switched off '\Microsoft\Windows\PI\Secure-Boot-Update' on 2026-08-22. Versions up to 0.9.0 did that to Windows' own tasks too. While it is off, the upkeep it does stops."
+        );
+        assert_eq!(issue.severity, Severity::Warning);
+        assert_eq!(issue.risk_score, RiskScore::Low);
+        assert!(issue.is_selected && !issue.advice_only);
+        assert_eq!(
+            issue.fix_steps,
+            [
+                r"Run Enable-ScheduledTask -TaskPath '\Microsoft\Windows\PI\' -TaskName 'Secure-Boot-Update'"
+            ]
+        );
+        assert!(
+            issue
+                .technical_details
+                .contains("Switched off by WinMedic: 2026-08-22 (audit log)"),
+            "{}",
+            issue.technical_details
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// What the log does not make WinMedic's doing stays as it is: a task of
+    /// Windows that someone else switched off, one that is on again, and a
+    /// task that is not Windows' own, which WinMedic was right to switch off.
+    #[tokio::test]
+    async fn tasks_winmedic_did_not_switch_off_or_that_are_not_windows_own_are_left_alone() {
+        let (module, _mock, dir) = module_with_history(
+            "reenable_others",
+            vec![
+                r"\Microsoft\Windows\Defrag\|ScheduledDefrag|Disabled|0|0|".to_string(),
+                secure_boot_update("Ready"),
+                format!(
+                    r"\GoogleUserPEH\|RunPlatformExperienceHelper_Daily|Disabled|2147942402|84|{MISSING_EXE}"
+                ),
+            ],
+        );
+        let issues = module.scan(None).await.unwrap();
+        assert!(issues.is_empty(), "{issues:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The three still off on the development PC, such as Location's
+    /// Notifications: Windows registers them for a program it does not ship.
+    /// Switched back on, the task would fail at every trigger and become the
+    /// advice about a deleted program, for good.
+    #[tokio::test]
+    async fn a_task_whose_program_does_not_exist_is_named_in_the_log_and_is_no_finding() {
+        let (module, _mock, dir) = module_with_history(
+            "reenable_missing",
+            vec![format!(
+                r"\Microsoft\Windows\Location\|Notifications|Disabled|2147942402|0|{MISSING_EXE}"
+            )],
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let issues = module.scan(Some(tx)).await.unwrap();
+        assert!(issues.is_empty(), "{issues:?}");
+        let mut log = Vec::new();
+        while let Ok(progress) = rx.try_recv() {
+            log.extend(progress.log_message);
+        }
+        assert!(
+            log.iter().any(|line| line.starts_with(
+                r"Not a finding: WinMedic switched off '\Microsoft\Windows\Location\Notifications' on 2026-08-22, but its program"
+            )),
+            "{log:?}"
+        );
+        assert!(
+            log.iter().any(|line| line.ends_with(
+                "1 already disabled (skipped), 0 of them Windows' own that WinMedic switched off."
+            )),
+            "{log:?}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A module that is given no log, as every one built in a test or around
+    /// another runner, reports nothing and reads nothing.
+    #[tokio::test]
+    async fn without_a_log_nothing_is_offered() {
+        let module = module_with(vec![secure_boot_update("Disabled")]);
+        assert!(module.scan(None).await.unwrap().is_empty());
+        assert!(module.switched_off().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_repair_enables_the_task_reads_it_back_and_the_log_then_clears_it() {
+        let (module, mock, dir) =
+            module_with_history("reenable_fix", vec![secure_boot_update("Disabled")]);
+        mock.add_response(
+            "Enable-ScheduledTask",
+            CmdOutput::ok("WINMEDIC_TASK_STATE=Ready"),
+        );
+        let issues = module.scan(None).await.unwrap();
+        let message = module.fix(&issues[0].id, None).await.unwrap();
+        assert_eq!(
+            message,
+            r"Scheduled task '\Microsoft\Windows\PI\Secure-Boot-Update' switched back on."
+        );
+        let executed = mock.executed();
+        let enable: Vec<&String> = executed
+            .iter()
+            .filter(|c| c.contains("Enable-ScheduledTask"))
+            .collect();
+        assert_eq!(enable.len(), 1, "{executed:?}");
+        assert!(
+            enable[0].contains(
+                r"Enable-ScheduledTask -TaskPath '\Microsoft\Windows\PI\' -TaskName 'Secure-Boot-Update' -ErrorAction Stop"
+            ),
+            "{}",
+            enable[0]
+        );
+
+        // The engine records the repair with that message. From then on the
+        // task is not WinMedic's doing any more: switched off again by the
+        // user, it is left alone.
+        logger(&dir).log(
+            "FIX",
+            "scheduled_tasks",
+            &issues[0].title,
+            "SUCCESS",
+            &message,
+        );
+        assert!(module.scan(None).await.unwrap().is_empty());
+        let err = module.fix(&issues[0].id, None).await.unwrap_err();
+        assert!(err.contains("does not say that it switched off"), "{err}");
+        assert_eq!(
+            mock.executed()
+                .iter()
+                .filter(|c| c.contains("Enable-ScheduledTask"))
+                .count(),
+            1
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// After a restart of the app every task has an id of this kind. Only
+    /// the log decides, so a task of Windows that the user switched off is
+    /// not switched on, and neither is one that is not Windows' own.
+    #[tokio::test]
+    async fn the_repair_switches_on_nothing_the_log_does_not_name() {
+        let defrag = r"\Microsoft\Windows\Defrag\ScheduledDefrag";
+        let google = r"\GoogleUserPEH\RunPlatformExperienceHelper_Daily";
+        let (module, mock, dir) = module_with_history(
+            "reenable_guard",
+            vec![
+                r"\Microsoft\Windows\Defrag\|ScheduledDefrag|Disabled|0|0|".to_string(),
+                format!(
+                    r"\GoogleUserPEH\|RunPlatformExperienceHelper_Daily|Disabled|2147942402|84|{MISSING_EXE}"
+                ),
+            ],
+        );
+        mock.add_response(
+            "Enable-ScheduledTask",
+            CmdOutput::ok("WINMEDIC_TASK_STATE=Ready"),
+        );
+        for task in [defrag, google] {
+            let id = ScheduledTasksModule::issue_id("sched_reenable", task);
+            let err = module.fix(&id, None).await.unwrap_err();
+            assert_eq!(
+                err,
+                format!(
+                    "WinMedic's log does not say that it switched off '{task}'. The task was left off."
+                )
+            );
+        }
+        assert!(
+            !mock
+                .executed()
+                .iter()
+                .any(|c| c.contains("Enable-ScheduledTask")),
+            "{:?}",
+            mock.executed()
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_task_that_is_on_again_or_gone_since_the_scan_is_left_alone() {
+        let (module, mock, dir) =
+            module_with_history("reenable_settled", vec![secure_boot_update("Disabled")]);
+        let issues = module.scan(None).await.unwrap();
+        let id = issues[0].id.clone();
+
+        mock.add_response_after(
+            "Schedule.Service",
+            "Schedule.Service",
+            inventory(vec![secure_boot_update("Ready")]),
+        );
+        let message = module.fix(&id, None).await.unwrap();
+        assert_eq!(
+            message,
+            format!("'{SECURE_BOOT_UPDATE}' is on already. Nothing was changed.")
+        );
+        assert!(
+            !mock
+                .executed()
+                .iter()
+                .any(|c| c.contains("Enable-ScheduledTask"))
+        );
+        let _ = std::fs::remove_dir_all(dir);
+
+        let (module, mock, dir) = module_with_history("reenable_gone", Vec::new());
+        let message = module.fix(&id, None).await.unwrap_err();
+        assert!(message.contains("Run the scan again"), "{message}");
+        assert!(
+            !mock
+                .executed()
+                .iter()
+                .any(|c| c.contains("Enable-ScheduledTask"))
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Windows refusing, or accepting the command without applying it, as it
+    /// does for the tasks it protects: the finding stays open.
+    #[tokio::test]
+    async fn an_enable_windows_refuses_or_swallows_is_a_failure() {
+        for (answer, expected) in [
+            (
+                CmdOutput::ok("WINMEDIC_TASK_STATE=Disabled"),
+                "is still disabled after Enable-ScheduledTask",
+            ),
+            (
+                CmdOutput::failed(1, "Access is denied."),
+                "Could not switch '\\Microsoft\\Windows\\PI\\Secure-Boot-Update' back on: Access is denied.",
+            ),
+        ] {
+            let (module, mock, dir) =
+                module_with_history("reenable_refused", vec![secure_boot_update("Disabled")]);
+            mock.add_response("Enable-ScheduledTask", answer);
+            let issues = module.scan(None).await.unwrap();
+            let err = module.fix(&issues[0].id, None).await.unwrap_err();
+            assert!(err.contains(expected), "{err}");
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_enable_script_parses_whatever_the_task_is_called() {
+        let task = TaskRef {
+            path: r"\Microsoft\Windows\It's here\".to_string(),
+            name: "Task (1) $x; `n".to_string(),
+        };
+        assert_eq!(
+            crate::utils::cmd::powershell_parse_errors(&ScheduledTasksModule::enable_script(&task))
+                .await,
+            0
+        );
     }
 }

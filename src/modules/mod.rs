@@ -261,13 +261,19 @@ pub fn get_all_modules_with_runner(
     cfg: &ModuleConfig,
     runner: Arc<dyn crate::utils::cmd::CommandRunner>,
 ) -> Vec<Arc<dyn DiagnosticModule>> {
-    all_modules(cfg, runner, system_cleaner::CleanerPaths::from_env())
+    all_modules(
+        cfg,
+        runner,
+        system_cleaner::CleanerPaths::from_env(),
+        crate::safety::audit::AuditLogger::inert(),
+    )
 }
 
 fn all_modules(
     cfg: &ModuleConfig,
     runner: Arc<dyn crate::utils::cmd::CommandRunner>,
     cleaner_paths: system_cleaner::CleanerPaths,
+    history: crate::safety::audit::AuditLogger,
 ) -> Vec<Arc<dyn DiagnosticModule>> {
     vec![
         Arc::new(
@@ -293,9 +299,10 @@ fn all_modules(
             runner.clone(),
             cleaner_paths,
         )),
-        Arc::new(scheduled_tasks::ScheduledTasksModule::with_runner(
-            runner.clone(),
-        )),
+        Arc::new(
+            scheduled_tasks::ScheduledTasksModule::with_runner(runner.clone())
+                .reading_history(history),
+        ),
         Arc::new(page_file::PageFileModule::with_runner(runner.clone())),
         Arc::new(whea_logger::WheaLoggerModule::with_runner(
             cfg.clone(),
@@ -325,11 +332,14 @@ fn all_modules(
 ///
 /// Only here, with the machine's own DISM, does the cleaner remember what its
 /// last component store cleanup left, in `%APPDATA%\WinMedic`; built around
-/// any other runner it remembers nothing.
+/// any other runner it remembers nothing. And only here do the scheduled
+/// tasks read the real audit log, for the tasks WinMedic itself switched off:
+/// a read, never a write.
 pub fn get_all_modules(cfg: &ModuleConfig) -> Vec<Arc<dyn DiagnosticModule>> {
     all_modules(
         cfg,
         Arc::new(crate::utils::cmd::SystemCommandRunner::new()),
         system_cleaner::CleanerPaths::from_env_remembering(),
+        crate::safety::audit::AuditLogger::real(),
     )
 }
