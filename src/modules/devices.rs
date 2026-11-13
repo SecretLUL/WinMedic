@@ -322,7 +322,9 @@ impl DevicesModule {
             title,
             "Devices & Drivers",
             Severity::Warning,
-            RiskScore::Low,
+            // It stops the spooler and what depends on it, and deletes
+            // every waiting job: not "zero disruption".
+            RiskScore::Medium,
             "Nothing prints while the queue is stuck: a damaged print job blocks every job behind it, or stops the print spooler whenever it starts. Clearing the queue deletes every waiting job; print them again afterwards.",
             format!(
                 "sc qc spooler: START_TYPE {start_type}\nsc query spooler: STATE {state}\n{}: {stuck} print job(s) older than an hour",
@@ -1300,6 +1302,7 @@ mod tests {
         )
         .await;
         let issue = issues.iter().find(|i| i.id == PRINT_QUEUE_STUCK).unwrap();
+        assert_eq!(issue.risk_score, RiskScore::Medium);
         assert_eq!(issue.title, "1 print job(s) stuck for more than an hour");
         assert!(
             issue
