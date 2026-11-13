@@ -505,6 +505,48 @@ impl ScheduledTasksModule {
         Ok(())
     }
 
+    /// What an orphaned task's program looks like now, read again from Task
+    /// Scheduler: `Ok(None)` while the task still points at a missing file,
+    /// and otherwise why there is nothing to switch off any more.
+    ///
+    /// The repair acted on the scan's verdict. The window offers the last
+    /// scan from disk, hours or days old, or the background scan's: a program
+    /// reinstalled since still had its task switched off. The Run-key repair
+    /// and the tweaks look again; this one now does too.
+    async fn settled_since_the_scan(&self, task: &TaskRef) -> Result<Option<String>, String> {
+        let out = self
+            .runner
+            .query_powershell(TASK_INVENTORY_SCRIPT, Duration::from_secs(45))
+            .await
+            .map_err(|e| format!("The task could not be read again ({e}). Nothing was changed."))?;
+        if !out.success && out.stdout.trim().is_empty() {
+            return Err(format!(
+                "The task could not be read again ({}). Nothing was changed.",
+                out.stderr.trim()
+            ));
+        }
+        let now = out
+            .stdout
+            .lines()
+            .filter_map(Self::parse_task_line)
+            .find(|now| now.path == task.path && now.name == task.name);
+        Ok(match now {
+            None => Some(format!(
+                "'{}{}' is no longer registered. Nothing was changed.",
+                task.path, task.name
+            )),
+            Some(now) if Self::missing_target(&now.execute, &*self.drive_type).is_none() => {
+                Some(format!(
+                    "The program of '{}{}' is there again ({}). The task was left on.",
+                    task.path,
+                    task.name,
+                    now.execute.trim()
+                ))
+            }
+            Some(_) => None,
+        })
+    }
+
     /// Look up a task by issue id, dynamically falling back to querying the system
     /// if the in-memory cache is empty.
     async fn lookup_or_refresh(&self, issue_id: &str) -> Option<TaskRef> {
@@ -887,6 +929,12 @@ impl DiagnosticModule for ScheduledTasksModule {
                 ));
             }
             TaskOwner::Office | TaskOwner::Other => {}
+        }
+
+        if issue_id.starts_with("sched_orphaned_")
+            && let Some(settled) = self.settled_since_the_scan(&task).await?
+        {
+            return Ok(settled);
         }
 
         self.disable_task(&task).await
@@ -1634,6 +1682,72 @@ mod tests {
 
         let err = module.scan(None).await.unwrap_err();
         assert!(err.contains("Access to the task scheduler service was denied."));
+    }
+
+    /// The scan may be days old. A program that came back since keeps its
+    /// task, and a task that is gone is not looked for.
+    #[tokio::test]
+    async fn an_orphaned_task_is_looked_at_again_before_it_is_switched_off() {
+        let dir =
+            std::env::temp_dir().join(format!("winmedic_task_program_back_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let program = dir.join("tool.exe");
+        let inventory = |program: &std::path::Path| {
+            CmdOutput::ok(format!(
+                "\\Vendor\\|Updater|Ready|0|0|{}",
+                program.display()
+            ))
+        };
+        let issue_id = ScheduledTasksModule::issue_id("sched_orphaned", r"\Vendor\Updater");
+        let module = |mock: &MockCommandRunner| {
+            ScheduledTasksModule::with_runner(Arc::new(mock.clone()))
+                .with_drive_type(Arc::new(|_| crate::modules::registry_startup::DRIVE_FIXED))
+        };
+        let disabled = |mock: &MockCommandRunner| {
+            mock.executed()
+                .iter()
+                .any(|c| c.contains("Disable-ScheduledTask"))
+        };
+
+        // Still missing: switched off, as before.
+        let mock = MockCommandRunner::new();
+        mock.add_response("Disable-ScheduledTask", CmdOutput::ok(""));
+        mock.add_response("Schedule.Service", inventory(&program));
+        let task_module = module(&mock);
+        let found = task_module.scan(None).await.unwrap();
+        assert!(found.iter().any(|i| i.id == issue_id), "{found:?}");
+        task_module.fix(&issue_id, None).await.unwrap();
+        assert!(disabled(&mock));
+
+        // Reinstalled between the scan and the repair: left on.
+        let mock = MockCommandRunner::new();
+        mock.add_response("Disable-ScheduledTask", CmdOutput::ok(""));
+        mock.add_response("Schedule.Service", inventory(&program));
+        let task_module = module(&mock);
+        task_module.scan(None).await.unwrap();
+        std::fs::write(&program, b"back").unwrap();
+        let said = task_module.fix(&issue_id, None).await.unwrap();
+        assert!(said.contains("is there again"), "{said}");
+        assert!(!disabled(&mock));
+        std::fs::remove_file(&program).unwrap();
+
+        // Unregistered since: nothing to switch off.
+        let mock = MockCommandRunner::new();
+        mock.add_response("Disable-ScheduledTask", CmdOutput::ok(""));
+        mock.add_response("Schedule.Service", inventory(&program));
+        mock.add_response_after(
+            "Schedule.Service",
+            "Schedule.Service",
+            CmdOutput::ok(r"\Vendor\|Another|Ready|0|0|C:\Windows\explorer.exe"),
+        );
+        let task_module = module(&mock);
+        task_module.scan(None).await.unwrap();
+        let said = task_module.fix(&issue_id, None).await.unwrap();
+        assert!(said.contains("no longer registered"), "{said}");
+        assert!(!disabled(&mock));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
