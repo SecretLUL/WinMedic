@@ -28,8 +28,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
-          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
+          # The labels as they are now, not as the event carried them: that
+          # is the pull request at the moment the event was raised. `gh pr
+          # create --label` adds the label a second after opening, and when
+          # the run for `opened` was the one that started last, it failed
+          # with an empty list on a pull request that had its label (#300).
+          LABELS=$(gh api "repos/$REPO/pulls/$PR" --jq '[.labels[].name]')
+          echo "Labels of #$PR: $LABELS"
+
           allowed='["bug","enhancement","documentation","github_actions","dependencies","maintenance"]'
           if ! jq -e --argjson allowed "$allowed" 'any(.[]; . as $label | $allowed | index($label))' <<<"$LABELS" >/dev/null; then
             echo "::error::Label this pull request with one of: $(jq -r 'join(", ")' <<<"$allowed"). CONTRIBUTING.md says which fits."
