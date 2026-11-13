@@ -333,6 +333,39 @@ fn version(tag: &str) -> String {
     format!("v{}", tag.trim_start_matches(['v', 'V']))
 }
 
+/// egui's spinner, drawn as `egui::Spinner` draws it but without asking for
+/// a repaint.
+///
+/// `ui.spinner()` asks for one on every frame it is painted, so while it was
+/// in the status bar the window redrew on every vsync, 60 to 165 times a
+/// second, during every scan and repair: `BUSY_REPAINT` never got to slow it
+/// down. This one turns as far as the clock says whenever the window is
+/// drawn, which while busy is every `BUSY_REPAINT`.
+fn busy_spinner(ui: &mut egui::Ui) {
+    let size = ui.spacing().interact_size.y;
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    response.widget_info(|| egui::WidgetInfo::new(egui::Role::ProgressIndicator));
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let radius = rect.height().min(rect.width()) * 0.5 - 2.0;
+    let points = (radius.round() as u32).clamp(8, 128);
+    let time = ui.input(|i| i.time);
+    let start = time * std::f64::consts::TAU;
+    let end = start + 240f64.to_radians() * time.sin();
+    let arc: Vec<egui::Pos2> = (0..points)
+        .map(|i| {
+            let angle = egui::lerp(start..=end, f64::from(i) / f64::from(points));
+            let (sin, cos) = angle.sin_cos();
+            rect.center() + radius * egui::vec2(cos as f32, sin as f32)
+        })
+        .collect();
+    ui.painter().add(egui::Shape::line(
+        arc,
+        egui::Stroke::new(3.0, ui.visuals().strong_text_color()),
+    ));
+}
+
 fn status_bar(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -344,7 +377,7 @@ fn status_bar(ui: &mut egui::Ui, app: &mut App) {
             let message = app.status_message.as_deref().unwrap_or("Ready");
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 if app.is_busy() {
-                    ui.spinner();
+                    busy_spinner(ui);
                 }
                 ui.add(egui::Label::new(message).truncate())
                     .on_hover_text(message);
@@ -446,8 +479,8 @@ mod tests {
             .build_ui_state(|ui, app: &mut App| show(ui, app), app);
         theme::apply(&harness.ctx);
         // A fixed number of frames rather than `run`, which waits for the
-        // window to stop asking for repaints — and a busy window, with its
-        // spinner, never does.
+        // window to stop asking for repaints: while Windows is asked for the
+        // restore points or an update downloads, egui's spinner keeps asking.
         harness.run_steps(3);
         harness
     }
@@ -801,6 +834,32 @@ mod tests {
                 .is_some(),
             "a module that failed mid-scan must say so"
         );
+    }
+
+    /// A busy window is redrawn every `BUSY_REPAINT`, 25 times a second, and
+    /// nothing it draws may ask for more. egui's spinner asks for a repaint
+    /// on every frame it is painted, so the status bar's made the window
+    /// redraw at the display's refresh rate next to DISM or SFC (#280).
+    #[test]
+    fn a_busy_window_asks_for_no_repaint_of_its_own() {
+        for (scanning, fixing) in [(true, false), (false, true)] {
+            let mut app = scanned_app();
+            app.is_scanning = scanning;
+            app.is_fixing = fixing;
+            let mut harness = window(app);
+            // Still there for a screen reader.
+            assert!(
+                harness
+                    .query_all_by_role(Role::ProgressIndicator)
+                    .next()
+                    .is_some()
+            );
+            // `try_run` gives up when the window keeps asking for repaints.
+            assert!(
+                harness.try_run().is_ok(),
+                "scanning {scanning}, fixing {fixing}: the window asks for a repaint on every frame"
+            );
+        }
     }
 
     /// A repair step that runs for minutes says how far its tool got and how
