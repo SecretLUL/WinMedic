@@ -170,6 +170,15 @@ pub fn parse_signature_output(output: &str) -> SignatureStatus {
     match status.trim() {
         "Valid" => SignatureStatus::Valid(subject.trim().to_string()),
         "NotSigned" => SignatureStatus::Unsigned,
+        // `UnknownError` is PowerShell's name for every trust failure that
+        // has none of its own: a chain that ends in a root Windows does not
+        // trust, a certificate that has expired or was revoked. The file
+        // then has a signer, and the script prints its subject. It was read
+        // as "Windows could not answer" and installed as "not checked",
+        // while the docs say a signature Windows rejects is refused.
+        "UnknownError" if !subject.trim().is_empty() => {
+            SignatureStatus::Invalid(format!("UnknownError, signed by {}", subject.trim()))
+        }
         // Windows understood the question but could not answer it. The checksum
         // has already passed at this point, so this is reported, not fatal.
         "" | "UnknownError" | "NotSupportedFileFormat" => SignatureStatus::Unknown(format!(
@@ -1441,6 +1450,12 @@ mod tests {
             parse_signature_output("WINMEDIC_SIG:UnknownError|"),
             SignatureStatus::Unknown(_)
         ));
+        // With a signer it is a signature Windows did not accept: an
+        // untrusted root, an expired or a revoked certificate.
+        assert_eq!(
+            parse_signature_output("WINMEDIC_SIG:UnknownError|CN=Self"),
+            SignatureStatus::Invalid("UnknownError, signed by CN=Self".to_string())
+        );
         // A localized error instead of the marker must not read as "signed".
         assert!(matches!(
             parse_signature_output("Der Befehl wurde nicht gefunden."),
