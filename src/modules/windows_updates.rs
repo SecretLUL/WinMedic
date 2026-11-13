@@ -367,6 +367,29 @@ impl FailureCause {
     }
 }
 
+/// The folders an earlier reset renamed `dir` to: its siblings named
+/// `<dir>.winmedic-<time>`. Only real folders; a link is not followed.
+fn earlier_copies(dir: &std::path::Path) -> Vec<PathBuf> {
+    let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) else {
+        return Vec::new();
+    };
+    let prefix = format!("{}.winmedic-", name.to_string_lossy()).to_ascii_lowercase();
+    std::fs::read_dir(parent)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .starts_with(&prefix)
+                && entry.file_type().is_ok_and(|kind| kind.is_dir())
+        })
+        .map(|entry| entry.path())
+        .collect()
+}
+
 /// The finding for updates whose error code names no more specific cause.
 pub const UPDATE_RESET: &str = "wu_update_reset";
 
@@ -503,6 +526,25 @@ impl WindowsUpdatesModule {
         say("Stopping the Windows Update services...".to_string()).await;
         let guard = self.stop_services("nothing was renamed").await?;
 
+        // What earlier resets renamed. Nothing referred to those folders
+        // again: each reset left a SoftwareDistribution.winmedic-<time>
+        // (the download cache and the datastore, possibly gigabytes) and a
+        // catroot2.winmedic-<time> behind for good. A reset that is asked
+        // for again shows the earlier one did not help, so its copies go.
+        let mut cleared = 0;
+        for dir in &self.component_dirs {
+            for old in earlier_copies(dir) {
+                say(format!(
+                    "Deleting {} from an earlier reset...",
+                    old.display()
+                ))
+                .await;
+                if std::fs::remove_dir_all(&old).is_ok() {
+                    cleared += 1;
+                }
+            }
+        }
+
         let suffix = format!("winmedic-{}", chrono::Local::now().format("%Y%m%d-%H%M%S"));
         let mut renamed: Vec<(PathBuf, PathBuf)> = Vec::new();
         for dir in &self.component_dirs {
@@ -545,7 +587,12 @@ impl WindowsUpdatesModule {
             ));
         }
         Ok(format!(
-            "Windows Update's components were reset ({moved}) and its services run. Run Windows Update now; the next scan shows whether the update installs. The update history in Settings starts empty."
+            "Windows Update's components were reset ({moved}) and its services run. Run Windows Update now; the next scan shows whether the update installs. The update history in Settings starts empty. Once updates install again, the renamed folders can be deleted.{}",
+            if cleared > 0 {
+                format!(" {cleared} folder(s) an earlier reset had renamed were deleted.")
+            } else {
+                String::new()
+            }
         ))
     }
 
@@ -1529,6 +1576,36 @@ mod tests {
             .filter(|name| name.contains(".winmedic-"))
             .collect();
         assert_eq!(renamed.len(), 2, "{renamed:?}");
+
+        // Windows creates the folders anew; a second reset renames those and
+        // takes the first one's copies away instead of piling up.
+        let dirs = component_dirs(&cache);
+        let again = cache
+            .0
+            .join("SoftwareDistribution.winmedic-20260101-000000");
+        std::fs::create_dir_all(again.join("Download")).unwrap();
+        std::fs::write(again.join("Download").join("old.cab"), b"x").unwrap();
+        // Not a copy of either folder: left alone.
+        let other = cache.0.join("SoftwareDistribution.bak");
+        std::fs::create_dir_all(&other).unwrap();
+        let mock = services(SERVICE_STOPPED, SERVICE_RUNNING);
+        let msg = module(&mock, &cache)
+            .with_component_dirs(dirs)
+            .fix(UPDATE_RESET, None)
+            .await
+            .unwrap();
+        assert!(
+            msg.contains("3 folder(s) an earlier reset had renamed were deleted"),
+            "{msg}"
+        );
+        assert!(msg.contains("can be deleted"), "{msg}");
+        let left: Vec<String> = std::fs::read_dir(&cache.0)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".winmedic-"))
+            .collect();
+        assert_eq!(left.len(), 2, "{left:?}");
+        assert!(!again.exists() && other.exists());
     }
 
     #[tokio::test]
