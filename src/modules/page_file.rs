@@ -89,8 +89,7 @@ const CONFIG_MISSING: &str =
 const NO_DETAIL: &str = "PowerShell reported no detail";
 
 /// Confirmation for the one repair that changes a machine-wide setting.
-const ENABLED_MESSAGE: &str =
-    "Automatic page file management enabled. Windows creates the page file on the next restart.";
+const ENABLED_MESSAGE: &str = "Automatic page file management enabled. Windows creates the page file on the next restart. To go back, untick \"Automatically manage paging file size for all drives\" under System Properties -> Advanced -> Performance -> Virtual memory.";
 
 fn mb_to_bytes(mb: u64) -> u64 {
     mb.saturating_mul(1024 * 1024)
@@ -298,8 +297,17 @@ impl PageFileModule {
     /// "system managed". The drive letter is validated by the caller and still
     /// goes through [`ps_single_quoted`], because this runs elevated.
     async fn set_system_managed(&self, drive: char) -> Result<String, String> {
+        // Prints `WAS|name|initial|maximum` for each setting before it is
+        // changed and `NOW|...` for each one read again afterwards.
+        //
+        // The script printed nothing and success was the exit code alone.
+        // With no setting on that drive (the finding may come from a saved
+        // scan; under automatic management the class has no instance at all)
+        // the pipeline is empty and ends with 0: "handed back to Windows",
+        // with nothing changed. The message named neither the old sizes nor
+        // a way back, which the docs say it does.
         let script = format!(
-            "Get-CimInstance -ClassName Win32_PageFileSetting | Where-Object {{ $_.Name -like {} }} | ForEach-Object {{ Set-CimInstance -InputObject $_ -Property @{{InitialSize=0; MaximumSize=0}} -ErrorAction Stop }}",
+            "$drive = {}; $which = {{ $_.Name -like $drive }}; Get-CimInstance -ClassName Win32_PageFileSetting | Where-Object $which | ForEach-Object {{ 'WAS|{{0}}|{{1}}|{{2}}' -f $_.Name, $_.InitialSize, $_.MaximumSize; Set-CimInstance -InputObject $_ -Property @{{InitialSize=0; MaximumSize=0}} -ErrorAction Stop }}; Get-CimInstance -ClassName Win32_PageFileSetting | Where-Object $which | ForEach-Object {{ 'NOW|{{0}}|{{1}}|{{2}}' -f $_.Name, $_.InitialSize, $_.MaximumSize }}",
             ps_single_quoted(&format!("{}:*", drive.to_ascii_uppercase()))
         );
 
@@ -309,9 +317,37 @@ impl PageFileModule {
             .await?;
 
         if out.success {
+            let drive = drive.to_ascii_uppercase();
+            let sizes = |marker: &str| -> Vec<(u64, u64)> {
+                out.stdout
+                    .lines()
+                    .filter_map(|line| line.trim().strip_prefix(marker))
+                    .filter_map(|rest| {
+                        let mut fields = rest.rsplitn(3, '|');
+                        let maximum = fields.next()?.trim().parse().ok()?;
+                        let initial = fields.next()?.trim().parse().ok()?;
+                        Some((initial, maximum))
+                    })
+                    .collect()
+            };
+            let (was, now) = (sizes("WAS|"), sizes("NOW|"));
+            if was.is_empty() {
+                return Err(format!(
+                    "No page file with a fixed size is set up on {drive}: any more. Nothing was changed; scan again."
+                ));
+            }
+            if now.is_empty() || now.iter().any(|&sizes| sizes != (0, 0)) {
+                return Err(format!(
+                    "The page file on {drive}: was handed back to Windows, but read again it is not system managed. Check it under System Properties -> Advanced -> Performance -> Virtual memory."
+                ));
+            }
+            let was: Vec<String> = was
+                .iter()
+                .map(|(initial, maximum)| format!("{initial}-{maximum} MB"))
+                .collect();
             return Ok(format!(
-                "Page file on {}: handed back to Windows (system managed). The change takes effect after a restart.",
-                drive.to_ascii_uppercase()
+                "Page file on {drive}: handed back to Windows (system managed). The change takes effect after a restart. It was fixed at {}; to go back, enter that under System Properties -> Advanced -> Performance -> Virtual memory.",
+                was.join(" and ")
             ));
         }
 
@@ -1034,11 +1070,43 @@ mod tests {
 
     #[tokio::test]
     async fn the_fix_hands_the_named_volume_back_to_windows() {
-        let mock = MockCommandRunner::with_default_success();
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "Set-CimInstance",
+            CmdOutput::ok("WAS|C:\\pagefile.sys|1024|2048\r\nNOW|C:\\pagefile.sys|0|0\r\n"),
+        );
         let module = PageFileModule::with_runner(Arc::new(mock.clone()));
 
         let result = module.fix("pagefile_fixed_size_c", None).await.unwrap();
         assert!(result.contains("system managed"));
+        // The old sizes are the way back.
+        assert!(result.contains("fixed at 1024-2048 MB"), "{result}");
+        assert_eq!(
+            crate::utils::cmd::powershell_parse_errors(&mock.executed()[0]).await,
+            0
+        );
+
+        // Nothing matched: what the script prints on a PC whose page files
+        // Windows manages, as on the development PC. That was "success".
+        let nothing = MockCommandRunner::new();
+        nothing.add_response("Set-CimInstance", CmdOutput::ok(""));
+        let err = PageFileModule::with_runner(Arc::new(nothing))
+            .fix("pagefile_fixed_size_c", None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("Nothing was changed"), "{err}");
+
+        // Set, and still fixed when read again.
+        let unchanged = MockCommandRunner::new();
+        unchanged.add_response(
+            "Set-CimInstance",
+            CmdOutput::ok("WAS|C:\\pagefile.sys|1024|2048\r\nNOW|C:\\pagefile.sys|1024|2048\r\n"),
+        );
+        let err = PageFileModule::with_runner(Arc::new(unchanged))
+            .fix("pagefile_fixed_size_c", None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("not system managed"), "{err}");
 
         let executed = mock.executed().join("\n");
         assert!(executed.contains("Win32_PageFileSetting"));
