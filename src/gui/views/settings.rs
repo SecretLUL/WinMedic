@@ -244,7 +244,7 @@ fn restore_points(ui: &mut egui::Ui, app: &mut App) {
 
 /// What WinMedic did to this machine lately, newest first.
 fn activity(ui: &mut egui::Ui, app: &mut App) {
-    const SHOWN: usize = 10;
+    const SHOWN: usize = crate::safety::audit::RECENT_ENTRIES;
     theme::section(ui, "Recent activity");
     if app.audit_entries.is_empty() {
         ui.label(theme::muted("Nothing recorded yet."));

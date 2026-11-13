@@ -296,7 +296,7 @@ impl App {
                 .with_audit_log(audit_logger.clone()),
         );
         let reg_backup_mgr = RegBackupManager::new();
-        let audit_entries = audit_logger.get_history();
+        let audit_entries = audit_logger.recent_history();
         let backup_records = if list_backups {
             reg_backup_mgr.list_backups()
         } else {
@@ -710,9 +710,11 @@ impl App {
         let path = report_dir.join(filename);
 
         let health = DiagnosticEngine::calculate_health_score(&self.issues);
-        self.audit_entries = self.audit_logger.get_history();
+        self.audit_entries = self.audit_logger.recent_history();
         let entries = match self.scan_started() {
-            Some(since) => DiagnosticReporter::audit_since(&self.audit_entries, &since),
+            Some(since) => {
+                DiagnosticReporter::audit_since(&self.audit_logger.history_since(&since), &since)
+            }
             None => Vec::new(),
         };
 

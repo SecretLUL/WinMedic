@@ -13,7 +13,7 @@ impl App {
     /// Called whenever that tab is opened, from any direction — the direct `[5]`
     /// jump, `[Tab]`, or the `←`/`→` arrows.
     pub fn load_safety_data(&mut self) {
-        self.audit_entries = self.audit_logger.get_history();
+        self.audit_entries = self.audit_logger.recent_history();
         self.backup_records = self.reg_backup_mgr.list_backups();
         self.clamp_backup_selection();
 

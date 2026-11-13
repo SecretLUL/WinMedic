@@ -1,11 +1,16 @@
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 /// Default maximum size in bytes before rotating log files (5 MB).
 pub const MAX_LOG_FILE_BYTES: u64 = 5 * 1024 * 1024;
+/// How many entries "Recent activity" shows.
+pub const RECENT_ENTRIES: usize = 10;
+/// How much of the history's end is read first. An entry is about 225 bytes
+/// on the development PC (17,232 in 3.9 MB), so this holds some 290.
+const FIRST_WINDOW_BYTES: u64 = 64 * 1024;
 /// Maximum number of rotated log backup files to keep.
 pub const MAX_ROTATED_FILES: usize = 5;
 
@@ -181,7 +186,53 @@ impl AuditLogger {
         }
     }
 
-    /// Read history from JSONL log files in chronological order.
+    /// The end of the history, oldest first: at least the last
+    /// [`RECENT_ENTRIES`], when the file holds that many.
+    ///
+    /// For the window's "Recent activity". [`Self::get_history`] was read
+    /// there, at the end of every scan and repair and whenever Settings
+    /// opened: the whole file, up to 5 MB, parsed on the UI thread and every
+    /// entry kept, to show ten (#281).
+    pub fn recent_history(&self) -> Vec<AuditEntry> {
+        self.history_end(|entries| entries.len() >= RECENT_ENTRIES)
+    }
+
+    /// The end of the history that reaches back to `since` (`%Y-%m-%d
+    /// %H:%M:%S`, the log's own format), oldest first, for a report of what
+    /// one run did. It starts with an entry older than `since` unless the
+    /// file holds none: the caller picks its own.
+    pub fn history_since(&self, since: &str) -> Vec<AuditEntry> {
+        self.history_end(|entries| {
+            entries
+                .first()
+                .is_some_and(|oldest| oldest.timestamp.as_str() < since)
+        })
+    }
+
+    /// The entries at the end of the active file, oldest first: read from a
+    /// window at its end that grows until `enough` says so or it is the
+    /// whole file.
+    fn history_end(&self, enough: impl Fn(&[AuditEntry]) -> bool) -> Vec<AuditEntry> {
+        let Some(dir) = self.log_dir.as_deref() else {
+            return Vec::new();
+        };
+        Self::migrate_legacy_json_if_needed(dir);
+        let history_file = dir.join("history.jsonl");
+        let mut window = FIRST_WINDOW_BYTES;
+        loop {
+            let mut entries = Vec::new();
+            let whole_file = read_end(&history_file, window, &mut entries);
+            if whole_file || enough(&entries) {
+                return entries;
+            }
+            window = window.saturating_mul(4);
+        }
+    }
+
+    /// Read all of the active history file, in chronological order. What the
+    /// window shows and a report carries comes from
+    /// [`Self::recent_history`] and [`Self::history_since`], which read its
+    /// end only.
     ///
     /// Each line is read as a stream of entries: up to 0.8.0, two writers
     /// appending at the same moment could glue their entries onto one line
@@ -257,10 +308,40 @@ impl AuditLogger {
 /// order; with a `needle`, only those on a line that holds it. A file that
 /// is not there adds nothing.
 fn read_entries(path: &Path, needle: Option<&str>, entries: &mut Vec<AuditEntry>) {
-    let Ok(file) = File::open(path) else {
-        return;
+    if let Ok(file) = File::open(path) {
+        entries_from(BufReader::new(file), needle, entries);
+    }
+}
+
+/// Add the entries in the last `window` bytes of the JSONL file `path` to
+/// `entries`, in the file's order. Whether that was the whole file: also
+/// said of a file that is not there or cannot be read, which has no more to
+/// give.
+///
+/// A window that starts inside the file starts inside a line, so what comes
+/// before the first line break is left out.
+fn read_end(path: &Path, window: u64, entries: &mut Vec<AuditEntry>) -> bool {
+    let Ok(mut file) = File::open(path) else {
+        return true;
     };
+    let Ok(len) = file.metadata().map(|meta| meta.len()) else {
+        return true;
+    };
+    let start = len.saturating_sub(window);
+    if start > 0 && file.seek(SeekFrom::Start(start)).is_err() {
+        return true;
+    }
     let mut reader = BufReader::new(file);
+    if start > 0 && reader.read_until(b'\n', &mut Vec::new()).is_err() {
+        return true;
+    }
+    entries_from(reader, None, entries);
+    start == 0
+}
+
+/// Add the entries `reader` gives to `entries`; with a `needle`, only those
+/// on a line that holds it.
+fn entries_from(mut reader: impl BufRead, needle: Option<&str>, entries: &mut Vec<AuditEntry>) {
     let mut line = Vec::new();
     // Line by line as bytes: `lines()` gives an error for a line that is not
     // UTF-8, such as a write a power cut tore in the middle of a character,
@@ -376,6 +457,101 @@ mod tests {
 
         let titles: Vec<String> = logger.get_history().into_iter().map(|e| e.title).collect();
         assert_eq!(titles, ["Before", "After"]);
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    /// A history of `count` entries, one a second from 10:00:00 on, each
+    /// about 1 KB: the first window holds some sixty of them.
+    fn long_history(name: &str, count: u32) -> (PathBuf, AuditLogger) {
+        let temp_dir = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let mut file = File::create(temp_dir.join("history.jsonl")).unwrap();
+        let start = chrono::NaiveDate::from_ymd_opt(2026, 11, 13)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+        for n in 0..count {
+            append_entry(
+                &mut file,
+                &AuditEntry {
+                    timestamp: (start + chrono::TimeDelta::seconds(n.into()))
+                        .format("%Y-%m-%d %H:%M:%S")
+                        .to_string(),
+                    action_type: "SCAN".to_string(),
+                    module_id: "network".to_string(),
+                    title: format!("Entry {n}"),
+                    status: "SUCCESS".to_string(),
+                    details: "ä".repeat(450),
+                },
+            );
+        }
+        let logger = AuditLogger::with_dir_and_size(temp_dir.clone(), MAX_LOG_FILE_BYTES);
+        (temp_dir, logger)
+    }
+
+    /// The window shows ten entries and read the whole file for them, up to
+    /// 5 MB at the end of every scan and repair (#281).
+    #[test]
+    fn recent_activity_reads_only_the_end_of_the_history() {
+        let (temp_dir, logger) = long_history("winmedic_audit_test_recent", 1000);
+        let all = logger.get_history();
+        assert_eq!(all.len(), 1000);
+        assert!(
+            std::fs::metadata(temp_dir.join("history.jsonl"))
+                .unwrap()
+                .len()
+                > 900_000
+        );
+
+        let recent = logger.recent_history();
+        // The end of the file, whole entries in the file's order, and far
+        // from all of it. The window starts inside a line of two-byte
+        // characters: that line is left out, not read as an entry.
+        assert!(
+            (RECENT_ENTRIES..100).contains(&recent.len()),
+            "{}",
+            recent.len()
+        );
+        assert_eq!(recent[..], all[all.len() - recent.len()..]);
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    /// A file shorter than the window is read whole, and one with fewer
+    /// entries than the window shows gives what it has.
+    #[test]
+    fn a_short_history_is_read_whole() {
+        let (temp_dir, logger) = long_history("winmedic_audit_test_short", 3);
+        assert_eq!(logger.recent_history(), logger.get_history());
+        assert_eq!(logger.history_since("2026-11-13 00:00:00").len(), 3);
+        assert_eq!(logger.recent_history().len(), 3);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        assert!(logger.recent_history().is_empty());
+        assert!(logger.history_since("2026-11-13 00:00:00").is_empty());
+    }
+
+    /// A report carries what its run did, however much that was: the end
+    /// that is read grows until it reaches back before the run.
+    #[test]
+    fn a_report_gets_every_entry_since_its_run_started() {
+        let (temp_dir, logger) = long_history("winmedic_audit_test_since", 1000);
+        let all = logger.get_history();
+        // Entry 850 is some 140 KB from the end: outside the first window of
+        // 64 KB, inside the second of 256 KB.
+        let since = all[850].timestamp.clone();
+
+        let read = logger.history_since(&since);
+        assert!(read.len() < all.len(), "{}", read.len());
+        assert!(read[0].timestamp < since, "{}", read[0].timestamp);
+        let of_the_run: Vec<&AuditEntry> = read.iter().filter(|e| e.timestamp >= since).collect();
+        assert_eq!(of_the_run.len(), 150);
+        assert_eq!(of_the_run[0].title, "Entry 850");
+
+        // A run that started before the first entry gets the whole file.
+        assert_eq!(logger.history_since("2026-01-01 00:00:00"), all);
 
         let _ = std::fs::remove_dir_all(temp_dir);
     }
