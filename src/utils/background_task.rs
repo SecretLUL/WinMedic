@@ -130,13 +130,23 @@ fn query_helper_task(name: &str) -> Option<String> {
 /// program that account runs. So the task is only registered for a file that
 /// only administrators can change, as under Program Files.
 pub fn helper_location_problem(exe: &Path) -> Option<String> {
-    crate::utils::acl::admin_only_problem(exe).map(|problem| {
-        format!(
-            "{problem}, and the scheduled task would start winmedic.exe from there with the highest rights, without asking. \
-             Move winmedic.exe to a folder only administrators can change, such as C:\\Program Files\\WinMedic, \
-             or install it with winget install SecretLUL.WinMedic --scope machine, then turn the background scan on again."
-        )
-    })
+    crate::utils::acl::admin_only_problem(exe).map(|problem| location_advice(&problem))
+}
+
+/// What to do about `problem`, the reason the task may not start the file.
+///
+/// It said "Move winmedic.exe to ... C:\Program Files\WinMedic". Dragged
+/// there from Downloads, on the same drive, the file is moved, and a moved
+/// file keeps its owner and its permissions: the check failed again and the
+/// message told the user to move the file to the folder it was in. A copy
+/// is a new file, which takes its permissions from the folder.
+fn location_advice(problem: &str) -> String {
+    format!(
+        "{problem}, and the scheduled task would start winmedic.exe from there with the highest rights, without asking. \
+         Copy winmedic.exe (copy, not move: a moved file keeps its owner) to a folder only administrators can change, \
+         such as C:\\Program Files\\WinMedic, and start it from there, \
+         or install it with winget install SecretLUL.WinMedic --scope machine, then turn the background scan on again."
+    )
 }
 
 /// Create or replace the helper task so that it runs `exe`.
@@ -324,6 +334,20 @@ pub fn reconcile(config: &AppConfig, exe: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Following "move it to Program Files" led to the same refusal: a file
+    /// moved within a drive keeps its owner.
+    #[test]
+    fn the_advice_for_a_file_its_user_owns_is_to_copy_it() {
+        let advice = location_advice(r"PC\Ammar can change C:\Program Files\WinMedic\winmedic.exe");
+        assert!(advice.starts_with(r"PC\Ammar can change"), "{advice}");
+        assert!(
+            advice.contains("Copy winmedic.exe (copy, not move"),
+            "{advice}"
+        );
+        assert!(!advice.contains("Move winmedic.exe"), "{advice}");
+        assert!(advice.contains("--scope machine"), "{advice}");
+    }
 
     #[test]
     fn only_intervals_schtasks_can_express_are_scheduled() {
