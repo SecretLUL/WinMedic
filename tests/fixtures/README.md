@@ -36,7 +36,6 @@ Captured on Windows 11 Pro 10.0.26200, German display language, OEM code page
 | `sc_query_disabled_service.bin` | `sc query AppVClient` | CP850 | The same disabled service via `sc query`: only its state, no start type. |
 | `netsh_winsock_catalog_de.bin` | `netsh winsock show catalog` | UTF-8 | German field labels, language-neutral paths. |
 | `powershell_utf8.bin` | PowerShell with `[Console]::OutputEncoding` set to UTF-8 without BOM | UTF-8 | Proves no byte order mark is written. |
-| `powershell_adapters_ipv4.bin` | The network module's adapter query (`Get-NetAdapter -Physical`, `Get-NetIPInterface`, `Get-NetIPAddress`) | UTF-8 | One wired adapter with a DHCP lease; its LAN address replaced with `192.168.1.10`. `Enabled` is an enum name, not translated. |
 | `reg_query_wu_policy.bin` | `reg query HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate /s` | CP850 | One policy value, `ExcludeWUDriversInQualityUpdate` 1, set through the local Group Policy: drivers are kept out of Windows Update. Harmless for the tweaks module; the devices module names it when a device has no driver. |
 | `reg_query_winhttp_direct.bin` | `reg query ...\Internet Settings\Connections /v WinHttpSettings` | CP850 | The binary blob of a WinHTTP configuration without a proxy. The network tests with a proxy set are **constructed** from it (setting one needs elevation and changes the machine): same header, access type 3, then the proxy and the bypass list as length and text. |
 | `w32tm_stripchart_de.bin` | `w32tm /stripchart /computer:time.windows.com /samples:1 /dataonly` | CP850, LF | The sample line `19:23:06, +02.2742473s` is the same in every language; positive means this clock is behind (checked against an HTTP `Date` header). |
@@ -65,7 +64,6 @@ Captured on 2026-09-27 on the same machine, unelevated, read-only commands:
 
 | File | Command | Encoding | Notes |
 | --- | --- | --- | --- |
-| `powershell_physical_adapters.bin` | The network module's physical adapter query (`Get-NetAdapter -Physical`: `InterfaceGuid`, `Status`, `AdminStatus`, `Name`) | UTF-8 | One wired adapter, `Up` and `Up`. Switching it off needs elevation and cuts the machine off, so the tests replace both with `Disabled` and `Down`, what Windows reports for an adapter switched off under Network Connections. |
 | `reg_query_tcpip_interfaces.bin` | `reg query HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces /s` | CP850 | Every interface's TCP/IP settings by `InterfaceGuid`, in lower case (PowerShell prints it in upper case). `NameServer` is empty everywhere: DNS comes from DHCP (`DhcpNameServer`). LAN addresses `192.168.178.x` replaced with `192.168.1.x` in the text; the binary `DhcpInterfaceOptions` is unchanged. The tests type servers into the wired adapter's `NameServer`. |
 | `powershell_resolve_dns_server_timeout_de.bin` | The network module's probe of one DNS server (`Resolve-DnsName dns.google -Server 192.0.2.1 -DnsOnly -QuickTimeout`), a documentation address nothing answers at | UTF-8 | Exit 1 after 8 seconds, `FAILED\|ERROR_TIMEOUT,...\|<message>`: the id is the same in every language, the message is German. |
 | `powershell_resolve_dns_server.bin` | The same probe of the router's DNS server | UTF-8 | Four addresses, exit 0. |
@@ -206,6 +204,12 @@ Captured unelevated on 2026-11-12 on the same machine, a read-only command:
 | File | Command | Encoding | Notes |
 | --- | --- | --- | --- |
 | `powershell_physical_disks.bin` | The storage module's disk query (`Get-PhysicalDisk`: `SerialNumber`, `UniqueId`, `HealthStatus`, `OperationalStatus`, `FriendlyName`) | UTF-8 | One NVMe disk, `Healthy` and `OK`: enum names, printed in English on a German Windows. The serial number ends in a dot, as the disk reports it. Its digits and those of the unique id were replaced (`0025_3800_0000_0001.`, `eui.0025380000000001`). The tests set the health to `Warning` and `Unhealthy`: no failing disk was at hand. |
+
+Captured on 2026-11-13 on the same machine (10.0.26300), a read-only command:
+
+| File | Command | Encoding | Notes |
+| --- | --- | --- | --- |
+| `powershell_adapters.bin` | The network module's adapter query (`Get-NetAdapter -Physical` with `Get-NetIPInterface` and `Get-NetIPAddress`: `InterfaceGuid`, `Status`, `AdminStatus`, `Dhcp`, the IPv4 addresses, `Name`) | UTF-8 | One wired adapter, `Up` and `Up`, with a DHCP lease; its LAN address replaced with `192.168.1.10`. `Up` and `Enabled` are enum names, not translated. It replaces `powershell_adapters_ipv4.bin` and `powershell_physical_adapters.bin`, the outputs of the two queries this one was until #282. Switching the adapter off needs elevation and cuts the machine off, so the tests **construct** that line: `Disabled`, `Down` and both IPv4 fields empty. Seen for real on the same day: for an interface index no IP interface has, as a switched-off adapter's, the script prints the line with both fields empty and ends with exit code 0. |
 
 ## Files — `files/`
 

@@ -230,13 +230,20 @@ fn reset_dns_script(guid: &str) -> String {
     )
 }
 
-/// Every physical, connected adapter's IPv4 setup as `name|dhcp|addresses`,
-/// e.g. `Ethernet|Enabled|192.168.1.10`. `Enabled` / `Disabled` are enum
-/// names, printed the same in every display language. Virtual adapters are
-/// left out: VPN and Hyper-V adapters sit on 169.254.x.x by design.
-const ADAPTER_IPV4_SCRIPT: &str = "Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object Status -eq 'Up' | ForEach-Object { $ip = Get-NetIPInterface -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue; $addr = @(Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object IPAddress) -join ','; '{0}|{1}|{2}' -f $_.Name, $ip.Dhcp, $addr }";
+/// Every physical adapter as `guid|status|admin status|dhcp|addresses|name`,
+/// e.g. `{E9CE66A4-...}|Up|Up|Enabled|192.168.1.10|Ethernet`, switched off or
+/// not. `Status`, `AdminStatus` and `Enabled` / `Disabled` are enum names,
+/// printed the same in every display language. An adapter without an IPv4
+/// interface, such as one that is switched off, leaves `dhcp` and
+/// `addresses` empty. Virtual adapters are left out: VPN and Hyper-V
+/// adapters sit on 169.254.x.x by design.
+///
+/// One script for both views of an adapter. They were two, each a PowerShell
+/// start of its own that began with `Get-NetAdapter -Physical` and held one
+/// of the four slots other modules queue for (#282).
+const ADAPTERS_SCRIPT: &str = "Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Object { $ip = Get-NetIPInterface -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue; $addr = @(Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object IPAddress) -join ','; '{0}|{1}|{2}|{3}|{4}|{5}' -f $_.InterfaceGuid, $_.Status, $_.AdminStatus, $ip.Dhcp, $addr, $_.Name }";
 
-/// One line of [`ADAPTER_IPV4_SCRIPT`]'s output.
+/// The IPv4 setup of a physical adapter that is up.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdapterIpv4 {
     pub name: String,
@@ -262,26 +269,21 @@ fn is_apipa(address: &str) -> bool {
     address.starts_with("169.254.")
 }
 
-/// The adapters [`ADAPTER_IPV4_SCRIPT`] printed. Read from the right, so an
-/// adapter the user named with a `|` in it still parses.
+/// The IPv4 setup of the adapters [`ADAPTERS_SCRIPT`] printed that are up.
 pub fn parse_adapters(output: &str) -> Vec<AdapterIpv4> {
-    output
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.trim().rsplitn(3, '|');
-            let addresses = fields.next()?;
-            let dhcp = fields.next()?;
-            let name = fields.next()?;
-            Some(AdapterIpv4 {
-                name: name.to_string(),
-                dhcp: dhcp.eq_ignore_ascii_case("Enabled"),
-                addresses: addresses
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|a| !a.is_empty())
-                    .map(str::to_string)
-                    .collect(),
-            })
+    connected_ipv4(&parse_physical_adapters(output))
+}
+
+/// The IPv4 setup of those among `adapters` that are up. An adapter that is
+/// switched off or has no link has no address to judge.
+fn connected_ipv4(adapters: &[PhysicalAdapter]) -> Vec<AdapterIpv4> {
+    adapters
+        .iter()
+        .filter(|adapter| adapter.status.eq_ignore_ascii_case("Up"))
+        .map(|adapter| AdapterIpv4 {
+            name: adapter.name.clone(),
+            dhcp: adapter.dhcp,
+            addresses: adapter.addresses.clone(),
         })
         .collect()
 }
@@ -312,19 +314,15 @@ fn dead_dns_issue_id(adapter: &str) -> String {
     format!("net_static_dns_dead_{}", slug(adapter))
 }
 
-/// Every physical adapter as `guid|status|admin status|name`, e.g.
-/// `{E9CE66A4-...}|Up|Up|Ethernet`, switched off or not. `Status` and
-/// `AdminStatus` are enum names, the same in every display language.
-/// [`ADAPTER_IPV4_SCRIPT`] sees only adapters that are up, so a switched-off
-/// one went unnoticed.
-const PHYSICAL_ADAPTERS_SCRIPT: &str = "Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Object { '{0}|{1}|{2}|{3}' -f $_.InterfaceGuid, $_.Status, $_.AdminStatus, $_.Name }";
-
-/// One line of [`PHYSICAL_ADAPTERS_SCRIPT`]'s output.
+/// One line of [`ADAPTERS_SCRIPT`]'s output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalAdapter {
     pub guid: String,
     pub status: String,
     pub admin_status: String,
+    /// IPv4 addresses come from DHCP; `false` also without an IPv4 interface.
+    pub dhcp: bool,
+    pub addresses: Vec<String>,
     pub name: String,
 }
 
@@ -337,21 +335,30 @@ impl PhysicalAdapter {
     }
 }
 
-/// The adapters [`PHYSICAL_ADAPTERS_SCRIPT`] printed. The name comes last, so
-/// one with a `|` in it still parses.
+/// The adapters [`ADAPTERS_SCRIPT`] printed. The name comes last, so one
+/// with a `|` in it still parses.
 pub fn parse_physical_adapters(output: &str) -> Vec<PhysicalAdapter> {
     output
         .lines()
         .filter_map(|line| {
-            let mut fields = line.trim().splitn(4, '|');
+            let mut fields = line.trim().splitn(6, '|');
             let guid = fields.next()?;
             let status = fields.next()?;
             let admin_status = fields.next()?;
+            let dhcp = fields.next()?;
+            let addresses = fields.next()?;
             let name = fields.next()?;
             guid.starts_with('{').then(|| PhysicalAdapter {
                 guid: guid.to_string(),
                 status: status.to_string(),
                 admin_status: admin_status.to_string(),
+                dhcp: dhcp.eq_ignore_ascii_case("Enabled"),
+                addresses: addresses
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|a| !a.is_empty())
+                    .map(str::to_string)
+                    .collect(),
                 name: name.to_string(),
             })
         })
@@ -653,24 +660,13 @@ impl NetworkModule {
     }
 
     async fn adapters(&self) -> Result<Vec<AdapterIpv4>, String> {
-        let out = self
-            .runner
-            .query_powershell(ADAPTER_IPV4_SCRIPT, Duration::from_secs(20))
-            .await?;
-        if !out.success {
-            return Err(format!(
-                "the adapter query failed (exit code {:?}): {}",
-                out.exit_code,
-                out.stderr.trim()
-            ));
-        }
-        Ok(parse_adapters(&out.stdout))
+        Ok(connected_ipv4(&self.physical_adapters().await?))
     }
 
     async fn physical_adapters(&self) -> Result<Vec<PhysicalAdapter>, String> {
         let out = self
             .runner
-            .query_powershell(PHYSICAL_ADAPTERS_SCRIPT, Duration::from_secs(20))
+            .query_powershell(ADAPTERS_SCRIPT, Duration::from_secs(20))
             .await?;
         if !out.success {
             return Err(format!(
@@ -1016,22 +1012,22 @@ impl DiagnosticModule for NetworkModule {
         )
         .await;
 
-        let mut adapters_result_was_read = true;
-        let adapters = match self.adapters().await {
-            Ok(adapters) => adapters,
+        // One query for the addresses judged here and for the switched-off
+        // adapters judged below.
+        let physical = match self.physical_adapters().await {
+            Ok(physical) => physical,
             Err(err) => {
-                adapters_result_was_read = false;
                 Self::send_progress(
                     &progress_tx,
                     15,
-                    "Adapter addresses could not be read",
+                    "The network adapters could not be read",
                     Some(&err),
                 )
                 .await;
                 Vec::new()
             }
         };
-        let adapters_read = adapters_result_was_read;
+        let adapters = connected_ipv4(&physical);
 
         // 2. DNS Resolution Check. Before the adapters are judged: what the
         // resolver and the ping say is also what tells whether this PC is
@@ -1056,33 +1052,25 @@ impl DiagnosticModule for NetworkModule {
 
         // Whether this PC is connected without the adapter in question:
         // names resolve, 1.1.1.1 answers, or a physical adapter holds an
-        // address. `None` when none of that is so and the adapters could not
-        // be read. Only the adapters used to count, and only physical ones
+        // address. Only the adapters used to count, and only physical ones
         // with an IPv4 address: behind a Hyper-V switch or a network bridge
         // the address sits on a virtual adapter, and an adapter switched off
-        // on purpose became "this PC has no network", ticked (#272).
-        let connected = if dns_healthy
+        // on purpose became "this PC has no network", ticked (#272). When
+        // the adapters could not be read, there is none to judge by it.
+        let connected = dns_healthy
             || ip_reachable == Some(true)
-            || adapters.iter().any(AdapterIpv4::has_usable_address)
-        {
-            Some(true)
-        } else {
-            adapters_read.then_some(false)
-        };
+            || adapters.iter().any(AdapterIpv4::has_usable_address);
         for adapter in adapters.iter().filter(|a| a.dhcp_failed()) {
-            let (severity, consequence) = match connected {
-                Some(true) => (
+            let (severity, consequence) = if connected {
+                (
                     Severity::Info,
                     "Another adapter is connected, so this may be a cable to a device that hands out no addresses.",
-                ),
-                Some(false) => (
+                )
+            } else {
+                (
                     Severity::Warning,
                     "No other adapter has an address either, so this PC is cut off from the network.",
-                ),
-                None => (
-                    Severity::Info,
-                    "Whether another adapter is connected could not be read.",
-                ),
+                )
             };
             let mut issue = Issue::new(
                 no_dhcp_issue_id(&adapter.name),
@@ -1109,66 +1097,46 @@ impl DiagnosticModule for NetworkModule {
             issues.push(issue);
         }
         let mut adapter_explains_offline =
-            connected == Some(false) && adapters.iter().any(AdapterIpv4::dhcp_failed);
+            !connected && adapters.iter().any(AdapterIpv4::dhcp_failed);
 
-        // Physical adapters switched off in Windows, which the query above
-        // does not see.
-        let physical = match self.physical_adapters().await {
-            Ok(physical) => {
-                for adapter in physical.iter().filter(|a| a.switched_off()) {
-                    let (severity, consequence) = match connected {
-                        Some(true) => (
-                            Severity::Info,
-                            "This PC is connected without it, so it may have been switched off on purpose.",
-                        ),
-                        Some(false) => (
-                            Severity::Warning,
-                            "No other adapter is connected, so this PC has no network.",
-                        ),
-                        None => (
-                            Severity::Info,
-                            "Whether another adapter is connected could not be read.",
-                        ),
-                    };
-                    let mut issue = Issue::new(
-                        adapter_off_issue_id(&adapter.name),
-                        self.id(),
-                        format!("Network adapter '{}' is switched off", adapter.name),
-                        "Network & DNS",
-                        severity,
-                        RiskScore::Low,
-                        format!(
-                            "The adapter is disabled in Windows, so it does not connect at all. {consequence}"
-                        ),
-                        format!(
-                            "Adapter: {}\nStatus: {}\nAdminStatus: {}\nInterfaceGuid: {}",
-                            adapter.name, adapter.status, adapter.admin_status, adapter.guid
-                        ),
-                        "Switch the adapter on (Enable-NetAdapter)",
-                        vec![
-                            format!("Enable-NetAdapter \"{}\"", adapter.name),
-                            "Check that the adapter is switched on".to_string(),
-                        ],
-                    );
-                    issue.is_selected = severity == Severity::Warning;
-                    issues.push(issue);
-                }
-                // Switching it on is the repair; a Winsock reset is not.
-                adapter_explains_offline |=
-                    connected == Some(false) && physical.iter().any(|a| a.switched_off());
-                physical
-            }
-            Err(err) => {
-                Self::send_progress(
-                    &progress_tx,
-                    15,
-                    "Switched-off adapters could not be read",
-                    Some(&err),
+        // Physical adapters switched off in Windows.
+        for adapter in physical.iter().filter(|a| a.switched_off()) {
+            let (severity, consequence) = if connected {
+                (
+                    Severity::Info,
+                    "This PC is connected without it, so it may have been switched off on purpose.",
                 )
-                .await;
-                Vec::new()
-            }
-        };
+            } else {
+                (
+                    Severity::Warning,
+                    "No other adapter is connected, so this PC has no network.",
+                )
+            };
+            let mut issue = Issue::new(
+                adapter_off_issue_id(&adapter.name),
+                self.id(),
+                format!("Network adapter '{}' is switched off", adapter.name),
+                "Network & DNS",
+                severity,
+                RiskScore::Low,
+                format!(
+                    "The adapter is disabled in Windows, so it does not connect at all. {consequence}"
+                ),
+                format!(
+                    "Adapter: {}\nStatus: {}\nAdminStatus: {}\nInterfaceGuid: {}",
+                    adapter.name, adapter.status, adapter.admin_status, adapter.guid
+                ),
+                "Switch the adapter on (Enable-NetAdapter)",
+                vec![
+                    format!("Enable-NetAdapter \"{}\"", adapter.name),
+                    "Check that the adapter is switched on".to_string(),
+                ],
+            );
+            issue.is_selected = severity == Severity::Warning;
+            issues.push(issue);
+        }
+        // Switching it on is the repair; a Winsock reset is not.
+        adapter_explains_offline |= !connected && physical.iter().any(|a| a.switched_off());
 
         // DNS servers typed in on a connected adapter, left behind by a VPN
         // or an ad blocker that is gone. Judged only while names do not
@@ -1834,10 +1802,11 @@ mod tests {
         );
     }
 
-    /// [`ADAPTER_IPV4_SCRIPT`] on a German Windows 11, LAN address replaced.
+    /// [`ADAPTERS_SCRIPT`] on a German Windows 11: one wired adapter,
+    /// switched on and up, with a DHCP lease. LAN address replaced.
     fn real_adapters() -> String {
         crate::utils::decode::decode_output(include_bytes!(
-            "../../tests/fixtures/console/powershell_adapters_ipv4.bin"
+            "../../tests/fixtures/console/powershell_adapters.bin"
         ))
     }
 
@@ -1863,15 +1832,16 @@ mod tests {
 
     #[test]
     fn only_an_unanswered_dhcp_request_is_a_failure() {
-        let adapter = |line: &str| parse_adapters(line).remove(0);
+        // `dhcp|addresses|name` of an adapter that is up.
+        let adapter = |line: &str| parse_adapters(&format!("{{A}}|Up|Up|{line}")).remove(0);
         // Set by hand, e.g. a direct cable to a camera or a NAS.
-        assert!(!adapter("Ethernet 2|Disabled|169.254.10.20").dhcp_failed());
+        assert!(!adapter("Disabled|169.254.10.20|Ethernet 2").dhcp_failed());
         // A real lease next to the stand-in address.
-        assert!(!adapter("WLAN|Enabled|169.254.1.1,192.168.1.20").dhcp_failed());
+        assert!(!adapter("Enabled|169.254.1.1,192.168.1.20|WLAN").dhcp_failed());
         // No address at all is not the 169.254 case this check is about.
-        assert!(!adapter("WLAN|Enabled|").dhcp_failed());
+        assert!(!adapter("Enabled||WLAN").dhcp_failed());
 
-        let odd = adapter("LAN | Dock|Enabled|169.254.1.1");
+        let odd = adapter("Enabled|169.254.1.1|LAN | Dock");
         assert_eq!(odd.name, "LAN | Dock");
         assert!(odd.dhcp_failed());
         assert_eq!(no_dhcp_issue_id(&odd.name), "net_no_dhcp_lan___dock");
@@ -1892,11 +1862,20 @@ mod tests {
         mock.add_response("Get-NetAdapter", CmdOutput::ok(real_adapters()));
         mock.add_response(PROBE, resolved());
         mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
-        let issues = NetworkModule::with_runner(Arc::new(mock))
+        let issues = NetworkModule::with_runner(Arc::new(mock.clone()))
             .scan(None)
             .await
             .unwrap();
         assert!(!issues.iter().any(|i| i.id.starts_with("net_no_dhcp_")));
+        assert!(!issues.iter().any(|i| i.id.starts_with("net_adapter_")));
+        // The addresses and the switched-off adapters come from one
+        // PowerShell start; they were two (#282).
+        let queries = mock
+            .executed()
+            .iter()
+            .filter(|c| c.contains("Get-NetAdapter"))
+            .count();
+        assert_eq!(queries, 1, "{:?}", mock.executed());
     }
 
     #[tokio::test]
@@ -1940,7 +1919,7 @@ mod tests {
         mock.add_response(
             "Get-NetAdapter",
             CmdOutput::ok(format!(
-                "{}Ethernet 2|Enabled|169.254.7.7\r\n",
+                "{}{{7D6A3B1C-0000-0000-0000-000000000002}}|Up|Up|Enabled|169.254.7.7|Ethernet 2\r\n",
                 real_adapters()
             )),
         );
@@ -2345,39 +2324,45 @@ mod tests {
         assert!(err.contains("could not be switched off"), "{err}");
     }
 
-    /// [`PHYSICAL_ADAPTERS_SCRIPT`] on a German Windows 11: one wired
-    /// adapter, switched on and up.
-    fn real_physical_adapters() -> String {
-        crate::utils::decode::decode_output(include_bytes!(
-            "../../tests/fixtures/console/powershell_physical_adapters.bin"
-        ))
-    }
-
-    /// The same adapter switched off, as Windows reports it then.
+    /// The captured adapter switched off, as Windows reports it then:
+    /// `Disabled` and `Down`, and no IPv4 interface. Constructed, since
+    /// switching it off cuts the machine off. That the script prints the
+    /// line with both IPv4 fields empty and still ends with exit code 0 was
+    /// seen on 2026-11-13 with an interface index no IP interface has.
     fn switched_off_adapters() -> String {
-        real_physical_adapters().replace("|Up|Up|", "|Disabled|Down|")
+        real_adapters().replace("|Up|Up|Enabled|192.168.1.10|", "|Disabled|Down|||")
     }
 
-    /// What the mock matches the physical adapter query by.
+    /// A second adapter, Wi-Fi, switched off: a line of the adapter query.
+    const WLAN_OFF: &str = "{7D6A3B1C-0000-0000-0000-000000000001}|Disabled|Down|||WLAN\r\n";
+
+    /// What the mock matches the adapter query by, and none of the scripts
+    /// that only look an adapter up (`Get-NetAdapter -Physical | Where-Object`).
     const PHYSICAL: &str = "$_.AdminStatus";
 
     #[test]
     fn physical_adapters_are_read_as_captured() {
-        let adapters = parse_physical_adapters(&real_physical_adapters());
+        let adapters = parse_physical_adapters(&real_adapters());
         assert_eq!(
             adapters,
             vec![PhysicalAdapter {
                 guid: "{E9CE66A4-C563-4C8B-B099-1206C25056CE}".to_string(),
                 status: "Up".to_string(),
                 admin_status: "Up".to_string(),
+                dhcp: true,
+                addresses: vec!["192.168.1.10".to_string()],
                 name: "Ethernet".to_string(),
             }]
         );
         assert!(!adapters[0].switched_off());
-        assert!(parse_physical_adapters(&switched_off_adapters())[0].switched_off());
-        // The IPv4 query's lines are not adapters of this one.
-        assert!(parse_physical_adapters(&real_adapters()).is_empty());
-        let odd = parse_physical_adapters("{A}|Disabled|Down|LAN | Dock");
+        let off = parse_physical_adapters(&switched_off_adapters());
+        assert!(off[0].switched_off());
+        assert!(!off[0].dhcp && off[0].addresses.is_empty());
+        // Only an adapter that is up has an address to judge.
+        assert!(parse_adapters(&switched_off_adapters()).is_empty());
+        // A line without a GUID in front is no adapter.
+        assert!(parse_physical_adapters("Ethernet|Enabled|192.168.1.10").is_empty());
+        let odd = parse_physical_adapters("{A}|Disabled|Down|||LAN | Dock");
         assert_eq!(odd[0].name, "LAN | Dock");
     }
 
@@ -2385,7 +2370,6 @@ mod tests {
     fn adapter_off_mock(physical: String) -> MockCommandRunner {
         let mock = MockCommandRunner::new();
         mock.add_response(PHYSICAL, CmdOutput::ok(physical));
-        mock.add_response("Get-NetAdapter", CmdOutput::ok(""));
         mock.add_response(PROBE, not_resolved());
         mock.add_response("ping.exe", CmdOutput::failed(1, ""));
         mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
@@ -2413,11 +2397,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_switched_on_adapter_is_not_a_finding() {
-        let issues =
-            NetworkModule::with_runner(Arc::new(adapter_off_mock(real_physical_adapters())))
-                .scan(None)
-                .await
-                .unwrap();
+        let issues = NetworkModule::with_runner(Arc::new(adapter_off_mock(real_adapters())))
+            .scan(None)
+            .await
+            .unwrap();
         assert!(
             !issues
                 .iter()
@@ -2431,12 +2414,8 @@ mod tests {
         let mock = MockCommandRunner::new();
         mock.add_response(
             PHYSICAL,
-            CmdOutput::ok(format!(
-                "{}{{7D6A3B1C-0000-0000-0000-000000000001}}|Disabled|Down|WLAN\r\n",
-                real_physical_adapters()
-            )),
+            CmdOutput::ok(format!("{}{WLAN_OFF}", real_adapters())),
         );
-        mock.add_response("Get-NetAdapter", CmdOutput::ok(real_adapters()));
         mock.add_response(PROBE, resolved());
         mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
         let issues = NetworkModule::with_runner(Arc::new(mock))
@@ -2463,11 +2442,7 @@ mod tests {
 
     #[tokio::test]
     async fn switching_an_adapter_on_is_read_back() {
-        let mock = enable_mock(
-            switched_off_adapters(),
-            CmdOutput::ok(""),
-            real_physical_adapters(),
-        );
+        let mock = enable_mock(switched_off_adapters(), CmdOutput::ok(""), real_adapters());
         let msg = NetworkModule::with_runner(Arc::new(mock.clone()))
             .fix("net_adapter_disabled_ethernet", None)
             .await
@@ -2574,8 +2549,7 @@ mod tests {
     /// probe answering `probe`.
     fn static_dns_mock(tcpip: String, probe: CmdOutput, ping: CmdOutput) -> MockCommandRunner {
         let mock = MockCommandRunner::new();
-        mock.add_response(PHYSICAL, CmdOutput::ok(real_physical_adapters()));
-        mock.add_response("Get-NetAdapter", CmdOutput::ok(real_adapters()));
+        mock.add_response(PHYSICAL, CmdOutput::ok(real_adapters()));
         mock.add_response("reg.exe query HKLM\\SYSTEM", CmdOutput::ok(tcpip));
         mock.add_response("reg.exe", CmdOutput::with_output(1, "", "FEHLER"));
         mock.add_response(SERVER_PROBE, probe);
@@ -2732,7 +2706,7 @@ mod tests {
     async fn the_dns_reset_changes_nothing_while_names_resolve() {
         let backups = Backups::new("dnsresolves");
         let mock = MockCommandRunner::new();
-        mock.add_response(PHYSICAL, CmdOutput::ok(real_physical_adapters()));
+        mock.add_response(PHYSICAL, CmdOutput::ok(real_adapters()));
         mock.add_response(
             "reg.exe query",
             CmdOutput::ok(tcpip_with_static_dns("10.0.0.53")),
@@ -2774,7 +2748,7 @@ mod tests {
     /// The servers are typed in until the reset ran, then `after`.
     fn dns_reset_mock(export: CmdOutput, after: String) -> MockCommandRunner {
         let mock = MockCommandRunner::new();
-        mock.add_response(PHYSICAL, CmdOutput::ok(real_physical_adapters()));
+        mock.add_response(PHYSICAL, CmdOutput::ok(real_adapters()));
         mock.add_response(
             "reg.exe query",
             CmdOutput::ok(tcpip_with_static_dns("10.0.0.53")),
@@ -2921,14 +2895,15 @@ mod tests {
     /// switched off on purpose is no "this PC has no network" there.
     #[tokio::test]
     async fn an_adapter_is_not_the_only_one_while_names_resolve() {
+        // The wired adapter up, with no IPv4 binding: the address is on the
+        // virtual switch.
         let physical = format!(
-            "{}{{7D6A3B1C-0000-0000-0000-000000000001}}|Disabled|Down|WLAN\r\n",
-            real_physical_adapters()
+            "{}{WLAN_OFF}",
+            real_adapters().replace("|Enabled|192.168.1.10|", "|||")
         );
+        assert!(!parse_adapters(&physical)[0].has_usable_address());
         let mock = MockCommandRunner::new();
         mock.add_response(PHYSICAL, CmdOutput::ok(physical.clone()));
-        // Up, with no IPv4 binding: the address is on the virtual switch.
-        mock.add_response("Get-NetAdapter", CmdOutput::ok("Ethernet||\r\n"));
         mock.add_response(PROBE, resolved());
         mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
         let (issues, _) = scan_with_steps(mock).await;
@@ -2943,7 +2918,6 @@ mod tests {
         // Names do not resolve, but 1.1.1.1 answers: connected as well.
         let mock = MockCommandRunner::new();
         mock.add_response(PHYSICAL, CmdOutput::ok(physical.clone()));
-        mock.add_response("Get-NetAdapter", CmdOutput::ok("Ethernet||\r\n"));
         mock.add_response(PROBE, not_resolved());
         mock.add_response("ping.exe", ping_answers());
         mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
@@ -2954,11 +2928,10 @@ mod tests {
             .unwrap();
         assert!(!wlan.is_selected);
 
-        // The address query failed and nothing else answers: not known, so
-        // nothing is claimed and nothing is ticked.
+        // Nothing answers: the switched-off adapter is the only one that
+        // could connect, and switching it on is ticked.
         let mock = MockCommandRunner::new();
         mock.add_response(PHYSICAL, CmdOutput::ok(physical));
-        mock.add_response("Get-NetAdapter", CmdOutput::failed(1, "Access denied"));
         mock.add_response(PROBE, not_resolved());
         mock.add_response("ping.exe", CmdOutput::failed(1, ""));
         mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
@@ -2967,13 +2940,28 @@ mod tests {
             .iter()
             .find(|i| i.id == "net_adapter_disabled_wlan")
             .unwrap();
-        assert_eq!(wlan.severity, Severity::Info);
-        assert!(!wlan.is_selected);
-        assert!(wlan.description.contains("could not be read"));
+        assert_eq!(wlan.severity, Severity::Warning);
+        assert!(wlan.is_selected);
+
+        // The adapter query failed and nothing else answers: no adapter is
+        // known, so none is blamed and the scan says so.
+        let mock = MockCommandRunner::new();
+        mock.add_response(PHYSICAL, CmdOutput::failed(1, "Access denied"));
+        mock.add_response(PROBE, not_resolved());
+        mock.add_response("ping.exe", CmdOutput::failed(1, ""));
+        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
+        let (issues, steps) = scan_with_steps(mock).await;
         assert!(
-            issues.iter().any(|i| i.id == "net_offline_warning"),
-            "an adapter that may not be the only one does not explain it"
+            !issues.iter().any(|i| i.id.starts_with("net_adapter_")),
+            "{issues:?}"
         );
+        assert!(
+            steps
+                .iter()
+                .any(|s| s == "The network adapters could not be read"),
+            "{steps:?}"
+        );
+        assert!(issues.iter().any(|i| i.id == "net_offline_warning"));
     }
 
     /// #272. A probe that never asked the resolver is no "names do not
@@ -3052,7 +3040,7 @@ mod tests {
     #[tokio::test]
     async fn the_adapter_scripts_parse() {
         assert_eq!(
-            crate::utils::cmd::powershell_parse_errors(PHYSICAL_ADAPTERS_SCRIPT).await,
+            crate::utils::cmd::powershell_parse_errors(ADAPTERS_SCRIPT).await,
             0
         );
         assert_eq!(
