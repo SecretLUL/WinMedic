@@ -76,6 +76,19 @@ const CRITICAL_FREE_MB: u64 = 512;
 const LOW_FREE_MB: u64 = 2048;
 const LOW_FREE_PERCENT: f64 = 10.0;
 
+/// How far Windows lets a page file it manages grow, in MB: three times the
+/// RAM or 4 GB, whichever is larger, and no more than an eighth of the
+/// volume (Microsoft, "Introduction to page files").
+///
+/// The percentage alone called a 2 TB drive with 180 GB free "nearly full",
+/// for good and with nothing but advice to answer it: with 16 GB of RAM the
+/// file stops at 48 GB. Less than [`LOW_FREE_PERCENT`] free is tight only
+/// when it is also less than the file can still ask for.
+fn page_file_growth_limit_mb(ram_mb: u64, volume_bytes: u64) -> u64 {
+    let by_ram = ram_mb.saturating_mul(3).max(4096);
+    by_ram.min(volume_bytes / (1024 * 1024) / 8)
+}
+
 /// Without the configured page files the main finding cannot be judged, so
 /// this is the one probe whose *failure* fails the module.
 const CONFIG_UNREADABLE: &str = "The virtual memory configuration could not be read";
@@ -542,7 +555,9 @@ impl DiagnosticModule for PageFileModule {
             let free_percent = (volume.free_bytes as f64 / volume.size_bytes as f64) * 100.0;
             let critical = free_mb < CRITICAL_FREE_MB;
 
-            if !critical && free_mb >= LOW_FREE_MB && free_percent >= LOW_FREE_PERCENT {
+            let tight = free_percent < LOW_FREE_PERCENT
+                && free_mb < page_file_growth_limit_mb(ram_mb, volume.size_bytes);
+            if !critical && free_mb >= LOW_FREE_MB && !tight {
                 continue;
             }
 
@@ -935,18 +950,30 @@ mod tests {
     #[tokio::test]
     async fn the_percentage_rule_fires_even_with_gigabytes_still_free() {
         // 1 TiB with 64 GiB free — 6.25 %. Far above the absolute floor, so
-        // only the proportional threshold can catch this one.
-        let module = module(
-            mock_system(
-                AUTOMATIC,
-                r"C:\pagefile.sys|2048|512|900",
-                "",
-                "C:|1099511627776|68719476736",
-            ),
-            16,
-        );
+        // only the proportional threshold can catch this one. With 32 GB of
+        // RAM the page file may grow to 96 GB, more than is free.
+        let scan = |disk: &'static str, ram_gib: u64| async move {
+            let usage = r"C:\pagefile.sys|2048|512|900";
+            module(mock_system(AUTOMATIC, usage, "", disk), ram_gib)
+                .scan(None)
+                .await
+                .unwrap()
+        };
+        const TIB_64_GIB_FREE: &str = "C:|1099511627776|68719476736";
 
-        let issues = module.scan(None).await.unwrap();
+        // With 16 GB it stops at 48 GB: 64 GiB free is room enough.
+        assert!(scan(TIB_64_GIB_FREE, 16).await.is_empty());
+        // 2 TB with 180 GB free, 9 %: no page file grows that far.
+        assert!(scan("C:|2000000000000|180000000000", 16).await.is_empty());
+        assert_eq!(
+            page_file_growth_limit_mb(16 * 1024, 2_000_000_000_000),
+            48 * 1024
+        );
+        assert_eq!(page_file_growth_limit_mb(1024, 2_000_000_000_000), 4096);
+        // An eighth of a 64 GiB volume.
+        assert_eq!(page_file_growth_limit_mb(16 * 1024, 64 * GIB), 8 * 1024);
+
+        let issues = scan(TIB_64_GIB_FREE, 32).await;
         let issue = issues
             .iter()
             .find(|i| i.id == "pagefile_low_space_c")
