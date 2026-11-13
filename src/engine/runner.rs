@@ -658,6 +658,15 @@ impl DiagnosticEngine {
                     pending
                 ),
             );
+        } else if pending == 0 {
+            // The restore point comes before the first repair, and there is
+            // none. `--auto-fix` on a PC with nothing ticked switched System
+            // Protection on and created a point on every run, pushing older
+            // ones out, and reported "Nothing was repaired" when Windows
+            // created none (#264).
+            run_trace
+                .hint("nothing is selected, so no restore point is created")
+                .await;
         } else if options.create_vss {
             let _ = event_tx.send(RepairEvent::VssStarted).await;
             let vss_started = Instant::now();
@@ -933,10 +942,7 @@ impl DiagnosticEngine {
             emit("[SIMULATION]   (no individual steps recorded)".to_string()).await;
         }
 
-        let message = format!(
-            "Simulation: {} step(s) would run. Nothing was changed.",
-            issue.fix_steps.len()
-        );
+        let message = simulation_summary(&issue.fix_steps);
 
         let _ = event_tx
             .send(RepairEvent::FixFinished {
@@ -948,6 +954,26 @@ impl DiagnosticEngine {
         self.audit_logger
             .log("DRYRUN", &issue.module_id, &issue.title, "INFO", &message);
     }
+}
+
+/// The last line of a simulated repair: how many of its steps the repair
+/// takes, and how many are left to the user ([`BY_HAND`]).
+///
+/// [`BY_HAND`]: crate::engine::issue::BY_HAND
+fn simulation_summary(steps: &[String]) -> String {
+    let by_hand = steps
+        .iter()
+        .filter(|step| step.starts_with(crate::engine::issue::BY_HAND))
+        .count();
+    let yours = if by_hand > 0 {
+        format!("; {by_hand} more are yours to take by hand")
+    } else {
+        String::new()
+    };
+    format!(
+        "Simulation: {} step(s) would run{yours}. Nothing was changed.",
+        steps.len() - by_hand
+    )
 }
 
 #[cfg(test)]
@@ -1003,6 +1029,22 @@ mod tests {
         issues[0].is_fixed = true;
         let score_after_fix = DiagnosticEngine::calculate_health_score(&issues);
         assert_eq!(score_after_fix, 90);
+    }
+
+    /// A step for the user to take is not one the repair "would run".
+    #[test]
+    fn a_simulation_counts_only_the_steps_the_repair_takes() {
+        use crate::engine::issue::BY_HAND;
+        let steps = |steps: &[&str]| steps.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            simulation_summary(&steps(&["reg delete x", "net start y"])),
+            "Simulation: 2 step(s) would run. Nothing was changed."
+        );
+        let by_hand = format!("{BY_HAND}Lower the memory frequency in BIOS");
+        assert_eq!(
+            simulation_summary(&steps(&["bcdedit /bootsequence {memdiag}", &by_hand])),
+            "Simulation: 1 step(s) would run; 1 more are yours to take by hand. Nothing was changed."
+        );
     }
 
     #[tokio::test]
@@ -1341,6 +1383,40 @@ mod tests {
         );
     }
 
+    /// #264. A run with nothing to repair asks Windows for no restore point:
+    /// advice is not repaired, and neither is an unticked finding.
+    #[tokio::test]
+    async fn a_run_with_nothing_to_repair_creates_no_restore_point() {
+        let engine = DiagnosticEngine::with_modules(vec![Arc::new(Answers(Ok("repaired")))])
+            .with_restore_points(RestorePointService::declined());
+        let mut unticked = answered_issue();
+        unticked.is_selected = false;
+        let mut issues = vec![answered_issue().with_advice_only(), unticked];
+        let (tx, mut rx) = channel(50);
+        let options = RepairOptions {
+            create_vss: true,
+            ..LIVE
+        };
+
+        let counts = engine
+            .run_repairs(&mut issues, options, tx, CancellationToken::new())
+            .await;
+
+        assert_eq!(counts, (0, 0));
+        let mut completed = false;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                RepairEvent::VssStarted | RepairEvent::RestorePointMissing { .. } => {
+                    panic!("a restore point was asked for: {event:?}")
+                }
+                RepairEvent::AllRepairsCompleted { .. } => completed = true,
+                _ => {}
+            }
+        }
+        assert!(completed);
+        assert!(issues.iter().all(|i| i.fix_error.is_none()));
+    }
+
     /// Told to go on without one, the run repairs.
     #[tokio::test]
     async fn without_a_restore_point_requested_the_repairs_run() {
@@ -1648,7 +1724,7 @@ mod tests {
         mock.add_response("qc bits", CmdOutput::ok(sc_qc_output("bits", 2)));
         mock.add_response("qc cryptsvc", CmdOutput::ok(sc_qc_output("cryptsvc", 2)));
         mock.add_response("dirty query C:", CmdOutput::ok("Volume - C: is clean"));
-        mock.add_response("Get-PhysicalDisk", CmdOutput::ok("SSD | Health: Healthy"));
+        mock.add_response("Get-PhysicalDisk", CmdOutput::ok("S1|eui.1|Healthy|OK|SSD"));
         mock.add_response("Resolve-DnsName", CmdOutput::ok("8.8.8.8"));
         mock.add_response("show catalog", CmdOutput::ok("Winsock Provider"));
         mock.add_response("Level=1", CmdOutput::ok(""));

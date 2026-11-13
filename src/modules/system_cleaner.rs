@@ -8,6 +8,7 @@ use crate::utils::debug_log::DebugTrace;
 use crate::utils::fs_stats::{dir_stats_recursive, measure_dirs, reached_without_link};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 
@@ -30,6 +31,59 @@ pub struct CleanStats {
     /// from "a system service keeps an empty placeholder open", which
     /// [`cleanup_result`] needs to tell a real failure from a non-event.
     pub locked_bytes: u64,
+}
+
+thread_local! {
+    /// Set on the thread a sweep runs on, by [`sweep_blocking`]: whether the
+    /// repair that started the sweep has been cancelled.
+    static SWEEP_CANCELLED: std::cell::RefCell<Option<Arc<AtomicBool>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Whether the sweep on this thread should stop before its next file.
+fn sweep_cancelled() -> bool {
+    SWEEP_CANCELLED.with(|flag| {
+        flag.borrow()
+            .as_ref()
+            .is_some_and(|cancelled| cancelled.load(Ordering::Relaxed))
+    })
+}
+
+/// Run a sweep on a blocking thread and wait for it.
+///
+/// Cancelling a repair drops the future that waits here, and nothing else:
+/// the thread went on deleting to the end of every folder while the window
+/// and the audit log said "Repair cancelled by the user", and a headless run
+/// did not end after Ctrl+C until the sweep was through. Dropping this future
+/// now tells the sweep, which stops before its next file.
+///
+/// `None` when the thread ended without a result (a panic in the sweep).
+pub async fn sweep_blocking<T: Send + 'static>(
+    sweep: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    struct CancelOnDrop(Arc<AtomicBool>);
+    impl Drop for CancelOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+    /// Blocking threads are reused: the next job must not inherit the flag.
+    struct ClearOnDrop;
+    impl Drop for ClearOnDrop {
+        fn drop(&mut self) {
+            SWEEP_CANCELLED.with(|flag| *flag.borrow_mut() = None);
+        }
+    }
+
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let _cancel = CancelOnDrop(cancelled.clone());
+    tokio::task::spawn_blocking(move || {
+        SWEEP_CANCELLED.with(|flag| *flag.borrow_mut() = Some(cancelled));
+        let _clear = ClearOnDrop;
+        sweep()
+    })
+    .await
+    .ok()
 }
 
 /// Parsed results from `dism.exe /Online /Cleanup-Image /AnalyzeComponentStore`.
@@ -122,6 +176,9 @@ fn sweep_tree(path: &Path, skip: &dyn Fn(&Path) -> bool) -> CleanStats {
     let mut stats = CleanStats::default();
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
+            if sweep_cancelled() {
+                break;
+            }
             let p = entry.path();
             if skip(&p) {
                 continue;
@@ -142,6 +199,8 @@ fn sweep_tree(path: &Path, skip: &dyn Fn(&Path) -> bool) -> CleanStats {
                     stats.deleted_files += sub.deleted_files;
                     stats.skipped_locked += sub.skipped_locked;
                     stats.locked_bytes += sub.locked_bytes;
+                    // Fails on a folder that is not empty, a cancelled
+                    // sweep's included.
                     let _ = std::fs::remove_dir(&p);
                 }
             }
@@ -269,6 +328,9 @@ fn sweep_log_tree(path: &Path) -> CleanStats {
     let mut stats = CleanStats::default();
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
+            if sweep_cancelled() {
+                break;
+            }
             let p = entry.path();
             if let Ok(meta) = p.symlink_metadata() {
                 if meta.is_file() {
@@ -981,7 +1043,7 @@ impl SystemCleanerModule {
         F: Fn(&Path) -> CleanStats + Send + Copy + 'static,
     {
         if !dbg.is_enabled() {
-            return tokio::task::spawn_blocking(move || {
+            return sweep_blocking(move || {
                 let mut total = CleanStats::default();
                 for dir in &dirs {
                     let stats = sweep(dir);
@@ -1010,7 +1072,7 @@ impl SystemCleanerModule {
                 continue;
             }
             let target = dir.clone();
-            let stats = tokio::task::spawn_blocking(move || sweep(&target))
+            let stats = sweep_blocking(move || sweep(&target))
                 .await
                 .unwrap_or_default();
             dbg.data(format!(
@@ -1396,7 +1458,10 @@ impl DiagnosticModule for SystemCleanerModule {
                     recycle_stats.files
                 ),
                 "Permanently empty your Recycle Bin on the local drives (irreversible)",
-                vec!["Run PowerShell Clear-RecycleBin -Force".to_string()],
+                vec![
+                    "Run PowerShell Clear-RecycleBin -Force for each local drive".to_string(),
+                    r"Delete what the shell leaves behind in your folder of $Recycle.Bin on those drives".to_string(),
+                ],
             );
             // Never runs unattended under `--auto-fix` / [A] auto-fix all: the
             // user has to tick this one themselves.
@@ -2052,6 +2117,51 @@ The operation completed successfully.";
         let stats_after = scan_path_recursive(&td.path);
         assert_eq!(stats_after.files, 0);
         assert_eq!(stats_after.bytes, 0);
+    }
+
+    /// Cancelling a repair drops the future that waits for the sweep. The
+    /// sweep went on to the end of the folder all the same.
+    #[tokio::test]
+    async fn a_sweep_stops_before_its_next_file_once_its_repair_is_cancelled() {
+        let td = TestDir::new("cancelled_sweep");
+        for n in 0..200 {
+            td.create_file(&format!("file_{n:03}.tmp"), b"x");
+        }
+        let (at_tenth, tenth_reached) = tokio::sync::oneshot::channel::<()>();
+        let (go_on, may_go_on) = std::sync::mpsc::channel::<()>();
+        let (done, sweep_done) = tokio::sync::oneshot::channel::<CleanStats>();
+
+        let dir = td.path.clone();
+        let waiting = tokio::spawn(sweep_blocking(move || {
+            // The sweep holds at its tenth file until the test has cancelled.
+            let seen = std::cell::Cell::new(0);
+            let at_tenth = std::cell::Cell::new(Some(at_tenth));
+            let stats = clean_filtered(&dir, &|_| {
+                seen.set(seen.get() + 1);
+                if seen.get() == 10 {
+                    let _ = at_tenth.take().unwrap().send(());
+                    let _ = may_go_on.recv();
+                }
+                false
+            });
+            let _ = done.send(stats);
+        }));
+
+        tenth_reached.await.unwrap();
+        waiting.abort();
+        assert!(waiting.await.unwrap_err().is_cancelled());
+        go_on.send(()).unwrap();
+
+        let stats = sweep_done.await.unwrap();
+        assert_eq!(stats.deleted_files, 10, "the file in hand, and no more");
+        assert_eq!(std::fs::read_dir(&td.path).unwrap().count(), 190);
+
+        // A sweep nobody cancels runs to the end, on a thread used before.
+        let dir = td.path.clone();
+        let stats = sweep_blocking(move || clean_path_contents(&dir))
+            .await
+            .unwrap();
+        assert_eq!(stats.deleted_files, 190);
     }
 
     #[test]

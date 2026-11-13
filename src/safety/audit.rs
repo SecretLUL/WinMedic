@@ -92,6 +92,21 @@ impl AuditLogger {
         if let Ok(metadata) = std::fs::metadata(&base_path)
             && metadata.len() >= self.max_file_size
         {
+            // The active file moves aside first, and nothing else happens
+            // unless that worked. It was renamed last, with every result
+            // ignored: while a program held the file open (a viewer that
+            // follows it), each entry deleted the oldest generation, shifted
+            // the others and then failed to move the active file, which was
+            // still over the limit. After five entries all five generations
+            // were gone and the file went on growing.
+            //
+            // One left over from a rotation that was cut off is finished
+            // now instead of being written over.
+            let aside = dir.join(format!("{}.0.{}", filename, ext));
+            if !aside.exists() && std::fs::rename(&base_path, &aside).is_err() {
+                return;
+            }
+
             // Delete the oldest rotated file if it exceeds the max backup count
             let oldest = dir.join(format!("{}.{}.{}", filename, MAX_ROTATED_FILES, ext));
             if oldest.exists() {
@@ -107,9 +122,9 @@ impl AuditLogger {
                 }
             }
 
-            // Rename current active log file to .1
+            // What was the active log file becomes .1
             let first_backup = dir.join(format!("{}.1.{}", filename, ext));
-            let _ = std::fs::rename(&base_path, first_backup);
+            let _ = std::fs::rename(&aside, first_backup);
         }
     }
 
@@ -180,17 +195,32 @@ impl AuditLogger {
         Self::migrate_legacy_json_if_needed(dir);
         let history_file = dir.join("history.jsonl");
 
-        if let Ok(file) = File::open(&history_file) {
-            let reader = BufReader::new(file);
-            for line in reader.lines().map_while(Result::ok) {
-                entries.extend(
-                    serde_json::Deserializer::from_str(&line)
-                        .into_iter::<AuditEntry>()
-                        .map_while(Result::ok),
-                );
-            }
-        }
+        read_entries(&history_file, None, &mut entries);
+        entries
+    }
 
+    /// Every entry on a line that holds `needle`, from the rotated files and
+    /// the active one, oldest first.
+    ///
+    /// For a module that asks what WinMedic itself did weeks ago, which
+    /// [`Self::get_history`] cannot answer: it reads the active file only,
+    /// and all of it. Here a line that cannot match is not parsed, so six
+    /// files of 5 MB cost a search and little else. A line that holds
+    /// several entries (see [`Self::get_history`]) gives all of them: the
+    /// caller still looks at each entry.
+    pub fn history_mentioning(&self, needle: &str) -> Vec<AuditEntry> {
+        let mut entries = Vec::new();
+        let Some(dir) = self.log_dir.as_deref() else {
+            return entries;
+        };
+        // `history.0.jsonl` is the active file of a rotation that was cut
+        // off: newer than every numbered one.
+        let rotated = (0..=MAX_ROTATED_FILES)
+            .rev()
+            .map(|generation| dir.join(format!("history.{generation}.jsonl")));
+        for file in rotated.chain([dir.join("history.jsonl")]) {
+            read_entries(&file, Some(needle), &mut entries);
+        }
         entries
     }
 
@@ -220,6 +250,36 @@ impl AuditLogger {
             .as_deref()
             .and_then(|dir| std::fs::read_to_string(dir.join("audit.log")).ok())
             .unwrap_or_default()
+    }
+}
+
+/// Add the entries of the JSONL file `path` to `entries`, in the file's
+/// order; with a `needle`, only those on a line that holds it. A file that
+/// is not there adds nothing.
+fn read_entries(path: &Path, needle: Option<&str>, entries: &mut Vec<AuditEntry>) {
+    let Ok(file) = File::open(path) else {
+        return;
+    };
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    // Line by line as bytes: `lines()` gives an error for a line that is not
+    // UTF-8, such as a write a power cut tore in the middle of a character,
+    // and the loop ended there. Every later entry was written and never
+    // shown or exported, until the file rotated.
+    while reader
+        .read_until(b'\n', &mut line)
+        .is_ok_and(|read| read > 0)
+    {
+        let text = String::from_utf8_lossy(&line);
+        if needle.is_none_or(|needle| text.contains(needle)) {
+            entries.extend(
+                serde_json::Deserializer::from_str(&text)
+                    .into_iter::<AuditEntry>()
+                    .map_while(Result::ok),
+            );
+        }
+        drop(text);
+        line.clear();
     }
 }
 
@@ -292,6 +352,97 @@ mod tests {
              use AuditLogger::with_dir_and_size with a temp directory instead: {:?}",
             offenders
         );
+    }
+
+    /// The doc comment promises that a damaged entry costs the rest of its
+    /// line. A line that is not UTF-8 cost every entry after it.
+    #[test]
+    fn a_line_torn_inside_a_character_hides_no_later_entry() {
+        let temp_dir = std::env::temp_dir().join("winmedic_audit_test_torn_line");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let logger = AuditLogger::with_dir_and_size(temp_dir.clone(), MAX_LOG_FILE_BYTES);
+
+        logger.log("SCAN", "network", "Before", "SUCCESS", "");
+        {
+            let mut file = OpenOptions::new()
+                .append(true)
+                .open(temp_dir.join("history.jsonl"))
+                .unwrap();
+            // "ä" is C3 A4; the write ended after the first byte.
+            file.write_all(b"{\"timestamp\":\"2026-11-12 10:00:00\",\"title\":\"Ger\xC3\n")
+                .unwrap();
+        }
+        logger.log("SCAN", "network", "After", "SUCCESS", "");
+
+        let titles: Vec<String> = logger.get_history().into_iter().map(|e| e.title).collect();
+        assert_eq!(titles, ["Before", "After"]);
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    /// While another program holds the log open, it cannot be renamed. Each
+    /// entry then deleted one old generation.
+    #[cfg(windows)]
+    #[test]
+    fn a_log_that_cannot_be_moved_costs_no_old_generation() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let temp_dir = std::env::temp_dir().join("winmedic_audit_test_held_log");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let logger = AuditLogger::with_dir_and_size(temp_dir.clone(), 64);
+
+        logger.log(
+            "SCAN",
+            "network",
+            "First",
+            "SUCCESS",
+            "long enough to pass 64 bytes",
+        );
+        for generation in 1..=MAX_ROTATED_FILES {
+            for (name, ext) in [("history", "jsonl"), ("audit", "log")] {
+                std::fs::write(temp_dir.join(format!("{name}.{generation}.{ext}")), "old").unwrap();
+            }
+        }
+        // FILE_SHARE_READ | FILE_SHARE_WRITE, and not FILE_SHARE_DELETE,
+        // which a rename needs: what a viewer that follows the file does.
+        let held: Vec<File> = ["history.jsonl", "audit.log"]
+            .iter()
+            .map(|name| {
+                OpenOptions::new()
+                    .read(true)
+                    .share_mode(0x3)
+                    .open(temp_dir.join(name))
+                    .unwrap()
+            })
+            .collect();
+
+        for _ in 0..MAX_ROTATED_FILES + 1 {
+            logger.log("SCAN", "network", "More", "SUCCESS", "");
+        }
+        for generation in 1..=MAX_ROTATED_FILES {
+            for (name, ext) in [("history", "jsonl"), ("audit", "log")] {
+                let old = temp_dir.join(format!("{name}.{generation}.{ext}"));
+                assert_eq!(
+                    std::fs::read_to_string(&old).ok().as_deref(),
+                    Some("old"),
+                    "{}",
+                    old.display()
+                );
+            }
+        }
+        // The entries were still written, to the file that could not move.
+        assert_eq!(logger.get_history().len(), MAX_ROTATED_FILES + 2);
+
+        // Let go, the next entry rotates as it always did.
+        drop(held);
+        logger.log("SCAN", "network", "Rotates", "SUCCESS", "");
+        assert!(
+            std::fs::read_to_string(temp_dir.join("history.1.jsonl"))
+                .unwrap()
+                .contains("First")
+        );
+        assert!(!temp_dir.join("history.0.jsonl").exists());
+
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -458,6 +609,59 @@ mod tests {
 
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].module_id, "legacy_module");
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    /// A question about what WinMedic did long ago reaches the rotated
+    /// files, oldest first, and parses only the lines that can answer it.
+    #[test]
+    fn history_mentioning_reads_every_generation_oldest_first() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("winmedic_audit_mention_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let line = |details: &str| {
+            let mut line = serde_json::to_string(&AuditEntry {
+                timestamp: "2026-08-22 00:11:46".to_string(),
+                action_type: "FIX".to_string(),
+                module_id: "scheduled_tasks".to_string(),
+                title: "t".to_string(),
+                status: "SUCCESS".to_string(),
+                details: details.to_string(),
+            })
+            .unwrap();
+            line.push('\n');
+            line
+        };
+        let write = |name: &str, text: String| std::fs::write(temp_dir.join(name), text).unwrap();
+        write(
+            &format!("history.{MAX_ROTATED_FILES}.jsonl"),
+            line("needle oldest") + "not json but with a needle\n",
+        );
+        write("history.2.jsonl", line("other") + &line("needle second"));
+        // A rotation that was cut off left the active file here.
+        write("history.0.jsonl", line("needle aside"));
+        write("history.jsonl", line("needle newest") + &line("other"));
+
+        let logger = AuditLogger::with_dir_and_size(temp_dir.clone(), MAX_LOG_FILE_BYTES);
+        let found: Vec<String> = logger
+            .history_mentioning("needle")
+            .into_iter()
+            .map(|entry| entry.details)
+            .collect();
+        assert_eq!(
+            found,
+            [
+                "needle oldest",
+                "needle second",
+                "needle aside",
+                "needle newest"
+            ]
+        );
+        // The window's history still reads the active file, all of it.
+        assert_eq!(logger.get_history().len(), 2);
+        assert!(AuditLogger::inert().history_mentioning("needle").is_empty());
 
         let _ = std::fs::remove_dir_all(temp_dir);
     }

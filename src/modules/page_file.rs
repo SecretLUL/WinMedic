@@ -76,6 +76,19 @@ const CRITICAL_FREE_MB: u64 = 512;
 const LOW_FREE_MB: u64 = 2048;
 const LOW_FREE_PERCENT: f64 = 10.0;
 
+/// How far Windows lets a page file it manages grow, in MB: three times the
+/// RAM or 4 GB, whichever is larger, and no more than an eighth of the
+/// volume (Microsoft, "Introduction to page files").
+///
+/// The percentage alone called a 2 TB drive with 180 GB free "nearly full",
+/// for good and with nothing but advice to answer it: with 16 GB of RAM the
+/// file stops at 48 GB. Less than [`LOW_FREE_PERCENT`] free is tight only
+/// when it is also less than the file can still ask for.
+fn page_file_growth_limit_mb(ram_mb: u64, volume_bytes: u64) -> u64 {
+    let by_ram = ram_mb.saturating_mul(3).max(4096);
+    by_ram.min(volume_bytes / (1024 * 1024) / 8)
+}
+
 /// Without the configured page files the main finding cannot be judged, so
 /// this is the one probe whose *failure* fails the module.
 const CONFIG_UNREADABLE: &str = "The virtual memory configuration could not be read";
@@ -89,8 +102,7 @@ const CONFIG_MISSING: &str =
 const NO_DETAIL: &str = "PowerShell reported no detail";
 
 /// Confirmation for the one repair that changes a machine-wide setting.
-const ENABLED_MESSAGE: &str =
-    "Automatic page file management enabled. Windows creates the page file on the next restart.";
+const ENABLED_MESSAGE: &str = "Automatic page file management enabled. Windows creates the page file on the next restart. To go back, untick \"Automatically manage paging file size for all drives\" under System Properties -> Advanced -> Performance -> Virtual memory.";
 
 fn mb_to_bytes(mb: u64) -> u64 {
     mb.saturating_mul(1024 * 1024)
@@ -298,8 +310,17 @@ impl PageFileModule {
     /// "system managed". The drive letter is validated by the caller and still
     /// goes through [`ps_single_quoted`], because this runs elevated.
     async fn set_system_managed(&self, drive: char) -> Result<String, String> {
+        // Prints `WAS|name|initial|maximum` for each setting before it is
+        // changed and `NOW|...` for each one read again afterwards.
+        //
+        // The script printed nothing and success was the exit code alone.
+        // With no setting on that drive (the finding may come from a saved
+        // scan; under automatic management the class has no instance at all)
+        // the pipeline is empty and ends with 0: "handed back to Windows",
+        // with nothing changed. The message named neither the old sizes nor
+        // a way back, which the docs say it does.
         let script = format!(
-            "Get-CimInstance -ClassName Win32_PageFileSetting | Where-Object {{ $_.Name -like {} }} | ForEach-Object {{ Set-CimInstance -InputObject $_ -Property @{{InitialSize=0; MaximumSize=0}} -ErrorAction Stop }}",
+            "$drive = {}; $which = {{ $_.Name -like $drive }}; Get-CimInstance -ClassName Win32_PageFileSetting | Where-Object $which | ForEach-Object {{ 'WAS|{{0}}|{{1}}|{{2}}' -f $_.Name, $_.InitialSize, $_.MaximumSize; Set-CimInstance -InputObject $_ -Property @{{InitialSize=0; MaximumSize=0}} -ErrorAction Stop }}; Get-CimInstance -ClassName Win32_PageFileSetting | Where-Object $which | ForEach-Object {{ 'NOW|{{0}}|{{1}}|{{2}}' -f $_.Name, $_.InitialSize, $_.MaximumSize }}",
             ps_single_quoted(&format!("{}:*", drive.to_ascii_uppercase()))
         );
 
@@ -309,9 +330,37 @@ impl PageFileModule {
             .await?;
 
         if out.success {
+            let drive = drive.to_ascii_uppercase();
+            let sizes = |marker: &str| -> Vec<(u64, u64)> {
+                out.stdout
+                    .lines()
+                    .filter_map(|line| line.trim().strip_prefix(marker))
+                    .filter_map(|rest| {
+                        let mut fields = rest.rsplitn(3, '|');
+                        let maximum = fields.next()?.trim().parse().ok()?;
+                        let initial = fields.next()?.trim().parse().ok()?;
+                        Some((initial, maximum))
+                    })
+                    .collect()
+            };
+            let (was, now) = (sizes("WAS|"), sizes("NOW|"));
+            if was.is_empty() {
+                return Err(format!(
+                    "No page file with a fixed size is set up on {drive}: any more. Nothing was changed; scan again."
+                ));
+            }
+            if now.is_empty() || now.iter().any(|&sizes| sizes != (0, 0)) {
+                return Err(format!(
+                    "The page file on {drive}: was handed back to Windows, but read again it is not system managed. Check it under System Properties -> Advanced -> Performance -> Virtual memory."
+                ));
+            }
+            let was: Vec<String> = was
+                .iter()
+                .map(|(initial, maximum)| format!("{initial}-{maximum} MB"))
+                .collect();
             return Ok(format!(
-                "Page file on {}: handed back to Windows (system managed). The change takes effect after a restart.",
-                drive.to_ascii_uppercase()
+                "Page file on {drive}: handed back to Windows (system managed). The change takes effect after a restart. It was fixed at {}; to go back, enter that under System Properties -> Advanced -> Performance -> Virtual memory.",
+                was.join(" and ")
             ));
         }
 
@@ -506,7 +555,9 @@ impl DiagnosticModule for PageFileModule {
             let free_percent = (volume.free_bytes as f64 / volume.size_bytes as f64) * 100.0;
             let critical = free_mb < CRITICAL_FREE_MB;
 
-            if !critical && free_mb >= LOW_FREE_MB && free_percent >= LOW_FREE_PERCENT {
+            let tight = free_percent < LOW_FREE_PERCENT
+                && free_mb < page_file_growth_limit_mb(ram_mb, volume.size_bytes);
+            if !critical && free_mb >= LOW_FREE_MB && !tight {
                 continue;
             }
 
@@ -555,22 +606,34 @@ impl DiagnosticModule for PageFileModule {
             ).with_advice_only());
         }
 
-        // 3. A manually sized page file whose maximum is too small to be useful.
+        // 3. Manually sized page files whose maximum is too small to be
+        // useful. What counts is what all of them hold together, which is
+        // what Windows can commit: a small fixed file on one drive for crash
+        // dumps next to a large one on another is a layout somebody chose,
+        // and each file was judged on its own (#275). With a system-managed
+        // file among them Windows grows that one as it needs.
         let recommended_min = Self::recommended_min_page_file_mb(ram_mb);
+        let system_managed = |s: &PageFileSetting| s.maximum_mb == 0 && s.initial_mb == 0;
+        let together_mb: u64 = settings.iter().map(|s| s.maximum_mb).sum();
+        let all_too_small = !settings.iter().any(system_managed) && together_mb < recommended_min;
         for setting in &settings {
             let Some(drive) = Self::drive_letter(&setting.name) else {
                 continue;
             };
             // Both sizes at zero is how a system-managed file is spelled.
-            if setting.maximum_mb == 0 && setting.initial_mb == 0 {
+            if system_managed(setting) {
                 continue;
             }
 
             let inverted = setting.maximum_mb < setting.initial_mb;
-            let too_small = setting.maximum_mb < recommended_min;
-            if !inverted && !too_small {
+            if !inverted && !all_too_small {
                 continue;
             }
+            let with_the_others = if together_mb == setting.maximum_mb {
+                String::new()
+            } else {
+                format!(", {together_mb} MB with the other page files,")
+            };
 
             // An inverted range can still have a generous maximum, so it is not
             // the same finding as one that is merely too small.
@@ -592,8 +655,9 @@ impl DiagnosticModule for PageFileModule {
                         drive.to_ascii_uppercase()
                     ),
                     format!(
-                        "its maximum of {} MB is below the {} MB this machine's {} of RAM calls for",
+                        "its maximum of {} MB{} is below the {} MB this machine's {} of RAM calls for",
                         setting.maximum_mb,
+                        with_the_others,
                         recommended_min,
                         format_bytes(mb_to_bytes(ram_mb))
                     ),
@@ -886,18 +950,30 @@ mod tests {
     #[tokio::test]
     async fn the_percentage_rule_fires_even_with_gigabytes_still_free() {
         // 1 TiB with 64 GiB free — 6.25 %. Far above the absolute floor, so
-        // only the proportional threshold can catch this one.
-        let module = module(
-            mock_system(
-                AUTOMATIC,
-                r"C:\pagefile.sys|2048|512|900",
-                "",
-                "C:|1099511627776|68719476736",
-            ),
-            16,
-        );
+        // only the proportional threshold can catch this one. With 32 GB of
+        // RAM the page file may grow to 96 GB, more than is free.
+        let scan = |disk: &'static str, ram_gib: u64| async move {
+            let usage = r"C:\pagefile.sys|2048|512|900";
+            module(mock_system(AUTOMATIC, usage, "", disk), ram_gib)
+                .scan(None)
+                .await
+                .unwrap()
+        };
+        const TIB_64_GIB_FREE: &str = "C:|1099511627776|68719476736";
 
-        let issues = module.scan(None).await.unwrap();
+        // With 16 GB it stops at 48 GB: 64 GiB free is room enough.
+        assert!(scan(TIB_64_GIB_FREE, 16).await.is_empty());
+        // 2 TB with 180 GB free, 9 %: no page file grows that far.
+        assert!(scan("C:|2000000000000|180000000000", 16).await.is_empty());
+        assert_eq!(
+            page_file_growth_limit_mb(16 * 1024, 2_000_000_000_000),
+            48 * 1024
+        );
+        assert_eq!(page_file_growth_limit_mb(1024, 2_000_000_000_000), 4096);
+        // An eighth of a 64 GiB volume.
+        assert_eq!(page_file_growth_limit_mb(16 * 1024, 64 * GIB), 8 * 1024);
+
+        let issues = scan(TIB_64_GIB_FREE, 32).await;
         let issue = issues
             .iter()
             .find(|i| i.id == "pagefile_low_space_c")
@@ -932,6 +1008,47 @@ mod tests {
         assert_eq!(issue.risk_score, RiskScore::High);
         assert!(!issue.is_selected);
         assert!(issue.technical_details.contains("Recommended minimum"));
+    }
+
+    /// #275. Windows can commit what all page files hold together. A small
+    /// fixed file for crash dumps next to a large one is no finding; two
+    /// small ones are, and a system-managed one beside a small one is not.
+    #[tokio::test]
+    async fn fixed_page_files_are_judged_together() {
+        let scan = |settings: &'static str| async move {
+            let usage = r"C:\pagefile.sys|1024|400|500";
+            let module = module(mock_system(AUTOMATIC, usage, settings, ROOMY_DISK), 32);
+            let issues = module.scan(None).await.unwrap();
+            issues
+                .into_iter()
+                .filter(|i| i.id.starts_with("pagefile_fixed_size_"))
+                .collect::<Vec<_>>()
+        };
+
+        // 32 GB of RAM calls for 4096 MB.
+        let small_and_large = "C:\\pagefile.sys|1024|1024\r\nD:\\pagefile.sys|16384|16384";
+        assert!(scan(small_and_large).await.is_empty());
+
+        let two_small = "C:\\pagefile.sys|1024|1024\r\nD:\\pagefile.sys|2048|2048";
+        let issues = scan(two_small).await;
+        let ids: Vec<&str> = issues.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["pagefile_fixed_size_c", "pagefile_fixed_size_d"]);
+        assert!(
+            issues[0]
+                .description
+                .contains("3072 MB with the other page files"),
+            "{}",
+            issues[0].description
+        );
+
+        let small_and_managed = "C:\\pagefile.sys|1024|1024\r\nD:\\pagefile.sys|0|0";
+        assert!(scan(small_and_managed).await.is_empty());
+
+        // An unusable range is one whatever the others hold.
+        let inverted_and_large = "C:\\pagefile.sys|2048|1024\r\nD:\\pagefile.sys|16384|16384";
+        let issues = scan(inverted_and_large).await;
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].title.contains("Invalid"));
     }
 
     #[tokio::test]
@@ -980,11 +1097,43 @@ mod tests {
 
     #[tokio::test]
     async fn the_fix_hands_the_named_volume_back_to_windows() {
-        let mock = MockCommandRunner::with_default_success();
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "Set-CimInstance",
+            CmdOutput::ok("WAS|C:\\pagefile.sys|1024|2048\r\nNOW|C:\\pagefile.sys|0|0\r\n"),
+        );
         let module = PageFileModule::with_runner(Arc::new(mock.clone()));
 
         let result = module.fix("pagefile_fixed_size_c", None).await.unwrap();
         assert!(result.contains("system managed"));
+        // The old sizes are the way back.
+        assert!(result.contains("fixed at 1024-2048 MB"), "{result}");
+        assert_eq!(
+            crate::utils::cmd::powershell_parse_errors(&mock.executed()[0]).await,
+            0
+        );
+
+        // Nothing matched: what the script prints on a PC whose page files
+        // Windows manages, as on the development PC. That was "success".
+        let nothing = MockCommandRunner::new();
+        nothing.add_response("Set-CimInstance", CmdOutput::ok(""));
+        let err = PageFileModule::with_runner(Arc::new(nothing))
+            .fix("pagefile_fixed_size_c", None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("Nothing was changed"), "{err}");
+
+        // Set, and still fixed when read again.
+        let unchanged = MockCommandRunner::new();
+        unchanged.add_response(
+            "Set-CimInstance",
+            CmdOutput::ok("WAS|C:\\pagefile.sys|1024|2048\r\nNOW|C:\\pagefile.sys|1024|2048\r\n"),
+        );
+        let err = PageFileModule::with_runner(Arc::new(unchanged))
+            .fix("pagefile_fixed_size_c", None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("not system managed"), "{err}");
 
         let executed = mock.executed().join("\n");
         assert!(executed.contains("Win32_PageFileSetting"));

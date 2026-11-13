@@ -233,7 +233,15 @@ impl Media {
     pub fn parse(stdout: &str) -> Self {
         let mut media = Media::default();
         for line in stdout.lines() {
-            let fields: Vec<&str> = line.trim_end().split('\t').collect();
+            // Split first, then trim what ends the line. The last field can
+            // be empty, and its tab is then the end of the line: trimmed
+            // before the split, the line about a Windows 10 before 20H2,
+            // which has no `DisplayVersion`, had three fields for four, and
+            // no ISO was ever a source there (#274).
+            let mut fields: Vec<&str> = line.split('\t').collect();
+            if let Some(last) = fields.last_mut() {
+                *last = last.trim_end();
+            }
             match fields.as_slice() {
                 ["WINDOWS", edition, build, display_version] => {
                     if let Ok(build) = build.parse() {
@@ -447,6 +455,25 @@ mod tests {
         let media = Media::parse(&enterprise);
         assert_eq!(media.best(), None);
         assert_eq!(media.images.len(), 10);
+    }
+
+    /// #274. Windows 10 1809 to 2004, LTSC 2019 included, has no
+    /// `DisplayVersion`: the script's line about this PC ends in a tab.
+    #[test]
+    fn a_windows_without_a_display_version_still_finds_its_image() {
+        let ltsc = format!(
+            "WINDOWS\tEnterpriseS\t17763\t\r\n{}{}",
+            image_line(1, "EnterpriseS", "10.0.17763.1", r"E:\sources\install.wim"),
+            image_line(2, "Professional", "10.0.17763.1", r"E:\sources\install.wim"),
+        );
+        let media = Media::parse(&ltsc);
+        let windows = media.windows.as_ref().expect("the line about this PC");
+        assert_eq!(
+            (windows.edition.as_str(), windows.build),
+            ("EnterpriseS", 17763)
+        );
+        assert_eq!(windows.display_version, "");
+        assert_eq!(media.best().map(|image| image.index), Some(1));
     }
 
     /// The download page offers only the newest release, so a 25H2 PC is

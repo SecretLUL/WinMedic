@@ -116,10 +116,21 @@ impl WinMedicApp {
         app.start_update_check();
         app.start_crash_check();
 
+        // Opening in Advanced mode, the window is where eframe put it back.
+        let window = if app.config.advanced_mode {
+            window::WindowLock::default()
+        } else {
+            window::WindowLock::remembering(
+                cc.storage
+                    .and_then(|storage| storage.get_string(window::KEPT_AS))
+                    .and_then(|stored| window::Geometry::from_stored(&stored)),
+            )
+        };
+
         Self {
             app,
             last_poll: Instant::now(),
-            window: window::WindowLock::default(),
+            window,
             taskbar: taskbar::Taskbar::of(cc),
         }
     }
@@ -372,6 +383,13 @@ impl eframe::App for WinMedicApp {
         });
     }
 
+    /// eframe saves the window's own size, which in Easy mode is the locked
+    /// one. What Advanced mode gets back goes beside it.
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        let kept = self.window.kept().map(|geometry| geometry.stored());
+        storage.set_string(window::KEPT_AS, kept.unwrap_or_default());
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         for key in keys::shortcuts(ui.ctx()) {
             handle_key(&mut self.app, key);
@@ -383,6 +401,7 @@ impl eframe::App for WinMedicApp {
         }
 
         show(ui, &mut self.app);
+        keys::remember_keyboard_owner(ui.ctx(), self.app.dialog_open());
 
         // The close button, Alt+F4 or the taskbar: while repairs run, the
         // window stays until the run it cancels has ended.
@@ -543,17 +562,20 @@ mod tests {
 
     /// A window that also reads the keyboard, the way [`WinMedicApp::ui`] does.
     fn window_with_keys(app: App) -> Harness<'static, App> {
-        let mut harness = Harness::builder()
-            .with_size(egui::vec2(1400.0, 900.0))
-            .build_ui_state(
-                |ui, app: &mut App| {
-                    for key in keys::shortcuts(ui.ctx()) {
-                        handle_key(app, key);
-                    }
-                    show(ui, app);
-                },
-                app,
-            );
+        window_with_keys_at(app, egui::vec2(1400.0, 900.0))
+    }
+
+    fn window_with_keys_at(app: App, size: egui::Vec2) -> Harness<'static, App> {
+        let mut harness = Harness::builder().with_size(size).build_ui_state(
+            |ui, app: &mut App| {
+                for key in keys::shortcuts(ui.ctx()) {
+                    handle_key(app, key);
+                }
+                show(ui, app);
+                keys::remember_keyboard_owner(ui.ctx(), app.dialog_open());
+            },
+            app,
+        );
         theme::apply(&harness.ctx);
         harness.run_steps(3);
         harness
@@ -831,6 +853,58 @@ mod tests {
                 .query_by_label_contains("Module 'network' finished.")
                 .is_some()
         );
+    }
+
+    /// #294: on a 1920 x 1080 screen at 175 % the window is 1097 x 546
+    /// points. The header takes half of that, and the open log took its 220
+    /// points of the rest: its buttons were drawn over the second finding.
+    /// The log now leaves the list room, at every size the window can have.
+    #[test]
+    fn the_open_log_leaves_the_findings_their_room() {
+        let smallest = (window::MIN_SIZE.x, window::MIN_SIZE.y);
+        // The last one is the log opened on a large screen, at its full 220
+        // points, in a window that then gets the small screen's size: what
+        // the saved window state brings to a smaller screen.
+        let opened_at = [
+            (smallest, smallest),
+            ((960.0, 527.0), (960.0, 527.0)),
+            ((1097.0, 546.0), (1097.0, 546.0)),
+            ((1400.0, 900.0), (1400.0, 900.0)),
+            ((1400.0, 900.0), (1097.0, 546.0)),
+        ];
+        for (opened, size) in opened_at {
+            let mut harness = sized_window(scanned_app(), opened);
+            harness.get_by_label("Show log").click();
+            harness.run_steps(4);
+            harness.set_size(egui::vec2(size.0, size.1));
+            harness.run_steps(4);
+
+            let log = harness.get_by_label("Hide log").rect();
+            // The second finding: the first is the selected one, and its
+            // title is in the detail pane as well.
+            let rows: Vec<_> = harness
+                .query_all_by_label_contains("Temp bloat files")
+                .map(|row| row.rect())
+                .collect();
+            assert!(!rows.is_empty(), "{size:?}: the second finding is gone");
+            for row in rows {
+                assert!(
+                    row.bottom() <= log.top(),
+                    "{size:?}: the log (from {}) covers the second finding (to {})",
+                    log.top(),
+                    row.bottom()
+                );
+            }
+            // And the log is still a log: its text is drawn below its buttons,
+            // inside the window.
+            let line = harness
+                .get_by_label_contains("[X] Failed: access denied.")
+                .rect();
+            assert!(
+                line.top() >= log.bottom() && line.bottom() <= size.1,
+                "{size:?}: the log's text at {line:?}, its buttons at {log:?}"
+            );
+        }
     }
 
     /// #155: the page was drawn before the repair ran. Nothing was picked, so
@@ -1784,6 +1858,173 @@ mod tests {
         harness.get_by_label("Easy mode (F7)").click();
         harness.run();
         assert!(!harness.state().config.advanced_mode);
+    }
+
+    /// #269. The Esc that takes the caret out of the search box is egui's: it
+    /// does not clear the filters as well. The next one is WinMedic's again.
+    #[test]
+    fn an_esc_that_leaves_the_search_box_does_nothing_else() {
+        let mut app = scanned_app();
+        app.severity_filter = Some(Severity::Critical);
+        let mut harness = window_with_keys(app);
+
+        harness.get_by_role(Role::TextInput).click();
+        harness.run();
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+        assert_eq!(
+            harness.state().severity_filter,
+            Some(Severity::Critical),
+            "the filter stays"
+        );
+
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+        assert_eq!(harness.state().severity_filter, None);
+    }
+
+    /// #269. In a dialog, Esc closes the dialog at once, also when its text
+    /// field has the caret.
+    #[test]
+    fn esc_closes_a_dialog_whose_field_has_the_caret() {
+        let mut app = scanned_app();
+        app.active_tab = TAB_SETTINGS;
+        app.selected_setting_index = 4;
+        app.open_setting_input();
+        let mut harness = window_with_keys(app);
+        assert!(harness.state().setting_input.is_some());
+
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+        assert!(harness.state().setting_input.is_none());
+    }
+
+    /// Enter on a setting that takes a number opens its dialog. The dialog
+    /// read the same Enter as "save" and closed in the frame it opened.
+    #[test]
+    fn enter_opens_the_number_dialog_and_a_second_enter_saves_it() {
+        let mut app = scanned_app();
+        app.active_tab = TAB_SETTINGS;
+        app.selected_setting_index = 4;
+        let mut harness = window_with_keys(app);
+
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        assert!(
+            harness.state().setting_input.is_some(),
+            "the dialog is open: {:?}",
+            harness.state().status_message
+        );
+
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        assert!(harness.state().setting_input.is_none());
+        assert!(
+            harness
+                .state()
+                .status_message
+                .as_deref()
+                .is_some_and(|message| message.starts_with("Setting ")),
+            "{:?}",
+            harness.state().status_message
+        );
+    }
+
+    /// #269. A key held down is one press, unless holding it means "go on":
+    /// F7 held does not flip the mode back and forth.
+    #[test]
+    fn a_held_key_is_passed_on_only_where_it_moves_through_a_list() {
+        // egui itself tells a repeat from a press: a key that is down already.
+        let down = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let mut harness = window_with_keys(scanned_app());
+        let advanced = harness.state().config.advanced_mode;
+
+        for _ in 0..4 {
+            harness.event(down(egui::Key::F7));
+            harness.run();
+        }
+        assert_ne!(
+            harness.state().config.advanced_mode,
+            advanced,
+            "switched once, by the press"
+        );
+
+        let mut harness = window_with_keys(scanned_app());
+        // Each one moves on; from the last finding that is back to the first.
+        let mut at = harness.state().selected_filtered_index;
+        for _ in 0..2 {
+            harness.event(down(egui::Key::ArrowDown));
+            harness.run();
+            assert_ne!(harness.state().selected_filtered_index, at);
+            at = harness.state().selected_filtered_index;
+        }
+    }
+
+    /// The leftmost text `label` in the window: a finding's title in the list,
+    /// not its copy in the detail pane.
+    fn leftmost(harness: &Harness<'static, App>, label: &str) -> egui::Rect {
+        harness
+            .query_all_by_label(label)
+            .map(|node| node.rect())
+            .min_by(|a, b| a.min.x.total_cmp(&b.min.x))
+            .unwrap_or_else(|| panic!("nothing is labelled {label:?}"))
+    }
+
+    /// End, PgDn and the arrow keys changed the detail pane and left the list
+    /// where it was: Space then ticked a row nobody could see.
+    #[test]
+    fn the_findings_list_scrolls_to_the_row_the_keyboard_moved_to() {
+        let mut app = scanned_app();
+        app.issues = (0..60)
+            .map(|n| {
+                issue(
+                    &format!("finding_{n}"),
+                    &format!("Finding number {n:02}"),
+                    Severity::Warning,
+                )
+            })
+            .collect();
+        let mut harness = window_with_keys(app);
+        let in_window = |rect: egui::Rect| rect.top() >= 0.0 && rect.bottom() <= 900.0;
+        assert!(in_window(leftmost(&harness, "Finding number 00")));
+        assert!(!in_window(leftmost(&harness, "Finding number 59")));
+
+        harness.key_press(egui::Key::End);
+        harness.run();
+        assert_eq!(harness.state().selected_filtered_index, 59);
+        assert!(in_window(leftmost(&harness, "Finding number 59")));
+
+        harness.key_press(egui::Key::Home);
+        harness.run();
+        assert!(in_window(leftmost(&harness, "Finding number 00")));
+    }
+
+    /// The same for the settings, at the smallest window size.
+    #[test]
+    fn the_settings_scroll_to_the_row_the_keyboard_moved_to() {
+        let mut app = scanned_app();
+        app.active_tab = TAB_SETTINGS;
+        let last = crate::config::AppConfig::SETTING_COUNT - 1;
+        let label = app.config.setting_row(last).unwrap().0;
+        let mut harness = window_with_keys_at(app, window::MIN_SIZE);
+        let in_window = |rect: egui::Rect| rect.top() >= 0.0 && rect.bottom() <= window::MIN_SIZE.y;
+        assert!(
+            !in_window(leftmost(&harness, label)),
+            "{label} fits already"
+        );
+
+        for _ in 0..last {
+            harness.key_press(egui::Key::ArrowDown);
+            harness.run();
+        }
+        assert_eq!(harness.state().selected_setting_index, last);
+        assert!(in_window(leftmost(&harness, label)));
     }
 
     /// F7 types nothing, so it works from inside the search box too — and

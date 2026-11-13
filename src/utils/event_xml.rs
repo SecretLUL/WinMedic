@@ -72,6 +72,24 @@ pub fn read_events(output: Result<CmdOutput, String>) -> Result<Vec<EventRecord>
     Ok(parse_events(&out.stdout))
 }
 
+/// A program's crash, as Application Error 1000 logs it; see
+/// [`EventRecord::app_crash`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppCrash<'a> {
+    /// The program's file name, `explorer.exe`.
+    pub app: &'a str,
+    pub app_version: &'a str,
+    /// The file name of the module the crash happened in.
+    pub module: &'a str,
+    pub module_version: &'a str,
+    /// The exception code in hex, without `0x`.
+    pub exception: &'a str,
+    /// Where in the module, in hex.
+    pub offset: &'a str,
+    /// The module's full path, when the event has one.
+    pub module_path: Option<&'a str>,
+}
+
 /// One event, with the parts of it the modules decide on.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EventRecord {
@@ -93,6 +111,58 @@ impl EventRecord {
             .iter()
             .find(|(field, _)| field == name)
             .map(|(_, value)| value.as_str())
+    }
+
+    /// What an Application Error 1000 event says, whichever of its two
+    /// layouts it has. `None` when it has neither.
+    ///
+    /// Windows 11 logs it with field names (`AppName`, `ModulePath`, ...).
+    /// Windows 10, and some Windows 11 PCs, log the classic event: the same
+    /// values without names, the application first, the module fourth. Read
+    /// by name only, no such event ever matched: no crash of Explorer in an
+    /// add-on was found there, and no crash of WinMedic offered (#260).
+    pub fn app_crash(&self) -> Option<AppCrash<'_>> {
+        if let Some(app) = self.data("AppName") {
+            let field = |name| self.data(name).unwrap_or_default();
+            return Some(AppCrash {
+                app,
+                app_version: field("AppVersion"),
+                module: field("ModuleName"),
+                module_version: field("ModuleVersion"),
+                exception: field("ExceptionCode"),
+                offset: field("FaultingOffset"),
+                module_path: self.data("ModulePath").filter(|path| !path.is_empty()),
+            });
+        }
+        if self.data.len() < 8 || self.data.iter().any(|(name, _)| !name.is_empty()) {
+            return None;
+        }
+        let at = |index: usize| self.data[index].1.as_str();
+        let module = at(3);
+        // The paths follow further down, not at the same place in every
+        // build: the module's is the full path that ends in its file name.
+        let module_path = self.data[8..]
+            .iter()
+            .map(|(_, value)| value.as_str())
+            .find(|value| {
+                let bytes = value.as_bytes();
+                bytes.len() > 3
+                    && bytes[0].is_ascii_alphabetic()
+                    && &bytes[1..3] == b":\\"
+                    && value
+                        .rsplit('\\')
+                        .next()
+                        .is_some_and(|file| file.eq_ignore_ascii_case(module))
+            });
+        Some(AppCrash {
+            app: at(0),
+            app_version: at(1),
+            module,
+            module_version: at(4),
+            exception: at(6),
+            offset: at(7),
+            module_path,
+        })
     }
 
     /// `2026-08-19 18:51:42 UTC  Microsoft-Windows-Kernel-Power  Event 41`
@@ -245,6 +315,44 @@ mod tests {
     const KERNEL_POWER_41: &str = include_str!("../../tests/fixtures/events/kernel_power_41.xml");
     const WER_BUGCHECK: &str = include_str!("../../tests/fixtures/events/wer_bugcheck_1001.xml");
     const SYSTEM_ERRORS: &str = include_str!("../../tests/fixtures/events/system_errors.xml");
+
+    /// #260. Both layouts of Application Error 1000 give the same crash.
+    #[test]
+    fn a_program_crash_is_read_with_and_without_field_names() {
+        let named = "<Event xmlns='x'><System><Provider Name='Application Error' Guid='{a0e9b465-b939-57d7-b27d-95d8e925ff57}'/><EventID>1000</EventID></System>\
+            <EventData><Data Name='AppName'>explorer.exe</Data><Data Name='AppVersion'>10.0.22621.2715</Data><Data Name='AppTimeStamp'>29e0887d</Data>\
+            <Data Name='ModuleName'>ntdll.dll</Data><Data Name='ModuleVersion'>10.0.22621.2506</Data><Data Name='ModuleTimeStamp'>bced4b82</Data>\
+            <Data Name='ExceptionCode'>c0000005</Data><Data Name='FaultingOffset'>0000000000033aca</Data><Data Name='ProcessId'>0x7f30</Data>\
+            <Data Name='ProcessCreationTime'>0x1da1ddd33a534b8</Data><Data Name='AppPath'>C:\\WINDOWS\\explorer.exe</Data>\
+            <Data Name='ModulePath'>C:\\WINDOWS\\SYSTEM32\\ntdll.dll</Data><Data Name='IntegratorReportId'>9b4b87a8</Data>\
+            <Data Name='PackageFullName'></Data><Data Name='PackageRelativeAppId'></Data></EventData></Event>";
+        let unnamed = "<Event xmlns='x'><System><Provider Name='Application Error'/><EventID Qualifiers='0'>1000</EventID></System>\
+            <EventData><Data>explorer.exe</Data><Data>10.0.22621.2715</Data><Data>29e0887d</Data><Data>ntdll.dll</Data>\
+            <Data>10.0.22621.2506</Data><Data>bced4b82</Data><Data>c0000005</Data><Data>0000000000033aca</Data><Data>c00000fd</Data>\
+            <Data>00007ffd56b4fd5a</Data><Data>3a20</Data><Data>01da1ddc5cb4da50</Data><Data>C:\\WINDOWS\\explorer.exe</Data>\
+            <Data>C:\\WINDOWS\\SYSTEM32\\ntdll.dll</Data><Data>c6e1d9d7</Data><Data></Data><Data></Data></EventData></Event>";
+        let expected = AppCrash {
+            app: "explorer.exe",
+            app_version: "10.0.22621.2715",
+            module: "ntdll.dll",
+            module_version: "10.0.22621.2506",
+            exception: "c0000005",
+            offset: "0000000000033aca",
+            module_path: Some(r"C:\WINDOWS\SYSTEM32\ntdll.dll"),
+        };
+        for xml in [named, unnamed] {
+            let events = parse_events(xml);
+            assert_eq!(events[0].app_crash().as_ref(), Some(&expected), "{xml}");
+        }
+
+        // Too few values, or another event's fields: no crash is made up.
+        let short = parse_events(
+            "<Event xmlns='x'><System><Provider Name='Application Error'/><EventID>1000</EventID></System>\
+             <EventData><Data>a.exe</Data><Data>1.0</Data></EventData></Event>",
+        );
+        assert_eq!(short[0].app_crash(), None);
+        assert_eq!(parse_events(KERNEL_POWER_41)[0].app_crash(), None);
+    }
 
     #[test]
     fn reads_provider_id_level_time_and_data() {

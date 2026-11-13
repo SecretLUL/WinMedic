@@ -558,7 +558,7 @@ fn system_dir() -> Option<&'static Path> {
 
 /// The Windows folder, from `GetSystemWindowsDirectoryW`, which unlike
 /// `GetWindowsDirectoryW` is the shared one on a terminal server too.
-fn windows_dir() -> Option<&'static Path> {
+pub(crate) fn windows_dir() -> Option<&'static Path> {
     static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     #[cfg(windows)]
     let dir = DIR.get_or_init(|| {

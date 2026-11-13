@@ -1,4 +1,4 @@
-use crate::engine::issue::{Issue, RiskScore, Severity};
+use crate::engine::issue::{BY_HAND, Issue, RiskScore, Severity};
 use crate::modules::crash_timeline::logged_at;
 use crate::modules::event_log::{
     last_passed_memory_test, memory_test_finding, schedule_memory_test,
@@ -56,6 +56,45 @@ impl WheaLoggerModule {
 
     fn lookback_ms(&self) -> u64 {
         u64::from(self.window_hours()) * 3_600_000
+    }
+
+    /// The fatal, processor and memory events (1, 18, 19, 47) of the window
+    /// that are not among `events`, for when the first query came back full.
+    ///
+    /// A PC with a link power management problem logs event 17 many times a
+    /// minute. The newest [`WHEA_EVENT_LIMIT`] events are then all 17, and a
+    /// machine check from yesterday was never returned: only the PCIe
+    /// finding appeared (#265). Storage asks twice for the same reason. A
+    /// second query that fails leaves the first one's events standing.
+    async fn older_severe_events(
+        &self,
+        dbg: &DebugTrace,
+        events: &[EventRecord],
+    ) -> Vec<EventRecord> {
+        let query = system_log_query(
+            &format!("Provider[@Name='{WHEA_PROVIDER}'] and ({SEVERE_EVENT_IDS})"),
+            self.lookback_ms(),
+            WHEA_EVENT_LIMIT,
+        );
+        let query: Vec<&str> = query.iter().map(String::as_str).collect();
+        let out = dbg
+            .run(
+                &self.runner,
+                "wevtutil.exe",
+                &query,
+                Duration::from_secs(15),
+            )
+            .await;
+        match read_events(out) {
+            Ok(severe) => severe.into_iter().filter(|e| !events.contains(e)).collect(),
+            Err(err) => {
+                dbg.warn(format!(
+                    "The older fatal, processor and memory events could not be read: {err}"
+                ))
+                .await;
+                Vec::new()
+            }
+        }
     }
 
     async fn send_progress(
@@ -119,7 +158,7 @@ impl DiagnosticModule for WheaLoggerModule {
         let query = system_log_query(
             &format!("Provider[@Name='{WHEA_PROVIDER}']"),
             self.lookback_ms(),
-            50,
+            WHEA_EVENT_LIMIT,
         );
         let query: Vec<&str> = query.iter().map(String::as_str).collect();
 
@@ -147,8 +186,15 @@ impl DiagnosticModule for WheaLoggerModule {
         sleep(Duration::from_millis(150)).await;
 
         // A refused query is not a clean bill of health (see `read_events`).
-        let parsed_events = match read_events(whea_out) {
-            Ok(events) => whea_records(events),
+        let (parsed_events, capped) = match read_events(whea_out) {
+            Ok(mut events) => {
+                let capped = events.len() >= WHEA_EVENT_LIMIT;
+                if capped {
+                    let older = self.older_severe_events(&dbg, &events).await;
+                    events.extend(older);
+                }
+                (whea_records(events), capped)
+            }
             Err(err) => {
                 dbg.warn(format!("Failed to query WHEA event logs: {}", err))
                     .await;
@@ -322,6 +368,12 @@ impl DiagnosticModule for WheaLoggerModule {
 
         if !pcie_events.is_empty() {
             let count = pcie_events.len();
+            // The query stops at its limit, so a full answer is a floor.
+            let counted = if capped {
+                format!("{count} or more")
+            } else {
+                count.to_string()
+            };
             let mut devices = HashSet::new();
             let mut bdfs = HashSet::new();
 
@@ -368,17 +420,17 @@ impl DiagnosticModule for WheaLoggerModule {
                 RiskScore::Low,
                 format!(
                     "{} corrected PCIe hardware error(s) logged by WHEA. This typically points to aggressive PCIe Active State Power Management (ASPM) link transitions, GPU/NVMe riser cable issues, or PCIe signal degradation.",
-                    count
+                    counted
                 ),
                 format!(
                     "Bus:Device:Function: {}\nDevice ID: {}\nTotal Occurrences: {}\n\nEvent Log Excerpt:\n{}",
-                    bdf_str, dev_str, count, sample_snippet
+                    bdf_str, dev_str, counted, sample_snippet
                 ),
                 "Disable aggressive PCIe Link State Power Management (ASPM) via powercfg and check PCIe riser/seating",
                 vec![
-                    "Disable PCIe Link State Power Management (ASPM) via powercfg".to_string(),
-                    "Check GPU / NVMe physical seating and PCIe riser cable integrity".to_string(),
-                    "Update motherboard chipset and NVMe / GPU driver firmware".to_string(),
+                    "Switch PCIe Link State Power Management (ASPM) off on mains and battery (powercfg /setacvalueindex and /setdcvalueindex ... ASPM 0)".to_string(),
+                    format!("{BY_HAND}Check GPU / NVMe physical seating and PCIe riser cable integrity"),
+                    format!("{BY_HAND}Update motherboard chipset and NVMe / GPU driver firmware"),
                 ],
             );
 
@@ -614,6 +666,14 @@ impl WheaLoggerModule {
 }
 
 const WHEA_PROVIDER: &str = "Microsoft-Windows-WHEA-Logger";
+
+/// How many events one query returns, the newest first.
+const WHEA_EVENT_LIMIT: usize = 50;
+
+/// The events that are no corrected PCIe error: a fatal error of an unknown
+/// component (1), a machine check (18), a cache hierarchy error (19) and a
+/// memory error (47).
+const SEVERE_EVENT_IDS: &str = "EventID=1 or EventID=18 or EventID=19 or EventID=47";
 
 /// A week, see [`WheaLoggerModule::window_hours`].
 const MIN_WINDOW_HOURS: u32 = 7 * 24;
@@ -1030,6 +1090,48 @@ mod tests {
         assert_eq!(issue.id, "whea_memory_error");
         assert_eq!(issue.severity, Severity::Critical);
         assert!(issue.technical_details.contains("0x1f4c8000"));
+    }
+
+    /// #265. Fifty corrected PCIe errors fill the first query; the memory
+    /// error behind them is asked for on its own.
+    #[tokio::test]
+    async fn a_burst_of_pcie_errors_does_not_hide_a_memory_error() {
+        let pcie = whea_event(
+            17,
+            3,
+            &[("Bus", "0x0"), ("Device", "0x1c"), ("Function", "0x5")],
+        );
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "EventID=47",
+            CmdOutput::ok(whea_event(47, 3, &[("PhysicalAddress", "0x1f4c8000")])),
+        );
+        mock.add_response("wevtutil.exe", CmdOutput::ok(pcie.repeat(WHEA_EVENT_LIMIT)));
+        let module = WheaLoggerModule::with_runner(ModuleConfig::default(), Arc::new(mock.clone()));
+
+        let issues = module.scan(None).await.expect("scan failed");
+
+        let ids: Vec<&str> = issues.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["whea_pcie_bus_error", "whea_memory_error"]);
+        assert!(
+            issues[0]
+                .technical_details
+                .contains("Total Occurrences: 50 or more"),
+            "{}",
+            issues[0].technical_details
+        );
+
+        // Below the limit the first query holds everything: no second one.
+        let mock = MockCommandRunner::new();
+        mock.add_response("wevtutil.exe", CmdOutput::ok(pcie.repeat(3)));
+        let module = WheaLoggerModule::with_runner(ModuleConfig::default(), Arc::new(mock.clone()));
+        let issues = module.scan(None).await.expect("scan failed");
+        assert!(
+            issues[0]
+                .technical_details
+                .contains("Total Occurrences: 3\n")
+        );
+        assert!(!mock.executed().iter().any(|c| c.contains("EventID=47")));
     }
 
     /// WHEA events 19 and 47 of 2026-08-20 and a memory test logged at

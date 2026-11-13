@@ -1,6 +1,8 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::crash_timeline::{DEFENDER_SIGNATURES, STORE_SERVICE, WU_PROVIDER, logged_at};
-use crate::modules::system_cleaner::{clean_path_contents, cleanup_result, format_bytes};
+use crate::modules::system_cleaner::{
+    clean_path_contents, cleanup_result, format_bytes, sweep_blocking,
+};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
 use crate::utils::event_xml::{EventRecord, read_events, system_log_query};
@@ -365,6 +367,29 @@ impl FailureCause {
     }
 }
 
+/// The folders an earlier reset renamed `dir` to: its siblings named
+/// `<dir>.winmedic-<time>`. Only real folders; a link is not followed.
+fn earlier_copies(dir: &std::path::Path) -> Vec<PathBuf> {
+    let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) else {
+        return Vec::new();
+    };
+    let prefix = format!("{}.winmedic-", name.to_string_lossy()).to_ascii_lowercase();
+    std::fs::read_dir(parent)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .starts_with(&prefix)
+                && entry.file_type().is_ok_and(|kind| kind.is_dir())
+        })
+        .map(|entry| entry.path())
+        .collect()
+}
+
 /// The finding for updates whose error code names no more specific cause.
 pub const UPDATE_RESET: &str = "wu_update_reset";
 
@@ -376,8 +401,24 @@ fn failed_list(updates: &[&FailedUpdate]) -> String {
         .join("\n")
 }
 
+/// Whether an `errorCode` says that nothing is wrong with Windows Update.
+///
+/// `0x80070103`: the driver offered is already installed, or is no better
+/// than the one that is. Windows Update offers it again and again and
+/// fails the same way each time, which is common and harmless. It fell
+/// under "nothing more specific" and got the component reset, which erases
+/// the update history and changes nothing about the driver: the finding
+/// came back with the next two attempts.
+fn needs_no_repair(error_code: &str) -> bool {
+    error_code.trim().eq_ignore_ascii_case("0x80070103")
+}
+
 /// One finding per cause, listing the updates behind it.
 pub fn failed_update_findings(module_id: &str, failed: &[FailedUpdate]) -> Vec<Issue> {
+    let failed: Vec<&FailedUpdate> = failed
+        .iter()
+        .filter(|u| !needs_no_repair(&u.error_code))
+        .collect();
     let mut causes: Vec<FailureCause> = failed
         .iter()
         .map(|u| FailureCause::of(&u.error_code))
@@ -389,6 +430,7 @@ pub fn failed_update_findings(module_id: &str, failed: &[FailedUpdate]) -> Vec<I
         .map(|cause| {
             let updates: Vec<&FailedUpdate> = failed
                 .iter()
+                .copied()
                 .filter(|u| FailureCause::of(&u.error_code) == cause)
                 .collect();
             let title = match updates.as_slice() {
@@ -501,6 +543,25 @@ impl WindowsUpdatesModule {
         say("Stopping the Windows Update services...".to_string()).await;
         let guard = self.stop_services("nothing was renamed").await?;
 
+        // What earlier resets renamed. Nothing referred to those folders
+        // again: each reset left a SoftwareDistribution.winmedic-<time>
+        // (the download cache and the datastore, possibly gigabytes) and a
+        // catroot2.winmedic-<time> behind for good. A reset that is asked
+        // for again shows the earlier one did not help, so its copies go.
+        let mut cleared = 0;
+        for dir in &self.component_dirs {
+            for old in earlier_copies(dir) {
+                say(format!(
+                    "Deleting {} from an earlier reset...",
+                    old.display()
+                ))
+                .await;
+                if std::fs::remove_dir_all(&old).is_ok() {
+                    cleared += 1;
+                }
+            }
+        }
+
         let suffix = format!("winmedic-{}", chrono::Local::now().format("%Y%m%d-%H%M%S"));
         let mut renamed: Vec<(PathBuf, PathBuf)> = Vec::new();
         for dir in &self.component_dirs {
@@ -543,7 +604,12 @@ impl WindowsUpdatesModule {
             ));
         }
         Ok(format!(
-            "Windows Update's components were reset ({moved}) and its services run. Run Windows Update now; the next scan shows whether the update installs. The update history in Settings starts empty."
+            "Windows Update's components were reset ({moved}) and its services run. Run Windows Update now; the next scan shows whether the update installs. The update history in Settings starts empty. Once updates install again, the renamed folders can be deleted.{}",
+            if cleared > 0 {
+                format!(" {cleared} folder(s) an earlier reset had renamed were deleted.")
+            } else {
+                String::new()
+            }
         ))
     }
 
@@ -564,9 +630,9 @@ impl WindowsUpdatesModule {
 
         say("Emptying SoftwareDistribution\\Download...").await;
         let dir = self.download_dir.clone();
-        let stats = tokio::task::spawn_blocking(move || clean_path_contents(&dir))
+        let stats = sweep_blocking(move || clean_path_contents(&dir))
             .await
-            .map_err(|e| format!("The cache sweep stopped: {e}"))?;
+            .ok_or("The cache sweep stopped before it was through.")?;
 
         say("Starting the Windows Update services again...").await;
         let not_running = self.start_services(guard).await?;
@@ -1527,6 +1593,48 @@ mod tests {
             .filter(|name| name.contains(".winmedic-"))
             .collect();
         assert_eq!(renamed.len(), 2, "{renamed:?}");
+
+        // Windows creates the folders anew; a second reset renames those and
+        // takes the first one's copies away instead of piling up.
+        let dirs = component_dirs(&cache);
+        let again = cache
+            .0
+            .join("SoftwareDistribution.winmedic-20260101-000000");
+        std::fs::create_dir_all(again.join("Download")).unwrap();
+        std::fs::write(again.join("Download").join("old.cab"), b"x").unwrap();
+        // Not a copy of either folder: left alone.
+        let other = cache.0.join("SoftwareDistribution.bak");
+        std::fs::create_dir_all(&other).unwrap();
+        let mock = services(SERVICE_STOPPED, SERVICE_RUNNING);
+        let msg = module(&mock, &cache)
+            .with_component_dirs(dirs)
+            .fix(UPDATE_RESET, None)
+            .await
+            .unwrap();
+        assert!(
+            msg.contains("3 folder(s) an earlier reset had renamed were deleted"),
+            "{msg}"
+        );
+        assert!(msg.contains("can be deleted"), "{msg}");
+        let left: Vec<String> = std::fs::read_dir(&cache.0)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".winmedic-"))
+            .collect();
+        assert_eq!(left.len(), 2, "{left:?}");
+        assert!(!again.exists() && other.exists());
+    }
+
+    /// 0x80070103: the driver offered is installed already, or no better.
+    #[test]
+    fn a_driver_that_is_not_needed_gets_no_reset() {
+        let failed = failing_updates(&parse(&one_update_failing("0x80070103")));
+        assert!(!failed.is_empty());
+        assert!(failed_update_findings("windows_updates", &failed).is_empty());
+        // Any other code without a cause of its own still does.
+        let failed = failing_updates(&parse(&one_update_failing("0x80246007")));
+        let issues = failed_update_findings("windows_updates", &failed);
+        assert_eq!(issues[0].id, UPDATE_RESET);
     }
 
     #[tokio::test]

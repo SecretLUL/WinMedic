@@ -1,7 +1,7 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
 use crate::safety::reg_backup::RegBackupManager;
-use crate::utils::cmd::{CmdOutput, CommandRunner, SystemCommandRunner};
+use crate::utils::cmd::{CmdOutput, CommandRunner, SystemCommandRunner, is_timeout};
 use crate::utils::registry::{self, RegKeyValues};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,18 +27,47 @@ const DNS_PROBE_NAMES: &[&str] = &["dns.google", "www.microsoft.com"];
 /// The check this replaces looked for the words "Error" and "Fehler" in the
 /// catalog, which says nothing about its health and nothing at all in any
 /// third language.
-pub fn winsock_provider_paths(catalog: &str) -> Vec<String> {
-    catalog
-        .lines()
-        .filter_map(|line| {
-            let (_, value) = line.split_once(':')?;
+///
+/// An entry of the 32-bit catalog carries `(32)` after its type
+/// ("Eintragstyp: Basisdienstanbieter (32)"), in every language, and the
+/// entries are separated by empty lines.
+pub fn winsock_provider_paths(catalog: &str) -> Vec<WinsockProvider> {
+    let mut for_32_bit = false;
+    let mut providers = Vec::new();
+    for line in catalog.lines().map(str::trim) {
+        if line.is_empty() {
+            for_32_bit = false;
+        } else if line.ends_with("(32)") {
+            for_32_bit = true;
+        } else if let Some((_, value)) = line.split_once(':') {
             let value = value.trim();
-            value
-                .to_ascii_lowercase()
-                .ends_with(".dll")
-                .then(|| value.to_string())
-        })
-        .collect()
+            if value.to_ascii_lowercase().ends_with(".dll") {
+                providers.push(WinsockProvider {
+                    path: value.to_string(),
+                    for_32_bit,
+                });
+            }
+        }
+    }
+    providers
+}
+
+/// A provider DLL the Winsock catalog names, and which catalog names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WinsockProvider {
+    pub path: String,
+    /// From the 32-bit catalog: 32-bit programs load it, and for them
+    /// `%SystemRoot%\system32` is `SysWOW64`.
+    pub for_32_bit: bool,
+}
+
+/// `...\system32\x.dll` as a 32-bit program gets it: `...\SysWOW64\x.dll`.
+fn as_32_bit_programs_see(path: &str) -> String {
+    const SYSTEM32: &str = r"\system32\";
+    match path.to_ascii_lowercase().find(SYSTEM32) {
+        Some(at) => format!(r"{}\SysWOW64\{}", &path[..at], &path[at + SYSTEM32.len()..]),
+        None => path.to_string(),
+    }
 }
 
 /// Whether a provider path names a file that is not there.
@@ -47,11 +76,28 @@ pub fn winsock_provider_paths(catalog: &str) -> Vec<String> {
 /// by software that has since been removed. A path with an environment
 /// variable this process cannot expand is not judged — an unverifiable entry
 /// is not evidence of a broken one.
-pub fn provider_is_missing(path: &str) -> bool {
-    match expand_env_vars(path) {
+///
+/// A 32-bit entry was looked for where this 64-bit process sees
+/// `system32`. A provider that ships only a 32-bit DLL, in `SysWOW64`, was
+/// "does not exist", and the reset offered for it removes a working
+/// component.
+pub fn provider_is_missing(provider: &WinsockProvider) -> bool {
+    provider_is_missing_where(provider, &|path| path.exists())
+}
+
+fn provider_is_missing_where(
+    provider: &WinsockProvider,
+    exists: &dyn Fn(&std::path::Path) -> bool,
+) -> bool {
+    match expand_env_vars(&provider.path) {
         Some(expanded) => {
+            let expanded = if provider.for_32_bit {
+                as_32_bit_programs_see(&expanded)
+            } else {
+                expanded
+            };
             let expanded = std::path::Path::new(&expanded);
-            expanded.is_absolute() && !expanded.exists()
+            expanded.is_absolute() && !exists(expanded)
         }
         None => false,
     }
@@ -74,7 +120,8 @@ fn expand_env_vars(path: &str) -> Option<String> {
 
 /// What one resolver probe did.
 struct DnsProbe {
-    resolved: bool,
+    /// Whether the name resolved; `None` when the probe did not get to ask.
+    resolved: Option<bool>,
     detail: String,
 }
 
@@ -99,6 +146,14 @@ pub fn dns_probe_resolved(out: &CmdOutput) -> bool {
             .stdout
             .lines()
             .any(|line| line.trim().parse::<std::net::IpAddr>().is_ok())
+}
+
+/// Whether [`dns_probe_script`] printed its `FAILED|` line: the resolver was
+/// asked and gave no address.
+fn dns_probe_said_no(out: &CmdOutput) -> bool {
+    out.stdout
+        .lines()
+        .any(|line| line.trim().starts_with("FAILED|"))
 }
 
 /// Why [`dns_probe_script`] returned no address, e.g.
@@ -393,6 +448,24 @@ pub fn proxy_endpoints(server: &str) -> Vec<String> {
         }
     }
     endpoints
+}
+
+/// Whether every endpoint of a proxy list is on this PC (`127.0.0.1`,
+/// `localhost`, `[::1]`): such a proxy answers or not whatever the network
+/// does.
+pub fn proxy_is_on_this_pc(server: &str) -> bool {
+    let endpoints = proxy_endpoints(server);
+    !endpoints.is_empty()
+        && endpoints.iter().all(|endpoint| {
+            let host = endpoint
+                .rsplit_once(':')
+                .map_or(endpoint.as_str(), |(host, _)| host);
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .trim_matches(['[', ']'])
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|address| address.is_loopback())
+        })
 }
 
 /// Whether something accepts a TCP connection at `host:port`, and if not,
@@ -834,35 +907,61 @@ impl NetworkModule {
             .await
         {
             Ok(out) if dns_probe_resolved(&out) => DnsProbe {
-                resolved: true,
+                resolved: Some(true),
                 detail: format!("{name} resolved"),
             },
-            Ok(out) => DnsProbe {
-                resolved: false,
+            // The resolver was asked and said no: the script's own line.
+            Ok(out) if dns_probe_said_no(&out) => DnsProbe {
+                resolved: Some(false),
                 detail: format!("{name}: {}", dns_probe_failure(&out)),
             },
-            Err(err) => DnsProbe {
-                resolved: false,
+            // A resolver that is dead keeps the lookup waiting.
+            Err(err) if is_timeout(&err) => DnsProbe {
+                resolved: Some(false),
                 detail: format!("{name} could not be looked up: {err}"),
+            },
+            // PowerShell did not start, or ended without the script's
+            // line: nobody asked the resolver.
+            Ok(out) => DnsProbe {
+                resolved: None,
+                detail: format!("{name} was not looked up: {}", dns_probe_failure(&out)),
+            },
+            Err(err) => DnsProbe {
+                resolved: None,
+                detail: format!("{name} was not looked up: {err}"),
             },
         }
     }
 
-    /// Whether the system resolver answers at all, with the per-probe log.
+    /// Whether the system resolver answers at all, with the per-probe log:
+    /// `Some(true)` as soon as one name resolves, `Some(false)` when none
+    /// does, `None` when no probe got to ask it. A probe that did not run
+    /// counted as "not resolved", and a PC on which PowerShell could not be
+    /// started got a critical "DNS name resolution failed" (#272).
     ///
     /// The log is returned either way: it is what the finding's technical
     /// details show, and what the repair uses to say whether it changed
     /// anything.
-    async fn resolver_works(&self) -> (bool, Vec<String>) {
+    async fn resolver_state(&self) -> (Option<bool>, Vec<String>) {
         let mut log = Vec::new();
+        let mut asked = false;
         for name in DNS_PROBE_NAMES {
             let probe = self.probe_name(name).await;
             log.push(probe.detail);
-            if probe.resolved {
-                return (true, log);
+            match probe.resolved {
+                Some(true) => return (Some(true), log),
+                Some(false) => asked = true,
+                None => {}
             }
         }
-        (false, log)
+        (asked.then_some(false), log)
+    }
+
+    /// [`Self::resolver_state`] for a repair, which has changed something
+    /// and can only call it a success when names are seen to resolve.
+    async fn resolver_works(&self) -> (bool, Vec<String>) {
+        let (state, log) = self.resolver_state().await;
+        (state == Some(true), log)
     }
 
     async fn send_progress(
@@ -917,9 +1016,11 @@ impl DiagnosticModule for NetworkModule {
         )
         .await;
 
+        let mut adapters_result_was_read = true;
         let adapters = match self.adapters().await {
             Ok(adapters) => adapters,
             Err(err) => {
+                adapters_result_was_read = false;
                 Self::send_progress(
                     &progress_tx,
                     15,
@@ -930,18 +1031,58 @@ impl DiagnosticModule for NetworkModule {
                 Vec::new()
             }
         };
-        let connected = adapters.iter().any(AdapterIpv4::has_usable_address);
+        let adapters_read = adapters_result_was_read;
+
+        // 2. DNS Resolution Check. Before the adapters are judged: what the
+        // resolver and the ping say is also what tells whether this PC is
+        // connected at all.
+        Self::send_progress(
+            &progress_tx,
+            12,
+            "Testing DNS name resolution...",
+            Some("Asking the machine's own resolver for two independent names..."),
+        )
+        .await;
+        sleep(Duration::from_millis(150)).await;
+
+        let (resolver, probe_log) = self.resolver_state().await;
+        let dns_healthy = resolver == Some(true);
+        // By address, asked only when names do not resolve.
+        let ip_reachable = if dns_healthy {
+            None
+        } else {
+            Some(self.ip_reachable().await)
+        };
+
+        // Whether this PC is connected without the adapter in question:
+        // names resolve, 1.1.1.1 answers, or a physical adapter holds an
+        // address. `None` when none of that is so and the adapters could not
+        // be read. Only the adapters used to count, and only physical ones
+        // with an IPv4 address: behind a Hyper-V switch or a network bridge
+        // the address sits on a virtual adapter, and an adapter switched off
+        // on purpose became "this PC has no network", ticked (#272).
+        let connected = if dns_healthy
+            || ip_reachable == Some(true)
+            || adapters.iter().any(AdapterIpv4::has_usable_address)
+        {
+            Some(true)
+        } else {
+            adapters_read.then_some(false)
+        };
         for adapter in adapters.iter().filter(|a| a.dhcp_failed()) {
-            let (severity, consequence) = if connected {
-                (
+            let (severity, consequence) = match connected {
+                Some(true) => (
                     Severity::Info,
                     "Another adapter is connected, so this may be a cable to a device that hands out no addresses.",
-                )
-            } else {
-                (
+                ),
+                Some(false) => (
                     Severity::Warning,
                     "No other adapter has an address either, so this PC is cut off from the network.",
-                )
+                ),
+                None => (
+                    Severity::Info,
+                    "Whether another adapter is connected could not be read.",
+                ),
             };
             let mut issue = Issue::new(
                 no_dhcp_issue_id(&adapter.name),
@@ -968,23 +1109,26 @@ impl DiagnosticModule for NetworkModule {
             issues.push(issue);
         }
         let mut adapter_explains_offline =
-            !connected && adapters.iter().any(AdapterIpv4::dhcp_failed);
+            connected == Some(false) && adapters.iter().any(AdapterIpv4::dhcp_failed);
 
         // Physical adapters switched off in Windows, which the query above
         // does not see.
         let physical = match self.physical_adapters().await {
             Ok(physical) => {
                 for adapter in physical.iter().filter(|a| a.switched_off()) {
-                    let (severity, consequence) = if connected {
-                        (
+                    let (severity, consequence) = match connected {
+                        Some(true) => (
                             Severity::Info,
-                            "Another adapter is connected, so it may have been switched off on purpose.",
-                        )
-                    } else {
-                        (
+                            "This PC is connected without it, so it may have been switched off on purpose.",
+                        ),
+                        Some(false) => (
                             Severity::Warning,
                             "No other adapter is connected, so this PC has no network.",
-                        )
+                        ),
+                        None => (
+                            Severity::Info,
+                            "Whether another adapter is connected could not be read.",
+                        ),
                     };
                     let mut issue = Issue::new(
                         adapter_off_issue_id(&adapter.name),
@@ -1010,7 +1154,8 @@ impl DiagnosticModule for NetworkModule {
                     issues.push(issue);
                 }
                 // Switching it on is the repair; a Winsock reset is not.
-                adapter_explains_offline |= !connected && physical.iter().any(|a| a.switched_off());
+                adapter_explains_offline |=
+                    connected == Some(false) && physical.iter().any(|a| a.switched_off());
                 physical
             }
             Err(err) => {
@@ -1025,18 +1170,6 @@ impl DiagnosticModule for NetworkModule {
             }
         };
 
-        // 2. DNS Resolution Check
-        Self::send_progress(
-            &progress_tx,
-            20,
-            "Testing DNS name resolution...",
-            Some("Asking the machine's own resolver for two independent names..."),
-        )
-        .await;
-        sleep(Duration::from_millis(150)).await;
-
-        let (dns_healthy, probe_log) = self.resolver_works().await;
-
         // DNS servers typed in on a connected adapter, left behind by a VPN
         // or an ad blocker that is gone. Judged only while names do not
         // resolve: asked directly, a server does not answer either where a
@@ -1046,7 +1179,7 @@ impl DiagnosticModule for NetworkModule {
         // is off answers nothing either, and only when none of them answers.
         let mut dead_static_dns = false;
         let up: Vec<&PhysicalAdapter> = physical.iter().filter(|a| a.status == "Up").collect();
-        if !dns_healthy && !up.is_empty() {
+        if resolver == Some(false) && !up.is_empty() {
             match self.tcpip_interfaces().await {
                 Ok(interfaces) => {
                     for adapter in up {
@@ -1054,7 +1187,7 @@ impl DiagnosticModule for NetworkModule {
                         else {
                             continue;
                         };
-                        if !self.ip_reachable().await {
+                        if ip_reachable != Some(true) {
                             Self::send_progress(
                                 &progress_tx,
                                 18,
@@ -1106,8 +1239,17 @@ impl DiagnosticModule for NetworkModule {
             }
         }
 
-        if !dns_healthy {
-            let ip_reachable = self.ip_reachable().await;
+        if resolver.is_none() {
+            // Nobody asked the resolver, so there is no verdict on it.
+            Self::send_progress(
+                &progress_tx,
+                45,
+                "DNS name resolution not checked",
+                Some(&probe_log.join("; ")),
+            )
+            .await;
+        } else if !dns_healthy {
+            let ip_reachable = ip_reachable == Some(true);
             let evidence = probe_log.join("\n");
 
             if ip_reachable && dead_static_dns {
@@ -1178,9 +1320,27 @@ impl DiagnosticModule for NetworkModule {
         )
         .await;
 
+        // With nothing reachable at all, a proxy that does not answer says
+        // nothing about the proxy: a router that is off answers nowhere. The
+        // finding was raised then, ticked, and Repair switched off the proxy
+        // a school or company network needs (#272). One on this PC itself is
+        // judged all the same.
+        let offline = resolver == Some(false) && ip_reachable == Some(false);
+        let not_judged = |server: &str| offline && !proxy_is_on_this_pc(server);
+
         match self.configured_user_proxy().await {
             Ok(Some(server)) => {
-                if let Err(log) = self.proxy_answers(&server).await {
+                if not_judged(&server) {
+                    Self::send_progress(
+                        &progress_tx,
+                        70,
+                        "Proxy not judged",
+                        Some(&format!(
+                            "This PC reaches nothing at all, so whether the proxy {server} answers says nothing."
+                        )),
+                    )
+                    .await;
+                } else if let Err(log) = self.proxy_answers(&server).await {
                     issues.push(Issue::new(
                         "net_proxy_active",
                         self.id(),
@@ -1233,7 +1393,15 @@ impl DiagnosticModule for NetworkModule {
                     Some(&format!("WinHTTP proxy: {}", proxy.server)),
                 )
                 .await;
-                if let Err(log) = self.proxy_answers(&proxy.server).await {
+                if not_judged(&proxy.server) {
+                    Self::send_progress(
+                        &progress_tx,
+                        75,
+                        "WinHTTP proxy not judged",
+                        Some("This PC reaches nothing at all."),
+                    )
+                    .await;
+                } else if let Err(log) = self.proxy_answers(&proxy.server).await {
                     issues.push(Issue::new(
                         "net_winhttp_proxy_dead",
                         self.id(),
@@ -1289,13 +1457,29 @@ impl DiagnosticModule for NetworkModule {
                 Duration::from_secs(6),
             )
             .await;
-        if let Ok(out) = winsock_audit {
+        if let Ok(out) = &winsock_audit
+            && !out.success
+        {
+            // netsh did not list the catalog: that is no catalog without
+            // providers, which is what it used to be taken for.
+            Self::send_progress(
+                &progress_tx,
+                95,
+                "Winsock catalog not checked",
+                Some(&format!(
+                    "netsh winsock show catalog failed (exit code {:?}).",
+                    out.exit_code
+                )),
+            )
+            .await;
+        } else if let Ok(out) = winsock_audit {
             let providers = winsock_provider_paths(&out.stdout);
             let missing: Vec<&String> = providers
                 .iter()
-                .filter(|path| provider_is_missing(path))
+                .filter(|provider| provider_is_missing(provider))
+                .map(|provider| &provider.path)
                 .collect();
-            let evidence = if !out.success || providers.is_empty() {
+            let evidence = if providers.is_empty() {
                 Some(format!(
                     "netsh winsock show catalog listed no provider (exit code {:?}).",
                     out.exit_code
@@ -1471,18 +1655,58 @@ mod tests {
         assert!(
             paths
                 .iter()
-                .all(|p| p == r"%SystemRoot%\system32\mswsock.dll")
+                .all(|p| p.path == r"%SystemRoot%\system32\mswsock.dll")
         );
+        // The captured catalog lists each of its 14 providers twice: once
+        // for 64-bit programs and once, marked (32), for 32-bit ones.
+        assert_eq!(paths.iter().filter(|p| p.for_32_bit).count(), 14);
+        assert!(!paths[0].for_32_bit && paths[27].for_32_bit);
+    }
+
+    fn provider(path: &str, for_32_bit: bool) -> WinsockProvider {
+        WinsockProvider {
+            path: path.to_string(),
+            for_32_bit,
+        }
     }
 
     #[test]
     fn a_provider_that_exists_is_not_missing() {
-        assert!(!provider_is_missing(r"%SystemRoot%\system32\mswsock.dll"));
-        assert!(provider_is_missing(
-            r"%SystemRoot%\system32\winmedic-uninstalled-lsp.dll"
-        ));
-        // Cannot be expanded here, so it cannot be judged.
-        assert!(!provider_is_missing(r"%WINMEDIC_NO_SUCH_VAR%\lsp.dll"));
+        for for_32_bit in [false, true] {
+            assert!(!provider_is_missing(&provider(
+                r"%SystemRoot%\system32\mswsock.dll",
+                for_32_bit
+            )));
+            assert!(provider_is_missing(&provider(
+                r"%SystemRoot%\system32\winmedic-uninstalled-lsp.dll",
+                for_32_bit
+            )));
+            // Cannot be expanded here, so it cannot be judged.
+            assert!(!provider_is_missing(&provider(
+                r"%WINMEDIC_NO_SUCH_VAR%\lsp.dll",
+                for_32_bit
+            )));
+        }
+    }
+
+    /// A component that ships a 32-bit DLL only puts it where 32-bit
+    /// programs find it. Looked for in the 64-bit folder, it was "gone".
+    #[test]
+    fn a_32_bit_provider_is_looked_for_where_32_bit_programs_load_it() {
+        let only_in_syswow64 = |path: &std::path::Path| {
+            path.to_string_lossy()
+                .to_ascii_lowercase()
+                .ends_with(r"\syswow64\vendor32.dll")
+        };
+        let entry = |for_32_bit| provider(r"%SystemRoot%\System32\vendor32.dll", for_32_bit);
+        assert!(!provider_is_missing_where(&entry(true), &only_in_syswow64));
+        // The same path in the 64-bit catalog does name a file that is gone.
+        assert!(provider_is_missing_where(&entry(false), &only_in_syswow64));
+
+        // Outside the Windows folder nothing is redirected.
+        let elsewhere = provider(r"C:\Program Files (x86)\Vendor\lsp32.dll", true);
+        assert!(provider_is_missing_where(&elsewhere, &|_| false));
+        assert!(!provider_is_missing_where(&elsewhere, &|_| true));
     }
 
     async fn scan_winsock(catalog: CmdOutput) -> Vec<Issue> {
@@ -2635,6 +2859,187 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("still uses 10.0.0.53"), "{err}");
+    }
+
+    /// A scan of `mock`, with a proxy nothing answers at, and its steps.
+    async fn scan_with_steps(mock: MockCommandRunner) -> (Vec<Issue>, Vec<String>) {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(200);
+        let issues = NetworkModule::with_runner(Arc::new(mock))
+            .with_proxy_probe(Arc::new(|_: &str| Err("connection refused".to_string())))
+            .scan(Some(tx))
+            .await
+            .unwrap();
+        let mut steps = Vec::new();
+        while let Ok(progress) = rx.try_recv() {
+            steps.push(progress.current_step);
+        }
+        (issues, steps)
+    }
+
+    /// #272. With the router off nothing answers, a proxy included: that is
+    /// no reason to switch off the proxy of a school or company network. A
+    /// proxy on this PC itself is dead whatever the network does.
+    #[tokio::test]
+    async fn a_proxy_is_not_judged_while_nothing_is_reachable() {
+        let offline = |registry: String| {
+            let mock = MockCommandRunner::new();
+            mock.add_response("reg.exe", CmdOutput::ok(registry));
+            mock.add_response(PROBE, not_resolved());
+            mock.add_response("ping.exe", CmdOutput::failed(1, ""));
+            mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
+            mock
+        };
+
+        let (issues, steps) =
+            scan_with_steps(offline(internet_settings_with_proxy("proxy.school:3128"))).await;
+        assert!(
+            !issues.iter().any(|i| i.id == "net_proxy_active"),
+            "{issues:?}"
+        );
+        assert!(issues.iter().any(|i| i.id == "net_offline_warning"));
+        assert!(steps.iter().any(|s| s == "Proxy not judged"), "{steps:?}");
+
+        let (issues, steps) =
+            scan_with_steps(offline(winhttp_with_proxy("proxy.corp:8080", ""))).await;
+        assert!(!issues.iter().any(|i| i.id == "net_winhttp_proxy_dead"));
+        assert!(steps.iter().any(|s| s == "WinHTTP proxy not judged"));
+
+        let (issues, _) =
+            scan_with_steps(offline(internet_settings_with_proxy("127.0.0.1:8888"))).await;
+        assert!(issues.iter().any(|i| i.id == "net_proxy_active"));
+
+        assert!(proxy_is_on_this_pc("127.0.0.1:8888"));
+        assert!(proxy_is_on_this_pc("http=localhost:8080;https=[::1]:8080"));
+        assert!(!proxy_is_on_this_pc(
+            "http=127.0.0.1:8080;https=proxy.corp:8080"
+        ));
+        assert!(!proxy_is_on_this_pc("192.168.1.5:3128"));
+    }
+
+    /// #272. Behind a Hyper-V switch or a network bridge the physical
+    /// adapter holds no address of its own, yet the PC is online: an adapter
+    /// switched off on purpose is no "this PC has no network" there.
+    #[tokio::test]
+    async fn an_adapter_is_not_the_only_one_while_names_resolve() {
+        let physical = format!(
+            "{}{{7D6A3B1C-0000-0000-0000-000000000001}}|Disabled|Down|WLAN\r\n",
+            real_physical_adapters()
+        );
+        let mock = MockCommandRunner::new();
+        mock.add_response(PHYSICAL, CmdOutput::ok(physical.clone()));
+        // Up, with no IPv4 binding: the address is on the virtual switch.
+        mock.add_response("Get-NetAdapter", CmdOutput::ok("Ethernet||\r\n"));
+        mock.add_response(PROBE, resolved());
+        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
+        let (issues, _) = scan_with_steps(mock).await;
+        let wlan = issues
+            .iter()
+            .find(|i| i.id == "net_adapter_disabled_wlan")
+            .unwrap();
+        assert_eq!(wlan.severity, Severity::Info);
+        assert!(!wlan.is_selected);
+        assert!(wlan.description.contains("connected without it"));
+
+        // Names do not resolve, but 1.1.1.1 answers: connected as well.
+        let mock = MockCommandRunner::new();
+        mock.add_response(PHYSICAL, CmdOutput::ok(physical.clone()));
+        mock.add_response("Get-NetAdapter", CmdOutput::ok("Ethernet||\r\n"));
+        mock.add_response(PROBE, not_resolved());
+        mock.add_response("ping.exe", ping_answers());
+        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
+        let (issues, _) = scan_with_steps(mock).await;
+        let wlan = issues
+            .iter()
+            .find(|i| i.id == "net_adapter_disabled_wlan")
+            .unwrap();
+        assert!(!wlan.is_selected);
+
+        // The address query failed and nothing else answers: not known, so
+        // nothing is claimed and nothing is ticked.
+        let mock = MockCommandRunner::new();
+        mock.add_response(PHYSICAL, CmdOutput::ok(physical));
+        mock.add_response("Get-NetAdapter", CmdOutput::failed(1, "Access denied"));
+        mock.add_response(PROBE, not_resolved());
+        mock.add_response("ping.exe", CmdOutput::failed(1, ""));
+        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
+        let (issues, _) = scan_with_steps(mock).await;
+        let wlan = issues
+            .iter()
+            .find(|i| i.id == "net_adapter_disabled_wlan")
+            .unwrap();
+        assert_eq!(wlan.severity, Severity::Info);
+        assert!(!wlan.is_selected);
+        assert!(wlan.description.contains("could not be read"));
+        assert!(
+            issues.iter().any(|i| i.id == "net_offline_warning"),
+            "an adapter that may not be the only one does not explain it"
+        );
+    }
+
+    /// #272. A probe that never asked the resolver is no "names do not
+    /// resolve": PowerShell that cannot start, or ends without the script's
+    /// line. One that ran out of time is, as a dead resolver makes it.
+    #[tokio::test]
+    async fn a_probe_that_did_not_run_is_no_dns_failure() {
+        for probe in [
+            Some(CmdOutput::failed(1, "")),
+            Some(CmdOutput::with_output(0, "", "")),
+            None,
+        ] {
+            let mock = MockCommandRunner::new();
+            mock.add_response("Get-NetAdapter", CmdOutput::ok(real_adapters()));
+            if let Some(probe) = probe {
+                mock.add_response(PROBE, probe);
+            }
+            mock.add_response("ping.exe", ping_answers());
+            mock.add_response("reg.exe", CmdOutput::ok(real_internet_settings()));
+            mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
+            let (issues, steps) = scan_with_steps(mock).await;
+            assert!(issues.is_empty(), "{issues:?}");
+            assert!(
+                steps.iter().any(|s| s == "DNS name resolution not checked"),
+                "{steps:?}"
+            );
+        }
+
+        let (state, log) = NetworkModule::with_runner(Arc::new(TimesOut))
+            .resolver_state()
+            .await;
+        assert_eq!(state, Some(false), "{log:?}");
+    }
+
+    /// A runner whose PowerShell never comes back in time.
+    struct TimesOut;
+
+    #[async_trait::async_trait]
+    impl CommandRunner for TimesOut {
+        async fn run(&self, program: &str, _: &[&str], _: Duration) -> Result<CmdOutput, String> {
+            Err(format!("Command '{program}' timed out after 20s"))
+        }
+
+        async fn run_streaming(
+            &self,
+            program: &str,
+            args: &[&str],
+            _: Option<Sender<String>>,
+            limit: Duration,
+        ) -> Result<CmdOutput, String> {
+            self.run(program, args, limit).await
+        }
+    }
+
+    /// #272. A netsh that did not list the catalog found no damage in it.
+    #[tokio::test]
+    async fn a_catalog_that_was_not_listed_is_not_a_damaged_one() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(PROBE, resolved());
+        mock.add_response(
+            "netsh.exe",
+            CmdOutput::with_output(1, "", "The request is not supported."),
+        );
+        let (issues, steps) = scan_with_steps(mock).await;
+        assert!(!issues.iter().any(|i| i.id == "net_winsock_corrupt"));
+        assert!(steps.iter().any(|s| s == "Winsock catalog not checked"));
     }
 
     #[tokio::test]

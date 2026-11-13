@@ -10,7 +10,7 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
 use crate::safety::reg_backup::RegBackupManager;
-use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
+use crate::utils::cmd::{CmdOutput, CommandRunner, SystemCommandRunner};
 use crate::utils::registry::{self, RegKeyValues};
 use crate::utils::service;
 use std::path::PathBuf;
@@ -41,6 +41,38 @@ const POWER_KEY: &str = r"HKLM\SYSTEM\CurrentControlSet\Control\Power";
 /// "Require use of fast startup" (WinInit.admx): 1 forces it on, anything
 /// else leaves the local setting in charge.
 const FAST_STARTUP_POLICY_KEY: &str = r"HKLM\SOFTWARE\Policies\Microsoft\Windows\System";
+
+/// How often, and how far apart, a time service that is still starting is
+/// looked at again before the resync is sent: ten seconds at most.
+const STARTING_POLLS: usize = 20;
+const STARTING_POLL: Duration = Duration::from_millis(500);
+
+/// What a `w32tm /resync` that failed said about it: its last line, which
+/// is where w32tm puts the reason ("Folgender Fehler ist aufgetreten:
+/// Zugriff verweigert (0x80070005)"), with the exit code. `None` when it
+/// succeeded.
+fn resync_failure(resync: &Result<CmdOutput, String>) -> Option<String> {
+    match resync {
+        Ok(out) if out.success => None,
+        Ok(out) => {
+            let code = out.exit_code.map_or_else(
+                || "no exit code".to_string(),
+                |code| format!("exit code {code}"),
+            );
+            let said = out
+                .stdout
+                .lines()
+                .chain(out.stderr.lines())
+                .map(str::trim)
+                .rfind(|line| !line.is_empty());
+            Some(match said {
+                Some(line) => format!("{line} ({code})"),
+                None => format!("nothing ({code})"),
+            })
+        }
+        Err(e) => Some(e.clone()),
+    }
+}
 
 /// The clock offset in seconds from `w32tm /stripchart ... /dataonly`.
 ///
@@ -198,6 +230,19 @@ impl ClockRestartModule {
                 .runner
                 .run("sc.exe", &["start", "W32Time"], Duration::from_secs(15))
                 .await;
+            // `sc start` returns while the service is still starting, and a
+            // resync sent at once can fail for that alone.
+            for _ in 0..STARTING_POLLS {
+                if service::state(&*self.runner, "W32Time")
+                    .await
+                    .ok()
+                    .flatten()
+                    != Some(service::SERVICE_START_PENDING)
+                {
+                    break;
+                }
+                tokio::time::sleep(STARTING_POLL).await;
+            }
         } else if !matches!(
             service::state(&*self.runner, "W32Time").await?,
             Some(service::SERVICE_RUNNING | service::SERVICE_START_PENDING)
@@ -205,21 +250,32 @@ impl ClockRestartModule {
             return Err("Skipped: setting the clock needs the Windows Time service (W32Time), which is stopped, and 'Restart services automatically' is off in the settings. Nothing was changed.".to_string());
         }
         // Waits for the synchronisation unless /nowait is given.
-        let _ = self
+        let resync = self
             .runner
             .run("w32tm.exe", &["/resync", "/force"], Duration::from_secs(60))
             .await;
+        // What w32tm itself said when it failed. It was thrown away, and a
+        // clock still off was always explained as "Windows may refuse to move
+        // the clock that far": a guess, whatever the reason had been.
+        let refused = resync_failure(&resync);
 
-        match self.clock_offset().await? {
-            Some(offset) if offset.abs() < CLOCK_WARNING_SECS => Ok(format!(
+        match (self.clock_offset().await?, refused) {
+            (Some(offset), _) if offset.abs() < CLOCK_WARNING_SECS => Ok(format!(
                 "The clock was synchronised with {TIME_SERVER} and is now off by {}. If it shows the wrong hour, the time zone is wrong: Settings -> Time & language.",
                 describe_duration(offset)
             )),
-            Some(offset) => Err(format!(
+            (Some(offset), Some(reason)) => Err(format!(
+                "Windows did not synchronise the clock, which is still off by {}. w32tm /resync said: {reason}",
+                describe_duration(offset)
+            )),
+            (Some(offset), None) => Err(format!(
                 "The clock was asked to synchronise but is still off by {}. Windows may refuse to move the clock that far in one step: set the date and time once by hand under Settings -> Time & language, then run the repair again.",
                 describe_duration(offset)
             )),
-            None => Err(format!(
+            (None, Some(reason)) => Err(format!(
+                "Windows did not synchronise the clock (w32tm /resync said: {reason}), and {TIME_SERVER} did not answer afterwards, so the clock could not be checked. The time server has to be reachable over UDP port 123."
+            )),
+            (None, None) => Err(format!(
                 "{TIME_SERVER} did not answer after the synchronisation, so the clock could not be checked. The time server has to be reachable over UDP port 123."
             )),
         }
@@ -726,13 +782,22 @@ mod tests {
     }
 
     fn clock_mock(time_service: u32, after_resync: &str) -> MockCommandRunner {
+        clock_mock_with(time_service, CmdOutput::ok(""), after_resync)
+    }
+
+    /// As [`clock_mock`], with what `w32tm /resync` answers.
+    fn clock_mock_with(
+        time_service: u32,
+        resync: CmdOutput,
+        after_resync: &str,
+    ) -> MockCommandRunner {
         let mock = MockCommandRunner::new();
         mock.add_response(
             "sc.exe qc",
             CmdOutput::ok(sc_qc_output("W32Time", time_service)),
         );
         mock.add_response("sc.exe start", CmdOutput::ok(""));
-        mock.add_response("/resync", CmdOutput::ok(""));
+        mock.add_response("/resync", resync);
         mock.add_response("/stripchart", CmdOutput::ok(stripchart("+185.0000000s")));
         mock.add_response_after(
             "/resync",
@@ -751,6 +816,66 @@ mod tests {
             mock.executed()
                 .contains(&"w32tm.exe /resync /force".to_string())
         );
+    }
+
+    /// What w32tm prints when it may not synchronise, captured unelevated on
+    /// a German Windows 11 (exit code 5).
+    const RESYNC_DENIED: &[u8] =
+        include_bytes!("../../tests/fixtures/console/w32tm_resync_denied_de.bin");
+
+    /// The repair threw away what the resync said, and explained a clock
+    /// that stayed off with a guess about how far Windows moves a clock.
+    #[tokio::test]
+    async fn a_resync_that_failed_is_reported_with_its_own_reason() {
+        let denied = CmdOutput::with_output(5, decode_output(RESYNC_DENIED), "");
+        let mock = clock_mock_with(3, denied, "+185.0000000s");
+        let err = module(&mock, 0)
+            .fix("clock_offset", None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("still off by 3 min 5 s"), "{err}");
+        assert!(
+            err.contains("Zugriff verweigert (0x80070005) (exit code 5)"),
+            "{err}"
+        );
+        assert!(!err.contains("that far"), "{err}");
+
+        // A resync that failed and a clock that is right all the same: the
+        // clock is what counts.
+        let mock = clock_mock_with(3, CmdOutput::with_output(5, "", ""), "+00.0123000s");
+        assert!(module(&mock, 0).fix("clock_offset", None).await.is_ok());
+
+        assert_eq!(resync_failure(&Ok(CmdOutput::ok("fine"))), None);
+        assert_eq!(
+            resync_failure(&Ok(CmdOutput::with_output(1, "", ""))).as_deref(),
+            Some("nothing (exit code 1)")
+        );
+    }
+
+    /// `sc start` returns while the service is still starting: the resync
+    /// waits until it is no longer.
+    #[tokio::test]
+    async fn the_resync_waits_for_a_time_service_that_is_still_starting() {
+        let mock = clock_mock(3, "+00.0123000s");
+        mock.add_response("sc.exe query", CmdOutput::ok(sc_query_output("W32Time", 2)));
+        mock.add_response_after(
+            "sc.exe query",
+            "sc.exe query",
+            CmdOutput::ok(sc_query_output("W32Time", 4)),
+        );
+        module(&mock, 0).fix("clock_offset", None).await.unwrap();
+        let executed = mock.executed();
+        let queries = executed
+            .iter()
+            .filter(|c| c.contains("sc.exe query"))
+            .count();
+        assert_eq!(queries, 2, "{executed:?}");
+        let resync = executed.iter().position(|c| c.contains("/resync")).unwrap();
+        let last_query = executed
+            .iter()
+            .rposition(|c| c.contains("sc.exe query"))
+            .unwrap();
+        assert!(last_query < resync, "{executed:?}");
     }
 
     #[tokio::test]

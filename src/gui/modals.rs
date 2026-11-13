@@ -180,6 +180,11 @@ fn setting_input(ctx: &egui::Context, app: &mut App) {
         if field.changed() {
             input.error_msg = None;
         }
+        // Enter saves when it was typed into the field, which gives up the
+        // caret on it. Any Enter in the frame counted before: the one that
+        // opened this dialog from the settings list was still there, so the
+        // dialog saved the value it opened with and was never seen.
+        let entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         field.request_focus();
 
         if let Some(message) = error.as_deref() {
@@ -189,9 +194,8 @@ fn setting_input(ctx: &egui::Context, app: &mut App) {
 
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
             let save = theme::primary_button(ui, true, RichText::new("Save"), egui::Vec2::ZERO);
-            if save.clicked() || enter_pressed {
+            if save.clicked() || entered {
                 submitted = true;
             }
             if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {

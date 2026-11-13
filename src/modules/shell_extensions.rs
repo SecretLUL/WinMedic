@@ -54,12 +54,19 @@ pub fn app_crashes_query() -> Vec<String> {
 pub struct ShellExtCrash {
     pub module_path: String,
     pub crashes: usize,
+    /// The module's version at each crash, as the event has it.
+    pub versions: Vec<String>,
 }
 
 impl ShellExtCrash {
     /// `7-zip.dll`.
     pub fn file_name(&self) -> &str {
         file_name(&self.module_path)
+    }
+
+    /// How many of the crashes happened in `version` of the module.
+    pub fn crashes_of(&self, version: &str) -> usize {
+        self.versions.iter().filter(|v| v.trim() == version).count()
     }
 
     pub fn issue_id(&self) -> String {
@@ -94,15 +101,13 @@ pub fn shell_extension_crashes(events: &[EventRecord], windows_dir: &str) -> Vec
         windows_dir.trim_end_matches('\\').to_ascii_lowercase()
     );
     let mut found: Vec<ShellExtCrash> = Vec::new();
-    for event in events
+    for crash in events
         .iter()
         .filter(|e| e.provider == APP_ERROR_PROVIDER && e.event_id == 1000)
-        .filter(|e| {
-            e.data("AppName")
-                .is_some_and(|app| app.eq_ignore_ascii_case("explorer.exe"))
-        })
+        .filter_map(EventRecord::app_crash)
+        .filter(|crash| crash.app.eq_ignore_ascii_case("explorer.exe"))
     {
-        let Some(path) = event.data("ModulePath").map(str::trim) else {
+        let Some(path) = crash.module_path.map(str::trim) else {
             continue;
         };
         if path.is_empty() || path.to_ascii_lowercase().starts_with(&windows) {
@@ -112,10 +117,14 @@ pub fn shell_extension_crashes(events: &[EventRecord], windows_dir: &str) -> Vec
             .iter_mut()
             .find(|c| c.module_path.eq_ignore_ascii_case(path))
         {
-            Some(known) => known.crashes += 1,
+            Some(known) => {
+                known.crashes += 1;
+                known.versions.push(crash.module_version.to_string());
+            }
             None => found.push(ShellExtCrash {
                 module_path: path.to_string(),
                 crashes: 1,
+                versions: vec![crash.module_version.to_string()],
             }),
         }
     }
@@ -123,21 +132,32 @@ pub fn shell_extension_crashes(events: &[EventRecord], windows_dir: &str) -> Vec
     found
 }
 
-/// Prints `company|product` of the file at `path` from its version
-/// resource, which the maker writes and Windows does not translate.
+/// Prints `company|product|file version` of the file at `path` from its
+/// version resource, which the maker writes and Windows does not translate.
+/// The version is the four numbers an Application Error event calls
+/// `ModuleVersion`, `16.0.20527.20016`.
 fn version_info_script(path: &str) -> String {
     format!(
-        "$v = (Get-Item -LiteralPath {} -ErrorAction Stop).VersionInfo; '{{0}}|{{1}}' -f $v.CompanyName, $v.ProductName",
+        "$v = (Get-Item -LiteralPath {} -ErrorAction Stop).VersionInfo; '{{0}}|{{1}}|{{2}}.{{3}}.{{4}}.{{5}}' -f $v.CompanyName, $v.ProductName, $v.FileMajorPart, $v.FileMinorPart, $v.FileBuildPart, $v.FilePrivatePart",
         ps_single_quoted(path)
     )
+}
+
+/// The file version in what [`version_info_script`] printed; `None` when the
+/// file has none (`0.0.0.0`).
+pub fn file_version(version_info: &str) -> Option<String> {
+    let line = version_info.lines().find(|l| l.contains('|'))?;
+    let version = line.rsplit('|').next()?.trim();
+    let numbers = version.split('.').all(|n| n.parse::<u32>().is_ok());
+    (line.matches('|').count() >= 2 && numbers && version != "0.0.0.0").then(|| version.to_string())
 }
 
 /// `Microsoft Office (Microsoft Corporation)` from what
 /// [`version_info_script`] printed; `None` when it names nothing.
 pub fn program_name(version_info: &str) -> Option<String> {
     let line = version_info.lines().find(|l| l.contains('|'))?;
-    let (company, product) = line.split_once('|')?;
-    let (company, product) = (company.trim(), product.trim());
+    let mut fields = line.splitn(3, '|');
+    let (company, product) = (fields.next()?.trim(), fields.next()?.trim());
     if product.is_empty() {
         return (!company.is_empty()).then(|| company.to_string());
     }
@@ -147,21 +167,24 @@ pub fn program_name(version_info: &str) -> Option<String> {
     Some(format!("{product} ({company})"))
 }
 
-/// Who made the module: its version resource, or else the folder it is in.
-async fn program_of(runner: &dyn CommandRunner, path: &str) -> String {
-    if let Ok(out) = runner
+/// Who made the module, its version resource or else the folder it is in,
+/// and the version of the file that is there now, if it could be read.
+async fn program_of(runner: &dyn CommandRunner, path: &str) -> (String, Option<String>) {
+    let info = match runner
         .run_powershell(&version_info_script(path), Duration::from_secs(15))
         .await
-        && out.success
-        && let Some(name) = program_name(&out.stdout)
     {
-        return name;
-    }
-    Path::new(path)
-        .parent()
-        .and_then(Path::file_name)
-        .map(|folder| folder.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "an unknown program".to_string())
+        Ok(out) if out.success => out.stdout,
+        _ => String::new(),
+    };
+    let program = program_name(&info).unwrap_or_else(|| {
+        Path::new(path)
+            .parent()
+            .and_then(Path::file_name)
+            .map(|folder| folder.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "an unknown program".to_string())
+    });
+    (program, file_version(&info))
 }
 
 fn finding(module_id: &str, crash: &ShellExtCrash, program: &str) -> Issue {
@@ -222,22 +245,73 @@ pub async fn findings(
         // blocked or its program uninstalled, while Explorer no longer loads
         // it and neither repair can do more. A registry that cannot be read
         // leaves the crashes standing; the repair reads it again.
-        if left_to_block(runner, crash.file_name())
+        if left_to_block(runner, &crash.module_path)
             .await
             .is_ok_and(|left| left.is_empty())
         {
             continue;
         }
-        let program = program_of(runner, &crash.module_path).await;
+        let (program, installed) = program_of(runner, &crash.module_path).await;
+        // The first advice is to update the program. After that the file is
+        // another version, and the crashes of the old one say nothing about
+        // it: they stayed in the log and brought the finding back for 30
+        // days (#273). A version that could not be read leaves them
+        // standing.
+        if installed.is_some_and(|version| crash.crashes_of(&version) < MIN_CRASHES) {
+            continue;
+        }
         issues.push(finding(module_id, &crash, &program));
     }
     Ok(issues)
 }
 
-/// The CLSIDs whose in-process server is a file named `dll`, among the
-/// keys `reg query /s /d /f` found. Compared by file name: the registry may
-/// hold the path with `%ProgramFiles%` or in other case.
-pub fn clsids_of(keys: &[RegKeyValues], dll: &str) -> Vec<String> {
+/// `%ProgramFiles%\x` as `C:\Program Files\x`; `None` when a variable is
+/// not set.
+fn expand_variables(path: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut rest = path;
+    while let Some(start) = rest.find('%') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        let end = after.find('%')?;
+        out.push_str(&std::env::var(&after[..end]).ok()?);
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    Some(out)
+}
+
+/// Whether the registry's `data` names the file at `module_path`.
+///
+/// The registry may hold the path with `%ProgramFiles%`, in other case or as
+/// a short name, so the variables are expanded, case is ignored, and two
+/// spellings that lead to one file are that file. Only the file names were
+/// compared once: a crash in one program's `ShellExt.dll` blocked every
+/// other program's add-on of that name as well (#273).
+///
+/// Where the whole path cannot be compared, the file name still decides: a
+/// value without a folder, a variable that is not set, and a path that is
+/// not plain ASCII, which `reg` prints in the console code page.
+fn names_module(data: &str, module_path: &str) -> bool {
+    let data = data.trim().trim_matches('"');
+    let by_name = || file_name(data).eq_ignore_ascii_case(file_name(module_path));
+    let whole = |path: &str| path.is_ascii() && !path.contains('?') && path.contains('\\');
+    let Some(registered) = expand_variables(data) else {
+        return by_name();
+    };
+    if !whole(&registered) || !whole(module_path) {
+        return by_name();
+    }
+    registered.eq_ignore_ascii_case(module_path)
+        || matches!(
+            (std::fs::canonicalize(&registered), std::fs::canonicalize(module_path)),
+            (Ok(a), Ok(b)) if a == b
+        )
+}
+
+/// The CLSIDs whose in-process server is the file at `module_path`, among
+/// the keys `reg query /s /d /f` found; see [`names_module`].
+pub fn clsids_of(keys: &[RegKeyValues], module_path: &str) -> Vec<String> {
     let mut clsids: Vec<String> = keys
         .iter()
         .filter(|key| {
@@ -245,7 +319,7 @@ pub fn clsids_of(keys: &[RegKeyValues], dll: &str) -> Vec<String> {
                 && key
                     .values
                     .iter()
-                    .any(|v| file_name(v.data.trim()).eq_ignore_ascii_case(dll))
+                    .any(|v| names_module(&v.data, module_path))
         })
         .filter_map(|key| {
             let mut parts = key.key.rsplit('\\');
@@ -261,8 +335,14 @@ pub fn clsids_of(keys: &[RegKeyValues], dll: &str) -> Vec<String> {
     clsids
 }
 
-/// The CLSIDs the DLL is registered under, for every user and for this one.
-async fn registered_clsids(runner: &dyn CommandRunner, dll: &str) -> Result<Vec<String>, String> {
+/// The CLSIDs the DLL at `module_path` is registered under, for every user
+/// and for this one. The registry is searched for the file name; which of
+/// the values found name this file, [`clsids_of`] decides.
+async fn registered_clsids(
+    runner: &dyn CommandRunner,
+    module_path: &str,
+) -> Result<Vec<String>, String> {
+    let dll = file_name(module_path);
     let mut clsids = Vec::new();
     for root in CLSID_KEYS {
         let out = runner
@@ -274,7 +354,10 @@ async fn registered_clsids(runner: &dyn CommandRunner, dll: &str) -> Result<Vec<
             .await?;
         // Exit 1: nothing found. Its message is translated; not read.
         match out.exit_code {
-            Some(0) => clsids.extend(clsids_of(&registry::parse_reg_query(&out.stdout), dll)),
+            Some(0) => clsids.extend(clsids_of(
+                &registry::parse_reg_query(&out.stdout),
+                module_path,
+            )),
             Some(1) => {}
             code => {
                 return Err(format!(
@@ -303,8 +386,11 @@ async fn not_blocked(runner: &dyn CommandRunner, clsids: &[String]) -> Result<Ve
 /// What blocking `dll` would still change: the CLSIDs it is registered
 /// under that the Blocked key does not hold. Empty when every one is
 /// blocked, and when the DLL is no longer registered.
-async fn left_to_block(runner: &dyn CommandRunner, dll: &str) -> Result<Vec<String>, String> {
-    let clsids = registered_clsids(runner, dll).await?;
+async fn left_to_block(
+    runner: &dyn CommandRunner,
+    module_path: &str,
+) -> Result<Vec<String>, String> {
+    let clsids = registered_clsids(runner, module_path).await?;
     if clsids.is_empty() {
         return Ok(clsids);
     }
@@ -330,7 +416,7 @@ pub async fn block(
         );
     };
     let dll = crash.file_name().to_string();
-    let clsids = registered_clsids(runner, &dll).await?;
+    let clsids = registered_clsids(runner, &crash.module_path).await?;
     if clsids.is_empty() {
         return Err(format!(
             "{dll} is not registered as an Explorer add-on under any CLSID, so there is nothing to block. Update or uninstall the program it belongs to."
@@ -422,7 +508,13 @@ mod tests {
                 "<Data Name='AppName'>explorer.exe<",
             )
             .replace(r"C:\WINDOWS\System32\ucrtbase.dll", VISSHE)
+            .replace(UCRTBASE_VERSION, VISSHE_VERSION)
     }
+
+    /// The version of ucrtbase.dll in the captured crashes.
+    const UCRTBASE_VERSION: &str = "<Data Name='ModuleVersion'>10.0.26100.9444<";
+    /// The version of VISSHE.DLL that [`VERSION_INFO`] was captured from.
+    const VISSHE_VERSION: &str = "<Data Name='ModuleVersion'>16.0.20527.20016<";
 
     #[test]
     fn crashes_of_other_programs_are_not_counted() {
@@ -438,6 +530,22 @@ mod tests {
         assert_eq!(crashes[0].module_path, VISSHE);
         assert!(crashes[0].crashes >= MIN_CRASHES);
         assert_eq!(crashes[0].issue_id(), "crash_shellext_visshe_dll");
+    }
+
+    /// #260. Windows 10, and some Windows 11 PCs, log the event without
+    /// field names, in two shapes. Constructed; see tests/fixtures/README.md.
+    #[test]
+    fn explorer_crashing_is_found_in_events_without_field_names() {
+        let events = parse_events(include_str!(
+            "../../tests/fixtures/events/app_error_1000_unnamed_constructed.xml"
+        ));
+        assert_eq!(events.len(), 3);
+        assert!(events.iter().all(|e| e.data("AppName").is_none()));
+
+        let crashes = shell_extension_crashes(&events, r"C:\Windows");
+        assert_eq!(crashes.len(), 1, "{crashes:?}");
+        assert_eq!(crashes[0].module_path, VISSHE);
+        assert_eq!(crashes[0].crashes, 2, "one of each shape");
     }
 
     #[test]
@@ -458,20 +566,100 @@ mod tests {
         assert_eq!(program_name("7-Zip|7-Zip").as_deref(), Some("7-Zip"));
         assert_eq!(program_name("|").as_deref(), None);
         assert_eq!(program_name("").as_deref(), None);
+
+        assert_eq!(
+            file_version(&decode_output(VERSION_INFO)).as_deref(),
+            Some("16.0.20527.20016")
+        );
+        assert_eq!(
+            file_version("7-Zip|7-Zip").as_deref(),
+            None,
+            "the old output"
+        );
+        assert_eq!(file_version("A|B|0.0.0.0").as_deref(), None);
+        assert_eq!(file_version("A|B|...").as_deref(), None);
+    }
+
+    /// #273. The first advice is to update the program. The crashes of the
+    /// version before stay in the log for 30 days and are not the new one's.
+    #[tokio::test]
+    async fn an_add_on_updated_since_its_crashes_is_not_reported() {
+        // Crashes in the version the file has now: reported.
+        let mock = scan_mock(decode_output(BLOCKED));
+        let issues = findings(&mock, "crash_analysis", r"C:\Windows")
+            .await
+            .unwrap();
+        assert_eq!(issues.len(), 1);
+
+        // The same crashes in an older version of the file.
+        let old = explorer_crashing().replace(VISSHE_VERSION, UCRTBASE_VERSION);
+        let mock = MockCommandRunner::new();
+        mock.add_response("wevtutil.exe", CmdOutput::ok(old.clone()));
+        mock.add_response("VersionInfo", CmdOutput::ok(decode_output(VERSION_INFO)));
+        let issues = findings(&mock, "crash_analysis", r"C:\Windows")
+            .await
+            .unwrap();
+        assert!(issues.is_empty(), "{issues:?}");
+
+        // The file's version cannot be read: the crashes stand.
+        let mock = MockCommandRunner::new();
+        mock.add_response("wevtutil.exe", CmdOutput::ok(old));
+        let issues = findings(&mock, "crash_analysis", r"C:\Windows")
+            .await
+            .unwrap();
+        assert_eq!(issues.len(), 1);
+    }
+
+    /// #273. Another program's DLL of the same name is not this add-on.
+    #[test]
+    fn an_add_on_is_matched_by_its_whole_path() {
+        let registered = |data: &str| {
+            let keys = registry::parse_reg_query(&format!(
+                "HKEY_LOCAL_MACHINE\\SOFTWARE\\Classes\\CLSID\\{{11111111-2222-3333-4444-555555555555}}\\InprocServer32\r\n    (Default)    REG_SZ    {data}\r\n\r\n"
+            ));
+            !clsids_of(&keys, r"C:\Program Files\Foo\ShellExt.dll").is_empty()
+        };
+
+        assert!(registered(r"C:\Program Files\Foo\ShellExt.dll"));
+        assert!(registered(r#""c:\program files\foo\SHELLEXT.DLL""#));
+        assert!(
+            !registered(r"C:\Program Files\Windows Defender\shellext.dll"),
+            "the same name in another folder"
+        );
+        // With a variable, as REG_EXPAND_SZ values hold it.
+        let windows = std::env::var("SystemRoot").unwrap();
+        let keys = registry::parse_reg_query(
+            "HKEY_LOCAL_MACHINE\\SOFTWARE\\Classes\\CLSID\\{11111111-2222-3333-4444-555555555555}\\InprocServer32\r\n    (Default)    REG_EXPAND_SZ    %SystemRoot%\\Foo\\ShellExt.dll\r\n\r\n",
+        );
+        assert_eq!(
+            clsids_of(&keys, &format!(r"{windows}\Foo\ShellExt.dll")).len(),
+            1
+        );
+        assert!(clsids_of(&keys, r"D:\Other\Foo\ShellExt.dll").is_empty());
+
+        // What cannot be compared whole is compared by name, as before: no
+        // folder, a variable that is not set, a path `reg` could not print.
+        assert!(registered("ShellExt.dll"));
+        assert!(registered(r"%WinMedicUnsetTestVar%\ShellExt.dll"));
+        assert!(registered(r"C:\Program Files\F?o\ShellExt.dll"));
     }
 
     #[test]
     fn the_clsids_are_read_from_the_search() {
         let keys = registry::parse_reg_query(&decode_output(CLSID_SEARCH));
         assert_eq!(
-            clsids_of(&keys, "visshe.dll"),
+            clsids_of(&keys, &VISSHE.to_lowercase()),
             [
                 "{506F4668-F13E-4AA1-BB04-B43203AB3CC0}",
                 "{A394DCA9-3727-11D4-BD85-00C04F6B93A4}",
                 "{D66DC78C-4F61-447F-942B-3FB6980118CF}"
             ]
         );
-        assert!(clsids_of(&keys, "other.dll").is_empty());
+        assert!(clsids_of(&keys, r"C:\Program Files\Other\other.dll").is_empty());
+        assert!(
+            clsids_of(&keys, r"C:\Program Files\Other\VISSHE.DLL").is_empty(),
+            "the same name in another folder"
+        );
     }
 
     /// Explorer crashing in the Visio extension, registered as captured,

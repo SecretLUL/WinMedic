@@ -75,6 +75,15 @@ pub(crate) fn on_fixed_drive(path: &Path, drive_type: &dyn Fn(char) -> u32) -> b
     drive_type(char::from(letter).to_ascii_uppercase()) == DRIVE_FIXED
 }
 
+/// Whether Windows says the file at `path` is not there. Any other answer
+/// leaves it open: a BitLocker volume that is still locked or a disk with a
+/// damaged file system is a fixed drive too, and `Path::exists` is false for
+/// every error. A program that could not be looked at counted as deleted,
+/// and its autostart entry was deleted or its task switched off (#268).
+pub(crate) fn is_gone(path: &Path) -> bool {
+    matches!(path.try_exists(), Ok(false))
+}
+
 /// The file a Run value starts, if it names one by an absolute path on a
 /// fixed drive of this PC and that file is not there.
 ///
@@ -90,7 +99,55 @@ fn missing_target(value: &RegValue, drive_type: &dyn Fn(char) -> u32) -> Option<
         return None;
     }
     let path = RegistryStartupModule::extract_exe_path(&value.data)?;
-    (path.is_absolute() && on_fixed_drive(&path, drive_type) && !path.exists()).then_some(path)
+    let nothing_there = program_candidates(&value.data)
+        .iter()
+        .all(|candidate| is_gone(candidate));
+    (path.is_absolute() && on_fixed_drive(&path, drive_type) && nothing_there).then_some(path)
+}
+
+/// The extensions a Run command's program is recognised by.
+const PROGRAM_EXTENSIONS: [&str; 4] = [".exe", ".bat", ".cmd", ".vbs"];
+
+/// Where the words of an unquoted command end: before each run of
+/// whitespace, and at its end.
+fn word_ends(command: &str) -> impl Iterator<Item = usize> + '_ {
+    command
+        .char_indices()
+        .filter(|&(at, c)| {
+            c.is_whitespace() && !command[..at].ends_with(char::is_whitespace) && at > 0
+        })
+        .map(|(at, _)| at)
+        .chain(std::iter::once(command.len()))
+}
+
+/// Every file Windows would start for a Run command, in the order it tries
+/// them.
+///
+/// A quoted program is that file. For an unquoted command `CreateProcess`
+/// tries each run of words from the start (`C:\Program`, then
+/// `C:\Program Files\App\launcher`, ...), and completes a name that has no
+/// extension with `.exe`. The entry works when any of them is there.
+fn program_candidates(command: &str) -> Vec<PathBuf> {
+    let trimmed = command.trim();
+    let named: Vec<&str> = match trimmed
+        .strip_prefix('"')
+        .and_then(|rest| rest.split_once('"'))
+    {
+        Some((quoted, _)) => vec![quoted],
+        None => word_ends(trimmed).map(|end| &trimmed[..end]).collect(),
+    };
+    named
+        .into_iter()
+        .filter(|name| !name.is_empty())
+        .flat_map(|name| {
+            let path = PathBuf::from(name);
+            let completed = path
+                .extension()
+                .is_none()
+                .then(|| PathBuf::from(format!("{name}.exe")));
+            std::iter::once(path).chain(completed)
+        })
+        .collect()
 }
 
 pub struct RegistryStartupModule {
@@ -189,21 +246,32 @@ impl RegistryStartupModule {
             return Some(PathBuf::from(&rest[..end_quote]));
         }
 
-        // 2. Look for case-insensitive .exe / .cmd / .bat in the command string.
-        // Lowering only ASCII keeps every byte position, so an index found in
-        // `lower` is valid in `trimmed` too. `to_lowercase` changes the byte
-        // length of some letters (U+0130, U+212A) and moved the cut.
+        // 2. The first run of words that ends in a program's extension.
+        //
+        // The extensions were looked for anywhere in the string, `.exe`
+        // first: `C:\Tools\start.bat C:\Tools\app.exe` gave the whole string,
+        // and `C:\Users\john.exeter\app.exe` gave `C:\Users\john.exe`. Both
+        // "did not exist", and a working entry was ticked for deletion.
+        // Lowering only ASCII keeps every byte position.
         let lower = trimmed.to_ascii_lowercase();
-        for ext in [".exe", ".bat", ".cmd", ".vbs"] {
-            if let Some(idx) = lower.find(ext) {
-                let candidate = &trimmed[..idx + ext.len()];
-                return Some(PathBuf::from(candidate.trim_matches('"')));
-            }
+        if let Some(end) = word_ends(trimmed).find(|&end| {
+            PROGRAM_EXTENSIONS
+                .iter()
+                .any(|ext| lower[..end].ends_with(ext))
+        }) {
+            return Some(PathBuf::from(&trimmed[..end]));
         }
 
-        // 3. Fallback to first token if no extension
-        let first_word = trimmed.split_whitespace().next()?;
-        Some(PathBuf::from(first_word.trim_matches('"')))
+        // 3. No extension anywhere. One word is the program, which Windows
+        // completes with `.exe`. With several words nothing says where the
+        // program's name ends (`C:\Program Files\App\launcher --tray`): the
+        // first word used to be taken, `C:\Program`, which never exists.
+        let mut words = trimmed.split_whitespace();
+        let first_word = words.next()?;
+        words
+            .next()
+            .is_none()
+            .then(|| PathBuf::from(first_word.trim_matches('"')))
     }
 
     /// Delete every Run value under `key` whose finding is `issue_id` and
@@ -664,15 +732,22 @@ mod tests {
         assert!(issues.is_empty(), "{:?}", issues[0].title);
         assert!(commands.executed().is_empty(), "{:?}", commands.executed());
 
-        // What `reg query` made of the same path is a file that is not there.
-        let as_printed = RegValue {
+        // What `reg query` made of the same path, a look-alike letter for
+        // one that the code page lacks, is a file that is not there.
+        let with = |from: char, to: &str| RegValue {
             name: "Tool".to_string(),
             kind: "REG_SZ".to_string(),
-            data: format!("\"{}\" --tray", program.display())
-                .replace('\u{141}', "L")
-                .replace('\u{20ac}', "?"),
+            data: format!("\"{}\" --tray", program.display()).replace(from, to),
         };
-        assert_eq!(missing_target(&as_printed, &drives).is_some(), on_c);
+        assert_eq!(
+            missing_target(&with('\u{141}', "L"), &drives).is_some(),
+            on_c
+        );
+        // #268. Its `?` for a character without a look-alike is no name a
+        // file can have: Windows answers with an error, not with "not
+        // found", as it does for a volume that is locked or damaged. A
+        // program that cannot be looked at is not a deleted one.
+        assert_eq!(missing_target(&with('\u{20ac}', "?"), &drives), None);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -685,6 +760,62 @@ mod tests {
             RegistryStartupModule::extract_exe_path("C:\\Users\\\u{130}lkay\\tool.exe /background"),
             Some(PathBuf::from("C:\\Users\\\u{130}lkay\\tool.exe"))
         );
+    }
+
+    /// Three shapes of a working entry that came out as a file that is not
+    /// there, and were ticked for deletion.
+    #[test]
+    fn an_unquoted_command_is_cut_where_windows_cuts_it() {
+        let named = |command: &str| RegistryStartupModule::extract_exe_path(command);
+        assert_eq!(
+            named(r"C:\Tools\start.bat C:\Tools\app.exe"),
+            Some(PathBuf::from(r"C:\Tools\start.bat"))
+        );
+        assert_eq!(
+            named(r"C:\Users\john.exeter\AppData\app.exe --min"),
+            Some(PathBuf::from(r"C:\Users\john.exeter\AppData\app.exe"))
+        );
+        assert_eq!(
+            named(r"C:\Program Files\App\app.exe --tray"),
+            Some(PathBuf::from(r"C:\Program Files\App\app.exe"))
+        );
+        // No extension and several words: where the name ends is not known.
+        assert_eq!(named(r"C:\Program Files\App\launcher --tray"), None);
+        assert_eq!(
+            named(r"C:\Tools\launcher"),
+            Some(PathBuf::from(r"C:\Tools\launcher"))
+        );
+
+        // A program named without its extension is there when the .exe is.
+        let fixed = |_: char| DRIVE_FIXED;
+        let value = |data: String| RegValue {
+            name: "Entry".to_string(),
+            kind: "REG_SZ".to_string(),
+            data,
+        };
+        let system32 = std::env::var("SystemRoot").unwrap() + r"\System32";
+        for working in [
+            format!(r"{system32}\cmd /c rem"),
+            format!(r"{system32}\cmd"),
+            format!("\"{system32}\\cmd\" /c rem"),
+            format!(r"{system32}\cmd.exe /c rem"),
+        ] {
+            assert_eq!(
+                missing_target(&value(working.clone()), &fixed),
+                None,
+                "{working}"
+            );
+        }
+        for gone in [
+            format!(r"{system32}\winmedic-no-such-tool.exe /x"),
+            format!(r"{system32}\winmedic-no-such-tool"),
+            format!("\"{system32}\\winmedic no such tool.exe\" /x"),
+        ] {
+            assert!(
+                missing_target(&value(gone.clone()), &fixed).is_some(),
+                "{gone}"
+            );
+        }
     }
 
     #[test]

@@ -10,6 +10,7 @@
 
 use crate::engine::issue::Severity;
 use eframe::egui::{self, Color32, RichText, Stroke};
+use std::sync::{Arc, Mutex};
 
 /// The status colours, picked per theme so each stays legible on its panel.
 #[derive(Debug, Clone, Copy)]
@@ -61,6 +62,137 @@ pub fn palette_of(visuals: &egui::Visuals) -> Palette {
     if visuals.dark_mode { DARK } else { LIGHT }
 }
 
+/// A script neither Segoe UI nor the bundled fonts hold, which Windows
+/// brings a font for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Script {
+    /// Chinese characters, as Chinese, Japanese and Korean write them.
+    Han,
+    /// Hiragana and Katakana.
+    Kana,
+    Hangul,
+    /// Thai and Lao.
+    Thai,
+    /// Devanagari, Bengali, Tamil and the other scripts of India.
+    Indic,
+}
+
+fn script_of(c: char) -> Option<Script> {
+    Some(match u32::from(c) {
+        0x3040..=0x30FF | 0x31F0..=0x31FF | 0xFF66..=0xFF9F => Script::Kana,
+        0x1100..=0x11FF | 0x3130..=0x318F | 0xA960..=0xA97F | 0xAC00..=0xD7FF => Script::Hangul,
+        0x2E80..=0x2FDF
+        | 0x3000..=0x303F
+        | 0x3400..=0x4DBF
+        | 0x4E00..=0x9FFF
+        | 0xF900..=0xFAFF
+        | 0xFE30..=0xFE4F
+        | 0xFF00..=0xFFEF
+        | 0x20000..=0x2FA1F => Script::Han,
+        0x0E00..=0x0EFF => Script::Thai,
+        0x0900..=0x0DFF => Script::Indic,
+        _ => return None,
+    })
+}
+
+/// The files in the Windows `Fonts` folder that hold `script`, the best
+/// first. Windows 10 and 11 install all but Yu Gothic and Meiryo with every
+/// language.
+///
+/// Chinese, Japanese and Korean share the Han characters and draw some of
+/// them differently, so the font follows the display language, `language`
+/// (a Windows language id): Japanese shapes on a Japanese Windows.
+fn font_files(script: Script, language: u16) -> &'static [&'static str] {
+    const JAPANESE: &[&str] = &["YuGothR.ttc", "meiryo.ttc", "msgothic.ttc", "msyh.ttc"];
+    const KOREAN: &[&str] = &["malgun.ttf", "msyh.ttc"];
+    const SIMPLIFIED: &[&str] = &["msyh.ttc", "msjh.ttc", "simsun.ttc"];
+    const TRADITIONAL: &[&str] = &["msjh.ttc", "msyh.ttc", "mingliub.ttc"];
+    const LANG_CHINESE: u16 = 0x04;
+    const LANG_JAPANESE: u16 = 0x11;
+    const LANG_KOREAN: u16 = 0x12;
+    /// Taiwan, Hong Kong and Macao write traditional characters.
+    const TRADITIONAL_SUBLANGUAGES: [u16; 3] = [0x01, 0x03, 0x05];
+
+    match script {
+        Script::Kana => JAPANESE,
+        Script::Hangul => &["malgun.ttf"],
+        Script::Thai => &["LeelawUI.ttf", "tahoma.ttf"],
+        Script::Indic => &["Nirmala.ttc", "Nirmala.ttf"],
+        Script::Han => match (language & 0x3FF, language >> 10) {
+            (LANG_JAPANESE, _) => JAPANESE,
+            (LANG_KOREAN, _) => KOREAN,
+            (LANG_CHINESE, sub) if TRADITIONAL_SUBLANGUAGES.contains(&sub) => TRADITIONAL,
+            _ => SIMPLIFIED,
+        },
+    }
+}
+
+/// The display language of this Windows, as a language id.
+fn ui_language() -> u16 {
+    #[cfg(windows)]
+    {
+        unsafe { windows_sys::Win32::Globalization::GetUserDefaultUILanguage() }
+    }
+    #[cfg(not(windows))]
+    {
+        0
+    }
+}
+
+/// Finds the Windows font for a character no installed font has, and loads
+/// it then: the files run to twenty megabytes each, far too much to read at
+/// every start for a text that may never come.
+///
+/// What Windows names is drawn as Windows wrote it: a device or an adapter
+/// named in Chinese or Japanese, the path of a user with such a name, the
+/// output of a translated tool. Without a font for them they were empty
+/// boxes (#271). The font joins every family, so a heading and a log line
+/// find it as well.
+fn windows_font_for(
+    folder: std::path::PathBuf,
+    language: u16,
+) -> impl Fn(&egui::epaint::text::FallbackRequest<'_>) -> Option<egui::epaint::text::FontInsert> {
+    use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
+
+    // egui asks once for each family and character. A file is read the
+    // first time and handed out again after that; the data is shared.
+    let loaded: Mutex<Vec<(&'static str, egui::FontData)>> = Mutex::new(Vec::new());
+    move |request| {
+        let script = script_of(request.cluster.chars().next()?)?;
+        let mut loaded = loaded.lock().ok()?;
+        for file in font_files(script, language) {
+            let known = loaded.iter().find(|(name, _)| name == file);
+            let data = match known {
+                Some((_, data)) => data.clone(),
+                None => {
+                    let Ok(bytes) = std::fs::read(folder.join(file)) else {
+                        continue;
+                    };
+                    let data = egui::FontData::from_owned(bytes);
+                    loaded.push((*file, data.clone()));
+                    data
+                }
+            };
+            return Some(FontInsert {
+                name: (*file).to_string(),
+                data,
+                families: [
+                    egui::FontFamily::Proportional,
+                    egui::FontFamily::Monospace,
+                    egui::FontFamily::Name(SEMIBOLD.into()),
+                ]
+                .into_iter()
+                .map(|family| InsertFontFamily {
+                    family,
+                    priority: FontPriority::Lowest,
+                })
+                .collect(),
+            });
+        }
+        None
+    }
+}
+
 pub fn apply(ctx: &egui::Context) {
     // Use the Windows UI font when available, retaining the bundled fallbacks.
     if let Some(windows) = std::env::var_os("SystemRoot") {
@@ -88,7 +220,18 @@ pub fn apply(ctx: &egui::Context) {
                 .families
                 .insert(egui::FontFamily::Name(SEMIBOLD.into()), family);
         }
+        // Logs, paths and technical details are set in the monospace
+        // family, whose fonts have no Arabic or Hebrew. Segoe UI has, so it
+        // comes last there, for what the others lack.
+        if fonts.font_data.contains_key("Segoe UI") {
+            fonts
+                .families
+                .entry(egui::FontFamily::Monospace)
+                .or_default()
+                .push("Segoe UI".into());
+        }
         ctx.set_fonts(fonts);
+        ctx.add_font_provider(Arc::new(windows_font_for(folder, ui_language())));
     }
 
     for theme in [egui::Theme::Dark, egui::Theme::Light] {
@@ -191,6 +334,21 @@ pub fn heading(ui: &egui::Ui, text: impl Into<String>, size: f32) -> RichText {
         text.family(family)
     } else {
         text
+    }
+}
+
+/// Bring the row the keyboard is on into view when the keyboard moved there.
+///
+/// Down, PgDn and End changed the detail pane while the list stayed where it
+/// was, and Space then ticked a row the user could not see. `row` names the
+/// row within `list`. The list is scrolled once per move, so the mouse wheel
+/// is free to leave the row afterwards.
+pub fn keep_in_view(ui: &egui::Ui, list: &'static str, row: (usize, usize), rect: egui::Rect) {
+    let id = egui::Id::unique(("winmedic_keyboard_row", list));
+    let last: Option<(usize, usize)> = ui.data(|data| data.get_temp(id));
+    if last != Some(row) {
+        ui.data_mut(|data| data.insert_temp(id, row));
+        ui.scroll_to_rect(rect, None);
     }
 }
 
@@ -535,6 +693,116 @@ pub fn usage_bar(ui: &mut egui::Ui, fraction: f32, width: f32) -> egui::Response
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    const GERMAN: u16 = 0x0407;
+    const JAPANESE: u16 = 0x0411;
+    const KOREAN: u16 = 0x0412;
+    const CHINESE_PRC: u16 = 0x0804;
+    const CHINESE_TAIWAN: u16 = 0x0404;
+
+    #[test]
+    fn a_character_is_told_by_its_script() {
+        for (c, script) in [
+            ('\u{9ad8}', Some(Script::Han)),    // a Chinese character
+            ('\u{3001}', Some(Script::Han)),    // the ideographic comma
+            ('\u{30a4}', Some(Script::Kana)),   // Katakana I
+            ('\u{3042}', Some(Script::Kana)),   // Hiragana A
+            ('\u{ff72}', Some(Script::Kana)),   // half-width Katakana I
+            ('\u{d55c}', Some(Script::Hangul)), // Hangul HAN
+            ('\u{0e01}', Some(Script::Thai)),
+            ('\u{0905}', Some(Script::Indic)), // Devanagari A
+            ('\u{0bb0}', Some(Script::Indic)), // Tamil RA
+            ('a', None),
+            ('\u{00e4}', None),
+            ('\u{0416}', None), // Cyrillic: Segoe UI has it
+            ('\u{0627}', None), // Arabic: Segoe UI has it
+        ] {
+            assert_eq!(script_of(c), script, "U+{:04X}", u32::from(c));
+        }
+    }
+
+    /// Han characters are drawn by the font of the display language; every
+    /// list ends in a font Windows installs with every language.
+    #[test]
+    fn han_characters_follow_the_display_language() {
+        assert_eq!(font_files(Script::Han, GERMAN)[0], "msyh.ttc");
+        assert_eq!(font_files(Script::Han, CHINESE_PRC)[0], "msyh.ttc");
+        assert_eq!(font_files(Script::Han, CHINESE_TAIWAN)[0], "msjh.ttc");
+        assert_eq!(font_files(Script::Han, JAPANESE)[0], "YuGothR.ttc");
+        assert_eq!(font_files(Script::Han, KOREAN)[0], "malgun.ttf");
+        assert_eq!(
+            font_files(Script::Kana, GERMAN),
+            font_files(Script::Han, JAPANESE)
+        );
+        for language in [GERMAN, JAPANESE, KOREAN, CHINESE_PRC, CHINESE_TAIWAN] {
+            assert!(font_files(Script::Han, language).contains(&"msyh.ttc"));
+        }
+    }
+
+    /// #271. With the fonts of this Windows, text in these scripts has
+    /// glyphs in every family, and none of the fonts is read before it is
+    /// needed. A Windows without the file (a server without the language's
+    /// fonts) is not judged.
+    #[test]
+    fn the_windows_font_of_a_script_is_loaded_when_a_character_needs_it() {
+        let folder =
+            std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("Fonts");
+        let ctx = egui::Context::default();
+        apply(&ctx);
+        // The provider counts from the next pass on.
+        let mut pass = ctx.run_ui(egui::RawInput::default(), |_| {});
+        pass.textures_delta.clear();
+
+        for (file, text) in [
+            ("msyh.ttc", "\u{9ad8}\u{7cbe}\u{5ea6}"),
+            ("malgun.ttf", "\u{d55c}\u{ae00}"),
+            ("LeelawUI.ttf", "\u{0e01}\u{0e02}"),
+        ] {
+            if !folder.join(file).exists() {
+                continue;
+            }
+            for family in [
+                egui::FontFamily::Proportional,
+                egui::FontFamily::Monospace,
+                egui::FontFamily::Name(SEMIBOLD.into()),
+            ] {
+                let font = egui::FontId::new(14.0, family.clone());
+                assert!(
+                    ctx.fonts_mut(|fonts| fonts.has_glyphs(&font, text)),
+                    "{file} in {family:?}"
+                );
+            }
+        }
+    }
+
+    /// The provider reads a file once, however often egui asks, and only
+    /// for a script it has a font for.
+    #[test]
+    fn a_font_file_is_read_once() {
+        use egui::epaint::text::FallbackRequest;
+
+        let folder = std::env::temp_dir().join(format!("winmedic_fonts_{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("malgun.ttf"), b"not a font, only a file").unwrap();
+        let provider = windows_font_for(folder.clone(), GERMAN);
+        let ask = |cluster: &str| {
+            provider(&FallbackRequest {
+                cluster,
+                family: &egui::FontFamily::Proportional,
+            })
+        };
+
+        assert!(ask("a").is_none(), "Latin is not looked for");
+        assert!(ask("\u{9ad8}").is_none(), "no file for it in this folder");
+        let found = ask("\u{d55c}").expect("the Korean font");
+        assert_eq!(found.name, "malgun.ttf");
+        assert_eq!(found.families.len(), 3);
+
+        // The file is gone; the next character gets what was read.
+        std::fs::remove_dir_all(&folder).unwrap();
+        let again = ask("\u{ae00}").expect("handed out again");
+        assert!(std::sync::Arc::ptr_eq(&found.data.font, &again.data.font));
+    }
 
     /// The WCAG 2 contrast ratio of two opaque colours.
     pub(crate) fn contrast(a: Color32, b: Color32) -> f32 {

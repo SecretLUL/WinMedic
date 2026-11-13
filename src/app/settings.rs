@@ -202,7 +202,11 @@ impl App {
         }
         self.status_message = Some(message);
 
+        // The running scan or repair keeps the engine it started with. The
+        // new one is built when it ends: left at that, the modules kept the
+        // old settings until another one was changed (#263).
         if self.is_busy() {
+            self.settings_changed_while_busy = true;
             return;
         }
 
