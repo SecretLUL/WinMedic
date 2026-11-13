@@ -9,7 +9,7 @@
 //! task, which Task Scheduler reverses with a single `Enable-ScheduledTask`.
 
 use crate::engine::issue::{Issue, RiskScore, Severity};
-use crate::modules::registry_startup::{DriveTypeSource, on_fixed_drive, real_drive_type};
+use crate::modules::registry_startup::{DriveTypeSource, is_gone, on_fixed_drive, real_drive_type};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner, ps_single_quoted};
 use sha2::{Digest, Sha256};
@@ -71,6 +71,23 @@ const BENIGN_TASK_RESULTS: &[i64] = &[
 /// there for. Only starting a service returns it, so the program alone tells
 /// it apart; the inventory does not read the arguments.
 const SERVICE_ALREADY_RUNNING: i64 = 1056;
+
+/// The environment variables that name the same folder whichever account
+/// asks.
+const MACHINE_WIDE_VARIABLES: &[&str] = &[
+    "SystemRoot",
+    "windir",
+    "SystemDrive",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "CommonProgramFiles",
+    "CommonProgramFiles(x86)",
+    "CommonProgramW6432",
+    "ProgramData",
+    "ALLUSERSPROFILE",
+    "PUBLIC",
+];
 
 /// Folder of the tasks Windows registers for its own upkeep.
 const WINDOWS_TASK_FOLDER: &str = r"\Microsoft\Windows\";
@@ -300,12 +317,20 @@ impl ScheduledTasksModule {
         })
     }
 
-    /// Expand `%NAME%` references against this process's environment.
+    /// Expand the `%NAME%` references that mean the same for every account,
+    /// [`MACHINE_WIDE_VARIABLES`], against this process's environment.
     ///
-    /// An unset variable is left standing rather than replaced with nothing:
-    /// `%AppDir%\tool.exe` collapsing to `\tool.exe` would look like a real
-    /// absolute path to a file that does not exist, which is exactly the
-    /// false positive this module must not produce.
+    /// Any other variable is left standing, as is an unset one, rather than
+    /// replaced: `%AppDir%\tool.exe` collapsing to `\tool.exe` would look
+    /// like a real absolute path to a file that does not exist, which is
+    /// exactly the false positive this module must not produce.
+    ///
+    /// `%LOCALAPPDATA%`, `%APPDATA%`, `%USERPROFILE%` and `%TEMP%` belong to
+    /// the account a task runs as. WinMedic sees every account's tasks and
+    /// would expand them with the environment of the account it was elevated
+    /// with: the per-user OneDrive updater of another account was looked for
+    /// in the wrong profile and reported as pointing at a deleted program
+    /// (#268).
     fn expand_env_vars(raw: &str) -> String {
         let mut out = String::with_capacity(raw.len());
         let mut rest = raw;
@@ -317,10 +342,14 @@ impl ScheduledTasksModule {
             match after.find('%') {
                 Some(end) => {
                     let var_name = &after[..end];
+                    let machine_wide = MACHINE_WIDE_VARIABLES
+                        .iter()
+                        .any(|name| name.eq_ignore_ascii_case(var_name));
                     match std::env::var(var_name) {
-                        Ok(value) if !var_name.is_empty() => out.push_str(&value),
+                        Ok(value) if machine_wide => out.push_str(&value),
                         _ => {
-                            // Unset, or an empty `%%`: keep the text verbatim.
+                            // Another account's, unset, or an empty `%%`:
+                            // keep the text verbatim.
                             out.push('%');
                             out.push_str(var_name);
                             out.push('%');
@@ -371,10 +400,7 @@ impl ScheduledTasksModule {
         let expanded = Self::expand_env_vars(trimmed);
         let path = PathBuf::from(expanded.trim().trim_matches('"'));
 
-        if !path.is_absolute() || !on_fixed_drive(&path, drive_type) || path.exists() {
-            return None;
-        }
-        Some(path)
+        (path.is_absolute() && on_fixed_drive(&path, drive_type) && is_gone(&path)).then_some(path)
     }
 
     /// Build a stable, unique and still human-readable issue id for a task.
@@ -1049,6 +1075,52 @@ mod tests {
             let expanded = ScheduledTasksModule::expand_env_vars(r"%SystemRoot%\system32\x.exe");
             assert_eq!(expanded, format!(r"{}\system32\x.exe", root));
         }
+    }
+
+    /// #268. A per-user variable would be expanded as the account WinMedic
+    /// runs elevated as, not as the one the task belongs to.
+    #[test]
+    fn a_variable_of_one_account_is_left_standing() {
+        for variable in [
+            "LOCALAPPDATA",
+            "localappdata",
+            "APPDATA",
+            "USERPROFILE",
+            "TEMP",
+        ] {
+            let raw = format!(r"%{variable}%\WinMedicNoSuchVendor\ghost.exe");
+            assert_eq!(ScheduledTasksModule::expand_env_vars(&raw), raw);
+            assert!(
+                ScheduledTasksModule::missing_target(&raw, &drives).is_none(),
+                "{raw}"
+            );
+        }
+        // The same for every account: still judged.
+        assert!(
+            ScheduledTasksModule::missing_target(
+                r"%ProgramData%\WinMedicNoSuchVendor\ghost.exe",
+                &drives
+            )
+            .is_some()
+        );
+        assert!(
+            ScheduledTasksModule::missing_target(
+                r"%windir%\WinMedicNoSuchVendor\ghost.exe",
+                &drives
+            )
+            .is_some()
+        );
+    }
+
+    /// #268. "Not found" is the only answer that proves a program is gone.
+    /// `?` cannot be in a file name, so Windows answers with another error,
+    /// as it does for a volume that is locked or damaged.
+    #[test]
+    fn a_path_windows_cannot_look_at_is_not_a_deleted_program() {
+        let root = std::env::var("SystemRoot").unwrap();
+        let unreadable = format!(r"{root}\a?b.exe");
+        assert!(std::path::Path::new(&unreadable).try_exists().is_err());
+        assert!(ScheduledTasksModule::missing_target(&unreadable, &drives).is_none());
     }
 
     #[test]

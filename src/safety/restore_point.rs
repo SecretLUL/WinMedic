@@ -1,9 +1,12 @@
+use crate::safety::reg_backup::MACHINE_KEY;
 use crate::utils::cmd::{ps_single_quoted, run_powershell};
 use chrono::{DateTime, FixedOffset, Local, NaiveDate, TimeZone, Utc};
 use std::fmt::Display;
 use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
+use winreg::RegKey;
+use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE};
 
 /// Marker prefix the checkpoint script prints so the Rust side never has to
 /// match on Windows' localized status text.
@@ -86,6 +89,13 @@ pub fn parse_checkpoint_output(output: &str) -> RestorePointOutcome {
         Some("CREATED") => RestorePointOutcome::Created,
         Some("THROTTLED") => RestorePointOutcome::Throttled,
         Some("UNVERIFIED") => RestorePointOutcome::Unverified,
+        Some(rest) if rest.starts_with("SEQ:") => {
+            let mut readings = rest["SEQ:".len()..].split(':').map(NewestPoint::parse);
+            match (readings.next().flatten(), readings.next().flatten()) {
+                (Some(before), Some(after)) => checkpoint_outcome(before, after),
+                _ => RestorePointOutcome::Failed(format!("unreadable result: {rest}")),
+            }
+        }
         Some(rest) => {
             let detail = rest.strip_prefix("ERROR:").unwrap_or(rest).trim();
             let detail = if detail.is_empty() {
@@ -108,60 +118,180 @@ pub fn parse_checkpoint_output(output: &str) -> RestorePointOutcome {
     }
 }
 
+/// What the newest restore point's sequence number was, before or after the
+/// checkpoint, as the script prints it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NewestPoint {
+    /// The list was read and holds this one.
+    Number(u32),
+    /// The list was read and is empty.
+    None,
+    /// The list could not be read.
+    Unreadable,
+}
+
+impl NewestPoint {
+    fn parse(text: &str) -> Option<Self> {
+        match text.trim() {
+            "NONE" => Some(Self::None),
+            "UNREADABLE" => Some(Self::Unreadable),
+            number => number.parse().ok().map(Self::Number),
+        }
+    }
+}
+
+/// Whether a restore point was added between the two readings.
+///
+/// A list that could not be read says nothing, before or after. The script
+/// used to return -1 for it as for an empty list: a first read that failed
+/// and a second one that showed older points made any of them count as new,
+/// and the repairs ran as protected without a restore point (#267).
+fn checkpoint_outcome(before: NewestPoint, after: NewestPoint) -> RestorePointOutcome {
+    use NewestPoint::{None, Number, Unreadable};
+    match (before, after) {
+        (Unreadable, _) | (_, Unreadable) | (Number(_), None) => RestorePointOutcome::Unverified,
+        (None, Number(_)) => RestorePointOutcome::Created,
+        (Number(before), Number(after)) if after > before => RestorePointOutcome::Created,
+        (Number(_), Number(_)) => RestorePointOutcome::Throttled,
+        (None, None) => RestorePointOutcome::Failed(
+            "Windows created no restore point, and there is none from before".to_string(),
+        ),
+    }
+}
+
 fn checkpoint_script(description: &str) -> String {
     format!(
         r#"
         function Get-MaxSeq {{
             try {{
-                $points = Get-ComputerRestorePoint
-                if ($null -eq $points) {{ return -1 }}
+                $points = Get-ComputerRestorePoint -ErrorAction Stop
+                if ($null -eq $points) {{ return 'NONE' }}
                 $max = ($points | Measure-Object -Maximum -Property SequenceNumber).Maximum
-                if ($null -eq $max) {{ return -1 }}
-                return [int]$max
-            }} catch {{ return -1 }}
+                if ($null -eq $max) {{ return 'NONE' }}
+                return [string][int]$max
+            }} catch {{ return 'UNREADABLE' }}
         }}
 
         try {{
             $before = Get-MaxSeq
             # Turns System Protection on for the system drive if it is off.
             Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction SilentlyContinue
-            # Windows creates at most one restore point a day and skips the rest
-            # silently. A frequency of 0 lifts that, as Microsoft documents for
-            # CreateRestorePoint; the old value is put back afterwards.
-            $key = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore'
-            $name = 'SystemRestorePointCreationFrequency'
-            $old = (Get-ItemProperty -Path $key -Name $name -ErrorAction SilentlyContinue).$name
-            New-ItemProperty -Path $key -Name $name -Value 0 -PropertyType DWord -Force -ErrorAction SilentlyContinue | Out-Null
-            try {{
-                # Windows reports the rate limit as a *warning*, not an error, so
-                # -ErrorAction cannot catch it and the call still "succeeds". The
-                # only reliable check is whether a new sequence number appeared.
-                Checkpoint-Computer -Description {} -RestorePointType 'MODIFY_SETTINGS' -WarningAction SilentlyContinue
-            }} finally {{
-                if ($null -eq $old) {{
-                    Remove-ItemProperty -Path $key -Name $name -ErrorAction SilentlyContinue
-                }} else {{
-                    New-ItemProperty -Path $key -Name $name -Value $old -PropertyType DWord -Force -ErrorAction SilentlyContinue | Out-Null
-                }}
-            }}
+            # Windows reports its rate limit as a *warning*, not an error, so
+            # -ErrorAction cannot catch it and the call still "succeeds". The
+            # only reliable check is whether a new sequence number appeared.
+            Checkpoint-Computer -Description {} -RestorePointType 'MODIFY_SETTINGS' -WarningAction SilentlyContinue
             $after = Get-MaxSeq
-            if ($after -gt $before) {{
-                "{}CREATED"
-            }} elseif ($before -ge 0) {{
-                "{}THROTTLED"
-            }} else {{
-                "{}UNVERIFIED"
-            }}
+            "{}SEQ:" + $before + ":" + $after
         }} catch {{
             "{}ERROR:" + $_.Exception.Message
         }}
         "#,
         ps_single_quoted(description),
         RESULT_MARKER,
-        RESULT_MARKER,
-        RESULT_MARKER,
         RESULT_MARKER
     )
+}
+
+/// The key Windows reads its restore point limit from.
+const SYSTEM_RESTORE_KEY: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore";
+
+/// Minutes that have to pass between two restore points; absent means 1440.
+const CREATION_FREQUENCY: &str = "SystemRestorePointCreationFrequency";
+
+/// Under [`MACHINE_KEY`]: what [`CREATION_FREQUENCY`] was before WinMedic set
+/// it to 0, a number or [`NOT_SET`], for as long as it is 0.
+const FREQUENCY_BEFORE: &str = "RestorePointFrequencyBefore";
+
+/// [`FREQUENCY_BEFORE`] for a value that was not there.
+const NOT_SET: &str = "not set";
+
+/// Windows' once-a-day limit for restore points, and where WinMedic notes
+/// what it was.
+///
+/// Windows creates at most one restore point a day and skips the rest
+/// silently. A frequency of 0 lifts that, as Microsoft documents for
+/// CreateRestorePoint. The script used to set it and put it back in a
+/// `finally`: when `Checkpoint-Computer` ran into the time limit, which a
+/// broken VSS makes likely, or WinMedic ended meanwhile, PowerShell was ended
+/// inside the `try`, the value stayed 0, and every later run took 0 for the
+/// old value (#267). Now the old value is noted before it is changed, put
+/// back when the [`LiftedLimit`] is dropped, whatever ended the checkpoint,
+/// and put back by the next start when WinMedic itself was ended.
+struct DailyLimit {
+    /// [`SYSTEM_RESTORE_KEY`].
+    limit: RegKey,
+    /// [`MACHINE_KEY`].
+    note: RegKey,
+}
+
+impl DailyLimit {
+    /// The limit of this Windows. `None` when a key cannot be opened; the
+    /// note's key is made only when `create_note` says so.
+    fn of_this_windows(create_note: bool) -> Option<Self> {
+        let machine = RegKey::predef(HKEY_LOCAL_MACHINE);
+        let note = if create_note {
+            crate::utils::acl::create_admin_only_key(MACHINE_KEY).ok()?
+        } else {
+            machine
+                .open_subkey_with_flags(MACHINE_KEY, KEY_READ | KEY_WRITE)
+                .ok()?
+        };
+        let limit = machine
+            .open_subkey_with_flags(SYSTEM_RESTORE_KEY, KEY_READ | KEY_WRITE)
+            .ok()?;
+        Some(Self { limit, note })
+    }
+
+    /// Note the limit and set it to 0. A note that is there already is from a
+    /// run that never put the limit back: it holds the real old value, and
+    /// the 0 in the registry is that run's.
+    fn lift(self) -> std::io::Result<LiftedLimit> {
+        if self.note.get_value::<String, _>(FREQUENCY_BEFORE).is_err() {
+            let before = match self.limit.get_value::<u32, _>(CREATION_FREQUENCY) {
+                Ok(minutes) => minutes.to_string(),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => NOT_SET.to_string(),
+                Err(e) => return Err(e),
+            };
+            self.note.set_value(FREQUENCY_BEFORE, &before)?;
+        }
+        let lifted = LiftedLimit(self);
+        lifted.0.limit.set_value(CREATION_FREQUENCY, &0u32)?;
+        Ok(lifted)
+    }
+
+    /// Put the limit back as the note says, and drop the note. Nothing
+    /// happens without a note.
+    fn put_back(&self) -> std::io::Result<()> {
+        let Ok(before) = self.note.get_value::<String, _>(FREQUENCY_BEFORE) else {
+            return Ok(());
+        };
+        match before.parse::<u32>() {
+            Ok(minutes) => self.limit.set_value(CREATION_FREQUENCY, &minutes)?,
+            Err(_) => match self.limit.delete_value(CREATION_FREQUENCY) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+                _ => {}
+            },
+        }
+        self.note.delete_value(FREQUENCY_BEFORE)
+    }
+}
+
+/// The limit while it is lifted; dropped, it is put back.
+struct LiftedLimit(DailyLimit);
+
+impl Drop for LiftedLimit {
+    fn drop(&mut self) {
+        let _ = self.0.put_back();
+    }
+}
+
+/// Put Windows' once-a-day limit for restore points back if an earlier
+/// WinMedic was ended while it had it lifted. For the start of the program;
+/// see [`DailyLimit`].
+pub fn put_back_daily_limit() {
+    if let Some(limit) = DailyLimit::of_this_windows(false) {
+        let _ = limit.put_back();
+    }
 }
 
 /// Create a Windows System Restore Point (VSS Checkpoint).
@@ -175,6 +305,8 @@ fn checkpoint_script(description: &str) -> String {
 /// the machine running the code without saying so out loud.
 async fn create_system_restore_point(description: &str) -> RestorePointResult {
     let script = checkpoint_script(description);
+    // Without the lift Windows may decline, which the result then says.
+    let _lifted = DailyLimit::of_this_windows(true).and_then(|limit| limit.lift().ok());
 
     match run_powershell(&script, Duration::from_secs(180)).await {
         Ok(out) => {
@@ -470,20 +602,110 @@ mod tests {
         assert!(!script.contains("O'Brien"));
     }
 
+    /// Windows' limit and WinMedic's note in a private hive in a temp file,
+    /// so that no key of this PC is written. A second call opens the same
+    /// hive, as the next start of WinMedic opens the same registry.
+    fn daily_limit(name: &str) -> DailyLimit {
+        let dir = std::env::temp_dir().join(format!(
+            "winmedic_restore_point_{name}_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = RegKey::load_app_key(dir.join("limit.dat"), false).unwrap();
+        DailyLimit {
+            limit: root.create_subkey("SystemRestore").unwrap().0,
+            note: root.create_subkey("WinMedic").unwrap().0,
+        }
+    }
+
+    fn frequency(limit: &DailyLimit) -> Option<u32> {
+        limit.limit.get_value(CREATION_FREQUENCY).ok()
+    }
+
+    fn note(limit: &DailyLimit) -> Option<String> {
+        limit.note.get_value(FREQUENCY_BEFORE).ok()
+    }
+
     /// The once-a-day limit is lifted for WinMedic's own checkpoint only, and
-    /// whatever was set before comes back whether the checkpoint works or not.
+    /// whatever was set before comes back when the checkpoint ends, however
+    /// it ends: dropping the guard is what a timeout and a cancel do too.
     #[test]
     fn the_daily_limit_is_lifted_for_the_checkpoint_and_put_back() {
-        let script = checkpoint_script("WinMedic Auto-Restore Point (before repairs)");
-        let lift = script
-            .find("-Name $name -Value 0")
-            .expect("the frequency is set to 0");
-        let checkpoint = script.find("Checkpoint-Computer").unwrap();
-        let finally = script.find("} finally {").expect("restored in a finally");
-        assert!(lift < checkpoint && checkpoint < finally);
-        assert!(script.contains("Remove-ItemProperty -Path $key -Name $name"));
-        assert!(script.contains("-Name $name -Value $old -PropertyType DWord"));
-        assert!(script.contains("SystemRestorePointCreationFrequency"));
+        // Not set, as on an untouched Windows.
+        let lifted = daily_limit("unset").lift().unwrap();
+        assert_eq!(frequency(&lifted.0), Some(0));
+        assert_eq!(note(&lifted.0).as_deref(), Some(NOT_SET));
+        drop(lifted);
+        let after = daily_limit("unset");
+        assert_eq!(frequency(&after), None, "the value is gone again");
+        assert_eq!(note(&after), None);
+
+        // Set by the user or a policy.
+        let limit = daily_limit("set");
+        limit.limit.set_value(CREATION_FREQUENCY, &720u32).unwrap();
+        let lifted = limit.lift().unwrap();
+        assert_eq!(frequency(&lifted.0), Some(0));
+        drop(lifted);
+        let after = daily_limit("set");
+        assert_eq!(frequency(&after), Some(720));
+        assert_eq!(note(&after), None);
+
+        // The script itself no longer touches the value.
+        let script = checkpoint_script("x");
+        assert!(!script.contains("SystemRestorePointCreationFrequency"));
+    }
+
+    /// #267. WinMedic ended while the limit was lifted: nothing put it back.
+    /// The next start does, and a checkpoint before that keeps the note.
+    #[test]
+    fn a_limit_left_lifted_is_put_back_by_the_next_start() {
+        let limit = daily_limit("killed");
+        limit.limit.set_value(CREATION_FREQUENCY, &1440u32).unwrap();
+        std::mem::forget(limit.lift().unwrap());
+        let left = daily_limit("killed");
+        assert_eq!(frequency(&left), Some(0));
+
+        // Another checkpoint first: 0 is not taken for the old value.
+        let lifted = left.lift().unwrap();
+        assert_eq!(note(&lifted.0).as_deref(), Some("1440"));
+        std::mem::forget(lifted);
+
+        let next_start = daily_limit("killed");
+        next_start.put_back().unwrap();
+        assert_eq!(frequency(&next_start), Some(1440));
+        assert_eq!(note(&next_start), None);
+
+        // Without a note the next start changes nothing.
+        next_start.put_back().unwrap();
+        assert_eq!(frequency(&next_start), Some(1440));
+    }
+
+    /// #267. Only two readings that both worked can show a new point.
+    #[test]
+    fn a_list_that_could_not_be_read_confirms_nothing() {
+        let outcome = |line: &str| parse_checkpoint_output(&format!("WINMEDIC_RP:SEQ:{line}"));
+
+        assert_eq!(outcome("11:12"), RestorePointOutcome::Created);
+        assert_eq!(outcome("NONE:1"), RestorePointOutcome::Created);
+        assert_eq!(outcome("12:12"), RestorePointOutcome::Throttled);
+        // The first read failed, the second shows the points from before.
+        assert_eq!(outcome("UNREADABLE:12"), RestorePointOutcome::Unverified);
+        assert_eq!(outcome("12:UNREADABLE"), RestorePointOutcome::Unverified);
+        assert_eq!(
+            outcome("UNREADABLE:UNREADABLE"),
+            RestorePointOutcome::Unverified
+        );
+        assert_eq!(outcome("12:NONE"), RestorePointOutcome::Unverified);
+        assert!(matches!(
+            outcome("NONE:NONE"),
+            RestorePointOutcome::Failed(_)
+        ));
+        assert!(matches!(outcome("12"), RestorePointOutcome::Failed(_)));
+        assert!(matches!(outcome("x:y"), RestorePointOutcome::Failed(_)));
+
+        let script = checkpoint_script("x");
+        assert!(script.contains("Get-ComputerRestorePoint -ErrorAction Stop"));
+        assert!(script.contains("return 'UNREADABLE'"));
     }
 
     /// System Protection is switched on for the drive Windows is on, which is

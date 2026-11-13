@@ -215,6 +215,7 @@ impl App {
             if end == ScanEnd::Completed {
                 self.save_scan_state();
             }
+            self.catch_up_on_settings();
         }
     }
 
@@ -405,6 +406,7 @@ impl App {
             self.backup_records = self.reg_backup_mgr.list_backups();
             self.clamp_backup_selection();
             self.save_scan_state();
+            self.catch_up_on_settings();
             if self.quit_when_repairs_end {
                 self.should_quit = true;
             }
@@ -998,6 +1000,46 @@ mod tests {
         app.is_fixing = true;
         app.total_to_fix = total;
         (app, tx)
+    }
+
+    /// #263. Verbose logging stands for everything the modules are built
+    /// with: the registry backup, the service restarts, the thresholds.
+    #[tokio::test]
+    async fn a_setting_changed_during_a_run_reaches_the_engine_when_it_ends() {
+        const VERBOSE_LOGGING: usize = 6;
+
+        let (mut app, tx) = scanning_app();
+        app.selected_setting_index = VERBOSE_LOGGING;
+        app.toggle_current_setting();
+        assert!(app.config.verbose_logging);
+        assert!(
+            !app.engine.verbose_logging,
+            "the running scan keeps its engine"
+        );
+        tx.send(ScanEvent::ScanCompleted {
+            total_issues: 0,
+            health_score: 100,
+        })
+        .await
+        .unwrap();
+        app.process_background_events();
+        assert!(app.engine.verbose_logging, "after the scan");
+
+        let (mut app, tx) = repairing_app(0);
+        app.selected_setting_index = VERBOSE_LOGGING;
+        app.toggle_current_setting();
+        assert!(
+            !app.engine.verbose_logging,
+            "the running repair keeps its engine"
+        );
+        tx.send(RepairEvent::AllRepairsCompleted {
+            fixed_count: 0,
+            failed_count: 0,
+        })
+        .await
+        .unwrap();
+        app.process_background_events();
+        assert!(app.engine.verbose_logging, "after the repairs");
     }
 
     /// #181: a simulation, finished or cancelled, records what it planned

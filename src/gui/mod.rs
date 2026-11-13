@@ -383,6 +383,7 @@ impl eframe::App for WinMedicApp {
         }
 
         show(ui, &mut self.app);
+        keys::remember_keyboard_owner(ui.ctx(), self.app.dialog_open());
 
         // The close button, Alt+F4 or the taskbar: while repairs run, the
         // window stays until the run it cancels has ended.
@@ -551,6 +552,7 @@ mod tests {
                         handle_key(app, key);
                     }
                     show(ui, app);
+                    keys::remember_keyboard_owner(ui.ctx(), app.dialog_open());
                 },
                 app,
             );
@@ -1784,6 +1786,81 @@ mod tests {
         harness.get_by_label("Easy mode (F7)").click();
         harness.run();
         assert!(!harness.state().config.advanced_mode);
+    }
+
+    /// #269. The Esc that takes the caret out of the search box is egui's: it
+    /// does not clear the filters as well. The next one is WinMedic's again.
+    #[test]
+    fn an_esc_that_leaves_the_search_box_does_nothing_else() {
+        let mut app = scanned_app();
+        app.severity_filter = Some(Severity::Critical);
+        let mut harness = window_with_keys(app);
+
+        harness.get_by_role(Role::TextInput).click();
+        harness.run();
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+        assert_eq!(
+            harness.state().severity_filter,
+            Some(Severity::Critical),
+            "the filter stays"
+        );
+
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+        assert_eq!(harness.state().severity_filter, None);
+    }
+
+    /// #269. In a dialog, Esc closes the dialog at once, also when its text
+    /// field has the caret.
+    #[test]
+    fn esc_closes_a_dialog_whose_field_has_the_caret() {
+        let mut app = scanned_app();
+        app.active_tab = TAB_SETTINGS;
+        app.selected_setting_index = 4;
+        app.open_setting_input();
+        let mut harness = window_with_keys(app);
+        assert!(harness.state().setting_input.is_some());
+
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+        assert!(harness.state().setting_input.is_none());
+    }
+
+    /// #269. A key held down is one press, unless holding it means "go on":
+    /// F7 held does not flip the mode back and forth.
+    #[test]
+    fn a_held_key_is_passed_on_only_where_it_moves_through_a_list() {
+        // egui itself tells a repeat from a press: a key that is down already.
+        let down = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let mut harness = window_with_keys(scanned_app());
+        let advanced = harness.state().config.advanced_mode;
+
+        for _ in 0..4 {
+            harness.event(down(egui::Key::F7));
+            harness.run();
+        }
+        assert_ne!(
+            harness.state().config.advanced_mode,
+            advanced,
+            "switched once, by the press"
+        );
+
+        let mut harness = window_with_keys(scanned_app());
+        // Each one moves on; from the last finding that is back to the first.
+        let mut at = harness.state().selected_filtered_index;
+        for _ in 0..2 {
+            harness.event(down(egui::Key::ArrowDown));
+            harness.run();
+            assert_ne!(harness.state().selected_filtered_index, at);
+            at = harness.state().selected_filtered_index;
+        }
     }
 
     /// F7 types nothing, so it works from inside the search box too — and

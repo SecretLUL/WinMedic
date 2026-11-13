@@ -181,6 +181,10 @@ fn run(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     // to run.
     utils::self_update::sweep_leftovers_beside_current_exe();
 
+    // A WinMedic that was ended while it created a restore point left
+    // Windows' once-a-day limit for them lifted; this start puts it back.
+    safety::restore_point::put_back_daily_limit();
+
     if args.uninstall {
         return Ok(run_uninstall(args.purge));
     }

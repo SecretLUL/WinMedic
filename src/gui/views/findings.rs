@@ -99,10 +99,14 @@ fn filters(ui: &mut egui::Ui, app: &mut App) {
             app.issues.len()
         )));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("Select none").on_hover_text("N").clicked() {
+            // A running repair keeps the ticks it started with.
+            let free = !app.selection_locked();
+            let none = ui.add_enabled(free, egui::Button::new("Select none"));
+            if none.on_hover_text("N").clicked() {
                 app.deselect_all_issues();
             }
-            if ui.button("Select all").on_hover_text("A").clicked() {
+            let all = ui.add_enabled(free, egui::Button::new("Select all"));
+            if all.on_hover_text("A").clicked() {
                 app.select_all_issues();
             }
         });
@@ -235,6 +239,7 @@ fn row(ui: &mut egui::Ui, app: &mut App, issue_index: usize, highlighted: bool, 
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
+                        let free = !app.selection_locked();
                         let issue = &mut app.issues[issue_index];
 
                         // A fixed issue is history: it cannot be selected for
@@ -262,10 +267,15 @@ fn row(ui: &mut egui::Ui, app: &mut App, issue_index: usize, highlighted: bool, 
                         } else {
                             // The box has no text of its own: the title further
                             // along the row says what it selects, and its name
-                            // says the same to a screen reader.
-                            theme::checkbox(ui, &mut issue.is_selected, "")
-                                .accessible_name(format!("Select {}", issue.title))
-                                .changed()
+                            // says the same to a screen reader. Greyed out
+                            // while a repair runs: the run keeps the ticks it
+                            // started with.
+                            ui.add_enabled_ui(free, |ui| {
+                                theme::checkbox(ui, &mut issue.is_selected, "")
+                                    .accessible_name(format!("Select {}", issue.title))
+                                    .changed()
+                            })
+                            .inner
                         };
                         // A fixed-width first column, so the titles line up
                         // whether a row carries a checkbox or a word.

@@ -15,8 +15,12 @@ use eframe::egui;
 /// triage search box must not start a scan on the `s`, and the widget that owns
 /// the keyboard is the one egui already tracks. F7 types nothing, so it switches
 /// the mode from anywhere, as it does in a BIOS setup screen.
+///
+/// An Esc that egui uses itself is not passed on either, see
+/// [`remember_keyboard_owner`].
 pub fn shortcuts(ctx: &egui::Context) -> Vec<Key> {
     let typing = ctx.memory(|memory| memory.focused().is_some());
+    let esc_is_eguis = ctx.data(|data| data.get_temp::<bool>(esc_owner()).unwrap_or(false));
 
     ctx.input(|input| {
         input
@@ -24,8 +28,28 @@ pub fn shortcuts(ctx: &egui::Context) -> Vec<Key> {
             .iter()
             .filter_map(translate)
             .filter(|key| !typing || *key == Key::F7)
+            .filter(|key| !(esc_is_eguis && *key == Key::Esc))
             .collect()
     })
+}
+
+fn esc_owner() -> egui::Id {
+    egui::Id::unique("winmedic_esc_belongs_to_egui")
+}
+
+/// Note, at the end of a frame, whether the next Esc is egui's: a widget has
+/// the keyboard or a drop-down is open, and no dialog of WinMedic's is
+/// (`dialog_open`), whose Esc closes the dialog.
+///
+/// egui takes the focus away at the start of the frame an Esc arrives in, so
+/// by the time [`shortcuts`] looks, nothing is focused: the Esc that left
+/// the search box or closed the module list also cancelled the running
+/// repair, or cleared every filter (#269). What the frame before ended with
+/// is the only record of whose key it is.
+pub fn remember_keyboard_owner(ctx: &egui::Context, dialog_open: bool) {
+    let eguis = !dialog_open
+        && (ctx.memory(|memory| memory.focused().is_some()) || egui::Popup::is_any_open(ctx));
+    ctx.data_mut(|data| data.insert_temp(esc_owner(), eguis));
 }
 
 fn translate(event: &egui::Event) -> Option<Key> {
@@ -35,14 +59,32 @@ fn translate(event: &egui::Event) -> Option<Key> {
         // would dispatch every letter twice — pressing `d` would toggle
         // simulation mode on and straight back off again.
         egui::Event::Text(text) => text.chars().next().map(Key::Char),
+        //
+        // A key held down arrives again and again. Only where that is what
+        // holding it means is it passed on: Esc held a moment cleared the
+        // filters, cancelled the run and left Settings in one press, and F7
+        // flipped the mode thirty times a second (#269).
         egui::Event::Key {
             key,
             pressed: true,
+            repeat,
             modifiers,
             ..
-        } => named_key(*key, *modifiers),
+        } if !*repeat || repeats_when_held(*key) => named_key(*key, *modifiers),
         _ => None,
     }
+}
+
+/// Moving through a list, and deleting what was typed.
+fn repeats_when_held(key: egui::Key) -> bool {
+    matches!(
+        key,
+        egui::Key::ArrowUp
+            | egui::Key::ArrowDown
+            | egui::Key::PageUp
+            | egui::Key::PageDown
+            | egui::Key::Backspace
+    )
 }
 
 fn named_key(key: egui::Key, modifiers: egui::Modifiers) -> Option<Key> {

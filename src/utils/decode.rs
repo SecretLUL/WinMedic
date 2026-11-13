@@ -177,17 +177,26 @@ fn shown(text: &str) -> &str {
         .unwrap_or(text)
 }
 
-/// Whether `bytes` are UTF-16LE text: a byte order mark, or mostly code units
-/// whose high byte is zero, which is what ASCII-range text looks like in it.
-/// Text in a byte encoding has no NUL bytes at all.
+/// Whether `bytes` are UTF-16LE text: a byte order mark, or, among the first
+/// code units, one whose high byte is zero and whose low byte is not, which
+/// is what a line end, a space or a digit looks like in it. Text in a byte
+/// encoding has no NUL bytes at all.
+///
+/// Most of the units had to look so once. That holds for Latin text only:
+/// in Russian, Greek, Chinese, Japanese or Korean just the spaces, digits
+/// and line ends do, SFC's output was read as bytes, and its repair log
+/// showed empty lines and no percentage for as long as it ran (#277). A
+/// unit that is all zero is no text in either encoding.
 fn looks_like_utf16le(bytes: &[u8]) -> bool {
     if bytes.starts_with(&[0xFF, 0xFE]) {
         return true;
     }
-    let units = bytes.as_chunks::<2>().0.iter().take(128);
-    let total = units.len();
-    let ascii_units = units.filter(|unit| unit[1] == 0 && unit[0] != 0).count();
-    total > 0 && ascii_units * 2 > total
+    let mut units = bytes.as_chunks::<2>().0.iter().take(128);
+    let mut ascii_range = false;
+    units.all(|unit| {
+        ascii_range |= unit[1] == 0 && unit[0] != 0;
+        *unit != [0, 0]
+    }) && ascii_range
 }
 
 fn decode_utf16le(bytes: &[u8]) -> String {
@@ -318,6 +327,35 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains('\0'));
+    }
+
+    /// #277. SFC on a Windows whose language is not written in Latin
+    /// letters: only line ends, spaces, digits and punctuation have a zero
+    /// high byte. Constructed: no such Windows was at hand.
+    #[test]
+    fn utf16_in_a_script_that_is_not_latin_is_recognised() {
+        let utf16 =
+            |text: &str| -> Vec<u8> { text.encode_utf16().flat_map(u16::to_le_bytes).collect() };
+        let russian = "\r\n\u{41d}\u{430}\u{447}\u{430}\u{442}\u{43e} \u{441}\u{43a}\u{430}\u{43d}\u{438}\u{440}\u{43e}\u{432}\u{430}\u{43d}\u{438}\u{435} \u{441}\u{438}\u{441}\u{442}\u{435}\u{43c}\u{44b}.\r\n";
+        let japanese = "\r\n\u{30b7}\u{30b9}\u{30c6}\u{30e0} \u{30b9}\u{30ad}\u{30e3}\u{30f3}\u{3092}\u{958b}\u{59cb}\u{3057}\u{3066}\u{3044}\u{307e}\u{3059}\u{3002}\r\n";
+        for text in [russian, japanese] {
+            assert_eq!(decode_output(&utf16(text)), text);
+        }
+
+        // The stream SFC writes, a line and then a bar it redraws.
+        let progress = "\u{41f}\u{440}\u{43e}\u{432}\u{435}\u{440}\u{43a}\u{430} 5% \u{437}\u{430}\u{432}\u{435}\u{440}\u{448}\u{435}\u{43d}\u{430}.";
+        let mut decoder = LineDecoder::new();
+        let lines = decoder.push(&utf16(&format!("{russian}\r\n{progress}\r")));
+        assert_eq!(lines[1], russian.trim());
+        assert_eq!(decoder.progress().as_deref(), Some(progress));
+
+        // Byte encodings stay what they are: they hold no NUL, and bytes
+        // that are all zero are no text.
+        assert!(!looks_like_utf16le(DISM_DE));
+        assert!(!looks_like_utf16le(NETSH_DE));
+        assert!(!looks_like_utf16le(b"ok\r\n"));
+        assert!(!looks_like_utf16le(&[0; 64]));
+        assert!(!looks_like_utf16le(b""));
     }
 
     #[test]
