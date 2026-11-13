@@ -673,7 +673,10 @@ pub fn defender_policy_hit(defender: &[RegKeyValues]) -> Option<PolicyHit> {
 /// Whether Defender's real-time protection runs (`MP|True`), and every
 /// antivirus Windows Security knows as `AV|productState|instanceGuid|name`.
 /// `True`, the state number and the GUID are the same in every language.
-const DEFENDER_STATUS_SCRIPT: &str = "try { 'MP|{0}' -f (Get-MpComputerStatus -ErrorAction Stop).RealTimeProtectionEnabled } catch { 'MP|FAILED|' + $_.FullyQualifiedErrorId }; Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction SilentlyContinue | ForEach-Object { 'AV|{0}|{1}|{2}' -f $_.productState, $_.instanceGuid, $_.displayName }";
+/// A query that fails prints `MP|FAILED|...` or `AV|FAILED|...`: the list of
+/// products was read with `SilentlyContinue`, so "Windows Security did not
+/// answer" and "no antivirus" looked the same.
+const DEFENDER_STATUS_SCRIPT: &str = "try { 'MP|{0}' -f (Get-MpComputerStatus -ErrorAction Stop).RealTimeProtectionEnabled } catch { 'MP|FAILED|' + $_.FullyQualifiedErrorId }; try { Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction Stop | ForEach-Object { 'AV|{0}|{1}|{2}' -f $_.productState, $_.instanceGuid, $_.displayName } } catch { 'AV|FAILED|' + $_.FullyQualifiedErrorId }";
 
 /// Microsoft Defender's `instanceGuid` in Windows Security.
 const DEFENDER_GUID: &str = "{D68DDC3A-831F-4fae-9E44-DA132C1ACF46}";
@@ -685,6 +688,13 @@ pub struct DefenderStatus {
     pub realtime_on: bool,
     /// Other antivirus products Windows Security reports switched on.
     pub other_antivirus: Vec<String>,
+    /// Defender did not say whether its protection runs. A Defender that
+    /// is switched off does not answer either, so this alone still counts
+    /// as off.
+    pub realtime_failed: bool,
+    /// Windows Security did not list the antivirus products: whether
+    /// another one protects this PC is not known.
+    pub antivirus_failed: bool,
 }
 
 pub fn parse_defender_status(output: &str) -> DefenderStatus {
@@ -692,6 +702,9 @@ pub fn parse_defender_status(output: &str) -> DefenderStatus {
     for line in output.lines().map(str::trim) {
         if let Some(rest) = line.strip_prefix("MP|") {
             status.realtime_on = rest.eq_ignore_ascii_case("True");
+            status.realtime_failed = rest.starts_with("FAILED");
+        } else if line.starts_with("AV|FAILED") {
+            status.antivirus_failed = true;
         } else if let Some(rest) = line.strip_prefix("AV|") {
             let mut fields = rest.splitn(3, '|');
             let (Some(state), Some(guid), Some(name)) =
@@ -1872,10 +1885,33 @@ impl DiagnosticModule for TweaksModule {
                     for hit in hits {
                         // Defender switched off by policy is only a fault
                         // while nothing else protects the PC.
+                        // Set when Windows Security did not list the
+                        // antivirus products: Defender is off, and whether
+                        // anything else protects the PC is not known.
+                        let mut antivirus_unknown = false;
                         if hit.id == DEFENDER_OFF {
                             match self.defender_status().await {
+                                // Neither query answered (WMI or the Security
+                                // Center service is down). That read as
+                                // "protection off, no other antivirus" and
+                                // raised "this PC is unprotected" with
+                                // Defender or another product running.
                                 Some(status)
-                                    if !status.realtime_on && status.other_antivirus.is_empty() => {
+                                    if status.realtime_failed && status.antivirus_failed =>
+                                {
+                                    Self::send_progress(
+                                        &progress_tx,
+                                        70,
+                                        "Defender policy not judged",
+                                        Some("A policy switches Defender off, but neither Defender nor Windows Security answered, so whether this PC is protected is not known."),
+                                    )
+                                    .await;
+                                    continue;
+                                }
+                                Some(status)
+                                    if !status.realtime_on && status.other_antivirus.is_empty() =>
+                                {
+                                    antivirus_unknown = status.antivirus_failed;
                                 }
                                 Some(status) => {
                                     let why = if status.realtime_on {
@@ -1906,16 +1942,23 @@ impl DiagnosticModule for TweaksModule {
                             .map(|(key, name)| format!("{key}\\{name}"))
                             .collect::<Vec<_>>()
                             .join("\n");
+                        let (severity, description) = if antivirus_unknown {
+                            (
+                                Severity::Warning,
+                                "A policy switches Microsoft Defender's protection off. Windows Security did not answer, so whether another antivirus protects this PC is not known. Debloat tools set this policy.",
+                            )
+                        } else {
+                            (hit.severity, hit.description)
+                        };
                         let mut issue = Issue::new(
                             hit.id,
                             self.id(),
                             hit.title,
                             "Tweaks & Policies",
-                            hit.severity,
+                            severity,
                             RiskScore::Medium,
                             format!(
-                                "{} If this PC belongs to an organisation, ask its IT before changing it.",
-                                hit.description
+                                "{description} If this PC belongs to an organisation, ask its IT before changing it."
                             ),
                             evidence,
                             "Remove the policy values after a registry backup",
@@ -3006,7 +3049,7 @@ mod tests {
             status,
             DefenderStatus {
                 realtime_on: true,
-                other_antivirus: Vec::new(),
+                ..DefenderStatus::default()
             }
         );
         assert!(
@@ -3065,6 +3108,45 @@ mod tests {
             issue
                 .technical_details
                 .contains("DisableRealtimeMonitoring")
+        );
+    }
+
+    /// "Unprotected" must not rest on queries that failed. Constructed: no
+    /// PC at hand has a Defender or a Windows Security that does not answer.
+    #[tokio::test]
+    async fn a_defender_status_that_could_not_be_read_is_not_no_protection() {
+        // Both failed: nothing is known, nothing is raised.
+        let both = "MP|FAILED|HRESULT 0x80041010,Get-MpComputerStatus\r\nAV|FAILED|HRESULT 0x8004100e,Get-CimInstance\r\n";
+        let issues = defender_scan("defender_both_failed", both.to_string()).await;
+        assert!(issues.is_empty(), "{issues:?}");
+
+        // Defender is off and the product list could not be read: off is
+        // known, "nothing else protects" is not.
+        let no_list = "MP|False\r\nAV|FAILED|HRESULT 0x8004100e,Get-CimInstance\r\n";
+        let issues = defender_scan("defender_no_list", no_list.to_string()).await;
+        let issue = issues.iter().find(|i| i.id == DEFENDER_OFF).unwrap();
+        assert_eq!(issue.severity, Severity::Warning);
+        assert!(
+            issue.description.contains("is not known"),
+            "{}",
+            issue.description
+        );
+        assert!(
+            !issue.description.contains("unprotected"),
+            "{}",
+            issue.description
+        );
+
+        // A Defender that does not answer, with the list read and empty of
+        // others, is a Defender that is switched off: as before.
+        let silent = "MP|FAILED|HRESULT 0x800106ba,Get-MpComputerStatus\r\n";
+        let issues = defender_scan("defender_silent", silent.to_string()).await;
+        let issue = issues.iter().find(|i| i.id == DEFENDER_OFF).unwrap();
+        assert_eq!(issue.severity, Severity::Critical);
+
+        assert_eq!(
+            crate::utils::cmd::powershell_parse_errors(DEFENDER_STATUS_SCRIPT).await,
+            0
         );
     }
 
