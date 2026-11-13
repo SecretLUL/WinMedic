@@ -241,10 +241,25 @@ fn task_runs(xml: &str, conhost: &Path, exe: &Path) -> bool {
     if !xml.contains(&command) {
         return false;
     }
+    if exe.is_ascii() {
+        return xml.contains(&exe.to_lowercase());
+    }
     // schtasks writes the XML in the console code page, so a path outside ASCII
     // cannot be compared byte for byte. Such a task is taken as current rather
     // than re-created, and its schedule restarted, on every launch.
-    !exe.is_ascii() || xml.contains(&exe.to_lowercase())
+    //
+    // Its file name can be compared when that is ASCII, as every release's
+    // is. Without this, an update that renamed winmedic-v0.12.0.exe to
+    // winmedic-v0.13.0.exe in a folder such as "Büro" left the task
+    // starting the old name, which the next start deletes: the background
+    // scan was dead until the setting was switched off and on.
+    match Path::new(&exe).file_name().and_then(|name| name.to_str()) {
+        Some(name) if name.is_ascii() => {
+            xml.contains(&format!("\\{}\"", name.to_lowercase()))
+                || xml.contains(&format!("\\{} ", name.to_lowercase()))
+        }
+        _ => true,
+    }
 }
 
 /// Whether a Run value is the "Start with Windows" entry an older WinMedic
@@ -419,6 +434,30 @@ mod tests {
         // As captured: limited rights.
         let limited = crate::utils::decode::decode_output(TASK);
         assert!(!task_runs(&limited, Path::new(CONHOST), Path::new(EXE)));
+    }
+
+    /// The folder of a path outside ASCII cannot be found in what schtasks
+    /// prints; the file's name can.
+    #[test]
+    fn a_task_in_a_folder_outside_ascii_is_still_told_by_its_file_name() {
+        // What schtasks makes of "Büro" depends on the console code page.
+        let xml = captured_task(TASK).replace(
+            r"C:\Program Files\Tom &amp; Jerry\winmedic.exe",
+            r"C:\Program Files\B?ro\winmedic-v0.12.0.exe",
+        );
+        assert!(xml.contains("winmedic-v0.12.0.exe"), "{xml}");
+        let at = |name: &str| format!("C:\\Program Files\\B\u{fc}ro\\{name}");
+        assert!(task_runs(
+            &xml,
+            Path::new(CONHOST),
+            Path::new(&at("winmedic-v0.12.0.exe"))
+        ));
+        // After the update renamed the file, the task starts the old name.
+        assert!(!task_runs(
+            &xml,
+            Path::new(CONHOST),
+            Path::new(&at("winmedic-v0.13.0.exe"))
+        ));
     }
 
     /// A task whose command Task Scheduler expands from `%SystemRoot%` when
