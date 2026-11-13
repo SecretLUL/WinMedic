@@ -407,6 +407,21 @@ fn device_issue_id(instance_id: &str) -> String {
     format!("{DEVICE_ID_PREFIX}{}", slug(instance_id))
 }
 
+fn chain_issue_id(instance_id: &str) -> String {
+    format!("{CHAIN_ID_PREFIX}{}", slug(instance_id))
+}
+
+/// What a finding calls the service a chain starts with: the name the user
+/// knows, else the one `sc` uses.
+fn head_name(chain: &Chain) -> &str {
+    let head = chain.head();
+    if head.display_name.is_empty() {
+        &head.name
+    } else {
+        &head.display_name
+    }
+}
+
 /// What a finding calls `device`: its entry's name, else its own.
 pub(crate) fn device_name(device: &PnpDevice) -> String {
     match core_device(&device.instance_id) {
@@ -1380,16 +1395,8 @@ impl TweaksModule {
         issue
     }
 
-    /// The finding for `device`, if it is a Windows system device that is
-    /// disabled. `chains` are the services it stops on this PC: they lead
-    /// the description, and they make a hint a ticked warning, since they
-    /// show what it breaks here.
-    fn device_issue(&self, device: &PnpDevice, chains: &[&Chain]) -> Option<Issue> {
-        if device.problem != DEVICE_DISABLED {
-            return None;
-        }
-        let entry = core_device(&device.instance_id)?;
-        let breaks_here = !chains.is_empty();
+    /// What enabling `device` runs, for the plan of its repair.
+    fn enable_steps(&self, device: &PnpDevice) -> Vec<String> {
         let mut steps = Vec::new();
         if self.config.auto_backup_registry {
             steps.push(format!(
@@ -1402,6 +1409,20 @@ impl TweaksModule {
             enable_device_script(&device.instance_id)
         ));
         steps.push("Check that the device no longer reports a problem".to_string());
+        steps
+    }
+
+    /// The finding for `device`, if it is a Windows system device that is
+    /// disabled. `chains` are the services it stops on this PC: they lead
+    /// the description, and they make a hint a ticked warning, since they
+    /// show what it breaks here.
+    fn device_issue(&self, device: &PnpDevice, chains: &[&Chain]) -> Option<Issue> {
+        if device.problem != DEVICE_DISABLED {
+            return None;
+        }
+        let entry = core_device(&device.instance_id)?;
+        let breaks_here = !chains.is_empty();
+        let steps = self.enable_steps(device);
         let mut issue = Issue::new(
             device_issue_id(&device.instance_id),
             self.id(),
@@ -1450,21 +1471,44 @@ impl TweaksModule {
     }
 
     /// The finding for services that cannot start because of a device that
-    /// has no finding of its own here. Advice: whatever repairs the device
-    /// is somewhere else, or is Device Manager's to do.
+    /// has no finding of its own here.
+    ///
+    /// A disabled device is enabled like a Windows system device. The chain
+    /// shows that a service needs it, not that nobody disabled it on
+    /// purpose, so that repair starts unticked. For any other problem the
+    /// finding is advice: whatever repairs the device is somewhere else.
     fn chain_issue(&self, device: &PnpDevice, chains: &[&Chain]) -> Issue {
         let name = device_name(device);
         let sentences: Vec<String> = chains.iter().map(|chain| chain.sentence(&name)).collect();
-        let head = chains[0].head();
-        let (recommendation, step) = match (device.problem, remedy(device.problem)) {
-            (DEVICE_DISABLED, _) => (
-                format!("Enable '{name}' again"),
+        let id = chain_issue_id(&device.instance_id);
+        let title = format!("'{}' cannot start", head_name(chains[0]));
+        if device.problem == DEVICE_DISABLED {
+            let mut issue = Issue::new(
+                id,
+                self.id(),
+                title,
+                "Tweaks & Policies",
+                Severity::Warning,
+                RiskScore::Medium,
                 format!(
-                    "Device Manager -> right-click '{name}' ({}) -> Enable device, then restart Windows",
-                    device.instance_id
+                    "{} Enabling the device lets the service start. Leave this unticked if the device was disabled on purpose.",
+                    sentences.join(" ")
                 ),
-            ),
-            (_, Remedy::None) => (
+                format!(
+                    "Device: {}\nInstance ID: {}\nProblem code: {} (disabled)\n{}",
+                    device.name,
+                    device.instance_id,
+                    device.problem,
+                    chain_details(chains)
+                ),
+                format!("Enable '{name}' again"),
+                self.enable_steps(device),
+            );
+            issue.is_selected = false;
+            return issue;
+        }
+        let (recommendation, step) = match remedy(device.problem) {
+            Remedy::None => (
                 format!("Fix '{name}' first: it {}", meaning(device.problem)),
                 format!(
                     "Device Manager -> '{name}' ({}) -> Properties -> Device status",
@@ -1479,16 +1523,9 @@ impl TweaksModule {
             ),
         };
         Issue::new(
-            format!("{CHAIN_ID_PREFIX}{}", slug(&device.instance_id)),
+            id,
             self.id(),
-            format!(
-                "'{}' cannot start",
-                if head.display_name.is_empty() {
-                    &head.name
-                } else {
-                    &head.display_name
-                }
-            ),
+            title,
             "Tweaks & Policies",
             Severity::Warning,
             RiskScore::Low,
@@ -1524,20 +1561,52 @@ impl TweaksModule {
 
     /// Back up the device's `ConfigFlags`, enable it, and read its problem
     /// code again.
+    ///
+    /// A Windows system device is enabled for what it is. Any other device
+    /// only while a service still cannot start because of it: that chain is
+    /// the whole reason to touch it, so it is followed again here.
     async fn fix_device(&self, issue_id: &str) -> Result<String, String> {
         let devices = self.runner.connected_devices().await?;
-        let Some((device, entry)) = devices.iter().find_map(|device| {
-            let entry = core_device(&device.instance_id)?;
-            (device_issue_id(&device.instance_id) == issue_id).then_some((device, entry))
+        let for_chain = issue_id.starts_with(CHAIN_ID_PREFIX);
+        let Some(device) = devices.iter().find(|device| {
+            if for_chain {
+                chain_issue_id(&device.instance_id) == issue_id
+            } else {
+                core_device(&device.instance_id).is_some()
+                    && device_issue_id(&device.instance_id) == issue_id
+            }
         }) else {
             return Ok("The device is no longer connected - nothing to change.".to_string());
         };
+        let name = device_name(device);
         if device.problem != DEVICE_DISABLED {
             return Ok(format!(
-                "'{}' is no longer disabled - nothing to change.",
-                entry.display
+                "'{name}' is no longer disabled - nothing to change."
             ));
         }
+        let waiting = if for_chain {
+            let chains = service_chain::failing_chains(&*self.runner, &devices)
+                .await
+                .map_err(|e| {
+                    format!(
+                        "Aborted: could not check which services wait for '{name}' ({e}). Nothing was changed."
+                    )
+                })?;
+            let Some(chain) = chains
+                .iter()
+                .find(|chain| chain.device.instance_id == device.instance_id)
+            else {
+                return Ok(format!(
+                    "No service waits for '{name}' any more - nothing to change."
+                ));
+            };
+            format!(
+                " If '{}' is still stopped, restart Windows.",
+                head_name(chain)
+            )
+        } else {
+            String::new()
+        };
 
         let key = format!("{ENUM_KEY}\\{}", device.instance_id);
         if self.config.auto_backup_registry {
@@ -1547,8 +1616,7 @@ impl TweaksModule {
                     &key,
                     "ConfigFlags",
                     &format!(
-                        "Before enabling '{}'; restoring it disables the device again at the next restart",
-                        entry.display
+                        "Before enabling '{name}'; restoring it disables the device again at the next restart"
                     ),
                 )
                 .await
@@ -1576,10 +1644,9 @@ impl TweaksModule {
             .await?
             .into_iter()
             .find(|d| d.instance_id.eq_ignore_ascii_case(&device.instance_id));
-        let name = entry.display;
         match after.map(|d| d.problem) {
             Some(0) => Ok(format!(
-                "'{name}' is enabled again and works.{} To disable it again: Device Manager -> right-click it -> Disable device.",
+                "'{name}' is enabled again and works.{waiting}{} To disable it again: Device Manager -> right-click it -> Disable device.",
                 if self.config.auto_backup_registry {
                     " Its old setting is in the registry backups."
                 } else {
@@ -2066,7 +2133,7 @@ impl DiagnosticModule for TweaksModule {
         if issue_id.starts_with("tweak_policy_") {
             return self.fix_policy(issue_id).await;
         }
-        if issue_id.starts_with(DEVICE_ID_PREFIX) {
+        if issue_id.starts_with(DEVICE_ID_PREFIX) || issue_id.starts_with(CHAIN_ID_PREFIX) {
             return self.fix_device(issue_id).await;
         }
         if issue_id == SPLIT_THRESHOLD_ID {
@@ -3977,47 +4044,258 @@ mod tests {
         assert!(!hpet.is_selected);
     }
 
-    /// A service stopped by a device that is no Windows system device: the
-    /// finding names the chain and leaves the repair to where it belongs.
-    #[tokio::test]
-    async fn a_chain_to_another_device_is_advice() {
-        const CAMERA: &str = r"USB\VID_046D&PID_0943&MI_00\9&B24F85A&0&0000";
-        let camera = |problem| PnpDevice {
+    const CAMERA: &str = r"USB\VID_046D&PID_0943&MI_00\9&B24F85A&0&0000";
+
+    /// A webcam that is no Windows system device, reporting `problem`.
+    fn camera(problem: u32) -> PnpDevice {
+        PnpDevice {
             problem,
             class: "Camera".to_string(),
             instance_id: CAMERA.to_string(),
             name: "Brio 500".to_string(),
             service: "usbvideo".to_string(),
             driver: String::new(),
-        };
-        for (problem, advice) in [
-            (43, "Repair 'Brio 500' under Devices & Drivers"),
-            (22, "Enable 'Brio 500' again"),
-        ] {
-            let services = listing(&[("CameraHost", "Camera Host", 1, 1068)]);
-            services.add_response("qc CameraHost", depends_on("CameraHost", &["usbvideo"]));
-            services.add_response(
-                "qc usbvideo",
-                CmdOutput::ok(decode_output(QC_HVSERVICE).replace("hvservice", "usbvideo")),
-            );
-            let mut devices = dev_pc(0);
-            devices.push(camera(problem));
-            let issues = scan_chains(services, devices).await;
-            let chain = issues
-                .iter()
-                .find(|i| i.id.starts_with(CHAIN_ID_PREFIX))
-                .unwrap_or_else(|| panic!("{problem}: {issues:?}"));
-            assert_eq!(chain.title, "'Camera Host' cannot start");
-            assert!(chain.advice_only && !chain.is_selected);
-            assert_eq!(chain.recommended_fix, advice);
-            assert!(
-                chain.description.starts_with(
-                    "Camera Host (CameraHost) cannot start because the device 'Brio 500'"
+        }
+    }
+
+    /// A service in state `state` with exit code `exit` that depends on the
+    /// webcam's driver.
+    fn camera_host(state: u32, exit: u32) -> MockCommandRunner {
+        let services = listing(&[("CameraHost", "Camera Host", state, exit)]);
+        services.add_response("qc CameraHost", depends_on("CameraHost", &["usbvideo"]));
+        services.add_response(
+            "qc usbvideo",
+            CmdOutput::ok(decode_output(QC_HVSERVICE).replace("hvservice", "usbvideo")),
+        );
+        services
+    }
+
+    /// The development PC's devices and the webcam reporting `problem`.
+    fn with_camera(problem: u32) -> Vec<PnpDevice> {
+        let mut devices = dev_pc(0);
+        devices.push(camera(problem));
+        devices
+    }
+
+    fn chain_finding(issues: &[Issue]) -> &Issue {
+        issues
+            .iter()
+            .find(|i| i.id.starts_with(CHAIN_ID_PREFIX))
+            .unwrap_or_else(|| panic!("{issues:?}"))
+    }
+
+    /// A service stopped by a device that is no Windows system device and
+    /// has a problem other than being disabled: the finding names the chain
+    /// and leaves the repair to where it belongs.
+    #[tokio::test]
+    async fn a_chain_to_a_device_that_failed_is_advice() {
+        let issues = scan_chains(camera_host(1, 1068), with_camera(43)).await;
+        let chain = chain_finding(&issues);
+        assert_eq!(chain.title, "'Camera Host' cannot start");
+        assert!(chain.advice_only && !chain.is_selected);
+        assert_eq!(
+            chain.recommended_fix,
+            "Repair 'Brio 500' under Devices & Drivers"
+        );
+        assert!(
+            chain
+                .description
+                .starts_with("Camera Host (CameraHost) cannot start because the device 'Brio 500'"),
+            "{}",
+            chain.description
+        );
+    }
+
+    /// The same service stopped by a disabled device: a repair that enables
+    /// it, unticked, since nothing shows that nobody disabled it on purpose.
+    #[tokio::test]
+    async fn a_chain_to_a_disabled_device_offers_to_enable_it() {
+        let issues = scan_chains(camera_host(1, 1068), with_camera(22)).await;
+        let chain = chain_finding(&issues);
+        assert_eq!(chain.id, chain_issue_id(CAMERA));
+        assert_eq!(chain.title, "'Camera Host' cannot start");
+        assert!(!chain.advice_only, "it is a repair");
+        assert!(!chain.is_selected, "it starts unticked");
+        assert_eq!(chain.severity, Severity::Warning);
+        assert_eq!(chain.risk_score, RiskScore::Medium);
+        assert_eq!(chain.recommended_fix, "Enable 'Brio 500' again");
+        assert_eq!(
+            chain.description,
+            "Camera Host (CameraHost) cannot start because the device 'Brio 500' is disabled. Enabling the device lets the service start. Leave this unticked if the device was disabled on purpose."
+        );
+        assert_eq!(
+            chain.fix_steps,
+            [
+                format!(
+                    "Run Enable-PnpDevice -InstanceId '{CAMERA}' -Confirm:$false -ErrorAction Stop (Device Manager: Enable device)"
                 ),
-                "{}",
-                chain.description
+                "Check that the device no longer reports a problem".to_string(),
+            ]
+        );
+        assert!(
+            chain.technical_details.contains(&format!(
+                "Instance ID: {CAMERA}\nProblem code: 22 (disabled)\nService chain: CameraHost (exit code 1068) -> driver usbvideo -> device {CAMERA} (problem code 22)"
+            )),
+            "{}",
+            chain.technical_details
+        );
+        // The device has one finding, and it is not listed as a Windows
+        // system device.
+        assert!(!issues.iter().any(|i| i.id == device_issue_id(CAMERA)));
+    }
+
+    /// The webcam disabled while `services` are as they are, until
+    /// `Enable-PnpDevice` ran and left it reporting `after`.
+    fn camera_repair(services: MockCommandRunner, after: u32) -> MockCommandRunner {
+        services.set_devices(with_camera(22));
+        // The captured `reg query` of HPET's key, as the webcam's.
+        services.add_response(
+            "/v ConfigFlags",
+            CmdOutput::ok(
+                decode_output(CONFIG_FLAGS_DISABLED).replace(r"ACPI\PNP0103\2&daba3ff&0", CAMERA),
+            ),
+        );
+        services.add_response("Enable-PnpDevice", CmdOutput::ok(""));
+        services.set_devices_after("Enable-PnpDevice", with_camera(after));
+        services
+    }
+
+    #[tokio::test]
+    async fn the_device_a_service_waits_for_is_backed_up_enabled_and_read_back() {
+        let dir = sandbox("chain_fix");
+        let mock = camera_repair(camera_host(1, 1068), 0);
+        let msg = backing_up(mock.clone(), &dir)
+            .fix(&chain_issue_id(CAMERA), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            msg,
+            "'Brio 500' is enabled again and works. If 'Camera Host' is still stopped, restart Windows. Its old setting is in the registry backups. To disable it again: Device Manager -> right-click it -> Disable device."
+        );
+
+        let executed = mock.executed();
+        let at = |what: &str| executed.iter().position(|c| c.contains(what)).unwrap();
+        assert!(
+            at("/v ConfigFlags") < at("Enable-PnpDevice"),
+            "{executed:?}"
+        );
+        assert!(executed[at("Enable-PnpDevice")].contains(&format!("-InstanceId '{CAMERA}'")));
+        let enabled = executed
+            .iter()
+            .filter(|c| c.contains("Enable-PnpDevice"))
+            .count();
+        assert_eq!(enabled, 1, "only the webcam: {executed:?}");
+
+        let backup = RegBackupManager::with_dir(dir.join("backups")).list_backups();
+        assert_eq!(backup.len(), 1);
+        assert_eq!(backup[0].key_path, format!(r"{ENUM_KEY}\{CAMERA}"));
+    }
+
+    /// The chain is the only reason to touch a device outside the table.
+    /// Once the service runs, or stopped without an error, nothing is
+    /// enabled.
+    #[tokio::test]
+    async fn a_device_no_service_waits_for_any_more_is_left_disabled() {
+        for (state, exit) in [(4, 0), (1, 0)] {
+            let dir = sandbox("chain_fix_gone");
+            let mock = camera_repair(camera_host(state, exit), 0);
+            let msg = module(mock.clone(), &dir, b"")
+                .fix(&chain_issue_id(CAMERA), None)
+                .await
+                .unwrap();
+            assert_eq!(
+                msg,
+                "No service waits for 'Brio 500' any more - nothing to change."
+            );
+            assert!(
+                !mock
+                    .executed()
+                    .iter()
+                    .any(|c| c.contains("Enable-PnpDevice") || c.contains("ConfigFlags")),
+                "{:?}",
+                mock.executed()
             );
         }
+    }
+
+    /// A PC that may not list its services cannot show that a service waits
+    /// for the device: nothing is enabled.
+    #[tokio::test]
+    async fn without_the_service_list_no_device_is_enabled_for_a_service() {
+        let dir = sandbox("chain_fix_refused");
+        let services = MockCommandRunner::new();
+        services.add_response("query type= service", CmdOutput::failed(5, "FEHLER"));
+        let mock = camera_repair(services, 0);
+        let err = module(mock.clone(), &dir, b"")
+            .fix(&chain_issue_id(CAMERA), None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.starts_with("Aborted: could not check which services wait for 'Brio 500'"),
+            "{err}"
+        );
+        assert!(err.ends_with("Nothing was changed."), "{err}");
+        assert!(
+            !mock
+                .executed()
+                .iter()
+                .any(|c| c.contains("Enable-PnpDevice"))
+        );
+    }
+
+    /// Enabled or unplugged since the scan: nothing to do, and nothing asked
+    /// of the services.
+    #[tokio::test]
+    async fn a_waited_for_device_enabled_or_gone_since_the_scan_is_left_alone() {
+        let dir = sandbox("chain_fix_changed");
+        let mock = camera_host(1, 1068);
+        mock.set_devices(with_camera(0));
+        let module = module(mock.clone(), &dir, b"");
+        let msg = module.fix(&chain_issue_id(CAMERA), None).await.unwrap();
+        assert_eq!(msg, "'Brio 500' is no longer disabled - nothing to change.");
+        mock.set_devices(dev_pc(0));
+        let msg = module.fix(&chain_issue_id(CAMERA), None).await.unwrap();
+        assert!(msg.contains("no longer connected"), "{msg}");
+        assert!(mock.executed().is_empty(), "{:?}", mock.executed());
+    }
+
+    /// A disabled device no service waits for has no finding, and its id as
+    /// a Windows system device's repairs nothing: only the table and a chain
+    /// enable a device.
+    #[tokio::test]
+    async fn a_disabled_device_outside_the_table_is_not_enabled_as_a_system_device() {
+        let dir = sandbox("chain_fix_not_core");
+        let mock = camera_repair(camera_host(1, 1068), 0);
+        let msg = module(mock.clone(), &dir, b"")
+            .fix(&device_issue_id(CAMERA), None)
+            .await
+            .unwrap();
+        assert!(msg.contains("no longer connected"), "{msg}");
+        assert!(mock.executed().is_empty(), "{:?}", mock.executed());
+    }
+
+    /// Windows refusing, or starting the device only after a restart, leaves
+    /// the finding open, as for a Windows system device.
+    #[tokio::test]
+    async fn a_waited_for_device_windows_does_not_start_leaves_the_finding_open() {
+        let dir = sandbox("chain_fix_open");
+        let err = module(camera_repair(camera_host(1, 1068), 22), &dir, b"")
+            .fix(&chain_issue_id(CAMERA), None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.starts_with("Windows did not enable 'Brio 500'; it is still disabled."),
+            "{err}"
+        );
+        let err = module(
+            camera_repair(camera_host(1, 1068), NEEDS_RESTART),
+            &dir,
+            b"",
+        )
+        .fix(&chain_issue_id(CAMERA), None)
+        .await
+        .unwrap_err();
+        assert!(err.contains("Restart Windows"), "{err}");
     }
 
     /// A PC that may not list its services still gets its device findings.
