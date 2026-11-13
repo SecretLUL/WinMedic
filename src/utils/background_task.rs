@@ -130,13 +130,23 @@ fn query_helper_task(name: &str) -> Option<String> {
 /// program that account runs. So the task is only registered for a file that
 /// only administrators can change, as under Program Files.
 pub fn helper_location_problem(exe: &Path) -> Option<String> {
-    crate::utils::acl::admin_only_problem(exe).map(|problem| {
-        format!(
-            "{problem}, and the scheduled task would start winmedic.exe from there with the highest rights, without asking. \
-             Move winmedic.exe to a folder only administrators can change, such as C:\\Program Files\\WinMedic, \
-             or install it with winget install SecretLUL.WinMedic --scope machine, then turn the background scan on again."
-        )
-    })
+    crate::utils::acl::admin_only_problem(exe).map(|problem| location_advice(&problem))
+}
+
+/// What to do about `problem`, the reason the task may not start the file.
+///
+/// It said "Move winmedic.exe to ... C:\Program Files\WinMedic". Dragged
+/// there from Downloads, on the same drive, the file is moved, and a moved
+/// file keeps its owner and its permissions: the check failed again and the
+/// message told the user to move the file to the folder it was in. A copy
+/// is a new file, which takes its permissions from the folder.
+fn location_advice(problem: &str) -> String {
+    format!(
+        "{problem}, and the scheduled task would start winmedic.exe from there with the highest rights, without asking. \
+         Copy winmedic.exe (copy, not move: a moved file keeps its owner) to a folder only administrators can change, \
+         such as C:\\Program Files\\WinMedic, and start it from there, \
+         or install it with winget install SecretLUL.WinMedic --scope machine, then turn the background scan on again."
+    )
 }
 
 /// Create or replace the helper task so that it runs `exe`.
@@ -231,10 +241,25 @@ fn task_runs(xml: &str, conhost: &Path, exe: &Path) -> bool {
     if !xml.contains(&command) {
         return false;
     }
+    if exe.is_ascii() {
+        return xml.contains(&exe.to_lowercase());
+    }
     // schtasks writes the XML in the console code page, so a path outside ASCII
     // cannot be compared byte for byte. Such a task is taken as current rather
     // than re-created, and its schedule restarted, on every launch.
-    !exe.is_ascii() || xml.contains(&exe.to_lowercase())
+    //
+    // Its file name can be compared when that is ASCII, as every release's
+    // is. Without this, an update that renamed winmedic-v0.12.0.exe to
+    // winmedic-v0.13.0.exe in a folder such as "Büro" left the task
+    // starting the old name, which the next start deletes: the background
+    // scan was dead until the setting was switched off and on.
+    match Path::new(&exe).file_name().and_then(|name| name.to_str()) {
+        Some(name) if name.is_ascii() => {
+            xml.contains(&format!("\\{}\"", name.to_lowercase()))
+                || xml.contains(&format!("\\{} ", name.to_lowercase()))
+        }
+        _ => true,
+    }
 }
 
 /// Whether a Run value is the "Start with Windows" entry an older WinMedic
@@ -325,6 +350,20 @@ pub fn reconcile(config: &AppConfig, exe: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// Following "move it to Program Files" led to the same refusal: a file
+    /// moved within a drive keeps its owner.
+    #[test]
+    fn the_advice_for_a_file_its_user_owns_is_to_copy_it() {
+        let advice = location_advice(r"PC\Ammar can change C:\Program Files\WinMedic\winmedic.exe");
+        assert!(advice.starts_with(r"PC\Ammar can change"), "{advice}");
+        assert!(
+            advice.contains("Copy winmedic.exe (copy, not move"),
+            "{advice}"
+        );
+        assert!(!advice.contains("Move winmedic.exe"), "{advice}");
+        assert!(advice.contains("--scope machine"), "{advice}");
+    }
+
     #[test]
     fn only_intervals_schtasks_can_express_are_scheduled() {
         assert_eq!(helper_schedule(1), Some(("hourly", 1)));
@@ -395,6 +434,30 @@ mod tests {
         // As captured: limited rights.
         let limited = crate::utils::decode::decode_output(TASK);
         assert!(!task_runs(&limited, Path::new(CONHOST), Path::new(EXE)));
+    }
+
+    /// The folder of a path outside ASCII cannot be found in what schtasks
+    /// prints; the file's name can.
+    #[test]
+    fn a_task_in_a_folder_outside_ascii_is_still_told_by_its_file_name() {
+        // What schtasks makes of "Büro" depends on the console code page.
+        let xml = captured_task(TASK).replace(
+            r"C:\Program Files\Tom &amp; Jerry\winmedic.exe",
+            r"C:\Program Files\B?ro\winmedic-v0.12.0.exe",
+        );
+        assert!(xml.contains("winmedic-v0.12.0.exe"), "{xml}");
+        let at = |name: &str| format!("C:\\Program Files\\B\u{fc}ro\\{name}");
+        assert!(task_runs(
+            &xml,
+            Path::new(CONHOST),
+            Path::new(&at("winmedic-v0.12.0.exe"))
+        ));
+        // After the update renamed the file, the task starts the old name.
+        assert!(!task_runs(
+            &xml,
+            Path::new(CONHOST),
+            Path::new(&at("winmedic-v0.13.0.exe"))
+        ));
     }
 
     /// A task whose command Task Scheduler expands from `%SystemRoot%` when

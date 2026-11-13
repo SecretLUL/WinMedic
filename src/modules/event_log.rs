@@ -66,6 +66,8 @@ pub async fn last_passed_memory_test(runner: &dyn CommandRunner) -> Option<DateT
 /// What scheduling the memory test runs.
 pub const SCHEDULE_MEMORY_TEST: [&str; 2] = ["/bootsequence", "{memdiag}"];
 
+pub use crate::engine::issue::BY_HAND;
+
 /// A finding whose repair is [`schedule_memory_test`]: it takes effect at
 /// the next start, which the test then holds up for half an hour, so it
 /// waits to be ticked.
@@ -103,8 +105,23 @@ pub fn memory_test_finding(
     let mut issue = issue.with_requires_reboot(true);
     issue.risk_score = RiskScore::High;
     issue.is_selected = false;
+    // The repair schedules the test and nothing else. Its step named
+    // mdsched.exe, a dialog the repair does not start, and the steps after it
+    // are for the user: the simulation listed "Lower XMP/EXPO memory frequency
+    // in BIOS" among the steps that "would run".
+    for step in &mut issue.fix_steps {
+        *step = if step.contains("Windows Memory Diagnostic") {
+            MEMORY_TEST_STEP.to_string()
+        } else {
+            format!("{BY_HAND}{step}")
+        };
+    }
     issue
 }
+
+/// What [`schedule_memory_test`] runs, as a finding's step says it.
+pub const MEMORY_TEST_STEP: &str =
+    "Schedule Windows Memory Diagnostic for the next restart (bcdedit /bootsequence {memdiag})";
 
 /// Schedule the Windows Memory Diagnostic for the next start, the way its
 /// "Check for problems the next time I start my computer" does: a one-time
@@ -446,6 +463,13 @@ mod tests {
             assert!(issue.requires_reboot && !issue.is_selected);
             assert_eq!(issue.risk_score, RiskScore::High);
             assert_eq!(issue.fix_steps.len(), 2);
+            // What the repair runs, and what is left to the user.
+            assert_eq!(issue.fix_steps[0], MEMORY_TEST_STEP);
+            assert!(
+                issue.fix_steps[1].starts_with(BY_HAND),
+                "{:?}",
+                issue.fix_steps
+            );
         }
     }
 

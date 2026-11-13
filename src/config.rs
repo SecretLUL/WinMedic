@@ -24,6 +24,9 @@ pub enum ConfigStatus {
         error: String,
         quarantined: Option<PathBuf>,
     },
+    /// A file was there but could not be used, and this run left it where it
+    /// is ([`AppConfig::read_from`]). Defaults apply for this run only.
+    LeftInPlace { error: String },
 }
 
 impl ConfigStatus {
@@ -50,11 +53,16 @@ impl ConfigStatus {
                  moved aside. Defaults are in effect and saving will overwrite it.",
                 error
             )),
+            Self::LeftInPlace { error } => Some(format!(
+                "Settings could not be read ({}). This run uses the defaults; \
+                 the file was left as it is.",
+                error
+            )),
         }
     }
 
     pub fn is_corrupt(&self) -> bool {
-        matches!(self, Self::Corrupt { .. })
+        matches!(self, Self::Corrupt { .. } | Self::LeftInPlace { .. })
     }
 }
 
@@ -183,28 +191,10 @@ impl AppConfig {
     /// over it, so a hand edit with one missing brace costs the user their
     /// settings for this session but never the file itself.
     pub fn load_from(path: &Path) -> (Self, ConfigStatus) {
-        let data = match std::fs::read_to_string(path) {
-            Ok(data) => data,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return (Self::default(), ConfigStatus::Missing);
-            }
-            Err(e) => {
-                let error = format!("could not read {}: {}", path.display(), e);
-                let quarantined = quarantine(path).ok();
-                return (
-                    Self::default(),
-                    ConfigStatus::Corrupt { error, quarantined },
-                );
-            }
-        };
-
-        // PowerShell 5.1's `Set-Content -Encoding UTF8` and Notepad's "UTF-8 with
-        // BOM" start the file with a byte order mark, which serde_json rejects:
-        // such a file was moved aside as corrupt.
-        match serde_json::from_str(data.strip_prefix('\u{feff}').unwrap_or(&data)) {
-            Ok(cfg) => (cfg, ConfigStatus::Loaded),
-            Err(e) => {
-                let error = format!("{} is malformed: {}", CONFIG_FILE_NAME, e);
+        match Self::parse_file(path) {
+            Ok(Some(config)) => (config, ConfigStatus::Loaded),
+            Ok(None) => (Self::default(), ConfigStatus::Missing),
+            Err(error) => {
                 let quarantined = quarantine(path).ok();
                 (
                     Self::default(),
@@ -212,6 +202,46 @@ impl AppConfig {
                 )
             }
         }
+    }
+
+    /// Read the config from the standard location for a run without a
+    /// window. See [`Self::read_from`].
+    pub fn read_reporting() -> (Self, ConfigStatus) {
+        Self::read_from(&Self::config_path())
+    }
+
+    /// Read the config without moving an unusable file aside.
+    ///
+    /// For the runs without a window: the background scan and the command
+    /// line. They used [`Self::load_from`], so the first of them to meet a
+    /// damaged file moved it aside and said so on a stderr nobody reads. The
+    /// window then found no file, which is a first run and no warning: the
+    /// settings were back to defaults, the archive was empty and the
+    /// background scan was off, with nothing shown. Left in place, the file is
+    /// still there for the window, which sets it aside and says so.
+    pub fn read_from(path: &Path) -> (Self, ConfigStatus) {
+        match Self::parse_file(path) {
+            Ok(Some(config)) => (config, ConfigStatus::Loaded),
+            Ok(None) => (Self::default(), ConfigStatus::Missing),
+            Err(error) => (Self::default(), ConfigStatus::LeftInPlace { error }),
+        }
+    }
+
+    /// The config in `path`; `None` when there is no file, and what was wrong
+    /// when there is one that cannot be used.
+    fn parse_file(path: &Path) -> Result<Option<Self>, String> {
+        let data = match std::fs::read_to_string(path) {
+            Ok(data) => data,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("could not read {}: {}", path.display(), e)),
+        };
+
+        // PowerShell 5.1's `Set-Content -Encoding UTF8` and Notepad's "UTF-8 with
+        // BOM" start the file with a byte order mark, which serde_json rejects:
+        // such a file was moved aside as corrupt.
+        serde_json::from_str(data.strip_prefix('\u{feff}').unwrap_or(&data))
+            .map(Some)
+            .map_err(|e| format!("{} is malformed: {}", CONFIG_FILE_NAME, e))
     }
 
     pub fn save(&self) -> Result<(), std::io::Error> {
@@ -229,8 +259,16 @@ impl AppConfig {
         }
         let json = serde_json::to_string_pretty(self)?;
 
+        // Written through to the disk before the rename: renamed first, a
+        // power cut could leave the new name on a file whose content never
+        // arrived, which is the damaged file the next start cannot read.
         let tmp_path = path.with_extension("json.tmp");
-        std::fs::write(&tmp_path, json)?;
+        {
+            use std::io::Write;
+            let mut file = std::fs::File::create(&tmp_path)?;
+            file.write_all(json.as_bytes())?;
+            file.sync_all()?;
+        }
 
         // `std::fs::rename` replaces the destination on both Unix and Windows.
         std::fs::rename(&tmp_path, path).inspect_err(|_| {
@@ -503,6 +541,42 @@ mod tests {
         // And the unusable file is gone from the live path, so the next save
         // writes a clean config rather than appending to wreckage.
         assert!(!dir.config().exists());
+    }
+
+    /// The background scan or a `--scan` meets the damaged file before the
+    /// window does. It moved the file aside, and the window then saw a first
+    /// run: defaults, an empty archive, and no word about it.
+    #[test]
+    fn a_run_without_a_window_leaves_a_damaged_file_for_the_window() {
+        let dir = TempDir::new("left_in_place");
+        std::fs::write(dir.config(), r#"{"helper_enabled": true"#).unwrap();
+
+        let (cfg, status) = AppConfig::read_from(&dir.config());
+        assert!(
+            matches!(status, ConfigStatus::LeftInPlace { .. }),
+            "{status:?}"
+        );
+        assert!(status.warning().unwrap().contains("left as it is"));
+        assert_eq!(cfg, AppConfig::default());
+        assert!(dir.config().exists());
+        assert!(dir.corrupt_copies().is_empty());
+
+        // The window, started afterwards, still finds it and says so.
+        let (_, status) = AppConfig::load_from(&dir.config());
+        assert!(matches!(
+            status,
+            ConfigStatus::Corrupt {
+                quarantined: Some(_),
+                ..
+            }
+        ));
+        assert!(status.warning().is_some());
+
+        // A file that is fine, and none at all, read as they load.
+        let dir = TempDir::new("left_in_place_fine");
+        assert_eq!(AppConfig::read_from(&dir.config()).1, ConfigStatus::Missing);
+        AppConfig::default().save_to(&dir.config()).unwrap();
+        assert_eq!(AppConfig::read_from(&dir.config()).1, ConfigStatus::Loaded);
     }
 
     /// What PowerShell 5.1 writes with `Set-Content -Encoding UTF8`.

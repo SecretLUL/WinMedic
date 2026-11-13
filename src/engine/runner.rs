@@ -942,10 +942,7 @@ impl DiagnosticEngine {
             emit("[SIMULATION]   (no individual steps recorded)".to_string()).await;
         }
 
-        let message = format!(
-            "Simulation: {} step(s) would run. Nothing was changed.",
-            issue.fix_steps.len()
-        );
+        let message = simulation_summary(&issue.fix_steps);
 
         let _ = event_tx
             .send(RepairEvent::FixFinished {
@@ -957,6 +954,26 @@ impl DiagnosticEngine {
         self.audit_logger
             .log("DRYRUN", &issue.module_id, &issue.title, "INFO", &message);
     }
+}
+
+/// The last line of a simulated repair: how many of its steps the repair
+/// takes, and how many are left to the user ([`BY_HAND`]).
+///
+/// [`BY_HAND`]: crate::engine::issue::BY_HAND
+fn simulation_summary(steps: &[String]) -> String {
+    let by_hand = steps
+        .iter()
+        .filter(|step| step.starts_with(crate::engine::issue::BY_HAND))
+        .count();
+    let yours = if by_hand > 0 {
+        format!("; {by_hand} more are yours to take by hand")
+    } else {
+        String::new()
+    };
+    format!(
+        "Simulation: {} step(s) would run{yours}. Nothing was changed.",
+        steps.len() - by_hand
+    )
 }
 
 #[cfg(test)]
@@ -1012,6 +1029,22 @@ mod tests {
         issues[0].is_fixed = true;
         let score_after_fix = DiagnosticEngine::calculate_health_score(&issues);
         assert_eq!(score_after_fix, 90);
+    }
+
+    /// A step for the user to take is not one the repair "would run".
+    #[test]
+    fn a_simulation_counts_only_the_steps_the_repair_takes() {
+        use crate::engine::issue::BY_HAND;
+        let steps = |steps: &[&str]| steps.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            simulation_summary(&steps(&["reg delete x", "net start y"])),
+            "Simulation: 2 step(s) would run. Nothing was changed."
+        );
+        let by_hand = format!("{BY_HAND}Lower the memory frequency in BIOS");
+        assert_eq!(
+            simulation_summary(&steps(&["bcdedit /bootsequence {memdiag}", &by_hand])),
+            "Simulation: 1 step(s) would run; 1 more are yours to take by hand. Nothing was changed."
+        );
     }
 
     #[tokio::test]

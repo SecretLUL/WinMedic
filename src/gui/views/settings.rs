@@ -23,22 +23,36 @@ fn is_numeric(index: usize) -> bool {
 }
 
 /// The row the arrow keys point at, so the keyboard moves something visible.
-fn keyboard_row<R>(ui: &mut egui::Ui, focused: bool, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    let fill = if focused {
+/// `focused` is the row's number when the keyboard is on it.
+fn keyboard_row<R>(
+    ui: &mut egui::Ui,
+    focused: Option<usize>,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let fill = if focused.is_some() {
         ui.visuals().selection.bg_fill.gamma_multiply(0.35)
     } else {
         egui::Color32::TRANSPARENT
     };
-    egui::Frame::NONE
+    let shown = egui::Frame::NONE
         .fill(fill)
         .corner_radius(2)
         .inner_margin(egui::Margin::symmetric(6, 4))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             add(ui)
-        })
-        .inner
+        });
+    if let Some(index) = focused {
+        theme::keep_in_view(ui, "settings", (SETTING_ROWS, index), shown.response.rect);
+    }
+    shown.inner
 }
+
+/// The two lists of the Settings view the arrow keys move through, as
+/// [`theme::keep_in_view`] tells them apart: going from one to the other is a
+/// move too.
+const SETTING_ROWS: usize = 0;
+const BACKUP_ROWS: usize = 1;
 
 fn settings(ui: &mut egui::Ui, app: &mut App) {
     egui::ScrollArea::vertical()
@@ -56,7 +70,7 @@ fn settings(ui: &mut egui::Ui, app: &mut App) {
                 let description = explanation.split(" [").next().unwrap_or(explanation);
                 let keyboard = focused && index == app.selected_setting_index;
 
-                keyboard_row(ui, keyboard, |ui| {
+                keyboard_row(ui, keyboard.then_some(index), |ui| {
                     let clicked = if is_numeric(index) {
                         ui.horizontal(|ui| {
                             ui.label(label);
@@ -177,6 +191,9 @@ fn backups(ui: &mut egui::Ui, app: &mut App) {
         if response.clicked() {
             app.safety_focus = SafetyFocus::Backups;
             app.selected_backup_index = position;
+        }
+        if selected && focused {
+            theme::keep_in_view(ui, "settings", (BACKUP_ROWS, position), response.rect);
         }
         if selected {
             ui.label(RichText::new(&record.key_path).monospace().weak());

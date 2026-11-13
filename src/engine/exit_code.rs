@@ -22,6 +22,15 @@ pub const INTERNAL_ERROR: u8 = 5;
 pub const CANCELLED: u8 = 6;
 /// At least one check could not run, so the findings are incomplete.
 pub const INCOMPLETE: u8 = 7;
+/// The command line was not understood; nothing was run.
+pub const USAGE: u8 = 8;
+
+/// The exit code of a command line clap did not turn into a run. `is_error`
+/// is clap's `use_stderr`: false for `--help` and `--version`, which are
+/// answered and are no failure.
+pub fn from_command_line(is_error: bool) -> u8 {
+    if is_error { USAGE } else { OK }
+}
 
 /// Derive an exit code from the state of the issue list.
 ///
@@ -50,6 +59,19 @@ pub fn from_issues(issues: &[Issue], failed_fixes: usize, failed_modules: usize)
     }
 }
 
+/// The exit code of a run whose `--output` report could not be written.
+///
+/// It was whatever the findings gave, 0 on a clean PC: a script saw success
+/// and had no report. A failed repair and a cancelled run still say so, since
+/// they are the more urgent news; everything else becomes
+/// [`INTERNAL_ERROR`], the code for WinMedic's own I/O failing.
+pub fn without_report(code: u8) -> u8 {
+    match code {
+        FIX_FAILED | CANCELLED => code,
+        _ => INTERNAL_ERROR,
+    }
+}
+
 /// One-line explanation of a code, printed at the end of a headless run.
 pub fn describe(code: u8) -> &'static str {
     match code {
@@ -58,9 +80,10 @@ pub fn describe(code: u8) -> &'static str {
         CRITICAL => "Open critical issues present.",
         FIX_FAILED => "At least one repair failed.",
         NEEDS_ADMIN => "WinMedic needs Administrator privileges.",
-        INTERNAL_ERROR => "Internal WinMedic error.",
+        INTERNAL_ERROR => "Internal WinMedic error, or the report could not be written.",
         CANCELLED => "Run aborted - results are incomplete.",
         INCOMPLETE => "At least one check could not run, so the findings are incomplete.",
+        USAGE => "The command line was not understood; nothing was run.",
         _ => "Unknown status.",
     }
 }
@@ -83,6 +106,23 @@ mod tests {
             "Fix",
             vec!["Step".to_string()],
         )
+    }
+
+    #[test]
+    fn a_command_line_that_was_not_understood_is_not_a_critical_finding() {
+        assert_eq!(from_command_line(true), USAGE);
+        assert_ne!(USAGE, CRITICAL);
+        // --help and --version were answered.
+        assert_eq!(from_command_line(false), OK);
+    }
+
+    #[test]
+    fn a_report_that_was_not_written_is_not_a_clean_run() {
+        for code in [OK, WARNINGS, CRITICAL, INCOMPLETE] {
+            assert_eq!(without_report(code), INTERNAL_ERROR, "{code}");
+        }
+        assert_eq!(without_report(FIX_FAILED), FIX_FAILED);
+        assert_eq!(without_report(CANCELLED), CANCELLED);
     }
 
     #[test]

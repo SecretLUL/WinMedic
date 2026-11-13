@@ -34,9 +34,10 @@ Exit codes (headless mode):
   2  open critical issues
   3  at least one repair failed
   4  started without Administrator privileges
-  5  internal error
+  5  internal error, or the --output report could not be written
   6  aborted with Ctrl+C
   7  at least one check could not run, so the findings are incomplete
+  8  the command line was not understood; nothing was run
 
 2 and 3 can also come with an incomplete scan; without --json, the console output names each failed module (\"[X] Module ... failed\")."
 )]
@@ -97,7 +98,16 @@ impl CliArgs {
 
 fn main() -> ExitCode {
     load_dlls_from_system32_only();
-    let args = CliArgs::parse();
+    // clap ends a command line it does not understand with its own 2, which
+    // here means "open critical issues": a typo in a script opened a ticket.
+    let args = match CliArgs::try_parse() {
+        Ok(args) => args,
+        Err(error) => {
+            // The message, or the text --help and --version asked for.
+            let _ = error.print();
+            return ExitCode::from(exit_code::from_command_line(error.use_stderr()));
+        }
+    };
     if let Some(dir) = safety::audit::AuditLogger::real().log_dir() {
         utils::crash_log::install(dir.to_path_buf(), crash_mode(&args));
     }
@@ -253,7 +263,10 @@ fn run_uninstall(purge: bool) -> u8 {
     } else {
         // Leave the settings saying what is now true; otherwise the next
         // start of the window registers the task again.
-        let (mut config, _) = AppConfig::load_reporting();
+        let (mut config, config_status) = AppConfig::load_reporting();
+        if let Some(warning) = config_status.warning() {
+            eprintln!("       {warning}");
+        }
         config.helper_enabled = false;
         report(
             "Turned the background scan off",
@@ -279,7 +292,9 @@ fn run_uninstall(purge: bool) -> u8 {
 // ---------------------------------------------------------------- headless
 
 async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
-    let (config, config_status) = AppConfig::load_reporting();
+    // Read, not loaded: a damaged file stays where it is for the window, the
+    // one place that can show the user what happened to their settings.
+    let (config, config_status) = AppConfig::read_reporting();
     // Goes to stderr so it cannot corrupt `--json` output being piped into
     // something. A run using default settings the user did not choose is worth
     // knowing about even in a scripted context.
@@ -585,7 +600,18 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         );
     }
 
-    if let Some(ref out_path) = args.output {
+    // The report --output asked for is part of the run's result: without it
+    // the exit code must not say the run went well.
+    let mut report_missing = false;
+    if let Some(ref out_path) = args.output
+        && scan_cancelled
+    {
+        // Half a scan must not replace the complete report of the last run.
+        eprintln!(
+            "The report was not written to '{}': the scan was cancelled.",
+            out_path.display()
+        );
+    } else if let Some(ref out_path) = args.output {
         let health = DiagnosticEngine::calculate_health_score(&issues);
         let audit_entries = this_run();
         match DiagnosticReporter::save_report(
@@ -601,6 +627,7 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
                 }
             }
             Err(e) => {
+                report_missing = true;
                 eprintln!(
                     "Could not save the report to '{}': {}",
                     out_path.display(),
@@ -619,6 +646,11 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         exit_code::OK
     } else {
         exit_code::from_issues(&issues, failed_fixes, failed_modules.len())
+    };
+    let code = if report_missing {
+        exit_code::without_report(code)
+    } else {
+        code
     };
 
     if !quiet {
@@ -653,9 +685,23 @@ fn run_gui() -> Result<u8, Box<dyn std::error::Error>> {
         viewport = viewport.with_icon(icon);
     }
 
+    // Listing the adapters runs the graphics driver's code, and wgpu unwraps
+    // what the driver answers (GetDesc2, CheckFeatureSupport). A driver that
+    // fails one of them panics here, before the window and outside the catch
+    // below: WinMedic was simply gone, with a crash log and exit code 5 and
+    // nothing on screen, the console having been released already.
+    let Ok(wgpu_options) = std::panic::catch_unwind(gui::renderer::wgpu_configuration) else {
+        runtime.shutdown_background();
+        could_not_open_window(
+            "The graphics driver failed while WinMedic asked it which graphics cards there are.",
+            "That usually means a damaged or outdated graphics driver.",
+        );
+        return Ok(exit_code::INTERNAL_ERROR);
+    };
+
     let options = eframe::NativeOptions {
         viewport,
-        wgpu_options: gui::renderer::wgpu_configuration(),
+        wgpu_options,
         ..Default::default()
     };
 
@@ -700,21 +746,29 @@ fn run_gui() -> Result<u8, Box<dyn std::error::Error>> {
         // (`gui::renderer`). What is left is Direct3D 12 failing there too,
         // which usually means damaged system files - and those the command
         // line can repair.
-        utils::console::show_error_dialog(
-            "WinMedic could not open its window",
-            &format!(
-                "WinMedic could not open its window:\n\n{err}\n\n\
-                 Direct3D 12 could not draw it, neither through the graphics card nor with \
-                 Windows' own software renderer. That usually means that Windows system files \
-                 are damaged.\n\n\
-                 Every check and repair also runs without the window. From a Command Prompt \
-                 started as Administrator,\n\n\
-                 \x20   winmedic --scan --output report.html\n\n\
-                 writes a report you can open in any browser, and winmedic --auto-fix repairs \
-                 what is safe to repair; winmedic --help lists the rest."
-            ),
+        could_not_open_window(
+            &err.to_string(),
+            "Direct3D 12 could not draw it, neither through the graphics card nor with \
+             Windows' own software renderer. That usually means that Windows system files \
+             are damaged.",
         );
         return Err(err.into());
     }
     Ok(exit_code::OK)
+}
+
+/// Say that there will be no window, why, and that everything also runs
+/// without one. A message box: the console is gone by now.
+fn could_not_open_window(what_happened: &str, what_it_means: &str) {
+    utils::console::show_error_dialog(
+        "WinMedic could not open its window",
+        &format!(
+            "WinMedic could not open its window:\n\n{what_happened}\n\n{what_it_means}\n\n\
+             Every check and repair also runs without the window. From a Command Prompt \
+             started as Administrator,\n\n\
+             \x20   winmedic --scan --output report.html\n\n\
+             writes a report you can open in any browser, and winmedic --auto-fix repairs \
+             what is safe to repair; winmedic --help lists the rest."
+        ),
+    );
 }

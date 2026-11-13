@@ -122,9 +122,6 @@ pub struct CrashAnalysisModule {
     config: ModuleConfig,
     runner: Arc<dyn CommandRunner>,
     dump_dir: PathBuf,
-    /// `%LOCALAPPDATA%CrashDumps`, where programs' crash dumps go; `None`
-    /// in tests.
-    user_dump_dir: Option<PathBuf>,
     /// `%SystemRoot%`: a module Explorer crashed in inside it is Windows' own.
     windows_dir: String,
     /// Where registry backups go.
@@ -136,15 +133,6 @@ pub struct CrashAnalysisModule {
 struct StaleDumps {
     count: usize,
     bytes: u64,
-}
-
-impl StaleDumps {
-    fn add(self, other: StaleDumps) -> StaleDumps {
-        StaleDumps {
-            count: self.count + other.count,
-            bytes: self.bytes + other.bytes,
-        }
-    }
 }
 
 /// Whether a file last written at `modified` is older than the evidence
@@ -165,8 +153,6 @@ impl CrashAnalysisModule {
             config,
             runner,
             dump_dir: minidump_dir(),
-            user_dump_dir: std::env::var_os("LOCALAPPDATA")
-                .map(|local| Path::new(&local).join("CrashDumps")),
             windows_dir: windows_dir(),
             backup_dir: RegBackupManager::new().backup_dir().to_path_buf(),
         }
@@ -189,7 +175,6 @@ impl CrashAnalysisModule {
             config,
             runner,
             dump_dir: dump_dir.into(),
-            user_dump_dir: None,
             windows_dir: windows_dir(),
             backup_dir: RegBackupManager::new().backup_dir().to_path_buf(),
         }
@@ -383,31 +368,19 @@ impl CrashAnalysisModule {
         (!changes.is_empty() || point.is_some()).then_some((first, changes, point))
     }
 
-    /// Programs' crash dumps older than [`DUMP_EVIDENCE_DAYS`].
-    fn stale_user_mode_dumps(&self) -> StaleDumps {
-        let Some(dir) = &self.user_dump_dir else {
-            return StaleDumps::default();
-        };
-        dump_dir_dmp_files(dir)
-            .iter()
-            .filter_map(|path| std::fs::metadata(path).ok())
-            .filter(|meta| meta.modified().is_ok_and(is_stale))
-            .fold(StaleDumps::default(), |stale, meta| StaleDumps {
-                count: stale.count + 1,
-                bytes: stale.bytes + meta.len(),
-            })
-    }
-
-    /// Deletes the dumps older than [`DUMP_EVIDENCE_DAYS`] and prints
-    /// `deleted|left`.
+    /// Deletes the kernel minidumps older than [`DUMP_EVIDENCE_DAYS`] and
+    /// prints `deleted|left`.
+    ///
+    /// Only those: they are what this module reads. It also counted and
+    /// deleted the old dumps in `%LOCALAPPDATA%\CrashDumps`, programs' dumps,
+    /// which it never reads and which the cleaner's "error reports & crash
+    /// dumps" finding empties. Both findings start ticked, so the same files
+    /// were promised twice in "Frees about", and this one said "Newer ones
+    /// are kept" about a folder the cleaner emptied in the same run.
     fn delete_stale_dumps_script(&self) -> String {
-        let dirs: Vec<String> = std::iter::once(&self.dump_dir)
-            .chain(self.user_dump_dir.as_ref())
-            .map(|dir| ps_single_quoted(&dir.to_string_lossy()))
-            .collect();
         format!(
-            "$cut = (Get-Date).AddDays(-{DUMP_EVIDENCE_DAYS}); $deleted = 0; $left = 0; foreach ($d in @({})) {{ Get-ChildItem -LiteralPath $d -Filter *.dmp -File -ErrorAction SilentlyContinue | Where-Object {{ $_.LastWriteTime -lt $cut }} | ForEach-Object {{ try {{ Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop; $deleted++ }} catch {{ $left++ }} }} }}; '{{0}}|{{1}}' -f $deleted, $left",
-            dirs.join(", ")
+            "$cut = (Get-Date).AddDays(-{DUMP_EVIDENCE_DAYS}); $deleted = 0; $left = 0; Get-ChildItem -LiteralPath {} -Filter *.dmp -File -ErrorAction SilentlyContinue | Where-Object {{ $_.LastWriteTime -lt $cut }} | ForEach-Object {{ try {{ Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop; $deleted++ }} catch {{ $left++ }} }}; '{{0}}|{{1}}' -f $deleted, $left",
+            ps_single_quoted(&self.dump_dir.to_string_lossy())
         )
     }
 }
@@ -466,17 +439,12 @@ impl DiagnosticModule for CrashAnalysisModule {
             .await;
         dbg.kv("lookback_hours", window_hours.to_string()).await;
 
-        let (dump_crashes, stale_kernel) = self.collect_dump_crashes().await;
-        let stale_user = self.stale_user_mode_dumps();
+        let (dump_crashes, stale) = self.collect_dump_crashes().await;
         dbg.kv("recent_kernel_dumps", dump_crashes.len().to_string())
             .await;
-        dbg.kv("old_kernel_dumps", stale_kernel.count.to_string())
-            .await;
-        dbg.kv("old_user_mode_dumps", stale_user.count.to_string())
-            .await;
+        dbg.kv("old_kernel_dumps", stale.count.to_string()).await;
 
         // Dumps nobody needs any more, whether or not anything crashed lately.
-        let stale = stale_kernel.add(stale_user);
         if stale.count > STALE_DUMP_THRESHOLD {
             issues.push(
                 Issue::new(
@@ -491,14 +459,14 @@ impl DiagnosticModule for CrashAnalysisModule {
                     RiskScore::Low,
                     format!("These crash dumps are older than {DUMP_EVIDENCE_DAYS} days and only take up space. Newer ones are kept: they are what the crash analysis reads."),
                     format!(
-                        "Older than {DUMP_EVIDENCE_DAYS} days in {}: {}\nOlder than {DUMP_EVIDENCE_DAYS} days in %LOCALAPPDATA%\\CrashDumps: {}",
+                        "Older than {DUMP_EVIDENCE_DAYS} days in {}: {}",
                         self.dump_dir.display(),
-                        stale_kernel.count,
-                        stale_user.count
+                        stale.count
                     ),
                     format!("Delete crash dumps older than {DUMP_EVIDENCE_DAYS} days"),
                     vec![format!(
-                        "Delete the .dmp files older than {DUMP_EVIDENCE_DAYS} days in both folders"
+                        "Delete the .dmp files older than {DUMP_EVIDENCE_DAYS} days in {}",
+                        self.dump_dir.display()
                     )],
                 )
                 .with_reclaimable_bytes(stale.bytes),
@@ -2166,6 +2134,9 @@ mod tests {
             Arc::new(MockCommandRunner::new()),
         );
         let script = module.delete_stale_dumps_script();
+        // Programs' dumps are the cleaner's: counted there, deleted there.
+        assert!(script.contains("Minidump"), "{script}");
+        assert!(!script.contains("CrashDumps"), "{script}");
         assert_eq!(crate::utils::cmd::powershell_parse_errors(&script).await, 0);
     }
 }

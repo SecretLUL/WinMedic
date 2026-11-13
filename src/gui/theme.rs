@@ -337,6 +337,21 @@ pub fn heading(ui: &egui::Ui, text: impl Into<String>, size: f32) -> RichText {
     }
 }
 
+/// Bring the row the keyboard is on into view when the keyboard moved there.
+///
+/// Down, PgDn and End changed the detail pane while the list stayed where it
+/// was, and Space then ticked a row the user could not see. `row` names the
+/// row within `list`. The list is scrolled once per move, so the mouse wheel
+/// is free to leave the row afterwards.
+pub fn keep_in_view(ui: &egui::Ui, list: &'static str, row: (usize, usize), rect: egui::Rect) {
+    let id = egui::Id::unique(("winmedic_keyboard_row", list));
+    let last: Option<(usize, usize)> = ui.data(|data| data.get_temp(id));
+    if last != Some(row) {
+        ui.data_mut(|data| data.insert_temp(id, row));
+        ui.scroll_to_rect(rect, None);
+    }
+}
+
 /// A section heading inside a tab.
 pub fn section(ui: &mut egui::Ui, title: &str) {
     ui.label(heading(ui, title, 14.5));

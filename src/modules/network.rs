@@ -27,18 +27,47 @@ const DNS_PROBE_NAMES: &[&str] = &["dns.google", "www.microsoft.com"];
 /// The check this replaces looked for the words "Error" and "Fehler" in the
 /// catalog, which says nothing about its health and nothing at all in any
 /// third language.
-pub fn winsock_provider_paths(catalog: &str) -> Vec<String> {
-    catalog
-        .lines()
-        .filter_map(|line| {
-            let (_, value) = line.split_once(':')?;
+///
+/// An entry of the 32-bit catalog carries `(32)` after its type
+/// ("Eintragstyp: Basisdienstanbieter (32)"), in every language, and the
+/// entries are separated by empty lines.
+pub fn winsock_provider_paths(catalog: &str) -> Vec<WinsockProvider> {
+    let mut for_32_bit = false;
+    let mut providers = Vec::new();
+    for line in catalog.lines().map(str::trim) {
+        if line.is_empty() {
+            for_32_bit = false;
+        } else if line.ends_with("(32)") {
+            for_32_bit = true;
+        } else if let Some((_, value)) = line.split_once(':') {
             let value = value.trim();
-            value
-                .to_ascii_lowercase()
-                .ends_with(".dll")
-                .then(|| value.to_string())
-        })
-        .collect()
+            if value.to_ascii_lowercase().ends_with(".dll") {
+                providers.push(WinsockProvider {
+                    path: value.to_string(),
+                    for_32_bit,
+                });
+            }
+        }
+    }
+    providers
+}
+
+/// A provider DLL the Winsock catalog names, and which catalog names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WinsockProvider {
+    pub path: String,
+    /// From the 32-bit catalog: 32-bit programs load it, and for them
+    /// `%SystemRoot%\system32` is `SysWOW64`.
+    pub for_32_bit: bool,
+}
+
+/// `...\system32\x.dll` as a 32-bit program gets it: `...\SysWOW64\x.dll`.
+fn as_32_bit_programs_see(path: &str) -> String {
+    const SYSTEM32: &str = r"\system32\";
+    match path.to_ascii_lowercase().find(SYSTEM32) {
+        Some(at) => format!(r"{}\SysWOW64\{}", &path[..at], &path[at + SYSTEM32.len()..]),
+        None => path.to_string(),
+    }
 }
 
 /// Whether a provider path names a file that is not there.
@@ -47,11 +76,28 @@ pub fn winsock_provider_paths(catalog: &str) -> Vec<String> {
 /// by software that has since been removed. A path with an environment
 /// variable this process cannot expand is not judged — an unverifiable entry
 /// is not evidence of a broken one.
-pub fn provider_is_missing(path: &str) -> bool {
-    match expand_env_vars(path) {
+///
+/// A 32-bit entry was looked for where this 64-bit process sees
+/// `system32`. A provider that ships only a 32-bit DLL, in `SysWOW64`, was
+/// "does not exist", and the reset offered for it removes a working
+/// component.
+pub fn provider_is_missing(provider: &WinsockProvider) -> bool {
+    provider_is_missing_where(provider, &|path| path.exists())
+}
+
+fn provider_is_missing_where(
+    provider: &WinsockProvider,
+    exists: &dyn Fn(&std::path::Path) -> bool,
+) -> bool {
+    match expand_env_vars(&provider.path) {
         Some(expanded) => {
+            let expanded = if provider.for_32_bit {
+                as_32_bit_programs_see(&expanded)
+            } else {
+                expanded
+            };
             let expanded = std::path::Path::new(&expanded);
-            expanded.is_absolute() && !expanded.exists()
+            expanded.is_absolute() && !exists(expanded)
         }
         None => false,
     }
@@ -1430,7 +1476,8 @@ impl DiagnosticModule for NetworkModule {
             let providers = winsock_provider_paths(&out.stdout);
             let missing: Vec<&String> = providers
                 .iter()
-                .filter(|path| provider_is_missing(path))
+                .filter(|provider| provider_is_missing(provider))
+                .map(|provider| &provider.path)
                 .collect();
             let evidence = if providers.is_empty() {
                 Some(format!(
@@ -1608,18 +1655,58 @@ mod tests {
         assert!(
             paths
                 .iter()
-                .all(|p| p == r"%SystemRoot%\system32\mswsock.dll")
+                .all(|p| p.path == r"%SystemRoot%\system32\mswsock.dll")
         );
+        // The captured catalog lists each of its 14 providers twice: once
+        // for 64-bit programs and once, marked (32), for 32-bit ones.
+        assert_eq!(paths.iter().filter(|p| p.for_32_bit).count(), 14);
+        assert!(!paths[0].for_32_bit && paths[27].for_32_bit);
+    }
+
+    fn provider(path: &str, for_32_bit: bool) -> WinsockProvider {
+        WinsockProvider {
+            path: path.to_string(),
+            for_32_bit,
+        }
     }
 
     #[test]
     fn a_provider_that_exists_is_not_missing() {
-        assert!(!provider_is_missing(r"%SystemRoot%\system32\mswsock.dll"));
-        assert!(provider_is_missing(
-            r"%SystemRoot%\system32\winmedic-uninstalled-lsp.dll"
-        ));
-        // Cannot be expanded here, so it cannot be judged.
-        assert!(!provider_is_missing(r"%WINMEDIC_NO_SUCH_VAR%\lsp.dll"));
+        for for_32_bit in [false, true] {
+            assert!(!provider_is_missing(&provider(
+                r"%SystemRoot%\system32\mswsock.dll",
+                for_32_bit
+            )));
+            assert!(provider_is_missing(&provider(
+                r"%SystemRoot%\system32\winmedic-uninstalled-lsp.dll",
+                for_32_bit
+            )));
+            // Cannot be expanded here, so it cannot be judged.
+            assert!(!provider_is_missing(&provider(
+                r"%WINMEDIC_NO_SUCH_VAR%\lsp.dll",
+                for_32_bit
+            )));
+        }
+    }
+
+    /// A component that ships a 32-bit DLL only puts it where 32-bit
+    /// programs find it. Looked for in the 64-bit folder, it was "gone".
+    #[test]
+    fn a_32_bit_provider_is_looked_for_where_32_bit_programs_load_it() {
+        let only_in_syswow64 = |path: &std::path::Path| {
+            path.to_string_lossy()
+                .to_ascii_lowercase()
+                .ends_with(r"\syswow64\vendor32.dll")
+        };
+        let entry = |for_32_bit| provider(r"%SystemRoot%\System32\vendor32.dll", for_32_bit);
+        assert!(!provider_is_missing_where(&entry(true), &only_in_syswow64));
+        // The same path in the 64-bit catalog does name a file that is gone.
+        assert!(provider_is_missing_where(&entry(false), &only_in_syswow64));
+
+        // Outside the Windows folder nothing is redirected.
+        let elsewhere = provider(r"C:\Program Files (x86)\Vendor\lsp32.dll", true);
+        assert!(provider_is_missing_where(&elsewhere, &|_| false));
+        assert!(!provider_is_missing_where(&elsewhere, &|_| true));
     }
 
     async fn scan_winsock(catalog: CmdOutput) -> Vec<Issue> {
