@@ -196,13 +196,23 @@ impl AuditLogger {
         let history_file = dir.join("history.jsonl");
 
         if let Ok(file) = File::open(&history_file) {
-            let reader = BufReader::new(file);
-            for line in reader.lines().map_while(Result::ok) {
+            let mut reader = BufReader::new(file);
+            let mut line = Vec::new();
+            // Line by line as bytes: `lines()` gives an error for a line
+            // that is not UTF-8, such as a write a power cut tore in the
+            // middle of a character, and the loop ended there. Every later
+            // entry was written and never shown or exported, until the file
+            // rotated.
+            while reader
+                .read_until(b'\n', &mut line)
+                .is_ok_and(|read| read > 0)
+            {
                 entries.extend(
-                    serde_json::Deserializer::from_str(&line)
+                    serde_json::Deserializer::from_str(&String::from_utf8_lossy(&line))
                         .into_iter::<AuditEntry>()
                         .map_while(Result::ok),
                 );
+                line.clear();
             }
         }
 
@@ -307,6 +317,32 @@ mod tests {
              use AuditLogger::with_dir_and_size with a temp directory instead: {:?}",
             offenders
         );
+    }
+
+    /// The doc comment promises that a damaged entry costs the rest of its
+    /// line. A line that is not UTF-8 cost every entry after it.
+    #[test]
+    fn a_line_torn_inside_a_character_hides_no_later_entry() {
+        let temp_dir = std::env::temp_dir().join("winmedic_audit_test_torn_line");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let logger = AuditLogger::with_dir_and_size(temp_dir.clone(), MAX_LOG_FILE_BYTES);
+
+        logger.log("SCAN", "network", "Before", "SUCCESS", "");
+        {
+            let mut file = OpenOptions::new()
+                .append(true)
+                .open(temp_dir.join("history.jsonl"))
+                .unwrap();
+            // "ä" is C3 A4; the write ended after the first byte.
+            file.write_all(b"{\"timestamp\":\"2026-11-12 10:00:00\",\"title\":\"Ger\xC3\n")
+                .unwrap();
+        }
+        logger.log("SCAN", "network", "After", "SUCCESS", "");
+
+        let titles: Vec<String> = logger.get_history().into_iter().map(|e| e.title).collect();
+        assert_eq!(titles, ["Before", "After"]);
+
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     /// While another program holds the log open, it cannot be renamed. Each
