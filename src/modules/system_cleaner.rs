@@ -1458,7 +1458,10 @@ impl DiagnosticModule for SystemCleanerModule {
                     recycle_stats.files
                 ),
                 "Permanently empty your Recycle Bin on the local drives (irreversible)",
-                vec!["Run PowerShell Clear-RecycleBin -Force".to_string()],
+                vec![
+                    "Run PowerShell Clear-RecycleBin -Force for each local drive".to_string(),
+                    r"Delete what the shell leaves behind in your folder of $Recycle.Bin on those drives".to_string(),
+                ],
             );
             // Never runs unattended under `--auto-fix` / [A] auto-fix all: the
             // user has to tick this one themselves.

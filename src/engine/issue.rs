@@ -2,6 +2,12 @@ use crate::modules::Repaired;
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 
+/// How a step starts that the repair does not take: it is the user's to do,
+/// such as a BIOS setting or a look inside the case. The steps of a finding
+/// are shown as its "Recommended fix" and listed by a simulation, which
+/// counted every one of them among the steps that "would run".
+pub const BY_HAND: &str = "By hand: ";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Severity {
     Critical, // Coral Red (#EF4444)

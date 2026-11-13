@@ -1,4 +1,4 @@
-use crate::engine::issue::{Issue, RiskScore, Severity};
+use crate::engine::issue::{BY_HAND, Issue, RiskScore, Severity};
 use crate::modules::crash_timeline::logged_at;
 use crate::modules::event_log::{
     last_passed_memory_test, memory_test_finding, schedule_memory_test,
@@ -428,9 +428,9 @@ impl DiagnosticModule for WheaLoggerModule {
                 ),
                 "Disable aggressive PCIe Link State Power Management (ASPM) via powercfg and check PCIe riser/seating",
                 vec![
-                    "Disable PCIe Link State Power Management (ASPM) via powercfg".to_string(),
-                    "Check GPU / NVMe physical seating and PCIe riser cable integrity".to_string(),
-                    "Update motherboard chipset and NVMe / GPU driver firmware".to_string(),
+                    "Switch PCIe Link State Power Management (ASPM) off on mains and battery (powercfg /setacvalueindex and /setdcvalueindex ... ASPM 0)".to_string(),
+                    format!("{BY_HAND}Check GPU / NVMe physical seating and PCIe riser cable integrity"),
+                    format!("{BY_HAND}Update motherboard chipset and NVMe / GPU driver firmware"),
                 ],
             );
 
