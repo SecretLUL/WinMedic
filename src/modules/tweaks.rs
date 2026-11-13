@@ -660,6 +660,9 @@ pub const DEFENDER_POLICY_KEY: &str = r"HKLM\SOFTWARE\Policies\Microsoft\Windows
 const DEFENDER_RTP_POLICY_KEY: &str =
     r"HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection";
 pub const DEFENDER_OFF: &str = "tweak_policy_defender_off";
+/// What `gpupdate.exe` is given to have Windows announce a refresh of the
+/// computer's policies, as it was run when Defender came back on (#296).
+const POLICY_REFRESH_ARGS: &[&str] = &["/target:computer", "/force"];
 
 /// The policy values debloat tools set to switch Microsoft Defender off,
 /// among `defender` (its policy key, read with `/s`).
@@ -1005,7 +1008,18 @@ impl TweaksModule {
     }
 
     /// Whether real-time protection came on, looking three times.
+    ///
+    /// Defender does not notice a policy value deleted in the registry: it
+    /// reads its policies again when Windows announces a policy refresh. On
+    /// a real PC it stayed off for minutes after the delete and was on three
+    /// seconds after `gpupdate /target:computer /force` (#296), so the
+    /// refresh comes first. Whether gpupdate succeeded is not asked: the
+    /// looks say whether protection is on.
     async fn defender_came_on(&self) -> bool {
+        let _ = self
+            .runner
+            .run("gpupdate.exe", POLICY_REFRESH_ARGS, Duration::from_secs(60))
+            .await;
         for _ in 0..3 {
             tokio::time::sleep(self.defender_wait).await;
             if self.defender_status().await.is_some_and(|s| s.realtime_on) {
@@ -2047,6 +2061,17 @@ impl DiagnosticModule for TweaksModule {
                         } else {
                             (hit.severity, hit.description)
                         };
+                        let mut steps: Vec<String> = hit
+                            .values
+                            .iter()
+                            .map(|(key, name)| format!("reg delete \"{key}\" /v {name} /f"))
+                            .collect();
+                        if hit.id == DEFENDER_OFF {
+                            steps.push(format!("gpupdate {}", POLICY_REFRESH_ARGS.join(" ")));
+                            steps.push(
+                                "Check that Defender's real-time protection is on".to_string(),
+                            );
+                        }
                         let mut issue = Issue::new(
                             hit.id,
                             self.id(),
@@ -2059,10 +2084,7 @@ impl DiagnosticModule for TweaksModule {
                             ),
                             evidence,
                             "Remove the policy values after a registry backup",
-                            hit.values
-                                .iter()
-                                .map(|(key, name)| format!("reg delete \"{key}\" /v {name} /f"))
-                                .collect(),
+                            steps,
                         );
                         issue.is_selected = false;
                         issues.push(issue);
@@ -3245,6 +3267,18 @@ mod tests {
                 .technical_details
                 .contains("DisableRealtimeMonitoring")
         );
+        // The plan names the policy refresh between the deletes and the look.
+        let refresh = issue
+            .fix_steps
+            .iter()
+            .position(|step| step == "gpupdate /target:computer /force")
+            .unwrap_or_else(|| panic!("{:?}", issue.fix_steps));
+        assert!(
+            issue.fix_steps[..refresh]
+                .iter()
+                .all(|s| s.starts_with("reg delete"))
+        );
+        assert_eq!(refresh + 2, issue.fix_steps.len(), "{:?}", issue.fix_steps);
     }
 
     /// "Unprotected" must not rest on queries that failed. Constructed: no
@@ -3300,8 +3334,10 @@ mod tests {
         assert!(issues.is_empty(), "{issues:?}");
     }
 
-    /// Defender's policy is set until deleted; the status says `after` once
-    /// it was.
+    /// Defender's policy is set until deleted. The status says `after` only
+    /// once Windows announced a policy refresh, as on the development PC on
+    /// 2026-11-13 (#296): off for minutes after the delete, on three seconds
+    /// after `gpupdate /target:computer /force`.
     fn defender_repair(after: String) -> MockCommandRunner {
         let mock = MockCommandRunner::new();
         mock.add_response(
@@ -3314,7 +3350,12 @@ mod tests {
             CmdOutput::ok(decode_output(DEFENDER_POLICY)),
         );
         mock.add_response("Get-MpComputerStatus", CmdOutput::ok(defender_off_status()));
-        mock.add_response_after("delete", "Get-MpComputerStatus", CmdOutput::ok(after));
+        mock.add_response_after(
+            "gpupdate.exe /target:computer /force",
+            "Get-MpComputerStatus",
+            CmdOutput::ok(after),
+        );
+        mock.add_response("gpupdate.exe", CmdOutput::ok(""));
         mock.add_response("reg.exe delete", CmdOutput::ok(""));
         mock.add_response("reg.exe", CmdOutput::with_output(1, "", "FEHLER"));
         mock
@@ -3339,6 +3380,15 @@ mod tests {
             .filter(|c| c.starts_with("reg.exe delete"))
             .collect();
         assert_eq!(deletes.len(), 2, "{deletes:?}");
+        // The refresh comes after the last delete and before the first look
+        // that counts.
+        let executed = mock.executed();
+        let at = |needle: &str| executed.iter().rposition(|c| c.contains(needle)).unwrap();
+        assert!(at("reg.exe delete") < at("gpupdate.exe"), "{executed:?}");
+        assert!(
+            at("gpupdate.exe") < at("Get-MpComputerStatus"),
+            "{executed:?}"
+        );
     }
 
     #[tokio::test]
