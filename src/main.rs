@@ -346,7 +346,8 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     let audit_logger = safety::audit::AuditLogger::real();
     // A report covers what this run did, not the whole audit history.
     let run_started = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let this_run = || DiagnosticReporter::audit_since(&audit_logger.get_history(), &run_started);
+    let this_run =
+        || DiagnosticReporter::audit_since(&audit_logger.history_since(&run_started), &run_started);
     let engine = Arc::new(
         DiagnosticEngine::new(&config)
             .with_restore_points(RestorePointService::real())

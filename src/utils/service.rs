@@ -60,6 +60,9 @@ pub const ERROR_SERVICE_DEPENDENCY_FAIL: u32 = 1068;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceConfig {
     pub service_type: u32,
+    /// `START_TYPE`, a number in every display language; `None` when `sc`
+    /// printed none.
+    pub start_type: Option<u32>,
     pub display_name: String,
     /// The services it depends on (`DependOnService`); groups, which `sc`
     /// prints with a `+`, are left out.
@@ -88,6 +91,7 @@ fn fields(output: &str) -> impl Iterator<Item = (&str, &str)> {
 /// service is not installed, or `sc` was refused).
 pub fn parse_config(sc_qc_output: &str) -> Option<ServiceConfig> {
     let mut service_type = None;
+    let mut start_type = None;
     let mut display_name = String::new();
     let mut dependencies = Vec::new();
     let mut in_dependencies = false;
@@ -104,6 +108,12 @@ pub fn parse_config(sc_qc_output: &str) -> Option<ServiceConfig> {
                     .next()
                     .and_then(|hex| u32::from_str_radix(hex, 16).ok());
             }
+            "START_TYPE" => {
+                start_type = value
+                    .split_whitespace()
+                    .next()
+                    .and_then(|number| number.parse().ok());
+            }
             "DISPLAY_NAME" => display_name = value.to_string(),
             _ if in_dependencies && !value.is_empty() && !value.starts_with('+') => {
                 dependencies.push(value.to_string());
@@ -113,6 +123,7 @@ pub fn parse_config(sc_qc_output: &str) -> Option<ServiceConfig> {
     }
     Some(ServiceConfig {
         service_type: service_type?,
+        start_type,
         display_name,
         dependencies,
     })

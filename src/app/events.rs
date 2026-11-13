@@ -211,7 +211,7 @@ impl App {
             self.last_findings.clear();
             self.scan_event_rx = None;
             self.cancel_token = None;
-            self.audit_entries = self.audit_logger.get_history();
+            self.audit_entries = self.audit_logger.recent_history();
             if end == ScanEnd::Completed {
                 self.save_scan_state();
             }
@@ -402,7 +402,7 @@ impl App {
             self.end_repair_step();
             self.repair_event_rx = None;
             self.cancel_token = None;
-            self.audit_entries = self.audit_logger.get_history();
+            self.audit_entries = self.audit_logger.recent_history();
             self.backup_records = self.reg_backup_mgr.list_backups();
             self.clamp_backup_selection();
             self.save_scan_state();
@@ -448,7 +448,7 @@ impl App {
                         if success { "SUCCESS" } else { "FAILED" },
                         &message,
                     );
-                    self.audit_entries = self.audit_logger.get_history();
+                    self.audit_entries = self.audit_logger.recent_history();
                 }
                 BackgroundEvent::UpdateChecked(Some(info)) => {
                     // The check lands at an arbitrary point in the session, so it
@@ -537,7 +537,7 @@ impl App {
                             self.fall_back_to_browser(&release_url, &err.reason());
                         }
                     }
-                    self.audit_entries = self.audit_logger.get_history();
+                    self.audit_entries = self.audit_logger.recent_history();
                 }
             }
         }

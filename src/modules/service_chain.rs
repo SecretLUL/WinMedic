@@ -10,13 +10,17 @@
 //! Only what the service configuration says counts (`DependOnService`, as
 //! `sc qc` prints it), never the text of an event, and devices are judged by
 //! their problem code.
+//!
+//! A chain also ends at a driver that is switched off (`START_TYPE` 4) and
+//! not loaded, when the service above it stopped with 1068: see
+//! [`DriverOff`].
 
 use crate::modules::devices::meaning;
 use crate::utils::cmd::CommandRunner;
 use crate::utils::pnp::PnpDevice;
 use crate::utils::service::{
-    self, ERROR_SERVICE_DEPENDENCY_FAIL, ERROR_SERVICE_NEVER_STARTED, SERVICE_RUNNING,
-    SERVICE_STOPPED, ServiceConfig, ServiceStatus,
+    self, ERROR_SERVICE_DEPENDENCY_FAIL, ERROR_SERVICE_NEVER_STARTED, SERVICE_DISABLED,
+    SERVICE_RUNNING, SERVICE_STOPPED, ServiceConfig, ServiceStatus,
 };
 use std::collections::HashMap;
 use std::time::Duration;
@@ -72,23 +76,13 @@ impl Chain {
     /// (HvHost) failed (exit code 31) because the device 'Microsoft
     /// Hypervisor Service' is disabled.`, with `device_name` for the device.
     pub fn sentence(&self, device_name: &str) -> String {
-        let services: Vec<String> = self
-            .services
-            .iter()
-            .map(|link| match link.exit_code {
-                ERROR_SERVICE_DEPENDENCY_FAIL => format!("{} cannot start", link.label()),
-                ERROR_SERVICE_NEVER_STARTED => format!("{} did not start", link.label()),
-                0 => format!("{} is stopped", link.label()),
-                code => format!("{} failed (exit code {code})", link.label()),
-            })
-            .collect();
         let problem = match self.device.problem {
             DEVICE_DISABLED => "is disabled".to_string(),
             code => format!("reports problem code {code}: {}", meaning(code)),
         };
         format!(
             "{} because the device '{device_name}' {problem}.",
-            services.join(": ")
+            how_they_ended(&self.services)
         )
     }
 
@@ -100,19 +94,109 @@ impl Chain {
     /// The chain for technical details: each service with its exit code,
     /// the driver and the device.
     pub fn details(&self) -> String {
-        let services: Vec<String> = self
-            .services
-            .iter()
-            .map(|link| format!("{} (exit code {})", link.name, link.exit_code))
-            .collect();
         format!(
             "Service chain: {} -> driver {} -> device {} (problem code {})",
-            services.join(" -> "),
+            with_exit_codes(&self.services),
             self.driver,
             self.device.instance_id,
             self.device.problem
         )
     }
+}
+
+/// `A cannot start: B failed (exit code 31)`: the services of a chain, each
+/// with how it ended.
+fn how_they_ended(services: &[Link]) -> String {
+    services
+        .iter()
+        .map(|link| match link.exit_code {
+            ERROR_SERVICE_DEPENDENCY_FAIL => format!("{} cannot start", link.label()),
+            ERROR_SERVICE_NEVER_STARTED => format!("{} did not start", link.label()),
+            0 => format!("{} is stopped", link.label()),
+            code => format!("{} failed (exit code {code})", link.label()),
+        })
+        .collect::<Vec<_>>()
+        .join(": ")
+}
+
+/// `A (exit code 1068) -> B (exit code 31)`, for technical details.
+fn with_exit_codes(services: &[Link]) -> String {
+    services
+        .iter()
+        .map(|link| format!("{} (exit code {})", link.name, link.exit_code))
+        .collect::<Vec<_>>()
+        .join(" -> ")
+}
+
+/// A service that cannot start because a driver it depends on is switched
+/// off, with the services between them (#141).
+///
+/// Windows ships drivers switched off (`cdfs` in Windows Sandbox, seven on
+/// the development PC), so a switched-off driver alone says nothing. It ends
+/// a chain only when all of this holds:
+/// - its `START_TYPE` is 4, a number in every display language,
+/// - it is not loaded: a driver switched off while it runs stays loaded
+///   until Windows restarts, and its dependents start,
+/// - the service that depends on it stopped with 1068, "the dependency
+///   service or group failed to start", which is what Windows leaves on a
+///   service after such a start (seen in Windows Sandbox, 26100.9974, on
+///   2026-11-13; a service that was never asked to start shows 1077),
+/// - no device of the driver reports a problem: that device is the cause
+///   then, and has a [`Chain`] of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DriverOff {
+    /// From the service that cannot start down to the one that depends on
+    /// the driver.
+    pub services: Vec<Link>,
+    /// The driver's service name, `cdfs`.
+    pub driver: String,
+    /// `CD/DVD File System Reader`; empty when `sc` printed none.
+    pub display_name: String,
+}
+
+impl DriverOff {
+    /// The service the chain starts with.
+    pub fn head(&self) -> &Link {
+        &self.services[0]
+    }
+
+    /// `CD/DVD File System Reader (cdfs)`, or the service name alone.
+    pub fn driver_label(&self) -> String {
+        if self.display_name.is_empty() || self.display_name.eq_ignore_ascii_case(&self.driver) {
+            self.driver.clone()
+        } else {
+            format!("{} ({})", self.display_name, self.driver)
+        }
+    }
+
+    /// `Windows-Zeitgeber (W32Time) cannot start because the driver 'CD/DVD
+    /// File System Reader (cdfs)' is switched off.`
+    pub fn sentence(&self) -> String {
+        format!(
+            "{} because the driver '{}' is switched off.",
+            how_they_ended(&self.services),
+            self.driver_label()
+        )
+    }
+
+    /// The chain for technical details: each service with its exit code,
+    /// and the driver with its start type.
+    pub fn details(&self) -> String {
+        format!(
+            "Service chain: {} -> driver {} (START_TYPE {SERVICE_DISABLED}, switched off; not loaded)",
+            with_exit_codes(&self.services),
+            self.driver
+        )
+    }
+}
+
+/// What explains the services that stopped with an error.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Failing {
+    /// The chains that end at a device with a problem.
+    pub chains: Vec<Chain>,
+    /// The chains that end at a driver that is switched off.
+    pub drivers_off: Vec<DriverOff>,
 }
 
 /// The services Windows lists, by state, and each one's configuration once
@@ -148,9 +232,15 @@ impl Walker<'_> {
         config
     }
 
-    /// Every chain from `start` down to a driver whose device has a problem.
-    async fn chains_from(&mut self, start: Link) -> Vec<Chain> {
-        let mut chains = Vec::new();
+    /// Whether the driver `name` is not loaded, as `sc query` says. A driver
+    /// `sc` does not answer for is not known to be stopped.
+    async fn stopped(&self, name: &str) -> bool {
+        service::state(self.runner, name).await == Ok(Some(SERVICE_STOPPED))
+    }
+
+    /// Every chain from `start` down to a driver whose device has a problem,
+    /// or that is switched off: added to `found`.
+    async fn chains_from(&mut self, start: Link, found: &mut Failing) {
         let mut pending = vec![vec![start]];
         while let Some(path) = pending.pop() {
             let current = &path[path.len() - 1].name;
@@ -185,18 +275,31 @@ impl Walker<'_> {
                 if !driver.is_driver() {
                     continue;
                 }
+                let mut a_device_explains_it = false;
                 for device in self.devices.iter().filter(|device| {
                     device.problem != 0 && device.service.eq_ignore_ascii_case(&dependency)
                 }) {
-                    chains.push(Chain {
+                    a_device_explains_it = true;
+                    found.chains.push(Chain {
                         services: path.clone(),
                         driver: dependency.clone(),
                         device: device.clone(),
                     });
                 }
+                // See `DriverOff` for why each of these is asked.
+                if !a_device_explains_it
+                    && driver.start_type == Some(SERVICE_DISABLED)
+                    && path[path.len() - 1].exit_code == ERROR_SERVICE_DEPENDENCY_FAIL
+                    && self.stopped(&dependency).await
+                {
+                    found.drivers_off.push(DriverOff {
+                        services: path.clone(),
+                        driver: dependency.clone(),
+                        display_name: driver.display_name.clone(),
+                    });
+                }
             }
         }
-        chains
     }
 }
 
@@ -219,10 +322,8 @@ async fn service_statuses(runner: &dyn CommandRunner) -> Result<Vec<ServiceStatu
     Ok(statuses)
 }
 
-/// Every chain that explains a service which stopped with an error: stopped,
-/// with an exit code other than 0 and 1077 ("never started"). A chain that
-/// is the end of a longer one is left out, so CmService's chain through
-/// HvHost stands for HvHost's own.
+/// The chains to a device with a problem among [`failing`]'s. Without such
+/// a device nothing is asked at all.
 pub async fn failing_chains(
     runner: &dyn CommandRunner,
     devices: &[PnpDevice],
@@ -230,6 +331,14 @@ pub async fn failing_chains(
     if !devices.iter().any(|device| device.problem != 0) {
         return Ok(Vec::new());
     }
+    Ok(failing(runner, devices).await?.chains)
+}
+
+/// Every chain that explains a service which stopped with an error: stopped,
+/// with an exit code other than 0 and 1077 ("never started"). A chain that
+/// is the end of a longer one is left out, so CmService's chain through
+/// HvHost stands for HvHost's own.
+pub async fn failing(runner: &dyn CommandRunner, devices: &[PnpDevice]) -> Result<Failing, String> {
     let statuses = service_statuses(runner).await?;
     let mut walker = Walker {
         runner,
@@ -237,14 +346,19 @@ pub async fn failing_chains(
         devices,
         configs: HashMap::new(),
     };
-    let mut chains = Vec::new();
+    let mut found = Failing::default();
     for status in statuses.iter().filter(|status| {
         status.state == SERVICE_STOPPED
             && !matches!(status.exit_code, 0 | ERROR_SERVICE_NEVER_STARTED)
     }) {
-        chains.extend(walker.chains_from(Link::from_status(status)).await);
+        walker
+            .chains_from(Link::from_status(status), &mut found)
+            .await;
     }
-    Ok(without_tails(chains))
+    Ok(Failing {
+        chains: without_tails(found.chains),
+        drivers_off: without_driver_tails(found.drivers_off),
+    })
 }
 
 /// The chains from the service `name`, whatever its exit code: for a service
@@ -270,9 +384,11 @@ pub async fn chains_from_service(
         devices,
         configs: HashMap::new(),
     };
-    Ok(without_tails(
-        walker.chains_from(Link::from_status(status)).await,
-    ))
+    let mut found = Failing::default();
+    walker
+        .chains_from(Link::from_status(status), &mut found)
+        .await;
+    Ok(without_tails(found.chains))
 }
 
 /// `chains` without those whose services are the end of another chain's to
@@ -284,6 +400,22 @@ fn without_tails(chains: Vec<Chain>) -> Vec<Chain> {
             && of.services[of.services.len() - chain.services.len()..] == chain.services[..]
     };
     let mut kept: Vec<Chain> = chains
+        .iter()
+        .filter(|chain| !chains.iter().any(|other| is_tail(chain, other)))
+        .cloned()
+        .collect();
+    kept.dedup();
+    kept
+}
+
+/// [`without_tails`] for the chains that end at a switched-off driver.
+fn without_driver_tails(chains: Vec<DriverOff>) -> Vec<DriverOff> {
+    let is_tail = |chain: &DriverOff, of: &DriverOff| {
+        of.services.len() > chain.services.len()
+            && of.driver.eq_ignore_ascii_case(&chain.driver)
+            && of.services[of.services.len() - chain.services.len()..] == chain.services[..]
+    };
+    let mut kept: Vec<DriverOff> = chains
         .iter()
         .filter(|chain| !chains.iter().any(|other| is_tail(chain, other)))
         .cloned()
@@ -312,6 +444,60 @@ pub(crate) mod test_support {
         include_bytes!("../../tests/fixtures/console/sc_qc_vmcompute.bin");
     pub const QC_MISSING: &[u8] =
         include_bytes!("../../tests/fixtures/console/sc_qc_not_installed_de.bin");
+
+    // Windows Sandbox (26100.9974, German) on 2026-11-13, for #141: W32Time
+    // made to depend on the driver cdfs, which Windows ships switched off
+    // there, and asked to start. `sc start` failed with 1068.
+    const QC_DRIVER_OFF: &[u8] =
+        include_bytes!("../../tests/fixtures/console/sc_qc_driver_disabled.bin");
+    const QUERY_DRIVER_OFF: &[u8] =
+        include_bytes!("../../tests/fixtures/console/sc_query_driver_disabled.bin");
+    const QC_WAITS_FOR_DRIVER: &[u8] =
+        include_bytes!("../../tests/fixtures/console/sc_qc_depends_on_disabled_driver.bin");
+    pub const QUERY_WAITS_FOR_DRIVER: &[u8] =
+        include_bytes!("../../tests/fixtures/console/sc_query_depends_on_disabled_driver.bin");
+
+    /// `sc qc cdfs` there: a file system driver, `START_TYPE` 4.
+    pub fn qc_driver_off() -> String {
+        decode_output(QC_DRIVER_OFF)
+    }
+
+    /// `sc query cdfs` there: stopped.
+    pub fn query_driver_off() -> String {
+        decode_output(QUERY_DRIVER_OFF)
+    }
+
+    /// The sandbox's services as far as the chain goes: W32Time stopped
+    /// with `exit_code` (1068 after the failed start, 1077 before it) and
+    /// depending on cdfs, for which `sc` prints `qc_cdfs` and `query_cdfs`.
+    pub fn waits_for_driver(
+        exit_code: u32,
+        qc_cdfs: String,
+        query_cdfs: String,
+    ) -> MockCommandRunner {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "query type= service",
+            CmdOutput::ok(sc_query_list(&[(
+                "W32Time",
+                "Windows-Zeitgeber",
+                1,
+                exit_code,
+            )])),
+        );
+        mock.add_response(
+            "qc W32Time",
+            CmdOutput::ok(decode_output(QC_WAITS_FOR_DRIVER)),
+        );
+        mock.add_response("qc cdfs", CmdOutput::ok(qc_cdfs));
+        mock.add_response("query cdfs", CmdOutput::ok(query_cdfs));
+        mock
+    }
+
+    /// The sandbox as captured: W32Time waits for the switched-off cdfs.
+    pub fn waits_for_a_switched_off_driver() -> MockCommandRunner {
+        waits_for_driver(1068, qc_driver_off(), query_driver_off())
+    }
 
     /// The captured `sc qc` of HvHost as `name`, depending on `on`.
     pub fn depends_on(name: &str, on: &[&str]) -> CmdOutput {
@@ -533,6 +719,131 @@ mod tests {
         let mock = MockCommandRunner::new();
         mock.add_response("query type= service", CmdOutput::failed(5, "FEHLER"));
         assert!(failing_chains(&mock, &devices(22)).await.is_err());
+    }
+
+    /// #141, as captured in Windows Sandbox: W32Time depends on the driver
+    /// cdfs, which is switched off, and stopped with 1068 when it was asked
+    /// to start.
+    #[tokio::test]
+    async fn a_service_waits_for_a_driver_that_is_switched_off() {
+        // What Windows left on the service after the failed start.
+        let after = service::parse_status_list(&decode_output(QUERY_WAITS_FOR_DRIVER));
+        assert_eq!(after.len(), 1);
+        assert_eq!(
+            (after[0].state, after[0].exit_code),
+            (SERVICE_STOPPED, ERROR_SERVICE_DEPENDENCY_FAIL)
+        );
+        let driver = service::parse_config(&qc_driver_off()).unwrap();
+        assert!(driver.is_driver());
+        assert_eq!(driver.start_type, Some(SERVICE_DISABLED));
+        // Its dependency is a group, `+SCSI CDROM Class`: no service.
+        assert!(driver.dependencies.is_empty());
+
+        let mock = waits_for_a_switched_off_driver();
+        let found = failing(&mock, &[]).await.unwrap();
+        assert!(found.chains.is_empty());
+        assert_eq!(found.drivers_off.len(), 1, "{found:?}");
+        let off = &found.drivers_off[0];
+        assert_eq!(off.head().name, "W32Time");
+        assert_eq!(off.driver, "cdfs");
+        assert_eq!(
+            off.sentence(),
+            "Windows-Zeitgeber (W32Time) cannot start because the driver 'CD/DVD File System Reader (cdfs)' is switched off."
+        );
+        assert_eq!(
+            off.details(),
+            "Service chain: W32Time (exit code 1068) -> driver cdfs (START_TYPE 4, switched off; not loaded)"
+        );
+        // The chains to devices are unchanged by it.
+        assert!(
+            failing_chains(&mock, &devices(22))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// Windows ships drivers switched off, so that alone ends no chain: the
+    /// service has to have failed with 1068, and the driver has to be
+    /// switched off and not loaded.
+    #[tokio::test]
+    async fn a_switched_off_driver_alone_explains_nothing() {
+        let on_demand = qc_driver_off().replace("4   DISABLED", "3   DEMAND_START");
+        assert_eq!(
+            service::parse_config(&on_demand).unwrap().start_type,
+            Some(3)
+        );
+        let loaded = query_driver_off().replace("1  STOPPED", "4  RUNNING");
+        assert_eq!(service::parse_state(&loaded), Some(SERVICE_RUNNING));
+        for (why, mock) in [
+            (
+                "never asked to start, as captured before the start: 1077",
+                waits_for_driver(1077, qc_driver_off(), query_driver_off()),
+            ),
+            (
+                "stopped with another error",
+                waits_for_driver(31, qc_driver_off(), query_driver_off()),
+            ),
+            (
+                "the driver starts on demand",
+                waits_for_driver(1068, on_demand, query_driver_off()),
+            ),
+            (
+                "the driver is loaded, switched off only for the next start",
+                waits_for_driver(1068, qc_driver_off(), loaded),
+            ),
+            (
+                "sc does not answer for the driver",
+                waits_for_driver(1068, qc_driver_off(), String::new()),
+            ),
+        ] {
+            let found = failing(&mock, &[]).await.unwrap();
+            assert_eq!(found, Failing::default(), "{why}");
+        }
+    }
+
+    /// A device of the driver that reports a problem is the cause, and has
+    /// the chain; the driver's start type is not blamed next to it.
+    #[tokio::test]
+    async fn a_device_with_a_problem_comes_before_the_switched_off_driver() {
+        let cd = vec![device(22, r"SCSI\CDROM\1", "cdfs")];
+        let found = failing(&waits_for_a_switched_off_driver(), &cd)
+            .await
+            .unwrap();
+        assert!(found.drivers_off.is_empty(), "{found:?}");
+        assert_eq!(found.chains.len(), 1);
+        assert_eq!(found.chains[0].driver, "cdfs");
+    }
+
+    /// Two services above the driver: one chain, from the top.
+    #[tokio::test]
+    async fn a_longer_chain_to_a_switched_off_driver_stands_for_its_end() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "query type= service",
+            CmdOutput::ok(sc_query_list(&[
+                ("Above", "Above", 1, 1068),
+                ("W32Time", "Windows-Zeitgeber", 1, 1068),
+            ])),
+        );
+        mock.add_response("qc Above", depends_on("Above", &["W32Time"]));
+        let below = waits_for_a_switched_off_driver();
+        for command in ["qc W32Time", "qc cdfs", "query cdfs"] {
+            let args: Vec<&str> = command.split(' ').collect();
+            let out = below
+                .run("sc.exe", &args, Duration::from_secs(1))
+                .await
+                .unwrap();
+            mock.add_response(command, out);
+        }
+        let found = failing(&mock, &[]).await.unwrap();
+        assert_eq!(found.drivers_off.len(), 1, "{found:?}");
+        let names: Vec<&str> = found.drivers_off[0]
+            .services
+            .iter()
+            .map(|l| l.name.as_str())
+            .collect();
+        assert_eq!(names, ["Above", "W32Time"]);
     }
 
     /// What an installer waits for: the chains from that service, whatever

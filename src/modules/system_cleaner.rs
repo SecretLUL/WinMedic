@@ -7,9 +7,9 @@ use crate::utils::cmd::{CommandRunner, SystemCommandRunner};
 use crate::utils::debug_log::DebugTrace;
 use crate::utils::fs_stats::{dir_stats_recursive, measure_dirs, reached_without_link};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Sender;
 
 /// Directory statistics collected during scan.
@@ -993,7 +993,22 @@ pub struct SystemCleanerModule {
     config: ModuleConfig,
     runner: Arc<dyn CommandRunner>,
     paths: CleanerPaths,
+    /// The reclaimable packages the last scan counted, and when: the WinSxS
+    /// repair's "before". See [`SCAN_COUNT_MAX_AGE`].
+    scan_count: Mutex<Option<(u32, Instant)>>,
+    scan_count_max_age: Duration,
 }
+
+/// How long the WinSxS repair takes the scan's count of reclaimable packages
+/// for its own "before".
+///
+/// The repair counted them again right before the cleanup, a minute or more
+/// of `DISM /AnalyzeComponentStore` for a number the scan had put into the
+/// finding moments earlier (#279). The count changes only when the component
+/// store does. Past this age it is counted again as before: other repairs of
+/// the same run (`DISM /RestoreHealth`, an update Windows installs meanwhile)
+/// change the store, and a window can stay open for days after its scan.
+const SCAN_COUNT_MAX_AGE: Duration = Duration::from_secs(10 * 60);
 
 impl SystemCleanerModule {
     pub fn new(config: ModuleConfig) -> Self {
@@ -1014,7 +1029,24 @@ impl SystemCleanerModule {
             config,
             runner,
             paths,
+            scan_count: Mutex::new(None),
+            scan_count_max_age: SCAN_COUNT_MAX_AGE,
         }
+    }
+
+    /// For tests: how long the scan's count of reclaimable packages stands
+    /// in for the repair's own.
+    pub fn with_scan_count_max_age(mut self, max_age: Duration) -> Self {
+        self.scan_count_max_age = max_age;
+        self
+    }
+
+    /// The scan's count of reclaimable packages, once and only while it is
+    /// young enough. A repair that used it leaves none: the cleanup changes
+    /// the store.
+    fn take_scan_count(&self) -> Option<u32> {
+        let (count, at) = self.scan_count.lock().ok()?.take()?;
+        (at.elapsed() <= self.scan_count_max_age).then_some(count)
     }
 
     /// Measure `dirs` on a blocking thread and return the combined totals.
@@ -1127,7 +1159,8 @@ impl SystemCleanerModule {
     }
 
     /// The WinSxS repair: StartComponentCleanup, with the reclaimable packages
-    /// counted before and after it.
+    /// counted before and after it. "Before" is the scan's count while that
+    /// is fresh (see [`SCAN_COUNT_MAX_AGE`]).
     ///
     /// DISM also counts packages the cleanup never removes, such as the 24H2
     /// checkpoint update (see [`WINSXS_PACKAGES_LEFT_FILE`]). A cleanup that
@@ -1142,7 +1175,16 @@ impl SystemCleanerModule {
         dbg.section("WinSxS component store cleanup").await;
         dbg.hint("DISM refuses to touch the component store without Administrator rights")
             .await;
-        let before = self.count_reclaimable_packages(&dbg).await;
+        let before = match self.take_scan_count() {
+            Some(count) => {
+                dbg.data(format!(
+                    "The scan counted {count} reclaimable package(s); not counted again"
+                ))
+                .await;
+                Some(count)
+            }
+            None => self.count_reclaimable_packages(&dbg).await,
+        };
         // Streamed for its progress bar: the cleanup takes minutes.
         let out = dbg
             .run_streaming(
@@ -1556,6 +1598,9 @@ impl DiagnosticModule for SystemCleanerModule {
             // only while DISM reports the same number; any other number means
             // the store changed since, and the note is dropped.
             let found = analysis.reclaimable_packages;
+            if let Ok(mut scan_count) = self.scan_count.lock() {
+                *scan_count = Some((found, Instant::now()));
+            }
             let left_by_last_cleanup = self.paths.packages_left_by_last_cleanup();
             if left_by_last_cleanup.is_some_and(|left| left != found) {
                 self.paths.remember_packages_left(None);
@@ -1603,9 +1648,8 @@ impl DiagnosticModule for SystemCleanerModule {
                     details_str,
                     "Clean the WinSxS component store via DISM (dism.exe /Online /Cleanup-Image /StartComponentCleanup)",
                     vec![
-                        "Count the reclaimable packages (dism.exe /Online /Cleanup-Image /AnalyzeComponentStore)".to_string(),
                         "Run dism.exe /Online /Cleanup-Image /StartComponentCleanup (may take several minutes)".to_string(),
-                        "Count them again and remember how many the cleanup left".to_string(),
+                        "Count the reclaimable packages again (dism.exe /Online /Cleanup-Image /AnalyzeComponentStore) and remember how many the cleanup left".to_string(),
                     ],
                 ));
             } else if analysis.cleanup_recommended {
@@ -2519,13 +2563,68 @@ The operation completed successfully.";
             .into_iter()
             .filter(|cmd| cmd.contains("dism.exe"))
             .collect();
-        assert_eq!(dism.len(), 4, "scan, count, cleanup, count: {dism:?}");
-        assert!(dism[2].contains("StartComponentCleanup"), "{dism:?}");
+        // The scan's count is the repair's "before": not counted again.
+        assert_eq!(dism.len(), 3, "scan, cleanup, count: {dism:?}");
+        assert!(dism[1].contains("StartComponentCleanup"), "{dism:?}");
 
         assert!(
             winsxs_finding(&td, 2).await.is_none(),
             "what the cleanup leaves is not raised again"
         );
+    }
+
+    /// The scan's count stands in for the repair's only once and only while
+    /// it is fresh: a second repair, and one long after the scan, count for
+    /// themselves, as every repair did before #279.
+    #[tokio::test]
+    async fn a_used_or_old_scan_count_is_counted_again() {
+        let dism_calls = |mock: &MockCommandRunner| {
+            mock.executed()
+                .into_iter()
+                .filter(|cmd| cmd.contains("dism.exe"))
+                .collect::<Vec<_>>()
+        };
+        let mock = || {
+            let mock = MockCommandRunner::new();
+            mock.add_response(
+                "StartComponentCleanup",
+                CmdOutput::ok("The operation completed successfully."),
+            );
+            mock.add_response("AnalyzeComponentStore", store_with_reclaimable(4));
+            mock.add_response_after(
+                "StartComponentCleanup",
+                "AnalyzeComponentStore",
+                store_with_reclaimable(0),
+            );
+            mock
+        };
+
+        // Fresh: used by the first repair, gone for the second.
+        let td = TestDir::new("winsxs_count_used");
+        let runner = mock();
+        let module = sandboxed(&td, Arc::new(runner.clone()));
+        module.scan(None).await.unwrap();
+        match module.repair("sys_clean_winsxs", None).await {
+            Ok(Repaired::Changed(msg)) => assert!(msg.contains("0 reclaimable"), "{msg}"),
+            other => panic!("a cleanup that removed four packages, not {other:?}"),
+        }
+        assert_eq!(dism_calls(&runner).len(), 3, "scan, cleanup, count");
+        module.repair("sys_clean_winsxs", None).await.unwrap();
+        let dism = dism_calls(&runner);
+        assert_eq!(dism.len(), 6, "then count, cleanup, count: {dism:?}");
+        assert!(dism[3].contains("AnalyzeComponentStore"), "{dism:?}");
+
+        // Old: counted again.
+        let td = TestDir::new("winsxs_count_old");
+        let runner = mock();
+        let module =
+            sandboxed(&td, Arc::new(runner.clone())).with_scan_count_max_age(Duration::ZERO);
+        module.scan(None).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        module.repair("sys_clean_winsxs", None).await.unwrap();
+        let dism = dism_calls(&runner);
+        assert_eq!(dism.len(), 4, "scan, count, cleanup, count: {dism:?}");
+        assert!(dism[1].contains("AnalyzeComponentStore"), "{dism:?}");
     }
 
     /// While an installed update waits for a restart, DISM asks whether to
@@ -2555,7 +2654,7 @@ The operation completed successfully.";
             .into_iter()
             .filter(|cmd| cmd.contains("dism.exe"))
             .collect();
-        assert_eq!(dism.len(), 4, "scan, count, cleanup, count: {dism:?}");
+        assert_eq!(dism.len(), 3, "scan, cleanup, count: {dism:?}");
         assert!(
             dism.iter().all(|cmd| cmd.contains(" /NoRestart ")),
             "{dism:?}"
