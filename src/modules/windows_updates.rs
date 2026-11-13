@@ -401,8 +401,24 @@ fn failed_list(updates: &[&FailedUpdate]) -> String {
         .join("\n")
 }
 
+/// Whether an `errorCode` says that nothing is wrong with Windows Update.
+///
+/// `0x80070103`: the driver offered is already installed, or is no better
+/// than the one that is. Windows Update offers it again and again and
+/// fails the same way each time, which is common and harmless. It fell
+/// under "nothing more specific" and got the component reset, which erases
+/// the update history and changes nothing about the driver: the finding
+/// came back with the next two attempts.
+fn needs_no_repair(error_code: &str) -> bool {
+    error_code.trim().eq_ignore_ascii_case("0x80070103")
+}
+
 /// One finding per cause, listing the updates behind it.
 pub fn failed_update_findings(module_id: &str, failed: &[FailedUpdate]) -> Vec<Issue> {
+    let failed: Vec<&FailedUpdate> = failed
+        .iter()
+        .filter(|u| !needs_no_repair(&u.error_code))
+        .collect();
     let mut causes: Vec<FailureCause> = failed
         .iter()
         .map(|u| FailureCause::of(&u.error_code))
@@ -414,6 +430,7 @@ pub fn failed_update_findings(module_id: &str, failed: &[FailedUpdate]) -> Vec<I
         .map(|cause| {
             let updates: Vec<&FailedUpdate> = failed
                 .iter()
+                .copied()
                 .filter(|u| FailureCause::of(&u.error_code) == cause)
                 .collect();
             let title = match updates.as_slice() {
@@ -1606,6 +1623,18 @@ mod tests {
             .collect();
         assert_eq!(left.len(), 2, "{left:?}");
         assert!(!again.exists() && other.exists());
+    }
+
+    /// 0x80070103: the driver offered is installed already, or no better.
+    #[test]
+    fn a_driver_that_is_not_needed_gets_no_reset() {
+        let failed = failing_updates(&parse(&one_update_failing("0x80070103")));
+        assert!(!failed.is_empty());
+        assert!(failed_update_findings("windows_updates", &failed).is_empty());
+        // Any other code without a cause of its own still does.
+        let failed = failing_updates(&parse(&one_update_failing("0x80246007")));
+        let issues = failed_update_findings("windows_updates", &failed);
+        assert_eq!(issues[0].id, UPDATE_RESET);
     }
 
     #[tokio::test]
