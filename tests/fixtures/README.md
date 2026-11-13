@@ -211,6 +211,17 @@ Captured on 2026-11-13 on the same machine (10.0.26300), a read-only command:
 | --- | --- | --- | --- |
 | `powershell_adapters.bin` | The network module's adapter query (`Get-NetAdapter -Physical` with `Get-NetIPInterface` and `Get-NetIPAddress`: `InterfaceGuid`, `Status`, `AdminStatus`, `Dhcp`, the IPv4 addresses, `Name`) | UTF-8 | One wired adapter, `Up` and `Up`, with a DHCP lease; its LAN address replaced with `192.168.1.10`. `Up` and `Enabled` are enum names, not translated. It replaces `powershell_adapters_ipv4.bin` and `powershell_physical_adapters.bin`, the outputs of the two queries this one was until #282. Switching the adapter off needs elevation and cuts the machine off, so the tests **construct** that line: `Disabled`, `Down` and both IPv4 fields empty. Seen for real on the same day: for an interface index no IP interface has, as a switched-off adapter's, the script prints the line with both fields empty and ends with exit code 0. |
 
+Captured in Windows Sandbox (Windows 11 24H2, 26100.9974, German) as SYSTEM on 2026-11-13, for
+#141: W32Time was made to depend on the driver `cdfs`, which Windows ships switched off there
+(`sc config w32time depend= cdfs`), and asked to start. `sc start` failed with 1068.
+
+| File | Command | Encoding | Notes |
+| --- | --- | --- | --- |
+| `sc_qc_driver_disabled.bin` | `sc qc cdfs` | ASCII | A file system driver, `START_TYPE : 4 DISABLED`. Its dependency is a group, `+SCSI CDROM Class`. |
+| `sc_query_driver_disabled.bin` | `sc query cdfs` | ASCII | Not loaded: `STATE : 1 STOPPED`, exit code 1077. The tests replace the state with `4  RUNNING` for a driver that was switched off while loaded; with the driver loaded the service started in the sandbox. |
+| `sc_qc_depends_on_disabled_driver.bin` | `sc qc w32time` | ASCII | `DEPENDENCIES : cdfs`. |
+| `sc_query_depends_on_disabled_driver.bin` | `sc query w32time`, after the failed start | ASCII | `STATE : 1 STOPPED`, `WIN32_EXIT_CODE : 1068 (0x42c)`. Before any start attempt it was 1077. |
+
 ## Files — `files/`
 
 | File | Content |

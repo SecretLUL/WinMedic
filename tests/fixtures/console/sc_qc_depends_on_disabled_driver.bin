@@ -1,0 +1,12 @@
+[SC] QueryServiceConfig ERFOLG
+
+SERVICE_NAME: w32time
+        TYPE               : 20  WIN32_SHARE_PROCESS 
+        START_TYPE         : 3   DEMAND_START
+        ERROR_CONTROL      : 1   NORMAL
+        BINARY_PATH_NAME   : C:\Windows\system32\svchost.exe -k LocalService
+        LOAD_ORDER_GROUP   : 
+        TAG                : 0
+        DISPLAY_NAME       : Windows-Zeitgeber
+        DEPENDENCIES       : cdfs
+        SERVICE_START_NAME : NT AUTHORITY\LocalService

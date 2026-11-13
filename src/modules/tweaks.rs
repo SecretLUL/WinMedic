@@ -15,7 +15,7 @@
 use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::devices::{Remedy, meaning, remedy};
 use crate::modules::page_file::{RamSource, real_ram};
-use crate::modules::service_chain::{self, Chain};
+use crate::modules::service_chain::{self, Chain, DriverOff};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleConfig, ModuleProgress};
 use crate::safety::reg_backup::RegBackupManager;
 use crate::utils::cmd::{CommandRunner, SystemCommandRunner, ps_single_quoted};
@@ -388,6 +388,13 @@ fn core_device(instance_id: &str) -> Option<&'static CoreDevice> {
 
 const DEVICE_ID_PREFIX: &str = "tweak_dev_";
 const CHAIN_ID_PREFIX: &str = "tweak_chain_";
+/// The advice about a driver that is switched off and keeps a service from
+/// starting (#141).
+const DRIVER_OFF_ID_PREFIX: &str = "tweak_driver_off_";
+
+fn driver_off_issue_id(driver: &str) -> String {
+    format!("{DRIVER_OFF_ID_PREFIX}{}", slug(driver))
+}
 
 /// `instance_id` as a part of a finding's id.
 fn slug(instance_id: &str) -> String {
@@ -1551,6 +1558,71 @@ impl TweaksModule {
         .with_advice_only()
     }
 
+    /// The advice for the services that cannot start because the driver
+    /// `chains` end at is switched off.
+    ///
+    /// Advice, not a repair: WinMedic does not know which start type the
+    /// driver had, and Windows ships drivers switched off itself. In Windows
+    /// Sandbox (2026-11-13) the advice was enough: with the driver set to
+    /// start on demand, the service started at once, without a restart.
+    fn driver_off_issue(&self, chains: &[&DriverOff]) -> Issue {
+        let driver = &chains[0].driver;
+        let label = chains[0].driver_label();
+        let head = chains[0].head();
+        let head_name = if head.display_name.is_empty() {
+            &head.name
+        } else {
+            &head.display_name
+        };
+        let sentences: Vec<String> = chains.iter().map(|chain| chain.sentence()).collect();
+        let details: Vec<String> = chains.iter().map(|chain| chain.details()).collect();
+        Issue::new(
+            driver_off_issue_id(driver),
+            self.id(),
+            format!("'{head_name}' cannot start"),
+            "Tweaks & Policies",
+            Severity::Warning,
+            RiskScore::Low,
+            format!(
+                "{} WinMedic does not know which start type this driver had, so it changes nothing.",
+                sentences.join(" ")
+            ),
+            format!("Driver: {label}\nSTART_TYPE: 4 (switched off)\n{}", details.join("\n")),
+            format!("Give the driver '{label}' its start type back, then start the service again"),
+            vec![
+                format!(
+                    "In a command prompt run as administrator: sc config {driver} start= demand (on demand; use the start type the driver had if you know it)"
+                ),
+                format!("Start '{head_name}' again, or restart Windows"),
+            ],
+        )
+        .with_advice_only()
+    }
+
+    /// One advice finding per switched-off driver, however many services
+    /// wait for it.
+    fn driver_off_findings(&self, drivers_off: &[DriverOff]) -> Vec<Issue> {
+        let mut drivers: Vec<&str> = Vec::new();
+        for chain in drivers_off {
+            if !drivers
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(&chain.driver))
+            {
+                drivers.push(&chain.driver);
+            }
+        }
+        drivers
+            .into_iter()
+            .map(|driver| {
+                let chains: Vec<&DriverOff> = drivers_off
+                    .iter()
+                    .filter(|chain| chain.driver.eq_ignore_ascii_case(driver))
+                    .collect();
+                self.driver_off_issue(&chains)
+            })
+            .collect()
+    }
+
     /// The findings about Windows system devices and the services that
     /// cannot start because of a device: one finding per device, never one
     /// for each, so no device is repaired twice.
@@ -1918,12 +1990,12 @@ impl DiagnosticModule for TweaksModule {
                 Self::send_progress(
                     &progress_tx,
                     43,
-                    "Following stopped services to their devices...",
+                    "Following stopped services to their devices and drivers...",
                     Some("sc query, sc qc: services that stopped with an error and what they depend on"),
                 )
                 .await;
-                let chains = match service_chain::failing_chains(&*self.runner, &devices).await {
-                    Ok(chains) => chains,
+                let failing = match service_chain::failing(&*self.runner, &devices).await {
+                    Ok(failing) => failing,
                     Err(e) => {
                         Self::send_progress(
                             &progress_tx,
@@ -1932,22 +2004,24 @@ impl DiagnosticModule for TweaksModule {
                             Some(&e),
                         )
                         .await;
-                        Vec::new()
+                        service_chain::Failing::default()
                     }
                 };
-                let found = self.device_findings(&devices, &chains);
+                let found = self.device_findings(&devices, &failing.chains);
                 Self::send_progress(
                     &progress_tx,
                     45,
                     "Windows system devices checked",
                     Some(&format!(
-                        "{} finding(s) about devices, {} service chain(s) to a device with a problem.",
+                        "{} finding(s) about devices, {} service chain(s) to a device with a problem, {} to a driver that is switched off.",
                         found.len(),
-                        chains.len()
+                        failing.chains.len(),
+                        failing.drivers_off.len()
                     )),
                 )
                 .await;
                 issues.extend(found);
+                issues.extend(self.driver_off_findings(&failing.drivers_off));
             }
             Err(e) => {
                 Self::send_progress(&progress_tx, 45, "System devices not checked", Some(&e)).await;
@@ -4047,6 +4121,49 @@ mod tests {
         );
         assert!(hv.is_selected && !hv.advice_only);
         assert!(!issues.iter().any(|i| i.id.starts_with(CHAIN_ID_PREFIX)));
+    }
+
+    /// #141, the state captured in Windows Sandbox: W32Time cannot start
+    /// because the driver cdfs is switched off. No device reports a problem,
+    /// so no chain ended there and WinMedic said nothing.
+    #[tokio::test]
+    async fn a_service_waiting_for_a_switched_off_driver_is_advice() {
+        let issues = scan_chains(
+            crate::modules::service_chain::test_support::waits_for_a_switched_off_driver(),
+            Vec::new(),
+        )
+        .await;
+        let issue = issues
+            .iter()
+            .find(|i| i.id == "tweak_driver_off_cdfs")
+            .unwrap_or_else(|| panic!("{issues:?}"));
+        assert_eq!(issue.title, "'Windows-Zeitgeber' cannot start");
+        assert!(issue.advice_only && !issue.is_selected && !issue.will_repair());
+        assert_eq!(issue.severity, Severity::Warning);
+        assert_eq!(
+            issue.description,
+            "Windows-Zeitgeber (W32Time) cannot start because the driver 'CD/DVD File System Reader (cdfs)' is switched off. WinMedic does not know which start type this driver had, so it changes nothing."
+        );
+        assert_eq!(
+            issue.technical_details,
+            "Driver: CD/DVD File System Reader (cdfs)\nSTART_TYPE: 4 (switched off)\nService chain: W32Time (exit code 1068) -> driver cdfs (START_TYPE 4, switched off; not loaded)"
+        );
+        assert!(
+            issue.fix_steps[0].contains("sc config cdfs start= demand"),
+            "{:?}",
+            issue.fix_steps
+        );
+        assert_eq!(
+            issue.fix_steps[1],
+            "Start 'Windows-Zeitgeber' again, or restart Windows"
+        );
+        assert_eq!(
+            issues
+                .iter()
+                .filter(|i| i.id.starts_with(DRIVER_OFF_ID_PREFIX))
+                .count(),
+            1
+        );
     }
 
     /// The same services once the device works: no chain, no finding.
