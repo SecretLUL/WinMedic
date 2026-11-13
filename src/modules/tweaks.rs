@@ -678,6 +678,18 @@ pub fn defender_policy_hit(defender: &[RegKeyValues]) -> Option<PolicyHit> {
 /// answer" and "no antivirus" looked the same.
 const DEFENDER_STATUS_SCRIPT: &str = "try { 'MP|{0}' -f (Get-MpComputerStatus -ErrorAction Stop).RealTimeProtectionEnabled } catch { 'MP|FAILED|' + $_.FullyQualifiedErrorId }; try { Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction Stop | ForEach-Object { 'AV|{0}|{1}|{2}' -f $_.productState, $_.instanceGuid, $_.displayName } } catch { 'AV|FAILED|' + $_.FullyQualifiedErrorId }";
 
+/// Whether `dsregcmd /status` says the device is joined to Entra ID
+/// (`AzureAdJoined : YES`) or to an on-premises registration service
+/// (`EnterpriseJoined : YES`). The tool prints English on every Windows.
+/// `WorkplaceJoined`, a work account added to a private PC, is no join.
+pub fn parse_entra_joined(dsregcmd_status: &str) -> bool {
+    dsregcmd_status.lines().any(|line| {
+        line.split_once(':').is_some_and(|(name, value)| {
+            matches!(name.trim(), "AzureAdJoined" | "EnterpriseJoined") && value.trim() == "YES"
+        })
+    })
+}
+
 /// Microsoft Defender's `instanceGuid` in Windows Security.
 const DEFENDER_GUID: &str = "{D68DDC3A-831F-4fae-9E44-DA132C1ACF46}";
 
@@ -1022,6 +1034,21 @@ impl TweaksModule {
             "False" => Some(false),
             _ => None,
         }
+    }
+
+    /// Whether the PC is joined to Entra ID (Azure AD), whose administrators
+    /// set policies through Intune as a domain's do through group policy.
+    ///
+    /// `Win32_ComputerSystem.PartOfDomain` is False on a device joined to
+    /// Entra ID only. Its update policies were reported as tweak damage (a
+    /// WSUS server: critical), and a repair deleted values the management
+    /// puts back. `false` when `dsregcmd` did not say: the policies are then
+    /// judged as before.
+    async fn entra_joined(&self) -> bool {
+        self.runner
+            .run("dsregcmd.exe", &["/status"], Duration::from_secs(15))
+            .await
+            .is_ok_and(|out| parse_entra_joined(&out.stdout))
     }
 
     async fn current_policy_hits(&self) -> Result<Vec<PolicyHit>, String> {
@@ -1872,8 +1899,11 @@ impl DiagnosticModule for TweaksModule {
         // policies are its administrators' to set, and a PC whose membership
         // could not be read may be one.
         let membership = self.part_of_domain().await;
-        if membership != Some(false) {
-            let why = if membership == Some(true) {
+        let entra = membership == Some(false) && self.entra_joined().await;
+        if membership != Some(false) || entra {
+            let why = if entra {
+                "This PC is joined to Entra ID, whose administrators set these policies on purpose."
+            } else if membership == Some(true) {
                 "This PC is joined to a domain, whose administrators set these policies on purpose."
             } else {
                 "WMI did not say whether this PC is joined to a domain, so its policies were not judged."
@@ -2798,8 +2828,47 @@ mod tests {
     /// Store policy; `domain` is what WMI says about membership, `None`
     /// when it does not answer.
     async fn wsus_scan(name: &str, domain: Option<&str>) -> Vec<Issue> {
+        wsus_scan_with(name, domain, None).await
+    }
+
+    // Captured on a German Windows 11 that is joined to nothing; see
+    // tests/fixtures/README.md.
+    const DSREGCMD_STATUS: &[u8] =
+        include_bytes!("../../tests/fixtures/console/dsregcmd_status.bin");
+
+    /// A device joined to Entra ID only is not "PartOfDomain". Its policies
+    /// are its administrators' all the same. Constructed from the capture:
+    /// no joined PC was at hand.
+    #[tokio::test]
+    async fn policies_of_an_entra_joined_pc_are_left_alone() {
+        let not_joined = decode_output(DSREGCMD_STATUS);
+        assert!(!parse_entra_joined(&not_joined));
+        let joined = not_joined.replace("AzureAdJoined : NO", "AzureAdJoined : YES");
+        assert!(parse_entra_joined(&joined));
+        // A work account on a private PC joins nothing.
+        assert!(!parse_entra_joined(
+            &not_joined.replace("WorkplaceJoined : NO", "WorkplaceJoined : YES")
+        ));
+
+        let issues = wsus_scan_with("entra_no", Some("False"), Some(not_joined)).await;
+        assert!(
+            issues.iter().any(|i| i.id == "tweak_policy_wsus"),
+            "{issues:?}"
+        );
+        let issues = wsus_scan_with("entra_yes", Some("False"), Some(joined)).await;
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    async fn wsus_scan_with(
+        name: &str,
+        domain: Option<&str>,
+        dsregcmd: Option<String>,
+    ) -> Vec<Issue> {
         let dir = sandbox(name);
         let mock = MockCommandRunner::new();
+        if let Some(status) = dsregcmd {
+            mock.add_response("dsregcmd.exe", CmdOutput::ok(status));
+        }
         if let Some(answer) = domain {
             mock.add_response("PartOfDomain", CmdOutput::ok(format!("{answer}\r\n")));
         }
