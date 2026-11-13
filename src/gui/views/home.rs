@@ -422,6 +422,30 @@ enum LogKind {
 ///
 /// Both are raw command-level detail. The header and the findings already say
 /// what happened; the log is for when the user wants to know how.
+/// How high the log opens, and the range it can be dragged to, where the
+/// window has the room.
+const LOG_DEFAULT_HEIGHT: f32 = 220.0;
+const LOG_HEIGHTS: std::ops::RangeInclusive<f32> = 120.0..=600.0;
+/// What the page above the open log keeps: the filters, the line that counts
+/// the findings, and three of them.
+const BODY_MIN_HEIGHT: f32 = 180.0;
+/// The share of the room the log gets where the page cannot keep
+/// [`BODY_MIN_HEIGHT`] next to a log worth reading.
+const LOG_SHARE_WHEN_TIGHT: f32 = 0.4;
+
+/// The smallest and the largest height of the open log where the page has
+/// `room` points left under its header.
+///
+/// The panel took its 220 points whatever was left. On a 1920 x 1080 screen at
+/// 175 % the window is 546 points high and the header takes half: the list got
+/// one row and a half, and the log's buttons were drawn over the second (#294).
+fn log_heights(room: f32) -> (f32, f32) {
+    let largest = (room - BODY_MIN_HEIGHT)
+        .max(room * LOG_SHARE_WHEN_TIGHT)
+        .clamp(0.0, *LOG_HEIGHTS.end());
+    (LOG_HEIGHTS.start().min(largest), largest)
+}
+
 fn log_panel(ui: &mut egui::Ui, app: &mut App) {
     let open_id = egui::Id::unique("log_panel_open");
     let kind_id = egui::Id::unique("log_panel_kind");
@@ -451,10 +475,11 @@ fn log_panel(ui: &mut egui::Ui, app: &mut App) {
         ..Default::default()
     }));
     let panel = if open {
+        let (smallest, largest) = log_heights(ui.available_height());
         panel
             .resizable(true)
-            .default_size(220.0)
-            .size_range(120.0..=600.0)
+            .default_size(LOG_DEFAULT_HEIGHT)
+            .size_range(smallest..=largest)
     } else {
         panel.resizable(false)
     };
@@ -530,6 +555,10 @@ fn log_view(
                 .id_salt(id)
                 .stick_to_bottom(true)
                 .auto_shrink([false, false])
+                // Two lines, not egui's 64 points: in a low window the log
+                // gets less than that, and its frame was cut off at the
+                // bottom instead of ending above the status bar.
+                .min_scrolled_height(2.0 * row_height)
                 .show_rows(ui, row_height, lines.len(), |ui, rows| {
                     for line in lines.range(rows) {
                         let mut text = RichText::new(line).monospace();
@@ -549,5 +578,28 @@ pub fn format_duration(duration: Duration) -> String {
         format!("{}m {:02}s", seconds / 60, seconds % 60)
     } else {
         format!("{seconds}s")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The log keeps its own range where the window has the room, gives the
+    /// page its 180 points where it has not, and where there is not even room
+    /// for both it takes two fifths.
+    #[test]
+    fn the_log_s_height_follows_the_room_the_page_has() {
+        // A large window: the range as it was.
+        assert_eq!(log_heights(2000.0), (120.0, 600.0));
+        // The smallest window, 960 x 640: the default 220 still fits.
+        let (smallest, largest) = log_heights(435.0);
+        assert_eq!(smallest, 120.0);
+        assert!(largest >= LOG_DEFAULT_HEIGHT, "{largest}");
+        // 1920 x 1080 at 175 %: the page keeps its 180 points.
+        assert_eq!(log_heights(341.0), (120.0, 161.0));
+        // Too little for both: two fifths, and the lower end follows.
+        assert_eq!(log_heights(250.0), (100.0, 100.0));
+        assert_eq!(log_heights(0.0), (0.0, 0.0));
     }
 }

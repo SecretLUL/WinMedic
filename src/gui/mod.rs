@@ -855,6 +855,58 @@ mod tests {
         );
     }
 
+    /// #294: on a 1920 x 1080 screen at 175 % the window is 1097 x 546
+    /// points. The header takes half of that, and the open log took its 220
+    /// points of the rest: its buttons were drawn over the second finding.
+    /// The log now leaves the list room, at every size the window can have.
+    #[test]
+    fn the_open_log_leaves_the_findings_their_room() {
+        let smallest = (window::MIN_SIZE.x, window::MIN_SIZE.y);
+        // The last one is the log opened on a large screen, at its full 220
+        // points, in a window that then gets the small screen's size: what
+        // the saved window state brings to a smaller screen.
+        let opened_at = [
+            (smallest, smallest),
+            ((960.0, 527.0), (960.0, 527.0)),
+            ((1097.0, 546.0), (1097.0, 546.0)),
+            ((1400.0, 900.0), (1400.0, 900.0)),
+            ((1400.0, 900.0), (1097.0, 546.0)),
+        ];
+        for (opened, size) in opened_at {
+            let mut harness = sized_window(scanned_app(), opened);
+            harness.get_by_label("Show log").click();
+            harness.run_steps(4);
+            harness.set_size(egui::vec2(size.0, size.1));
+            harness.run_steps(4);
+
+            let log = harness.get_by_label("Hide log").rect();
+            // The second finding: the first is the selected one, and its
+            // title is in the detail pane as well.
+            let rows: Vec<_> = harness
+                .query_all_by_label_contains("Temp bloat files")
+                .map(|row| row.rect())
+                .collect();
+            assert!(!rows.is_empty(), "{size:?}: the second finding is gone");
+            for row in rows {
+                assert!(
+                    row.bottom() <= log.top(),
+                    "{size:?}: the log (from {}) covers the second finding (to {})",
+                    log.top(),
+                    row.bottom()
+                );
+            }
+            // And the log is still a log: its text is drawn below its buttons,
+            // inside the window.
+            let line = harness
+                .get_by_label_contains("[X] Failed: access denied.")
+                .rect();
+            assert!(
+                line.top() >= log.bottom() && line.bottom() <= size.1,
+                "{size:?}: the log's text at {line:?}, its buttons at {log:?}"
+            );
+        }
+    }
+
     /// #155: the page was drawn before the repair ran. Nothing was picked, so
     /// the log still opens on the run that happened last.
     #[test]
