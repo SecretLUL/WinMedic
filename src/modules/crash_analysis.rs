@@ -235,9 +235,8 @@ impl CrashAnalysisModule {
                     .unwrap_or("unknown.dmp")
                     .to_string();
 
-                let bytes = match std::fs::read(&path) {
-                    Ok(bytes) => bytes,
-                    Err(_) => continue,
+                let Ok(bytes) = read_dump_header(&path) else {
+                    continue;
                 };
                 let Some(info) = parse_minidump_header(&bytes) else {
                     continue;
@@ -817,6 +816,23 @@ fn dump_dir_dmp_files(dir: &Path) -> Vec<PathBuf> {
         .collect();
     files.sort();
     files
+}
+
+/// How much of a dump is read. [`parse_minidump_header`] looks at its first
+/// 96 bytes.
+const DUMP_HEADER_BYTES: u64 = 4096;
+
+/// The start of the dump at `path`, which holds its header.
+///
+/// Every dump of the last 30 days was read whole for it (#282): a minidump
+/// is a few megabytes, and a kernel dump copied into the folder far more.
+fn read_dump_header(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut header = Vec::new();
+    std::fs::File::open(path)?
+        .take(DUMP_HEADER_BYTES)
+        .read_to_end(&mut header)?;
+    Ok(header)
 }
 
 /// Parses the kernel dump header (`PAGEDUMP` / `PAGEDU64` signatures) to
@@ -1412,6 +1428,30 @@ mod tests {
         let info = parse_minidump_header(&bytes).expect("header should parse");
         assert_eq!(info.bugcheck_code, 0x1A);
         assert_eq!(info.bugcheck_params[0], 0xDEADBEEF);
+    }
+
+    /// Only the start of a dump is read, and it is enough: the header of a
+    /// dump of 3 MB parses as the whole file does.
+    #[test]
+    fn only_the_start_of_a_dump_is_read() {
+        let dir = temp_dump_dir("header_only");
+        let dump = synth_dump64(0x116, &vec![0xAB; 3 * 1024 * 1024]);
+        write_dump(&dir, "big.dmp", &dump);
+
+        let header = read_dump_header(&dir.join("big.dmp")).unwrap();
+        assert_eq!(header.len() as u64, DUMP_HEADER_BYTES);
+        assert_eq!(parse_minidump_header(&header), parse_minidump_header(&dump));
+        assert_eq!(parse_minidump_header(&header).unwrap().bugcheck_code, 0x116);
+
+        // A dump shorter than that is read as far as it goes.
+        write_dump(&dir, "small.dmp", &synth_dump64(0x9F, b""));
+        assert_eq!(
+            read_dump_header(&dir.join("small.dmp")).unwrap().len(),
+            0x62
+        );
+        assert!(read_dump_header(&dir.join("missing.dmp")).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
