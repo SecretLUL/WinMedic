@@ -11,7 +11,7 @@
 use super::{easy, findings};
 use crate::app::App;
 use crate::engine::issue::{Issue, Severity};
-use crate::gui::theme;
+use crate::gui::{motion, theme};
 use crate::modules::ModuleStatus;
 use crate::modules::devices::PRINT_QUEUE_STUCK;
 use eframe::egui::{self, RichText};
@@ -77,6 +77,28 @@ pub(super) fn deletes_ticked_files(app: &App) -> bool {
 
 pub(super) fn has_scanned(app: &App) -> bool {
     app.scan_duration.is_some() || app.last_scan_timestamp.is_some() || !app.issues.is_empty()
+}
+
+/// What the page has to say, in either mode: each is a page of its own to
+/// the eye, and comes in as one ([`motion::entrance`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Stage {
+    Unscanned,
+    Scanning,
+    Repairing,
+    Result,
+}
+
+pub(crate) fn stage(app: &App) -> Stage {
+    if app.is_scanning {
+        Stage::Scanning
+    } else if app.is_fixing {
+        Stage::Repairing
+    } else if !has_scanned(app) {
+        Stage::Unscanned
+    } else {
+        Stage::Result
+    }
 }
 
 /// The one button per state that moves the user forward.
@@ -209,8 +231,16 @@ fn headline(ui: &mut egui::Ui, text: &str, color: Option<egui::Color32>) {
     ui.label(text);
 }
 
+/// What the bar of a scan or a repair run shows of `fraction`: it runs there,
+/// where the value jumps. One bar in both modes, so it goes on where it was
+/// when the mode is switched.
+pub(super) fn followed(ui: &egui::Ui, fraction: f32) -> f32 {
+    motion::follow(ui.ctx(), egui::Id::unique("winmedic_progress"), fraction)
+}
+
 fn progress(ui: &mut egui::Ui, fraction: f32, fill: Option<egui::Color32>) {
     let fill = fill.unwrap_or(theme::palette(ui).accent);
+    let fraction = followed(ui, fraction);
     ui.add(
         egui::ProgressBar::new(fraction)
             .desired_height(12.0)
@@ -333,8 +363,13 @@ fn checks(ui: &mut egui::Ui, app: &mut App) {
                             } else {
                                 palette.accent
                             };
+                            let fraction = motion::follow(
+                                ui.ctx(),
+                                egui::Id::unique(("winmedic_check_progress", &module.id)),
+                                module.percent as f32 / 100.0,
+                            );
                             ui.add(
-                                egui::ProgressBar::new(module.percent as f32 / 100.0)
+                                egui::ProgressBar::new(fraction)
                                     .desired_width(120.0)
                                     .desired_height(10.0)
                                     .corner_radius(2)
@@ -464,33 +499,32 @@ fn log_panel(ui: &mut egui::Ui, app: &mut App) {
 
     // Two ids, because a panel remembers its height: the folded bar is one
     // button tall, and the open log must not start out that small.
-    let panel = egui::Panel::bottom(if open {
-        "log_panel_open"
-    } else {
-        "log_panel_folded"
-    })
-    .show_separator_line(true)
-    .frame(egui::Frame::NONE.inner_margin(egui::Margin {
-        top: 6,
-        ..Default::default()
-    }));
-    let panel = if open {
-        let (smallest, largest) = log_heights(ui.available_height());
-        panel
-            .resizable(true)
-            .default_size(LOG_DEFAULT_HEIGHT)
-            .size_range(smallest..=largest)
-    } else {
-        panel.resizable(false)
+    let panel = |id: &'static str| {
+        egui::Panel::bottom(id)
+            .show_separator_line(true)
+            .frame(egui::Frame::NONE.inner_margin(egui::Margin {
+                top: 6,
+                ..Default::default()
+            }))
     };
+    let (smallest, largest) = log_heights(ui.available_height());
+    let folded = panel("log_panel_folded").resizable(false);
+    let unfolded = panel("log_panel_open")
+        .resizable(true)
+        .default_size(LOG_DEFAULT_HEIGHT)
+        .size_range(smallest..=largest);
 
-    panel.show(ui, |ui| {
+    // The log slides open and shut between the two. `open` is what the panel
+    // is on its way to, `shown` what it draws on the way.
+    let mut toggle = false;
+    egui::Panel::show_switched(ui, &mut open, folded, unfolded, |ui, shown| {
+        let open = shown;
         ui.horizontal(|ui| {
             if ui
                 .button(if open { "Hide log" } else { "Show log" })
                 .clicked()
             {
-                open = !open;
+                toggle = true;
             }
             if open {
                 ui.separator();
@@ -531,7 +565,7 @@ fn log_panel(ui: &mut egui::Ui, app: &mut App) {
         }
     });
 
-    ui.data_mut(|d| d.insert_persisted(open_id, open));
+    ui.data_mut(|d| d.insert_persisted(open_id, open != toggle));
 }
 
 /// A monospace log that keeps up with a 2000-line buffer.

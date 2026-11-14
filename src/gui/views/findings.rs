@@ -7,7 +7,7 @@
 use crate::app::App;
 use crate::app::state::waits_for_restart;
 use crate::engine::issue::{Issue, RiskScore, Severity};
-use crate::gui::theme;
+use crate::gui::{motion, theme};
 use eframe::egui::{self, RichText};
 
 pub fn show(ui: &mut egui::Ui, app: &mut App) {
@@ -194,19 +194,20 @@ fn list(ui: &mut egui::Ui, app: &mut App, indices: &[usize]) {
 /// the dark theme's selection. A tint of the selection colour over the panel
 /// keeps every status colour and the muted text at 4.5:1 or more in both
 /// themes, which `the_status_words_stay_legible_on_every_row` checks.
-fn row_fill(visuals: &egui::Visuals, highlighted: bool, hovered: bool) -> egui::Color32 {
-    let tint = |share| {
-        visuals
-            .panel_fill
-            .lerp_to_gamma(visuals.selection.bg_fill, share)
-    };
-    if highlighted {
-        tint(0.2)
-    } else if hovered {
-        tint(0.1)
-    } else {
-        egui::Color32::TRANSPARENT
+///
+/// `highlighted` and `hovered` are how far the row is each, from 0 to 1: the
+/// tint comes and goes, and every tint on the way lies between two that are
+/// legible.
+fn row_fill(visuals: &egui::Visuals, highlighted: f32, hovered: f32) -> egui::Color32 {
+    const HIGHLIGHTED: f32 = 0.2;
+    const HOVERED: f32 = 0.1;
+    let share = egui::lerp(HOVERED * hovered..=HIGHLIGHTED, highlighted);
+    if share <= 0.0 {
+        return egui::Color32::TRANSPARENT;
     }
+    visuals
+        .panel_fill
+        .lerp_to_gamma(visuals.selection.bg_fill, share)
 }
 
 fn row(ui: &mut egui::Ui, app: &mut App, issue_index: usize, highlighted: bool, position: usize) {
@@ -227,8 +228,13 @@ fn row(ui: &mut egui::Ui, app: &mut App, issue_index: usize, highlighted: bool, 
             // label sits on top of the row that contains it. A finding's title
             // is a list entry rather than prose, so the row keeps the click.
             ui.style_mut().interaction.selectable_labels = false;
+            // The tint comes and goes under the pointer and with the arrow
+            // keys, where it used to switch.
             let hovered = ui.response().hovered();
-            let fill = row_fill(ui.visuals(), highlighted, hovered);
+            let (ctx, id) = (ui.ctx(), ui.scope_id());
+            let hovered = motion::toggled(ctx, id.with("hovered"), hovered, motion::FAST);
+            let marked = motion::toggled(ctx, id.with("marked"), highlighted, motion::NORMAL);
+            let fill = row_fill(ui.visuals(), marked, hovered);
             let marker = ui.visuals().selection.stroke.color;
             let palette = theme::palette(ui);
 
@@ -310,12 +316,18 @@ fn row(ui: &mut egui::Ui, app: &mut App, issue_index: usize, highlighted: bool, 
                     .inner
                 });
             // The row the arrow keys are on, marked by a bar in the selection's
-            // text colour at its left edge as well as by its tint.
+            // text colour at its left edge as well as by its tint. The bar
+            // grows from its middle, as the one of a Windows 11 list does.
+            let rect = shown.response.rect;
             if highlighted {
-                let rect = shown.response.rect;
                 theme::keep_in_view(ui, "findings", (0, position), rect);
+            }
+            if marked > 0.0 {
                 ui.painter().rect_filled(
-                    egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height())),
+                    egui::Rect::from_center_size(
+                        egui::pos2(rect.left() + 1.5, rect.center().y),
+                        egui::vec2(3.0, rect.height() * marked),
+                    ),
                     1,
                     marker,
                 );
@@ -466,7 +478,7 @@ mod tests {
                 ("title", visuals.text_color()),
             ];
             for (highlighted, hovered) in [(true, false), (false, true), (false, false)] {
-                let fill = super::row_fill(&visuals, highlighted, hovered);
+                let fill = super::row_fill(&visuals, f32::from(highlighted), f32::from(hovered));
                 let background = if fill == egui::Color32::TRANSPARENT {
                     visuals.panel_fill
                 } else {
