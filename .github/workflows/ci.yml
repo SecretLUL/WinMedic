@@ -41,10 +41,56 @@ permissions:
   contents: read
 
 jobs:
+  # Whether the pull request carries the `documentation` label, asked of
+  # GitHub when the run starts. The jobs below wait for the answer.
+  #
+  # They read `github.event.pull_request.labels` before, which is the pull
+  # request as it was when the event was raised. `gh pr create --label` opens
+  # the pull request and adds the label a second later, so whether `opened`
+  # carried it was a race: #240 and #286 skipped the build and the tests, #299
+  # ran them all, labelled the same way (#300).
+  #
+  # A question that fails leaves the output empty, and the jobs below run.
+  labels:
+    name: Documentation Label
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      documentation: ${{ steps.ask.outputs.documentation }}
+    steps:
+      - name: Ask GitHub for the labels
+        id: ask
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          # labels.yml lets no pull request through without a label, so none
+          # at all means it has not arrived yet: look again, for ten seconds.
+          for attempt in 1 2 3; do
+            labels=$(gh api "repos/$REPO/pulls/$PR" --jq '[.labels[].name] | join(",")')
+            if [ -n "$labels" ]; then
+              break
+            fi
+            if [ "$attempt" != 3 ]; then
+              sleep 5
+            fi
+          done
+          echo "Labels of #$PR: ${labels:-none}"
+          case ",$labels," in
+            *,documentation,*) echo "documentation=true" >> "$GITHUB_OUTPUT" ;;
+          esac
+
   # A pull request labelled `documentation` builds and tests nothing: the jobs
   # below are skipped, and a skipped job satisfies a required check, the way
   # the release build's push-only condition always has. labels.yml fails that
   # label on a pull request that changes anything but documentation.
+  #
+  # `!cancelled()` lets them run when the job above failed: without a status
+  # function a job is skipped as soon as one it needs did not succeed, and a
+  # skipped job would then pass for code nothing had built.
   #
   # rustfmt, clippy and the test suite share one runner. They do not share a
   # compile — clippy caches under its own driver — but they do share the
@@ -54,7 +100,8 @@ jobs:
   test:
     name: Lints & Test Suite
     runs-on: windows-latest
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'documentation') }}
+    needs: labels
+    if: ${{ !cancelled() && needs.labels.outputs.documentation != 'true' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -96,7 +143,8 @@ jobs:
   smoke:
     name: Smoke-test a real scan
     runs-on: windows-latest
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'documentation') }}
+    needs: labels
+    if: ${{ !cancelled() && needs.labels.outputs.documentation != 'true' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -149,7 +197,8 @@ jobs:
   msrv:
     name: Minimum Supported Rust Version
     runs-on: windows-latest
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'documentation') }}
+    needs: labels
+    if: ${{ !cancelled() && needs.labels.outputs.documentation != 'true' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -190,7 +239,8 @@ jobs:
   audit:
     name: Dependency Audit
     runs-on: ubuntu-latest
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'documentation') }}
+    needs: labels
+    if: ${{ !cancelled() && needs.labels.outputs.documentation != 'true' }}
     steps:
       - uses: actions/checkout@v7
 
