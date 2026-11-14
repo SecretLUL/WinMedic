@@ -7,27 +7,60 @@
 //! exactly the same order for the keyboard.
 
 use crate::app::{App, ConfirmRequest};
-use crate::gui::theme;
+use crate::gui::{motion, theme};
 use eframe::egui::{self, RichText};
 
 pub fn show(ctx: &egui::Context, app: &mut App) {
-    if app.pending_confirm.is_some() {
-        confirm(ctx, app);
+    let overlay = if app.pending_confirm.is_some() {
+        Some(Overlay::Confirm)
     } else if app.crash_report.is_some() {
-        crash_report(ctx, app);
+        Some(Overlay::CrashReport)
     } else if app.setting_input.is_some() {
-        setting_input(ctx, app);
+        Some(Overlay::SettingInput)
     } else if app.show_help {
-        help(ctx, app);
+        Some(Overlay::Help)
+    } else {
+        None
+    };
+    // Asked in every frame, with or without an overlay, so that the next one
+    // to open is known as a change. `arrived` is how far it has opened.
+    let arrived = motion::since_change(
+        ctx,
+        egui::Id::unique("winmedic_overlay"),
+        egui::Id::unique(overlay),
+        motion::NORMAL,
+    );
+    match overlay {
+        Some(Overlay::Confirm) => confirm(ctx, app, arrived),
+        Some(Overlay::CrashReport) => crash_report(ctx, app, arrived),
+        Some(Overlay::SettingInput) => setting_input(ctx, app, arrived),
+        Some(Overlay::Help) => help(ctx, app, arrived),
+        None => {}
     }
 }
 
-/// The frame every overlay shares: modal, centred, not resizable.
-fn modal_window(title: &str) -> egui::Modal {
-    egui::Modal::new(egui::Id::unique(title))
+#[derive(Debug, Clone, Copy, Hash)]
+enum Overlay {
+    Confirm,
+    CrashReport,
+    SettingInput,
+    Help,
 }
 
-fn confirm(ctx: &egui::Context, app: &mut App) {
+/// The frame every overlay shares: modal, centred, not resizable.
+///
+/// It opens the way a Windows 11 dialog does: egui fades it in, and it
+/// settles from a little larger into its size as `arrived` goes to 1.
+fn modal_window(ctx: &egui::Context, title: &str, arrived: f32) -> egui::Modal {
+    let id = egui::Id::unique(title);
+    ctx.set_transform_layer(
+        egui::LayerId::new(egui::Order::Foreground, id),
+        motion::settling(ctx, arrived),
+    );
+    egui::Modal::new(id)
+}
+
+fn confirm(ctx: &egui::Context, app: &mut App, arrived: f32) {
     let Some(request) = app.pending_confirm.as_ref() else {
         return;
     };
@@ -45,7 +78,7 @@ fn confirm(ctx: &egui::Context, app: &mut App) {
     let mut confirmed = false;
     let mut dismissed = false;
 
-    modal_window(title).show(ctx, |ui| {
+    modal_window(ctx, title, arrived).show(ctx, |ui| {
         ui.set_max_width(560.0);
         ui.label(theme::heading(ui, title, 15.0));
         ui.add_space(8.0);
@@ -86,7 +119,7 @@ fn confirm(ctx: &egui::Context, app: &mut App) {
 }
 
 /// What a crash report will say, shown before anything leaves the PC (#236).
-fn crash_report(ctx: &egui::Context, app: &mut App) {
+fn crash_report(ctx: &egui::Context, app: &mut App, arrived: f32) {
     let Some(report) = app.crash_report.as_ref() else {
         return;
     };
@@ -97,7 +130,7 @@ fn crash_report(ctx: &egui::Context, app: &mut App) {
     let mut save = false;
     let mut close = false;
 
-    modal_window("Send a crash report").show(ctx, |ui| {
+    modal_window(ctx, "Send a crash report", arrived).show(ctx, |ui| {
         ui.set_max_width(640.0);
         ui.label(theme::heading(ui, "Send a crash report", 15.0));
         ui.add_space(8.0);
@@ -149,7 +182,7 @@ fn crash_report(ctx: &egui::Context, app: &mut App) {
     }
 }
 
-fn setting_input(ctx: &egui::Context, app: &mut App) {
+fn setting_input(ctx: &egui::Context, app: &mut App, arrived: f32) {
     let mut submitted = false;
     let mut cancelled = false;
 
@@ -164,7 +197,7 @@ fn setting_input(ctx: &egui::Context, app: &mut App) {
     let max = input.max_value;
     let error = input.error_msg.clone();
 
-    modal_window("Edit setting").show(ctx, |ui| {
+    modal_window(ctx, "Edit setting", arrived).show(ctx, |ui| {
         ui.set_max_width(420.0);
         ui.label(theme::heading(ui, &title, 15.0));
         ui.label(theme::muted(format!("Allowed: {min}–{max} {unit}")));
@@ -211,10 +244,10 @@ fn setting_input(ctx: &egui::Context, app: &mut App) {
     }
 }
 
-fn help(ctx: &egui::Context, app: &mut App) {
+fn help(ctx: &egui::Context, app: &mut App, arrived: f32) {
     let mut close = false;
 
-    modal_window("Keyboard shortcuts").show(ctx, |ui| {
+    modal_window(ctx, "Keyboard shortcuts", arrived).show(ctx, |ui| {
         ui.set_max_width(520.0);
         ui.label(theme::heading(ui, "Keyboard shortcuts", 15.0));
         ui.label(theme::muted(

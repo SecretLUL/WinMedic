@@ -9,6 +9,7 @@
 //! decoration.
 
 use crate::engine::issue::Severity;
+use crate::gui::motion;
 use eframe::egui::{self, Color32, RichText, Stroke};
 use std::sync::{Arc, Mutex};
 
@@ -556,6 +557,8 @@ const CHECKBOX: f32 = 16.0;
 ///
 /// egui paints both states in the same grey and the tick as a hairline, and
 /// down a list of findings the ticked and the clear ones looked alike.
+///
+/// Ticking it, the fill comes in and the tick is drawn, start to end.
 pub fn checkbox(
     ui: &mut egui::Ui,
     checked: &mut bool,
@@ -591,6 +594,21 @@ pub fn checkbox(
         )
     });
 
+    // Asked for a box out of view as well: one ticked there by "Select all"
+    // is ticked when it is scrolled to, not ticking.
+    let ticked = motion::toggled(
+        ui.ctx(),
+        response.id.with("ticked"),
+        *checked,
+        motion::NORMAL,
+    );
+    let hovered = motion::toggled(
+        ui.ctx(),
+        response.id.with("hovered"),
+        response.hovered(),
+        motion::FAST,
+    );
+
     if ui.is_rect_visible(rect) {
         let visuals = ui.visuals();
         let palette = palette(ui);
@@ -599,31 +617,28 @@ pub fn checkbox(
             egui::pos2(rect.left() + CHECKBOX / 2.0, rect.center().y),
             egui::Vec2::splat(CHECKBOX),
         );
-        if *checked {
-            let share = if response.is_pointer_button_down_on() {
-                PRESSED
-            } else if response.hovered() {
-                HOVERED
-            } else {
-                1.0
-            };
-            painter.rect_filled(
+        if ticked < 1.0 {
+            painter.rect(
                 square,
                 4,
-                visuals.panel_fill.lerp_to_gamma(palette.accent, share),
+                clear_box(visuals, hovered),
+                Stroke::new(1.0, visuals.weak_text_color()),
+                egui::StrokeKind::Inside,
             );
+        }
+        if ticked > 0.0 {
+            let share = if response.is_pointer_button_down_on() {
+                PRESSED
+            } else {
+                egui::lerp(1.0..=HOVERED, hovered)
+            };
+            let fill = visuals.panel_fill.lerp_to_gamma(palette.accent, share);
+            painter.rect_filled(square, 4, fill.gamma_multiply(ticked));
             tick(
                 painter,
                 square.shrink(3.0),
                 Stroke::new(2.0, palette.on_accent),
-            );
-        } else {
-            painter.rect(
-                square,
-                4,
-                clear_box(visuals, response.hovered()),
-                Stroke::new(1.0, visuals.weak_text_color()),
-                egui::StrokeKind::Inside,
+                ticked,
             );
         }
         if response.has_focus() {
@@ -646,24 +661,26 @@ pub fn checkbox(
 }
 
 /// The inside of a clear checkbox: the colour of a text field, lifted a
-/// shade toward the text under the pointer.
-fn clear_box(visuals: &egui::Visuals, hovered: bool) -> Color32 {
-    if hovered {
-        visuals
-            .extreme_bg_color
-            .lerp_to_gamma(visuals.text_color(), 0.1)
-    } else {
-        visuals.extreme_bg_color
-    }
+/// shade toward the text under the pointer, which is `hovered` from 0 to 1.
+fn clear_box(visuals: &egui::Visuals, hovered: f32) -> Color32 {
+    visuals
+        .extreme_bg_color
+        .lerp_to_gamma(visuals.text_color(), 0.1 * hovered)
 }
 
-/// A tick filling `rect`: a short stroke down, a long one up.
-fn tick(painter: &egui::Painter, rect: egui::Rect, stroke: Stroke) {
+/// A tick filling `rect`: a short stroke down, a long one up. `drawn` is how
+/// much of it is there, from its start: 1 is the whole tick.
+fn tick(painter: &egui::Painter, rect: egui::Rect, stroke: Stroke, drawn: f32) {
     let point = |x: f32, y: f32| rect.min + egui::vec2(x * rect.width(), y * rect.height());
-    painter.add(egui::Shape::line(
-        vec![point(0.15, 0.55), point(0.4, 0.8), point(0.88, 0.25)],
-        stroke,
-    ));
+    let (start, turn, end) = (point(0.15, 0.55), point(0.4, 0.8), point(0.88, 0.25));
+    let (down, up) = (start.distance(turn), turn.distance(end));
+    let length = drawn.clamp(0.0, 1.0) * (down + up);
+    let line = if length <= down {
+        vec![start, start.lerp(turn, length / down)]
+    } else {
+        vec![start, turn, turn.lerp(end, (length - down) / up)]
+    };
+    painter.add(egui::Shape::line(line, stroke));
 }
 
 /// A green tick, painted for the same reason as [`severity_icon`]: egui's
@@ -671,7 +688,7 @@ fn tick(painter: &egui::Painter, rect: egui::Rect, stroke: Stroke) {
 pub fn check_mark(ui: &mut egui::Ui, size: f32) {
     let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::hover());
     let stroke = Stroke::new((size * 0.14).max(1.5), palette(ui).green);
-    tick(ui.painter(), rect, stroke);
+    tick(ui.painter(), rect, stroke, 1.0);
 }
 
 /// A usage bar that turns amber, then red, as it fills.
@@ -840,8 +857,8 @@ pub(crate) mod tests {
             let outline = visuals.weak_text_color();
             for (against, fill) in [
                 ("the panel", panel),
-                ("the box", clear_box(&visuals, false)),
-                ("the hovered box", clear_box(&visuals, true)),
+                ("the box", clear_box(&visuals, 0.0)),
+                ("the hovered box", clear_box(&visuals, 1.0)),
             ] {
                 let ratio = contrast(outline, fill);
                 assert!(

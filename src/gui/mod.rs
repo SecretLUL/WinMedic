@@ -10,6 +10,7 @@
 //! | Module | Responsibility |
 //! | --- | --- |
 //! | [`theme`] | Typography, spacing, status and severity colours |
+//! | [`motion`] | The short animations between two states of the window |
 //! | [`keys`] | egui key events into the neutral [`crate::app::Key`] |
 //! | [`modals`] | Confirmation, setting entry and help overlays |
 //! | [`views`] | The two views, the findings list and Easy mode's short list |
@@ -19,6 +20,7 @@
 
 pub mod keys;
 pub mod modals;
+pub mod motion;
 pub mod renderer;
 pub mod taskbar;
 pub mod theme;
@@ -75,26 +77,48 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
 
     // Easy mode's page is the restart prompt itself once nothing else is left.
     let page_asks = app.active_tab != TAB_SETTINGS && views::easy::asks_for_restart(app);
-    if app.restart_pending() && !page_asks {
-        banner_panel("restart_banner", theme::caution_fill(ui))
-            .show(ui, |ui| restart_banner(ui, app));
-    }
-    if let Some(update) = app.available_update.clone() {
-        banner_panel("update_banner", ui.visuals().selection.bg_fill)
-            .show(ui, |ui| update_banner(ui, app, &update));
-    }
-    if app.crash_offer.is_some() {
-        banner_panel("crash_banner", ui.visuals().faint_bg_color)
-            .show(ui, |ui| crash_banner(ui, app));
-    }
+    // A banner slides in under the navigation and out again, so the page
+    // below is moved down, not thrown down: the update check answers a
+    // moment after the window opened.
+    let mut restart = app.restart_pending() && !page_asks;
+    banner_panel("restart_banner", theme::caution_fill(ui)).show_collapsible(
+        ui,
+        &mut restart,
+        |ui| restart_banner(ui, app),
+    );
+    let update = app.available_update.clone();
+    banner_panel("update_banner", ui.visuals().selection.bg_fill).show_collapsible(
+        ui,
+        &mut update.is_some(),
+        |ui| {
+            if let Some(update) = &update {
+                update_banner(ui, app, update);
+            }
+        },
+    );
+    let mut crashed = app.crash_offer.is_some();
+    banner_panel("crash_banner", ui.visuals().faint_bg_color).show_collapsible(
+        ui,
+        &mut crashed,
+        |ui| crash_banner(ui, app),
+    );
 
     egui::Panel::bottom("status_bar").show(ui, |ui| status_bar(ui, app));
 
+    // A page comes up into its place when it is another one than before: the
+    // other view, the other mode, or the same view with something else to
+    // say, such as a scan's result after the scan.
+    let page = match app.active_tab {
+        TAB_SETTINGS => egui::Id::unique("settings"),
+        _ => egui::Id::unique((app.config.advanced_mode, views::home::stage(app))),
+    };
     egui::CentralPanel::default()
         .frame(egui::Frame::central_panel(ui.style()).inner_margin(12))
-        .show(ui, |ui| match app.active_tab {
-            TAB_SETTINGS => views::settings::show(ui, app),
-            _ => views::home::show(ui, app),
+        .show(ui, |ui| {
+            motion::entrance(ui, page, |ui| match app.active_tab {
+                TAB_SETTINGS => views::settings::show(ui, app),
+                _ => views::home::show(ui, app),
+            });
         });
 
     // Overlays, in the order the terminal front end stacked them: a pending
@@ -105,6 +129,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
 impl WinMedicApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::apply(&cc.egui_ctx);
+        if !motion::windows_animates() {
+            motion::switch_off(&cc.egui_ctx);
+        }
 
         let mut app = App::from_disk();
         // `App` builds an app that cannot touch the desktop. This is the
@@ -138,14 +165,20 @@ impl WinMedicApp {
 
 fn navigation(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
+        let mut entries = [egui::Rect::NOTHING; TABS.len()];
         for (index, title) in TABS.iter().enumerate() {
             let selected = app.active_tab == index;
-            if tab(ui, selected, title)
+            let entry = tab(ui, selected, title);
+            entries[index] = entry.rect;
+            if entry
                 .on_hover_text(format!("Shortcut: {}", index + 1))
                 .clicked()
             {
                 app.goto_tab(index);
             }
+        }
+        if let Some(current) = entries.get(app.active_tab) {
+            current_page_bar(ui, *current);
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.button("Help").on_hover_text("?").clicked() {
@@ -178,32 +211,39 @@ fn navigation(ui: &mut egui::Ui, app: &mut App) {
 }
 
 /// A navigation entry, marked the way Windows 11 marks the current page: its
-/// title in the strong text colour over a short accent bar, where egui would
-/// fill the whole entry with its selection blue.
+/// title in the strong text colour over a short accent bar
+/// ([`current_page_bar`]), where egui would fill the whole entry with its
+/// selection blue.
 fn tab(ui: &mut egui::Ui, selected: bool, title: &str) -> egui::Response {
-    let response = ui
-        .scope(|ui| {
-            let strong = ui.visuals().strong_text_color();
-            let visuals = ui.visuals_mut();
-            visuals.selection.bg_fill = egui::Color32::TRANSPARENT;
-            visuals.selection.stroke.color = strong;
-            visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
-            ui.selectable_label(selected, title)
-        })
-        .inner;
-    if selected {
-        let rect = response.rect;
-        ui.painter().rect_filled(
-            // Just below the entry, in the room the panel leaves under it.
-            egui::Rect::from_center_size(
-                egui::pos2(rect.center().x, rect.bottom() + 1.0),
-                egui::vec2(16.0, 3.0),
-            ),
-            1.5,
-            theme::palette(ui).accent,
-        );
-    }
-    response
+    ui.scope(|ui| {
+        let strong = ui.visuals().strong_text_color();
+        let visuals = ui.visuals_mut();
+        visuals.selection.bg_fill = egui::Color32::TRANSPARENT;
+        visuals.selection.stroke.color = strong;
+        visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+        ui.selectable_label(selected, title)
+    })
+    .inner
+}
+
+/// The accent bar under the navigation entry of the current page, `entry`.
+/// One bar for all entries: picking another page, it glides there.
+fn current_page_bar(ui: &egui::Ui, entry: egui::Rect) {
+    const HALF_WIDTH: f32 = 8.0;
+    let (lead, trail) = motion::glide(
+        ui.ctx(),
+        egui::Id::unique("winmedic_current_page_bar"),
+        entry.center().x,
+        motion::SLOW,
+    );
+    // Just below the entry, in the room the panel leaves under it.
+    let rows = egui::Rangef::new(entry.bottom() - 0.5, entry.bottom() + 2.5);
+    let columns = egui::Rangef::new(lead.min(trail) - HALF_WIDTH, lead.max(trail) + HALF_WIDTH);
+    ui.painter().rect_filled(
+        egui::Rect::from_x_y_ranges(columns, rows),
+        1.5,
+        theme::palette(ui).accent,
+    );
 }
 
 /// What the update banner says to get the update installed, one at a time.
@@ -859,7 +899,114 @@ mod tests {
                 harness.try_run().is_ok(),
                 "scanning {scanning}, fixing {fixing}: the window asks for a repaint on every frame"
             );
+            // Nor does a bar on its way to a new value: it moves when the
+            // window is drawn.
+            harness.state_mut().scan_overall_progress = 90;
+            assert_eq!(
+                harness.try_run().ok(),
+                Some(1),
+                "scanning {scanning}, fixing {fixing}: the progress bar asks for repaints"
+            );
         }
+    }
+
+    /// A window drawn 60 times a second, as a display draws it: the tests'
+    /// own quarter of a second per frame is longer than any animation.
+    fn animated_window(app: App) -> Harness<'static, App> {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1400.0, 900.0))
+            .with_step_dt(1.0 / 60.0)
+            .with_max_steps(60)
+            .build_ui_state(|ui, app: &mut App| show(ui, app), app);
+        theme::apply(&harness.ctx);
+        // A test window has its animations switched off.
+        let animation_time = egui::Style::default().animation_time;
+        harness
+            .ctx
+            .all_styles_mut(|style| style.animation_time = animation_time);
+        harness.run_steps(3);
+        harness
+    }
+
+    /// A page comes up into its place and ends exactly where a window that
+    /// never animated draws it. On the way it is the whole page already, for
+    /// a screen reader and for a click.
+    #[test]
+    fn a_page_that_came_in_stands_where_it_is_drawn_at_once() {
+        let mut settings = fresh_app();
+        settings.active_tab = TAB_SETTINGS;
+        let at_once = window(settings).get_by_label("Options").rect();
+
+        let mut harness = animated_window(fresh_app());
+        harness.get_by_label("Settings").click();
+        harness.step();
+        let coming = harness.get_by_label("Options").rect();
+        assert!(
+            coming.top() > at_once.top() && coming.top() <= at_once.top() + 12.0,
+            "on its way at {coming:?}, its place is {at_once:?}"
+        );
+        assert_eq!(coming.left(), at_once.left());
+
+        // `run` gives up on an animation that does not end.
+        harness.run();
+        assert_eq!(harness.get_by_label("Options").rect(), at_once);
+    }
+
+    /// A dialog settles from a little larger into the size and place of one
+    /// that was open when the window was first drawn.
+    #[test]
+    fn a_dialog_that_opened_stands_where_it_is_drawn_at_once() {
+        let mut help = fresh_app();
+        help.show_help = true;
+        let at_once = window(help).get_by_label("Close").rect();
+
+        let mut harness = animated_window(fresh_app());
+        harness.get_by_label("Help").click();
+        harness.run();
+        assert!(harness.state().show_help);
+        assert_eq!(harness.get_by_label("Close").rect(), at_once);
+    }
+
+    /// The log slides open to the height it has in a window that opens it at
+    /// once, and shut to the folded bar.
+    #[test]
+    fn the_log_that_slid_open_stands_where_it_is_drawn_at_once() {
+        let mut at_once = window(scanned_app());
+        at_once.get_by_label("Show log").click();
+        at_once.run();
+
+        let mut harness = animated_window(scanned_app());
+        let folded = harness.get_by_label("Show log").rect();
+        harness.get_by_label("Show log").click();
+        // The click's frame, and the first one of the log on its way.
+        harness.run_steps(2);
+        let opening = harness.get_by_label("Hide log").rect();
+        harness.run();
+        let open = harness.get_by_label("Hide log").rect();
+        assert_eq!(open, at_once.get_by_label("Hide log").rect());
+        assert!(
+            open.top() < opening.top() && opening.top() < folded.top(),
+            "on its way at {opening:?}, from {folded:?} to {open:?}"
+        );
+
+        harness.get_by_label("Hide log").click();
+        harness.run();
+        assert_eq!(harness.get_by_label("Show log").rect(), folded);
+    }
+
+    /// An update found after the window opened: its banner slides in and is
+    /// then the banner a window that knew of the update from the start draws.
+    #[test]
+    fn a_banner_that_slid_in_stands_where_it_is_drawn_at_once() {
+        let at_once = window(with_update(fresh_app()))
+            .get_by_label("Update now")
+            .rect();
+
+        let mut harness = animated_window(fresh_app());
+        assert!(harness.query_by_label("Update now").is_none());
+        *harness.state_mut() = with_update(fresh_app());
+        harness.run();
+        assert_eq!(harness.get_by_label("Update now").rect(), at_once);
     }
 
     /// A repair step that runs for minutes says how far its tool got and how

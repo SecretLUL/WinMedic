@@ -9,7 +9,8 @@
 //! ticked there, which out of the box is what the checks recommend.
 
 use super::home::{
-    deletes_ticked_files, format_duration, has_scanned, plural, repair_label, selected_for_repair,
+    deletes_ticked_files, followed, format_duration, has_scanned, plural, repair_label,
+    selected_for_repair,
 };
 use crate::app::App;
 use crate::app::state::waits_for_restart;
@@ -68,7 +69,7 @@ fn note(ui: &mut egui::Ui, text: impl Into<String>) {
 fn progress(ui: &mut egui::Ui, fraction: f32) {
     let fill = theme::palette(ui).accent;
     ui.add(
-        egui::ProgressBar::new(fraction)
+        egui::ProgressBar::new(followed(ui, fraction))
             .desired_height(16.0)
             .corner_radius(3)
             .fill(fill),
