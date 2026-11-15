@@ -28,6 +28,7 @@ pub mod views;
 pub mod window;
 
 use crate::app::{App, TAB_SETTINGS, handle_key};
+use crate::modules::system_cleaner::format_bytes;
 use crate::utils::updater::UpdateInfo;
 use eframe::egui::{self, RichText};
 use std::hash::{BuildHasher, RandomState};
@@ -292,18 +293,27 @@ fn update_banner(ui: &mut egui::Ui, app: &mut App, update: &UpdateInfo) {
                 .size(15.0)
                 .color(text),
         );
-        ui.label(
-            RichText::new(format!(
-                "WinMedic {} is ready, you have {}.",
-                version(&update.latest_version),
-                version(&update.current_version)
-            ))
-            .color(text),
-        );
+        ui.label(RichText::new(update_line(app, update)).color(text));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if app.is_updating {
-                ui.label(RichText::new("Updating...").color(text));
-                ui.spinner();
+                // A bar for the download, which can be measured; the steps
+                // around it take a second or two and get the spinner. It
+                // said "Updating..." beside a spinner and nothing else,
+                // however long the download took.
+                match app.update_download_fraction() {
+                    Some(fraction) => {
+                        let fraction =
+                            motion::follow(ui.ctx(), egui::Id::unique("update_download"), fraction);
+                        ui.add(
+                            egui::ProgressBar::new(fraction)
+                                .desired_width(UPDATE_BAR_WIDTH)
+                                .desired_height(8.0)
+                                .corner_radius(2)
+                                .fill(text),
+                        );
+                    }
+                    None => busy_spinner(ui),
+                }
             } else if ui
                 .add(egui::Button::new(RichText::new("Update now").strong()))
                 .on_hover_text("U")
@@ -313,6 +323,38 @@ fn update_banner(ui: &mut egui::Ui, app: &mut App, update: &UpdateInfo) {
             }
         });
     });
+}
+
+/// How wide the update banner draws the download's bar.
+const UPDATE_BAR_WIDTH: f32 = 180.0;
+
+/// What the update banner says: that an update is there, or how far the one
+/// being installed is.
+fn update_line(app: &App, update: &UpdateInfo) -> String {
+    let latest = version(&update.latest_version);
+    if !app.is_updating {
+        return format!(
+            "WinMedic {latest} is ready, you have {}.",
+            version(&update.current_version)
+        );
+    }
+    match app.update_download {
+        // Still arriving, against the size the release states.
+        Some((received, total)) if received < total => format!(
+            "Downloading WinMedic {latest}: {} of {}",
+            format_bytes(received),
+            format_bytes(total)
+        ),
+        // A release that states no size: how much has arrived is all there
+        // is to say.
+        Some((received, 0)) => format!("Downloading WinMedic {latest}: {}", format_bytes(received)),
+        // Past the download, the step the update is at.
+        Some(_) => app
+            .update_step
+            .clone()
+            .unwrap_or_else(|| format!("Installing WinMedic {latest}...")),
+        None => format!("Downloading WinMedic {latest}..."),
+    }
 }
 
 /// Windows waits for a restart, across the top of both modes until it has had
@@ -449,7 +491,8 @@ impl eframe::App for WinMedicApp {
         // egui only repaints in response to input, and almost nothing this
         // window shows is driven by input: progress bars and log lines come
         // from work happening elsewhere.
-        ctx.request_repaint_after(if self.app.is_busy() {
+        // An update's download counts: its bar moves five times a second.
+        ctx.request_repaint_after(if self.app.is_busy() || self.app.is_updating {
             BUSY_REPAINT
         } else {
             IDLE_REPAINT
@@ -1767,6 +1810,63 @@ mod tests {
         let harness = window(app);
         assert!(shows_a_quote(&harness));
         assert!(harness.query_by_label("Update now").is_some());
+    }
+
+    /// While an update is installed the banner says how far it is: the
+    /// megabytes that arrived, with a bar, then the step. It said
+    /// "Updating..." for as long as the download took.
+    #[test]
+    fn a_running_update_shows_how_far_it_is_in_the_banner() {
+        const MB: u64 = 1024 * 1024;
+        let updating = |download: Option<(u64, u64)>, step: Option<&str>| {
+            let mut app = with_update(scanned_app());
+            app.is_updating = true;
+            app.update_download = download;
+            app.update_step = step.map(str::to_string);
+            window(app)
+        };
+
+        for (download, step, line) in [
+            // Before the first bytes.
+            (None, None, "Downloading WinMedic v0.5.3..."),
+            (
+                Some((4 * MB, 16 * MB)),
+                Some("Downloading winmedic-v0.5.3.exe..."),
+                "Downloading WinMedic v0.5.3: 4.0 MB of 16.0 MB",
+            ),
+            // A release that states no size.
+            (
+                Some((4 * MB, 0)),
+                Some("Downloading winmedic-v0.5.3.exe..."),
+                "Downloading WinMedic v0.5.3: 4.0 MB",
+            ),
+            // The download is complete: the step it is at.
+            (
+                Some((16 * MB, 16 * MB)),
+                Some("Verifying the SHA256 checksum..."),
+                "Verifying the SHA256 checksum...",
+            ),
+        ] {
+            let harness = updating(download, step);
+            assert!(
+                harness.query_by_label(line).is_some(),
+                "the banner does not say: {line}"
+            );
+            // A bar or the spinner, one of them, and no second download to
+            // start.
+            assert_eq!(
+                harness.query_all_by_role(Role::ProgressIndicator).count(),
+                1,
+                "{line}"
+            );
+            assert!(harness.query_by_label("Update now").is_none(), "{line}");
+            assert!(
+                harness
+                    .query_by_label("WinMedic v0.5.3 is ready, you have v0.5.2.")
+                    .is_none(),
+                "{line}"
+            );
+        }
     }
 
     /// A repair waiting for a restart: the banner says so in either mode and

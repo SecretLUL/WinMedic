@@ -74,6 +74,12 @@ pub enum BackgroundEvent {
     UpdateChecked(Option<UpdateInfo>),
     /// One step of an in-place update, for the status line.
     UpdateInstallStep(String),
+    /// How much of an in-place update's binary has arrived, of how much;
+    /// `total` is 0 when the release does not say.
+    UpdateDownloaded {
+        received: u64,
+        total: u64,
+    },
     /// An in-place update finished, one way or the other.
     ///
     /// `release_url` travels along so that a failure can still put the user in

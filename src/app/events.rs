@@ -469,7 +469,15 @@ impl App {
                     // A step that arrives after the run finished would overwrite
                     // the outcome the user is reading.
                     if self.is_updating {
+                        self.update_step = Some(step.clone());
                         self.status_message = Some(step);
+                    }
+                }
+                BackgroundEvent::UpdateDownloaded { received, total } => {
+                    // Like a late step: after the run it would bring back a
+                    // bar for an update that is over.
+                    if self.is_updating {
+                        self.update_download = Some((received, total));
                     }
                 }
                 BackgroundEvent::UpdateInstallFinished {
@@ -478,6 +486,8 @@ impl App {
                     result,
                 } => {
                     self.is_updating = false;
+                    self.update_step = None;
+                    self.update_download = None;
                     let version = version.trim_start_matches(['v', 'V']).to_string();
 
                     match result {
@@ -925,6 +935,81 @@ mod tests {
             .find(|e| e.action_type == "UPDATE")
             .expect("the refusal was not written to the audit log");
         assert_eq!(entry.status, "VERIFICATION");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The banner's bar: the bytes that arrived against the size the release
+    /// stated, and nothing to draw where the release states none.
+    #[tokio::test]
+    async fn a_running_update_knows_how_far_its_download_is() {
+        let mut app = App::new();
+        assert_eq!(app.update_download_fraction(), None);
+
+        app.is_updating = true;
+        assert_eq!(app.update_download_fraction(), None, "before any bytes");
+
+        for (received, total, fraction) in [
+            (0, 16_000_000, Some(0.0)),
+            (4_000_000, 16_000_000, Some(0.25)),
+            (16_000_000, 16_000_000, Some(1.0)),
+            // More than stated is still no more than all of it.
+            (17_000_000, 16_000_000, Some(1.0)),
+            // A release that does not say: nothing to measure against.
+            (4_000_000, 0, None),
+        ] {
+            app.bg_tx
+                .send(BackgroundEvent::UpdateDownloaded { received, total })
+                .unwrap();
+            app.process_background_events();
+            assert_eq!(app.update_download, Some((received, total)));
+            assert_eq!(
+                app.update_download_fraction(),
+                fraction,
+                "{received} of {total}"
+            );
+        }
+
+        app.bg_tx
+            .send(BackgroundEvent::UpdateInstallStep(
+                "Verifying the SHA256 checksum...".to_string(),
+            ))
+            .unwrap();
+        app.process_background_events();
+        assert_eq!(
+            app.update_step.as_deref(),
+            Some("Verifying the SHA256 checksum...")
+        );
+    }
+
+    /// Progress that arrives after the run ended belongs to no update, and
+    /// the next one starts from nothing.
+    #[tokio::test]
+    async fn an_update_that_ended_leaves_no_progress_behind() {
+        let (mut app, dir) = app_with_scratch_audit_log();
+        app.is_updating = true;
+        app.update_step = Some("Installing the new binary...".to_string());
+        app.update_download = Some((10, 10));
+
+        app.bg_tx
+            .send(BackgroundEvent::UpdateInstallFinished {
+                version: "v0.2.0".to_string(),
+                release_url: "https://github.com/SecretLUL/WinMedic/releases/tag/v0.2.0"
+                    .to_string(),
+                result: Ok(installed_update()),
+            })
+            .unwrap();
+        app.bg_tx
+            .send(BackgroundEvent::UpdateDownloaded {
+                received: 5,
+                total: 10,
+            })
+            .unwrap();
+        app.process_background_events();
+
+        assert_eq!(app.update_step, None);
+        assert_eq!(app.update_download, None);
+        assert_eq!(app.update_download_fraction(), None);
 
         let _ = std::fs::remove_dir_all(dir);
     }
