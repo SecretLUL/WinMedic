@@ -164,28 +164,52 @@ jobs:
         run: |
           set -euo pipefail
           version="${TAG#v}"
+          fork="${REPO%%/*}/winget-pkgs"
+          synced=true
           if [ "${REHEARSAL:-false}" = "true" ]; then
             mode=--dry-run
           else
             mode=--submit
-            # This only tidies the fork: komac opens the manifest branch at
-            # winget-pkgs' own head, not at the fork's. So a failed sync warns
-            # instead of stopping the submission. For v0.8.0 GitHub answered
-            # it with "Something went wrong while executing your query", and
-            # only a re-run submitted the release (#144).
-            komac sync-fork ||
-              echo "::warning::The winget-pkgs fork was not brought up to date. The submission does not need it: komac branches from winget-pkgs itself."
+            # The submission needs this. komac opens the manifest branch in
+            # the fork, at the commit winget-pkgs' own head is on, and a fork
+            # that is behind does not have that commit: "Ref cannot be
+            # created". GitHub answers the sync now and then with "Something
+            # went wrong while executing your query" (v0.8.0, #144), and for
+            # v0.16.0, where the sync only warned, the submission then failed
+            # with the fork under two hours behind. So the sync gets three
+            # tries.
+            synced=false
+            for attempt in 1 2 3; do
+              if komac sync-fork; then
+                synced=true
+                break
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                echo "The winget-pkgs fork was not brought up to date (try $attempt of 3). Trying again in 20 seconds."
+                sleep 20
+              fi
+            done
+            if [ "$synced" != "true" ]; then
+              # Still tried: a fork that happens to be up to date takes the
+              # branch, and nothing is lost by asking.
+              echo "::warning::$fork could not be brought up to date in three tries. Unless it already is, the submission below fails with \"Ref cannot be created\"."
+            fi
           fi
           # The release assets are the binary and its .sha256; only the binary
           # is an installer. komac downloads it and hashes it itself, reads the
           # licence from this repository as it is on main at the time of the
           # run, and takes everything else - portable, the `winmedic` command -
           # from the version already in winget-pkgs.
-          komac update SecretLUL.WinMedic \
+          if ! komac update SecretLUL.WinMedic \
             --version "$version" \
             --urls "https://github.com/$REPO/releases/download/$TAG/winmedic-$TAG.exe" \
             --release-notes-url "https://github.com/$REPO/releases/tag/$TAG" \
-            "$mode"
+            "$mode"; then
+            if [ "$synced" != "true" ]; then
+              echo "::error::$TAG was not submitted to WinGet, most likely because $fork is behind microsoft/winget-pkgs. Bring it up to date (gh repo sync $fork --branch master, or \"Sync fork\" on its page), then re-run this job."
+            fi
+            exit 1
+          fi
 
       - name: Say where the pull request went
         if: steps.gate.outputs.publish == 'true' && !inputs.dry_run
