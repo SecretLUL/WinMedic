@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Chocolatey package for WinMedic. The placeholders for the version and the
+  SHA-256 of the released .exe are filled in from a published release by
+  scripts/chocolatey-package.ps1, which also packs it;
+  .github/workflows/chocolatey.yml pushes the result.
+-->
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>winmedic</id>
+    <version>__VERSION__</version>
+    <packageSourceUrl>https://github.com/SecretLUL/WinMedic/tree/main/packaging/chocolatey</packageSourceUrl>
+    <owners>SecretLUL</owners>
+    <title>WinMedic</title>
+    <authors>SecretLUL</authors>
+    <projectUrl>https://github.com/SecretLUL/WinMedic</projectUrl>
+    <iconUrl>https://cdn.jsdelivr.net/gh/SecretLUL/WinMedic@v__VERSION__/assets/logo.png</iconUrl>
+    <copyright>Copyright (c) 2026 SecretLUL</copyright>
+    <licenseUrl>https://github.com/SecretLUL/WinMedic/blob/main/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <docsUrl>https://github.com/SecretLUL/WinMedic/blob/main/docs/how-it-works.md</docsUrl>
+    <bugTrackerUrl>https://github.com/SecretLUL/WinMedic/issues</bugTrackerUrl>
+    <tags>cleanup diagnostics dism network repair restore-point sfc troubleshooting windows-update</tags>
+    <summary>Finds out why Windows acts up and repairs it, so you do not have to reinstall</summary>
+    <description>Updates that fail, no internet, a slow or crashing PC: WinMedic finds out why and repairs it, so you do not have to reinstall Windows. It checks system files and the component store, Windows Update, services, the network, disks, crash reports, hardware errors and leftovers of removed programs.
+
+Easy mode shows how the PC is doing and what Repair will do; Advanced mode lists every finding with its evidence. Nothing changes until you click Repair, and a restore point is created first, so every change can be undone.
+
+WinMedic needs administrator rights. Started with the `winmedic` command, it asks for them.</description>
+    <releaseNotes>https://github.com/SecretLUL/WinMedic/releases/tag/v__VERSION__</releaseNotes>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>
