@@ -231,6 +231,12 @@ pub struct App {
     /// True from the moment the user accepts an update until the download has
     /// either been installed or given up on.
     pub is_updating: bool,
+    /// The step the running update is at, for the banner: the status line
+    /// shows it too, until the next message takes its place.
+    pub update_step: Option<String>,
+    /// How much of the running update's binary has arrived, and of how much
+    /// (0 when the release does not say). `None` before the first bytes.
+    pub update_download: Option<(u64, u64)>,
     /// The installed update to restart into, once no scan, repair or restore
     /// is running.
     pub restart_into: Option<std::path::PathBuf>,
@@ -418,6 +424,8 @@ impl App {
             crash_offer: None,
             crash_report: None,
             is_updating: false,
+            update_step: None,
+            update_download: None,
             restart_into: None,
             system_actions,
             should_quit: false,
@@ -625,6 +633,21 @@ impl App {
     /// True while a scan or a repair run is in flight.
     pub fn is_busy(&self) -> bool {
         self.is_scanning || self.is_fixing
+    }
+
+    /// How far the running update's download is, from 0 to 1.
+    ///
+    /// `None` when no update runs, before its first bytes have arrived, and
+    /// for a release that does not say how large its binary is: there is
+    /// then nothing to measure the bytes against.
+    pub fn update_download_fraction(&self) -> Option<f32> {
+        if !self.is_updating {
+            return None;
+        }
+        match self.update_download? {
+            (_, 0) => None,
+            (received, total) => Some((received as f32 / total as f32).clamp(0.0, 1.0)),
+        }
     }
 
     /// Whether a dialog is on screen that takes the keyboard for itself:

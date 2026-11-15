@@ -86,6 +86,8 @@ When the release publishes both the binary and its `.sha256` — every release c
 4. if the download carries an Authenticode signature Windows rejects, it is refused
 5. only then is the running binary renamed aside and the new one moved into its place
 
+While that runs, the banner across the top says how far it is: the megabytes that have arrived out of the size the release states, with a bar, and then each step by name. WinMedic's taskbar button fills with the download, as it does with a scan. The size is read from the staging file as curl writes it, five times a second; a release that states no size gets the megabytes and a spinner.
+
 WinMedic then starts the new version and closes itself; a scan or repair still running is finished first. The old binary stays parked as `winmedic.exe.old-<tag>` — a running image cannot delete itself — and the new version deletes it as soon as the old process has exited.
 
 If *any* of that fails — the download never arrives, the checksum does not match, the file cannot be replaced — nothing is touched, the release page opens in your browser instead, and the status line states the reason. Successful and refused updates are both written to `%APPDATA%\WinMedic\logs\history.jsonl`.

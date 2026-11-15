@@ -8,7 +8,7 @@ use crate::config::AppConfig;
 use crate::safety::reg_backup::RegBackupManager;
 use crate::safety::restore_point::RestorePointService;
 use crate::utils::self_remove;
-use crate::utils::self_update::{self, InstallPlan, SelfUpdateService};
+use crate::utils::self_update::{self, InstallPlan, InstallProgress, SelfUpdateService};
 use crate::utils::updater::{self, UpdateDownload};
 
 use super::BackgroundEvent;
@@ -495,22 +495,27 @@ impl App {
         };
 
         self.is_updating = true;
+        self.update_step = None;
+        self.update_download = None;
         self.status_message = Some(format!(
             "Downloading WinMedic v{}...",
             version.trim_start_matches(['v', 'V'])
         ));
 
-        // Progress travels on its own channel of plain strings so the updater
-        // never has to know what a `BackgroundEvent` is; this task is the
-        // adapter between the two.
-        let (step_tx, mut step_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        // Progress travels on its own channel so the updater never has to
+        // know what a `BackgroundEvent` is; this task is the adapter between
+        // the two.
+        let (step_tx, mut step_rx) = tokio::sync::mpsc::unbounded_channel::<InstallProgress>();
         let step_bg = self.bg_tx.clone();
         handle.spawn(async move {
-            while let Some(step) = step_rx.recv().await {
-                if step_bg
-                    .send(BackgroundEvent::UpdateInstallStep(step))
-                    .is_err()
-                {
+            while let Some(progress) = step_rx.recv().await {
+                let event = match progress {
+                    InstallProgress::Step(step) => BackgroundEvent::UpdateInstallStep(step),
+                    InstallProgress::Downloaded { received, total } => {
+                        BackgroundEvent::UpdateDownloaded { received, total }
+                    }
+                };
+                if step_bg.send(event).is_err() {
                     break;
                 }
             }

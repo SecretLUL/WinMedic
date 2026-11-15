@@ -1,4 +1,5 @@
-//! How far a scan or a repair run got, on WinMedic's taskbar button.
+//! How far a scan, a repair run or an update's download got, on WinMedic's
+//! taskbar button.
 //!
 //! A scan takes minutes and a repair run can take a quarter of an hour, and a
 //! window nobody watches that long gets minimised. Windows lets a taskbar
@@ -29,6 +30,13 @@ impl Progress {
             f32::from(app.scan_overall_progress) / 100.0
         } else if app.is_fixing {
             app.repair_fraction()
+        } else if app.is_updating {
+            // The steps around the download take a second or two and have
+            // nothing to measure: a bar that keeps moving.
+            match app.update_download_fraction() {
+                Some(fraction) => fraction,
+                None => return Self::Starting,
+            }
         } else {
             return Self::Idle;
         };
@@ -224,6 +232,33 @@ mod tests {
         assert_eq!(Progress::of(&app), Progress::Percent(25));
 
         app.is_fixing = false;
+        assert_eq!(Progress::of(&app), Progress::Idle);
+    }
+
+    /// An update is watched the same way: the download fills the button,
+    /// and the steps without a measure keep it moving.
+    #[test]
+    fn the_button_shows_how_far_an_updates_download_got() {
+        let mut app = App::new();
+        app.is_updating = true;
+        assert_eq!(Progress::of(&app), Progress::Starting);
+
+        app.update_download = Some((4_000_000, 16_000_000));
+        assert_eq!(Progress::of(&app), Progress::Percent(25));
+        app.update_download = Some((16_000_000, 16_000_000));
+        assert_eq!(Progress::of(&app), Progress::Percent(100));
+
+        // A release that does not say how large the file is.
+        app.update_download = Some((4_000_000, 0));
+        assert_eq!(Progress::of(&app), Progress::Starting);
+
+        // A scan that runs meanwhile is what the button shows.
+        app.is_scanning = true;
+        app.scan_overall_progress = 40;
+        assert_eq!(Progress::of(&app), Progress::Percent(40));
+
+        app.is_scanning = false;
+        app.is_updating = false;
         assert_eq!(Progress::of(&app), Progress::Idle);
     }
 }

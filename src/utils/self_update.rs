@@ -191,6 +191,20 @@ pub fn parse_signature_output(output: &str) -> SignatureStatus {
     }
 }
 
+/// What an install in flight reports to whoever shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstallProgress {
+    /// A step has begun. The text is the status line.
+    Step(String),
+    /// How much of the binary is on disk, and how large the release says it
+    /// is: `0` when it does not say.
+    Downloaded { received: u64, total: u64 },
+}
+
+/// How often the size of the file being downloaded is read. Five times a
+/// second moves a progress bar evenly and costs one file lookup each.
+const DOWNLOAD_TICK: Duration = Duration::from_millis(200);
+
 /// One file to fetch onto disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchRequest {
@@ -380,7 +394,7 @@ pub async fn install(
     fetch: Fetcher,
     runner: &dyn CommandRunner,
     plan: &InstallPlan,
-    progress: Option<&UnboundedSender<String>>,
+    progress: Option<&UnboundedSender<InstallProgress>>,
 ) -> Result<InstalledUpdate, UpdateFailure> {
     let staged = sibling(&plan.exe, STAGING_INFIX, &plan.tag)?;
     let retired = sibling(&plan.exe, RETIRED_INFIX, &plan.tag)?;
@@ -407,20 +421,24 @@ async fn stage_verify_and_swap(
     staged: &Path,
     manifest: &Path,
     retired: &Path,
-    progress: Option<&UnboundedSender<String>>,
+    progress: Option<&UnboundedSender<InstallProgress>>,
 ) -> Result<InstalledUpdate, UpdateFailure> {
     step(
         progress,
         format!("Downloading {}...", plan.download.binary_name),
     );
-    fetch
-        .get(FetchRequest {
+    fetch_reporting(
+        fetch,
+        FetchRequest {
             url: plan.download.binary_url.clone(),
             dest: staged.to_path_buf(),
             max_bytes: MAX_UPDATE_BYTES,
             timeout: plan.timeout,
-        })
-        .await?;
+        },
+        plan.download.size,
+        progress,
+    )
+    .await?;
 
     // curl's --max-filesize only fires when the server announced a length, so
     // the size the download actually reached is checked here as well.
@@ -444,6 +462,14 @@ async fn stage_verify_and_swap(
             downloaded, MAX_UPDATE_BYTES
         )));
     }
+    // All of it, whatever size the release stated: the bar is full now.
+    report(
+        progress,
+        InstallProgress::Downloaded {
+            received: downloaded,
+            total: downloaded,
+        },
+    );
 
     step(progress, "Downloading the published checksum...");
     fetch
@@ -480,6 +506,44 @@ async fn stage_verify_and_swap(
         sha256,
         signature,
     })
+}
+
+/// Fetch `request`, reporting how much of it is on disk while it runs.
+///
+/// The fetcher says nothing until it is done, and for a release binary on a
+/// slow line that is minutes in which the window showed a spinner and no
+/// more. curl writes the bytes into the file as they arrive, so the file's
+/// size is how far the download is; nothing about the download changes.
+async fn fetch_reporting(
+    fetch: Fetcher,
+    request: FetchRequest,
+    total: u64,
+    progress: Option<&UnboundedSender<InstallProgress>>,
+) -> Result<(), UpdateFailure> {
+    let staged = request.dest.clone();
+    let download = fetch.get(request);
+    if progress.is_none() {
+        return download.await;
+    }
+    tokio::pin!(download);
+    let mut tick = tokio::time::interval(DOWNLOAD_TICK);
+    loop {
+        tokio::select! {
+            result = &mut download => return result,
+            _ = tick.tick() => {
+                // No file yet, before the first bytes: nothing to report.
+                if let Ok(file) = fs::metadata(&staged) {
+                    report(
+                        progress,
+                        InstallProgress::Downloaded {
+                            received: file.len(),
+                            total,
+                        },
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Read the digest the release published for `binary_name`.
@@ -805,7 +869,7 @@ pub type InstallFuture =
 
 #[derive(Debug, Clone, Copy)]
 pub struct SelfUpdateService {
-    install: fn(InstallPlan, Option<UnboundedSender<String>>) -> InstallFuture,
+    install: fn(InstallPlan, Option<UnboundedSender<InstallProgress>>) -> InstallFuture,
     /// Whether `install` really downloads and replaces a file. Carried as data
     /// so a guard test can assert an app is inert *without* invoking it.
     live: bool,
@@ -814,7 +878,10 @@ pub struct SelfUpdateService {
 impl SelfUpdateService {
     /// The real thing: downloads from GitHub and replaces the binary on disk.
     pub fn real() -> Self {
-        fn install(plan: InstallPlan, progress: Option<UnboundedSender<String>>) -> InstallFuture {
+        fn install(
+            plan: InstallPlan,
+            progress: Option<UnboundedSender<InstallProgress>>,
+        ) -> InstallFuture {
             Box::pin(async move {
                 let runner = SystemCommandRunner::new();
                 let installed =
@@ -833,7 +900,7 @@ impl SelfUpdateService {
     /// Reports [`UpdateFailure::NotRequested`] without touching the network or
     /// the disk. The default.
     pub fn inert() -> Self {
-        fn install(_: InstallPlan, _: Option<UnboundedSender<String>>) -> InstallFuture {
+        fn install(_: InstallPlan, _: Option<UnboundedSender<InstallProgress>>) -> InstallFuture {
             Box::pin(std::future::ready(Err(UpdateFailure::NotRequested)))
         }
         Self {
@@ -850,7 +917,7 @@ impl SelfUpdateService {
     pub fn install(
         &self,
         plan: InstallPlan,
-        progress: Option<UnboundedSender<String>>,
+        progress: Option<UnboundedSender<InstallProgress>>,
     ) -> InstallFuture {
         (self.install)(plan, progress)
     }
@@ -964,9 +1031,13 @@ fn notify_shell_icons_changed() {
 
 // ------------------------------------------------------------------ helpers
 
-fn step(progress: Option<&UnboundedSender<String>>, message: impl Into<String>) {
+fn step(progress: Option<&UnboundedSender<InstallProgress>>, message: impl Into<String>) {
+    report(progress, InstallProgress::Step(message.into()));
+}
+
+fn report(progress: Option<&UnboundedSender<InstallProgress>>, what: InstallProgress) {
     if let Some(tx) = progress {
-        let _ = tx.send(message.into());
+        let _ = tx.send(what);
     }
 }
 
@@ -1727,13 +1798,106 @@ mod tests {
         drop(tx);
 
         let mut steps = Vec::new();
-        while let Ok(step) = rx.try_recv() {
-            steps.push(step);
+        let mut downloaded = Vec::new();
+        while let Ok(progress) = rx.try_recv() {
+            match progress {
+                InstallProgress::Step(step) => steps.push(step),
+                InstallProgress::Downloaded { received, total } => {
+                    downloaded.push((received, total))
+                }
+            }
         }
+        // However fast the download was, it ends with all of it.
+        let size = payload.len() as u64;
+        assert_eq!(downloaded.last(), Some(&(size, size)), "{downloaded:?}");
         assert_eq!(steps.len(), 5, "{:?}", steps);
         assert!(steps[0].starts_with("Downloading winmedic-progress.exe"));
         assert!(steps[2].contains("SHA256"));
         assert!(steps[4].contains("Installing"));
+    }
+
+    /// A fetcher that takes its time: the binary arrives in four parts, a
+    /// quarter of a second apart, as a download on a slow line does.
+    fn slow_fetcher() -> Fetcher {
+        fn fetch(request: FetchRequest) -> FetchFuture {
+            Box::pin(async move {
+                use std::io::Write;
+
+                let body = stub_bodies().lock().unwrap().get(&request.url).cloned();
+                let Some(bytes) = body else {
+                    return Err(UpdateFailure::Download(format!(
+                        "stub has nothing for {}",
+                        request.url
+                    )));
+                };
+                let io = |e: std::io::Error| UpdateFailure::Download(e.to_string());
+                let mut file = fs::File::create(&request.dest).map_err(io)?;
+                for part in bytes.chunks(bytes.len().div_ceil(4).max(1)) {
+                    file.write_all(part).map_err(io)?;
+                    file.flush().map_err(io)?;
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+                Ok(())
+            })
+        }
+        Fetcher::from_fn(fetch)
+    }
+
+    /// While the binary arrives, its size on disk is reported against the
+    /// size the release stated, so the window can draw how far it is.
+    #[tokio::test]
+    async fn a_download_reports_how_far_it_is_while_it_runs() {
+        let dir = TempDir::new("download_progress");
+        dir.file("winmedic.exe", "old");
+        let mut plan = plan_for(&dir, "slow");
+        let payload = vec![7u8; 4000];
+        plan.download.size = payload.len() as u64;
+        serve(&plan.download.binary_url, &payload);
+
+        let probe = dir.path.join("probe");
+        fs::write(&probe, &payload).unwrap();
+        let digest = sha256_file(&probe).unwrap();
+        fs::remove_file(&probe).unwrap();
+        serve(
+            &plan.download.checksum_url,
+            format!("{}  {}\n", digest, plan.download.binary_name).as_bytes(),
+        );
+
+        let mock = MockCommandRunner::new();
+        mock.add_response("powershell", CmdOutput::ok("WINMEDIC_SIG:NotSigned|"));
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        install(slow_fetcher(), &mock, &plan, Some(&tx))
+            .await
+            .unwrap();
+        drop(tx);
+
+        let mut seen = Vec::new();
+        let mut steps_before_the_end = 0;
+        while let Ok(progress) = rx.try_recv() {
+            match progress {
+                InstallProgress::Downloaded { received, total } => {
+                    assert_eq!(total, 4000, "not the size the release stated");
+                    seen.push(received);
+                }
+                InstallProgress::Step(_) if seen.last() != Some(&4000) => {
+                    steps_before_the_end += 1;
+                }
+                InstallProgress::Step(_) => {}
+            }
+        }
+
+        assert!(
+            seen.iter().any(|received| (1..4000).contains(received)),
+            "nothing was reported while the download ran: {seen:?}"
+        );
+        assert!(
+            seen.windows(2).all(|pair| pair[0] <= pair[1]),
+            "the download went backwards: {seen:?}"
+        );
+        assert_eq!(seen.last(), Some(&4000), "{seen:?}");
+        // Only "Downloading ..." comes before the download is complete.
+        assert_eq!(steps_before_the_end, 1);
     }
 
     // ------------------------------------------------------------- the seam
