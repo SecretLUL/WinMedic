@@ -109,14 +109,24 @@ impl Removal {
         winget_exe: Option<PathBuf>,
     ) -> Result<Self, String> {
         // Started through WinGet's link, the running file is the link; the
-        // program is where it points.
+        // program is where it points, and both go.
         let target = std::fs::canonicalize(exe)
             .map(|path| without_verbatim_prefix(&path))
             .unwrap_or_else(|_| exe.to_path_buf());
+        // Any other file is one file, however its path is spelled: as
+        // `C:\Users\RUNNER~1\...` and as `C:\Users\runneradmin\...` it, and
+        // its folder, would be listed twice.
+        let is_link =
+            std::fs::symlink_metadata(exe).is_ok_and(|file| file.file_type().is_symlink());
+        let named = if is_link {
+            vec![exe, target.as_path()]
+        } else {
+            vec![target.as_path()]
+        };
 
         let mut files = Vec::new();
         let mut program_folders = Vec::new();
-        for file in [exe, target.as_path()] {
+        for file in named {
             if let Some(folder) = file.parent().filter(|folder| is_own_folder(folder)) {
                 push_once(&mut program_folders, folder.to_path_buf());
             }
