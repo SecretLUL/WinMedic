@@ -14,7 +14,8 @@ gh workflow run release.yml --ref main -f bump=patch
 
 The run writes the version into every file that states it, tags, builds,
 refuses a binary that does not report the tagged version, publishes the release
-with its `.sha256`, pushes the version bump to `main`, and calls `winget.yml`.
+with its `.sha256`, pushes the version bump to `main`, and calls `winget.yml`
+and, after a clean VirusTotal scan, `chocolatey.yml`.
 `dry_run` rehearses all of it without tagging or publishing.
 
 - Release notes go in `docs/release-notes/<tag>.md` (`v0.6.0.md` for 0.6.0),
@@ -110,3 +111,29 @@ WinMedic's in-place updater also updates a WinGet install, after which WinGet
 still lists the version it installed and `winget upgrade` offers the one that is
 already there. For a WinGet install, `winget upgrade SecretLUL.WinMedic` is the
 tidier path.
+
+## Chocolatey
+
+`chocolatey.yml` builds the package in `packaging/chocolatey/` with
+`./scripts/chocolatey-package.ps1 <version>` and pushes it to the
+[Chocolatey Community Repository](https://community.chocolatey.org/packages/winmedic).
+The package downloads the release's `.exe` and checks it against the checksum
+the script established, the same way `winget-manifest.ps1` does.
+
+- `release.yml` calls it only when the VirusTotal job is green. Chocolatey scans
+  every package on VirusTotal too, and a version an engine flags waits there for
+  a moderator. A version held back that way goes out with **Run workflow** on
+  `chocolatey.yml` once the vendor has cleared the detection.
+- Every version is moderated: automated checks, a test install, VirusTotal, and
+  a person until the package is trusted. Chocolatey answers by e-mail to the
+  account. A version moderation sends back is fixed and pushed again under the
+  same version, with **Run workflow** and its tag.
+- Pre-releases are skipped; `dry_run` builds the package without pushing it.
+- As with WinGet, the in-place updater leaves Chocolatey listing the version it
+  installed; `choco upgrade winmedic` is the tidier path.
+
+### Set up once
+
+The repository secret `CHOCOLATEY_API_KEY`: the API key of the `SecretLUL`
+account on community.chocolatey.org (*Account* → *API Keys*). Without it the job
+goes red and says so.

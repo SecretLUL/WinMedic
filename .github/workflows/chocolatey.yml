@@ -1,0 +1,139 @@
+name: Chocolatey
+
+# Pushes a published release to the Chocolatey Community Repository, so that
+# `choco install winmedic` installs it. The package lives in
+# packaging/chocolatey/; scripts/chocolatey-package.ps1 fills in the version
+# and the checksum from the release and packs it.
+#
+# Every version is moderated there before anyone can install it: automated
+# checks, a test install, a VirusTotal scan, and a person until the package is
+# trusted. So "pushed" is the honest word for what this does, not "published".
+#
+# Reusable for the same reason as winget.yml: release.yml publishes with
+# GITHUB_TOKEN, whose events start no further workflows, so a `release:
+# published` trigger would never fire. release.yml calls this only after its
+# VirusTotal job is green (#309). `workflow_dispatch` is the manual path: a
+# version the scan held back, once the vendor has cleared it; the same version
+# again after moderation sent it back; or a rehearsal.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag to push, e.g. v0.17.0
+        required: true
+        type: string
+    secrets:
+      CHOCOLATEY_API_KEY:
+        description: API key of the SecretLUL account on community.chocolatey.org
+        required: false
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to push, e.g. v0.17.0 (the release must already be published)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Rehearsal: build the package from the release, but push nothing'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: chocolatey
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Push to Chocolatey
+    # choco pack needs Windows, and the Windows image comes with Chocolatey.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Decide whether this release goes to Chocolatey
+        id: gate
+        shell: pwsh
+        env:
+          TAG: ${{ inputs.tag }}
+          CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+          REHEARSAL: ${{ inputs.dry_run }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Add-Summary($lines) {
+            if ($env:GITHUB_STEP_SUMMARY) {
+              ($lines -join "`n") | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            }
+          }
+
+          if (-not $env:TAG) {
+            throw 'No release tag was passed to this workflow.'
+          }
+
+          # `choco upgrade all` would move people onto a pre-release.
+          if ($env:TAG -match '-') {
+            Write-Host "::notice::$env:TAG is a pre-release, which does not go to Chocolatey. Nothing to push."
+            Add-Summary @(
+              "### Skipped: ``$env:TAG`` is a pre-release"
+              ''
+              'Pre-releases are not pushed to Chocolatey, so that `choco upgrade` never moves anyone onto one.'
+            )
+            "build=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "push=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            exit 0
+          }
+
+          "build=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          if ($env:REHEARSAL -eq 'true') {
+            "push=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            exit 0
+          }
+
+          # Red rather than skipped, as in winget.yml: a release that quietly
+          # did not reach Chocolatey is the failure worth noticing.
+          if (-not $env:CHOCOLATEY_API_KEY) {
+            Write-Host "::error::No CHOCOLATEY_API_KEY secret is set, so $env:TAG cannot be pushed to Chocolatey. See .github/RELEASING.md."
+            Add-Summary @(
+              "### ``$env:TAG`` was not pushed to Chocolatey"
+              ''
+              'The release shipped correctly; only the Chocolatey push is missing. It needs the repository secret `CHOCOLATEY_API_KEY`: the API key of the `SecretLUL` account on community.chocolatey.org (*Account* → *API Keys*).'
+              ''
+              'Then run this workflow from the Actions tab with the tag `' + $env:TAG + '`.'
+            )
+            exit 1
+          }
+          "push=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Build the package
+        id: pack
+        if: steps.gate.outputs.build == 'true'
+        shell: pwsh
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $nupkg = ./scripts/chocolatey-package.ps1 $env:TAG -OutDir (Join-Path $env:RUNNER_TEMP 'chocolatey')
+          "nupkg=$nupkg" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Push the package to the Chocolatey Community Repository
+        if: steps.gate.outputs.push == 'true'
+        shell: pwsh
+        env:
+          TAG: ${{ inputs.tag }}
+          NUPKG: ${{ steps.pack.outputs.nupkg }}
+          CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+        run: |
+          choco push $env:NUPKG --source https://push.chocolatey.org/ --api-key $env:CHOCOLATEY_API_KEY --limit-output
+          if ($LASTEXITCODE) {
+            Write-Host "::error::choco push failed with exit code $LASTEXITCODE. A version Chocolatey already has cannot be pushed again unless moderation sent it back."
+            exit $LASTEXITCODE
+          }
+          $version = $env:TAG.TrimStart('v')
+          @(
+            "### ``$env:TAG`` pushed to Chocolatey"
+            ''
+            "It is now [in moderation](https://community.chocolatey.org/packages/winmedic/$version): automated checks, a test install and a VirusTotal scan, then a moderator, until the package is trusted. Chocolatey writes to the account's e-mail address when something needs an answer. ``choco install winmedic`` offers this version once it is approved."
+          ) -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
