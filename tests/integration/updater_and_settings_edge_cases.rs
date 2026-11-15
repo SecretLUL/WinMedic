@@ -440,7 +440,7 @@ async fn test_app_event_channel_update_checked_when_no_modal_active() {
 async fn test_app_event_channel_update_buffering_when_another_modal_is_active() {
     let mut app = App::new();
     // Another dialog is already open
-    app.pending_confirm = Some(ConfirmRequest::Unregister);
+    app.pending_confirm = Some(ConfirmRequest::Remove);
     app.available_update = None;
 
     let update_info = UpdateInfo {
@@ -458,9 +458,9 @@ async fn test_app_event_channel_update_buffering_when_another_modal_is_active() 
 
     // The open dialog is NOT overwritten
     match &app.pending_confirm {
-        Some(ConfirmRequest::Unregister) => {}
+        Some(ConfirmRequest::Remove) => {}
         other => panic!(
-            "Expected ConfirmRequest::Unregister to remain active, got {:?}",
+            "Expected ConfirmRequest::Remove to remain active, got {:?}",
             other
         ),
     }

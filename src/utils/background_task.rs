@@ -195,6 +195,21 @@ fn delete_helper_task() -> Result<(), String> {
     }
 }
 
+/// End the background scan the task is running right now, if it is one.
+///
+/// It runs from the same winmedic.exe, which cannot be deleted while it
+/// does: for [`crate::utils::self_remove`]. Best effort, since a task that
+/// is idle has nothing to end.
+pub fn end_running_helper() {
+    #[cfg(windows)]
+    {
+        let name = helper_task_name();
+        if query_helper_task(&name).is_some() {
+            let _ = schtasks(&["/end", "/tn", &name]);
+        }
+    }
+}
+
 pub fn sync_helper_task(enabled: bool, frequency_hours: u32) -> Result<(), String> {
     #[cfg(windows)]
     {

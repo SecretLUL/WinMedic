@@ -755,6 +755,22 @@ fn run_gui() -> Result<u8, Box<dyn std::error::Error>> {
         );
         return Err(err.into());
     }
+
+    // "Remove WinMedic from this PC", confirmed in the window. Done here and
+    // not there: eframe has written the window's position by now, into the
+    // folder that goes, and the services above are running again.
+    if utils::self_remove::requested()
+        && let Err(problem) = utils::self_remove::remove_this_installation()
+    {
+        utils::console::show_error_dialog(
+            "WinMedic",
+            &format!(
+                "WinMedic was not removed completely: {problem}.\n\n\
+                 Start WinMedic again and remove it once more."
+            ),
+        );
+        return Ok(exit_code::INTERNAL_ERROR);
+    }
     Ok(exit_code::OK)
 }
 

@@ -7,6 +7,7 @@ use super::state::App;
 use crate::config::AppConfig;
 use crate::safety::reg_backup::RegBackupManager;
 use crate::safety::restore_point::RestorePointService;
+use crate::utils::self_remove;
 use crate::utils::self_update::{self, InstallPlan, SelfUpdateService};
 use crate::utils::updater::{self, UpdateDownload};
 
@@ -74,6 +75,12 @@ pub struct SystemActions {
     /// Repair the task when its setting is on, and remove the Run entry of
     /// the "Start with Windows" setting older versions had.
     pub reconcile_background: fn(&AppConfig, &std::path::Path) -> Result<(), String>,
+    /// Note that WinMedic is to be removed from this PC. The window then
+    /// closes, and `main` does the removing once it has
+    /// ([`crate::utils::self_remove`]). Inert by default: a test that
+    /// confirms the dialog must not have the test run delete the settings,
+    /// logs and registry backups of the developer's own WinMedic.
+    pub request_removal: fn(),
 }
 
 fn real_restore_registry(file_path: &str) -> Result<String, String> {
@@ -140,6 +147,7 @@ impl SystemActions {
             persist_config: true,
             sync_helper_task: crate::utils::background_task::sync_helper_task,
             reconcile_background: crate::utils::background_task::reconcile,
+            request_removal: crate::utils::self_remove::request,
         }
     }
 
@@ -158,6 +166,7 @@ impl SystemActions {
             persist_config: false,
             sync_helper_task: |_, _| Ok(()),
             reconcile_background: |_, _| Ok(()),
+            request_removal: || {},
         }
     }
 }
@@ -190,10 +199,9 @@ pub enum ConfirmRequest {
     RestartRequired {
         issues: Vec<String>,
     },
-    /// Take the helper task and the Run entry out of Windows before the user
-    /// deletes the executable, which would otherwise leave both pointing at a
-    /// file that is gone.
-    Unregister,
+    /// Take WinMedic off this PC: the program, its scheduled task, and the
+    /// settings, logs, reports and registry backups it keeps.
+    Remove,
     /// Windows created no restore point, so the repair run stopped before
     /// its first repair. Going on without one is the user's call.
     RepairWithoutRestorePoint {
@@ -207,7 +215,7 @@ impl ConfirmRequest {
             ConfirmRequest::Rollback { .. } => "RESTORE REGISTRY BACKUP?",
             ConfirmRequest::UpdateAvailable { .. } => "NEW WINMEDIC UPDATE AVAILABLE",
             ConfirmRequest::RestartRequired { .. } => "SYSTEM RESTART REQUIRED",
-            ConfirmRequest::Unregister => "REMOVE WINMEDIC FROM WINDOWS?",
+            ConfirmRequest::Remove => "REMOVE WINMEDIC FROM THIS PC?",
             ConfirmRequest::RepairWithoutRestorePoint { .. } => "REPAIR WITHOUT A RESTORE POINT?",
         }
     }
@@ -222,7 +230,7 @@ impl ConfirmRequest {
                 "Open the release page in a browser"
             }
             ConfirmRequest::RestartRequired { .. } => "Restart now",
-            ConfirmRequest::Unregister => "Remove",
+            ConfirmRequest::Remove => "Remove",
             ConfirmRequest::RepairWithoutRestorePoint { .. } => "Repair without one",
         }
     }
@@ -232,7 +240,7 @@ impl ConfirmRequest {
             ConfirmRequest::Rollback { .. } => "Cancel",
             ConfirmRequest::UpdateAvailable { .. } => "Remind me later",
             ConfirmRequest::RestartRequired { .. } => "Later",
-            ConfirmRequest::Unregister => "Cancel",
+            ConfirmRequest::Remove => "Cancel",
             ConfirmRequest::RepairWithoutRestorePoint { .. } => "Cancel",
         }
     }
@@ -308,14 +316,48 @@ impl ConfirmRequest {
                 body.push("Restart Windows now?".to_string());
                 body
             }
-            ConfirmRequest::Unregister => vec![
-                "WinMedic will remove the background scan task (WinMedicHelper)".to_string(),
-                "and turn its setting off. Do this before deleting winmedic.exe,".to_string(),
-                "or the task keeps pointing at a file that is gone.".to_string(),
-                String::new(),
-                "Settings, logs and registry backups stay where they are; the".to_string(),
-                "command line 'winmedic --uninstall --purge' deletes them too.".to_string(),
-            ],
+            // Named with their places, so "everything" is not taken on
+            // trust: the registry backups are what a rollback needs.
+            ConfirmRequest::Remove => {
+                let shown = |path: Option<std::path::PathBuf>| {
+                    path.map(|path| path.display().to_string())
+                        .unwrap_or_default()
+                };
+                let exe = std::env::current_exe().ok();
+                let from_winget = exe
+                    .as_deref()
+                    .and_then(self_remove::winget_product_code)
+                    .is_some();
+                let mut body = vec![
+                    "WinMedic closes and deletes itself, with everything it keeps on this PC:"
+                        .to_string(),
+                    String::new(),
+                    format!("  • the program: {}", shown(exe)),
+                    "  • the background scan task".to_string(),
+                    format!(
+                        "  • settings, logs and reports: {}",
+                        shown(AppConfig::config_path().parent().map(Into::into))
+                    ),
+                    format!(
+                        "  • registry backups: {}",
+                        shown(
+                            crate::safety::reg_backup::default_backup_dir()
+                                .parent()
+                                .map(Into::into)
+                        )
+                    ),
+                ];
+                if from_winget {
+                    body.push("  • WinGet's entry for WinMedic".to_string());
+                }
+                body.extend([
+                    String::new(),
+                    "Without the backups, earlier repairs can no longer be undone from WinMedic."
+                        .to_string(),
+                    "Windows' own restore points stay.".to_string(),
+                ]);
+                body
+            }
             ConfirmRequest::RepairWithoutRestorePoint { reason } => vec![
                 "Windows did not create a restore point, so nothing was repaired yet:".to_string(),
                 String::new(),
@@ -346,7 +388,7 @@ impl App {
                 ConfirmRequest::RestartRequired { .. } => {
                     self.status_message = Some("Restart postponed.".to_string());
                 }
-                ConfirmRequest::Unregister => {
+                ConfirmRequest::Remove => {
                     self.status_message = Some("Cancelled - nothing was changed.".to_string());
                 }
                 ConfirmRequest::RepairWithoutRestorePoint { .. } => {
@@ -359,38 +401,34 @@ impl App {
         }
     }
 
-    /// Ask before taking WinMedic's registrations out of Windows.
-    pub fn request_unregister(&mut self) {
-        self.pending_confirm = Some(ConfirmRequest::Unregister);
+    /// Ask before taking WinMedic off this PC.
+    ///
+    /// Not while it works: the removal closes the window, and a repair cut
+    /// short there is left half done, a download half written.
+    pub fn request_remove(&mut self) {
+        if self.is_busy() || self.is_restoring || self.is_updating {
+            self.status_message =
+                Some("WinMedic is still working. Remove it once that has finished.".to_string());
+            return;
+        }
+        self.pending_confirm = Some(ConfirmRequest::Remove);
     }
 
-    /// Remove the helper task, and turn off the setting that would register
-    /// it again the next time the window opens.
-    fn unregister_from_windows(&mut self) {
-        self.config.helper_enabled = false;
+    /// Close the window and have `main` remove WinMedic once it has closed
+    /// ([`self_remove`]).
+    ///
+    /// The window cannot do it itself: on its way out eframe writes the
+    /// window's position into the very folder that has to go.
+    fn remove_from_this_pc(&mut self) {
+        // Nothing of this window is written back into folders that are
+        // about to be deleted, and no update is started on the way out.
+        self.system_actions.persist_config = false;
+        self.system_actions.persist_scan_state = false;
+        self.restart_into = None;
 
-        let mut problems: Vec<String> = Vec::new();
-        problems.extend(
-            (self.system_actions.sync_helper_task)(false, self.config.helper_frequency_hours).err(),
-        );
-        if self.system_actions.persist_config
-            && let Err(e) = self.config.save()
-        {
-            problems.push(format!("the settings could not be saved: {e}"));
-        }
-
-        self.status_message = Some(if problems.is_empty() {
-            format!(
-                "Removed from Windows - winmedic.exe can be deleted now. Settings and logs stay in {}, registry backups in {}.",
-                AppConfig::config_path()
-                    .parent()
-                    .map(|dir| dir.display().to_string())
-                    .unwrap_or_default(),
-                crate::safety::reg_backup::default_backup_dir().display()
-            )
-        } else {
-            format!("Not everything could be removed: {}", problems.join("; "))
-        });
+        (self.system_actions.request_removal)();
+        self.status_message = Some("Removing WinMedic from this PC...".to_string());
+        self.should_quit = true;
     }
 
     /// Open the parked update notice as a confirmation dialog.
@@ -565,7 +603,7 @@ impl App {
                     self.should_quit = true;
                 }
             }
-            ConfirmRequest::Unregister => self.unregister_from_windows(),
+            ConfirmRequest::Remove => self.remove_from_this_pc(),
             ConfirmRequest::RepairWithoutRestorePoint { .. } => {
                 self.start_repairs_without_restore_point()
             }
@@ -609,6 +647,11 @@ mod tests {
             !actions.self_update.is_live(),
             "App::new installed the real self-updater: accepting the update \
              dialog would download and replace an executable on this machine"
+        );
+        (actions.request_removal)();
+        assert!(
+            !self_remove::requested(),
+            "App::new installed the real removal of WinMedic from this PC"
         );
         assert!(
             !actions.persist_scan_state,
@@ -895,55 +938,105 @@ mod tests {
         );
     }
 
+    /// One click and one answer: the dialog says what goes and where it
+    /// is, and confirming it closes the window with the removal noted.
     #[test]
-    fn unregistering_turns_the_background_scan_off() {
+    fn confirming_the_removal_notes_it_and_closes_the_window() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NOTED: AtomicUsize = AtomicUsize::new(0);
+
         let mut app = App::new();
-        app.config.helper_enabled = true;
-        app.request_unregister();
-        assert_eq!(
-            app.pending_confirm.as_ref().map(ConfirmRequest::title),
-            Some("REMOVE WINMEDIC FROM WINDOWS?")
-        );
+        app.system_actions.request_removal = || {
+            NOTED.fetch_add(1, Ordering::SeqCst);
+        };
+        app.system_actions.persist_config = true;
+        app.system_actions.persist_scan_state = true;
+        app.restart_into = Some(std::path::PathBuf::from("winmedic-v9.9.9.exe"));
+
+        app.request_remove();
+        let request = app.pending_confirm.clone().expect("the button did not ask");
+        assert_eq!(request.title(), "REMOVE WINMEDIC FROM THIS PC?");
+        let body = request.body().join("\n");
+        let backups = crate::safety::reg_backup::default_backup_dir();
+        for named in [
+            "the program: ",
+            "the background scan task",
+            &AppConfig::config_path()
+                .parent()
+                .unwrap()
+                .display()
+                .to_string(),
+            &backups.parent().unwrap().display().to_string(),
+            "can no longer be undone",
+            "restore points stay",
+        ] {
+            assert!(
+                body.contains(named),
+                "the dialog does not name {named}: {body}"
+            );
+        }
+        assert_eq!(NOTED.load(Ordering::SeqCst), 0, "removed before the answer");
 
         app.confirm_pending_action();
 
-        assert!(!app.config.helper_enabled);
-        let backups = crate::safety::reg_backup::default_backup_dir();
+        assert_eq!(NOTED.load(Ordering::SeqCst), 1);
+        assert!(app.should_quit, "the window stays open");
+        // What the window writes on its way out would land in the folders
+        // `main` is about to delete, and bring them back.
+        assert!(!app.system_actions.persist_config);
+        assert!(!app.system_actions.persist_scan_state);
+        assert_eq!(app.restart_into, None, "it would restart into an update");
+    }
+
+    /// The default app's removal does nothing, like its other actions.
+    #[test]
+    fn a_default_app_removes_nothing() {
+        let mut app = App::new();
+        app.request_remove();
+        app.confirm_pending_action();
+
+        assert!(app.should_quit);
         assert!(
-            app.status_message.as_deref().is_some_and(|m| {
-                m.contains("can be deleted now") && m.contains(&backups.display().to_string())
-            }),
-            "{:?}",
-            app.status_message
+            !self_remove::requested(),
+            "App::new installed the real removal: `main` would delete WinMedic's \
+             folders, registry key and executable after this test run"
         );
     }
 
+    /// Closing the window ends a repair halfway and throws a download away.
     #[test]
-    fn a_removal_windows_refuses_is_reported_not_hidden() {
-        let mut app = App::new();
-        app.system_actions.sync_helper_task = |_, _| Err("access denied".to_string());
-        app.request_unregister();
+    fn the_removal_is_not_offered_while_winmedic_works() {
+        let busy: [fn(&mut App); 4] = [
+            |app| app.is_scanning = true,
+            |app| app.is_fixing = true,
+            |app| app.is_restoring = true,
+            |app| app.is_updating = true,
+        ];
+        for make_busy in busy {
+            let mut app = App::new();
+            make_busy(&mut app);
 
-        app.confirm_pending_action();
+            app.request_remove();
 
-        let message = app.status_message.unwrap_or_default();
-        assert!(
-            message.contains("Not everything could be removed"),
-            "{message}"
-        );
-        assert!(message.contains("access denied"), "{message}");
+            assert!(app.pending_confirm.is_none());
+            assert_eq!(
+                app.status_message.as_deref(),
+                Some("WinMedic is still working. Remove it once that has finished.")
+            );
+        }
     }
 
     #[test]
     fn cancelling_the_removal_changes_nothing() {
         let mut app = App::new();
         app.config.helper_enabled = true;
-        app.request_unregister();
+        app.request_remove();
 
         app.dismiss_confirm();
 
         assert!(app.config.helper_enabled);
         assert!(app.pending_confirm.is_none());
+        assert!(!app.should_quit);
     }
 
     #[test]

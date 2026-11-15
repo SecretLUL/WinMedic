@@ -222,6 +222,13 @@ Captured in Windows Sandbox (Windows 11 24H2, 26100.9974, German) as SYSTEM on 2
 | `sc_qc_depends_on_disabled_driver.bin` | `sc qc w32time` | ASCII | `DEPENDENCIES : cdfs`. |
 | `sc_query_depends_on_disabled_driver.bin` | `sc query w32time`, after the failed start | ASCII | `STATE : 1 STOPPED`, `WIN32_EXIT_CODE : 1068 (0x42c)`. Before any start attempt it was 1077. |
 
+Captured on 2026-11-15 on the development PC (10.0.26300, WinGet 1.29.380), unelevated, a
+read-only command:
+
+| File | Command | Encoding | Notes |
+| --- | --- | --- | --- |
+| `reg_query_winget_portable_arp.bin` | `reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Ninja-build.Ninja_Microsoft.Winget.Source_8wekyb3d8bbwe` | ASCII | What WinGet registers for a portable package, the kind WinMedic is: the key is named like the package folder under `...\WinGet\Packages` (`InstallLocation`), and `UninstallString` is `winget uninstall --product-code` with that same name. Another package's entry, since WinMedic is not installed through WinGet here. The user name in the path was replaced with `User`. |
+
 ## Files — `files/`
 
 | File | Content |

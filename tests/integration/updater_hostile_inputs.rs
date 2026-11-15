@@ -945,7 +945,7 @@ fn test_confirm_request_update_available_dialog_contract() {
 async fn test_app_update_buffering_when_another_dialog_is_active() {
     let mut app = App::new();
     // Another dialog is already open
-    app.pending_confirm = Some(ConfirmRequest::Unregister);
+    app.pending_confirm = Some(ConfirmRequest::Remove);
     app.available_update = None;
 
     let update_info = UpdateInfo {
@@ -963,10 +963,7 @@ async fn test_app_update_buffering_when_another_dialog_is_active() {
     // A background update never raises its own modal: a confirmation dialog
     // swallows every key and maps `j`/Enter (this app's list-navigation keys)
     // onto "open a browser", so it must not appear unasked-for.
-    assert!(matches!(
-        app.pending_confirm,
-        Some(ConfirmRequest::Unregister)
-    ));
+    assert!(matches!(app.pending_confirm, Some(ConfirmRequest::Remove)));
 
     // Dismissing it does not hand the user a second dialog either.
     app.dismiss_confirm();
@@ -999,7 +996,7 @@ async fn test_app_update_buffering_when_another_dialog_is_active() {
 #[tokio::test]
 async fn test_app_update_survives_accepting_another_dialog() {
     let mut app = App::new();
-    app.pending_confirm = Some(ConfirmRequest::Unregister);
+    app.pending_confirm = Some(ConfirmRequest::Remove);
     app.available_update = Some(UpdateInfo {
         current_version: "0.1.0".to_string(),
         latest_version: "v0.2.0".to_string(),

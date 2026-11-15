@@ -122,14 +122,15 @@ code is listed in [How WinMedic works](docs/how-it-works.md#cli-headless-automat
 
 ## Uninstall
 
-First click *Settings → Remove WinMedic from Windows*, or run
-`winmedic --uninstall`. That removes the background scan, if you turned it on.
-Then delete `winmedic.exe`, or run `winget uninstall SecretLUL.WinMedic` if you
-installed it with WinGet.
+Click *Settings → Remove WinMedic from this PC*. WinMedic asks once, closes
+and deletes itself with everything it keeps: the background scan, your
+settings, logs and reports, the registry backups, and WinGet's entry if you
+installed it with WinGet. Nothing is left to do by hand. Windows' restore
+points stay.
 
-Your settings and logs stay in `%APPDATA%\WinMedic`, the registry backups in
-`%ProgramData%\WinMedic` and `HKLM\SOFTWARE\WinMedic`;
-`winmedic --uninstall --purge` deletes them too.
+For scripts, `winmedic --uninstall` removes only the background scan and
+`winmedic --uninstall --purge` the data as well; see
+[How WinMedic works](docs/how-it-works.md#uninstall).
 
 ## For developers
 

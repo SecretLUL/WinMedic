@@ -13,6 +13,7 @@ pub mod job;
 pub mod pnp;
 pub mod progress;
 pub mod registry;
+pub mod self_remove;
 pub mod self_update;
 pub mod service;
 #[cfg(test)]

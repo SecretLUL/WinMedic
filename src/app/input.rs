@@ -357,7 +357,7 @@ mod tests {
     #[test]
     fn a_pending_confirmation_swallows_every_other_key() {
         let mut app = app();
-        app.pending_confirm = Some(ConfirmRequest::Unregister);
+        app.pending_confirm = Some(ConfirmRequest::Remove);
 
         // 'q' or other arbitrary keys would normally trigger actions, but must be swallowed without dismissing.
         handle_key(&mut app, Key::Char('q'));
@@ -377,14 +377,14 @@ mod tests {
         let mut app = app();
 
         // Dismiss via 'n'
-        app.pending_confirm = Some(ConfirmRequest::Unregister);
+        app.pending_confirm = Some(ConfirmRequest::Remove);
         handle_key(&mut app, Key::Char(' '));
         assert!(app.pending_confirm.is_some(), "Space ignored");
         handle_key(&mut app, Key::Char('n'));
         assert!(app.pending_confirm.is_none(), "'n' dismisses");
 
         // Dismiss via 'N'
-        app.pending_confirm = Some(ConfirmRequest::Unregister);
+        app.pending_confirm = Some(ConfirmRequest::Remove);
         handle_key(&mut app, Key::Char('N'));
         assert!(app.pending_confirm.is_none(), "'N' dismisses");
 
@@ -699,7 +699,7 @@ mod tests {
     #[test]
     fn f7_waits_while_a_dialog_is_open() {
         let mut app = app();
-        app.pending_confirm = Some(ConfirmRequest::Unregister);
+        app.pending_confirm = Some(ConfirmRequest::Remove);
         handle_key(&mut app, Key::F7);
         assert!(app.config.advanced_mode);
 

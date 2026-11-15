@@ -683,6 +683,12 @@ pub fn clean_leftovers(exe: &Path) -> usize {
         .count()
 }
 
+/// Every file an update left beside `exe`, staged or replaced, for
+/// [`crate::utils::self_remove`]: taking WinMedic off the PC takes them too.
+pub fn update_leftovers(exe: &Path) -> Vec<PathBuf> {
+    leftovers(exe, &[STAGING_INFIX, RETIRED_INFIX])
+}
+
 /// The files beside `exe` that an update wrote under one of `infixes`.
 fn leftovers(exe: &Path, infixes: &[&str]) -> Vec<PathBuf> {
     let (Some(dir), Some(name)) = (exe.parent(), exe.file_name().and_then(|n| n.to_str())) else {

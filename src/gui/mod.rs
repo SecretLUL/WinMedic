@@ -1149,7 +1149,7 @@ mod tests {
     #[test]
     fn confirmation_blocks_clicks_on_the_navigation() {
         let mut app = fresh_app();
-        app.pending_confirm = Some(ConfirmRequest::Unregister);
+        app.pending_confirm = Some(ConfirmRequest::Remove);
         let mut harness = window(app);
         harness.get_by_label("Settings").click();
         harness.run();
@@ -1194,11 +1194,11 @@ mod tests {
         app.active_tab = TAB_SETTINGS;
         let mut harness = window(app);
 
-        harness.get_by_label("Remove WinMedic from Windows").click();
+        harness.get_by_label("Remove WinMedic from this PC").click();
         harness.run();
         assert!(matches!(
             harness.state().pending_confirm,
-            Some(ConfirmRequest::Unregister)
+            Some(ConfirmRequest::Remove)
         ));
     }
 
@@ -1209,12 +1209,12 @@ mod tests {
         for tab in 0..TAB_COUNT {
             let mut app = fresh_app();
             app.active_tab = tab;
-            app.pending_confirm = Some(ConfirmRequest::Unregister);
+            app.pending_confirm = Some(ConfirmRequest::Remove);
 
             let harness = window(app);
             assert!(
                 harness
-                    .query_by_label_contains("REMOVE WINMEDIC FROM WINDOWS?")
+                    .query_by_label_contains("REMOVE WINMEDIC FROM THIS PC?")
                     .is_some(),
                 "the dialog is missing on view {tab}"
             );
