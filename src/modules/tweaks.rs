@@ -2281,9 +2281,20 @@ mod tests {
         }
     }
 
+    /// A folder of its own for every call. Named by `name` and the process
+    /// alone, the helpers that several tests scan through (`scan_chains`,
+    /// `scan_devices`, `scan_split_threshold`) handed them all one folder,
+    /// and a test that ended deleted it under a test that had just made it:
+    /// once in a while a `hosts` file could not be written, "path not found".
     fn sandbox(name: &str) -> Sandbox {
-        let dir =
-            std::env::temp_dir().join(format!("winmedic_tweaks_{}_{}", name, std::process::id()));
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "winmedic_tweaks_{}_{}_{}",
+            name,
+            std::process::id(),
+            call
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         Sandbox(dir)
