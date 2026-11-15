@@ -52,7 +52,8 @@ jobs:
       pull-requests: write
       # To read whether CI passed on the commit being released.
       actions: read
-    # Read by the `winget` job below, which needs to know both which version
+    # Read by the `winget` job below (and by `virustotal` and `chocolatey`),
+    # which needs to know both which version
     # shipped and whether it actually reached the releases page.
     outputs:
       tag: ${{ steps.v.outputs.tag }}
@@ -501,8 +502,8 @@ jobs:
   # Microsoft flagged v0.6.0 as a trojan, a machine-learning false positive that
   # nobody noticed until the file was uploaded by hand. This uploads every
   # published binary and turns red when any engine flags it, which is what
-  # sends the notification. It holds nothing up: the release is out and WinGet
-  # does not wait for it.
+  # sends the notification. The release is out and WinGet does not wait for it;
+  # only the Chocolatey push below does.
   virustotal:
     name: Scan on VirusTotal
     needs: release
@@ -529,3 +530,19 @@ jobs:
           gh release download $env:TAG --repo $env:GITHUB_REPOSITORY --pattern $name
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           ./scripts/virustotal-scan.ps1 $name
+
+  # After the scan rather than beside it like WinGet: Chocolatey scans every
+  # package on VirusTotal itself, and a version an engine flags waits there for
+  # a moderator. Such a version is not pushed at all (#309); once the vendor has
+  # cleared the detection, `chocolatey.yml` pushes it by hand. Without the
+  # VIRUSTOTAL_API_KEY secret the scan job is green without scanning, and this
+  # one runs.
+  chocolatey:
+    name: Publish to Chocolatey
+    needs: [release, virustotal]
+    if: ${{ always() && needs.release.outputs.published == 'true' && needs.virustotal.result == 'success' }}
+    uses: ./.github/workflows/chocolatey.yml
+    with:
+      tag: ${{ needs.release.outputs.tag }}
+    # CHOCOLATEY_API_KEY is optional there; without it the job says what to set.
+    secrets: inherit
