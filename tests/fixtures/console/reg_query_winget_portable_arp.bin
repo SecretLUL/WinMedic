@@ -1,0 +1,16 @@
+
+HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\Ninja-build.Ninja_Microsoft.Winget.Source_8wekyb3d8bbwe
+    WinGetPackageIdentifier    REG_SZ    Ninja-build.Ninja
+    WinGetSourceIdentifier    REG_SZ    Microsoft.Winget.Source_8wekyb3d8bbwe
+    UninstallString    REG_SZ    winget uninstall --product-code Ninja-build.Ninja_Microsoft.Winget.Source_8wekyb3d8bbwe
+    WinGetInstallerType    REG_SZ    portable
+    DisplayName    REG_SZ    ninja
+    DisplayVersion    REG_SZ    1.13.2
+    Publisher    REG_SZ    ninja-build
+    InstallDate    REG_SZ    20260711
+    URLInfoAbout    REG_SZ    https://github.com/ninja-build/ninja
+    HelpLink    REG_SZ    https://github.com/ninja-build/ninja/issues
+    InstallDirectoryCreated    REG_DWORD    0x1
+    InstallLocation    REG_SZ    C:\Users\User\AppData\Local\Microsoft\WinGet\Packages\Ninja-build.Ninja_Microsoft.Winget.Source_8wekyb3d8bbwe
+    InstallDirectoryAddedToPath    REG_DWORD    0x1
+

@@ -72,8 +72,8 @@ fn confirm(ctx: &egui::Context, app: &mut App, arrived: f32) {
     let confirm_label = request.confirm_label();
     let dismiss_label = request.dismiss_label();
     // Red like the button that asked, so the dialog does not make taking
-    // WinMedic out of Windows look like the step everyone takes.
-    let removes = matches!(request, ConfirmRequest::Unregister);
+    // WinMedic off the PC look like the step everyone takes.
+    let removes = matches!(request, ConfirmRequest::Remove);
 
     let mut confirmed = false;
     let mut dismissed = false;

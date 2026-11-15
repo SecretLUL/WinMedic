@@ -545,7 +545,7 @@ pub fn system_program(program: &str) -> Result<PathBuf, String> {
 }
 
 /// System32, from `GetSystemDirectoryW`.
-fn system_dir() -> Option<&'static Path> {
+pub(crate) fn system_dir() -> Option<&'static Path> {
     static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     #[cfg(windows)]
     let dir = DIR.get_or_init(|| {
@@ -583,7 +583,7 @@ pub(crate) fn windows_dir() -> Option<&'static Path> {
 /// The separator at the end is deliberate. PowerShell puts the user's folder
 /// in front of a value that equals the machine's own `PSModulePath`, which is
 /// never spelled like this.
-fn powershell_module_path(program: &Path) -> Option<std::ffi::OsString> {
+pub(crate) fn powershell_module_path(program: &Path) -> Option<std::ffi::OsString> {
     let name = program.file_name()?.to_str()?;
     if !name.eq_ignore_ascii_case("powershell.exe") {
         return None;

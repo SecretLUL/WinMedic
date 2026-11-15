@@ -155,15 +155,15 @@ fn safety(ui: &mut egui::Ui, app: &mut App) {
 
             theme::section(ui, "Remove from this PC");
             ui.label(theme::muted(
-                "Before deleting winmedic.exe: removes the background scan task and turns \
-                 its setting off.",
+                "Deletes WinMedic and everything it keeps on this PC: the program, its \
+                 settings, logs, reports and registry backups. Nothing is left to do by hand.",
             ));
             ui.add_space(4.0);
-            if theme::danger_button(ui, "Remove WinMedic from Windows")
+            if theme::danger_button(ui, "Remove WinMedic from this PC")
                 .on_hover_text("Asks for confirmation first")
                 .clicked()
             {
-                app.request_unregister();
+                app.request_remove();
             }
         });
 }
