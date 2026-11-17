@@ -155,13 +155,18 @@ impl FastStartup {
     }
 }
 
-/// How long Windows has been running since it last really started.
-pub type UptimeSource = Arc<dyn Fn() -> Duration + Send + Sync>;
+/// How long Windows has been running since it last really started, or `None`
+/// when that cannot be read.
+pub type UptimeSource = Arc<dyn Fn() -> Option<Duration> + Send + Sync>;
 
 /// `GetTickCount64`, which keeps counting through sleep and hibernation - and
 /// so through a Fast Startup "shutdown" - just like Task Manager's uptime.
+///
+/// `sysinfo` 0.40 returns a `Result` here. On Windows it is always `Ok`; an
+/// error is "not known", never an uptime of zero, which would read as a
+/// Windows that has just started.
 fn real_uptime() -> UptimeSource {
-    Arc::new(|| Duration::from_secs(sysinfo::System::uptime()))
+    Arc::new(|| sysinfo::System::uptime().ok().map(Duration::from_secs))
 }
 
 pub struct ClockRestartModule {
@@ -438,6 +443,17 @@ impl DiagnosticModule for ClockRestartModule {
         )
         .await;
         let uptime = (self.uptime)();
+        if uptime.is_none() {
+            // Not checked is not "restarted lately": say so, raise nothing.
+            Self::send_progress(
+                &progress_tx,
+                80,
+                "The uptime could not be read - the last restart was not judged",
+                None,
+            )
+            .await;
+        }
+        let uptime = uptime.unwrap_or_default();
         let days = uptime.as_secs() / 86_400;
         if days >= RESTART_OVERDUE_DAYS {
             let state = self.fast_startup().await;
@@ -595,7 +611,7 @@ mod tests {
             ..ModuleConfig::default()
         };
         ClockRestartModule::with_runner(config, Arc::new(mock.clone())).with_uptime(Arc::new(
-            move || Duration::from_secs(uptime_days * 86_400 + 3_600),
+            move || Some(Duration::from_secs(uptime_days * 86_400 + 3_600)),
         ))
     }
 
@@ -727,6 +743,30 @@ mod tests {
         assert!(!issue.requires_reboot);
         assert!(issue.fix_steps.is_empty());
         assert!(issue.recommended_fix.starts_with("Restart Windows"));
+    }
+
+    /// `sysinfo` 0.40 can fail to tell the uptime. Nothing is raised, and the
+    /// scan says the restart was not judged rather than passing it.
+    #[tokio::test]
+    async fn an_uptime_that_cannot_be_read_is_not_judged() {
+        let module = module(&machine(true), 20).with_uptime(Arc::new(|| None));
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let issues = module.scan(Some(tx)).await.unwrap();
+        assert!(issues.is_empty(), "{issues:?}");
+
+        let mut steps = Vec::new();
+        while let Ok(progress) = rx.try_recv() {
+            steps.push(progress.current_step);
+        }
+        assert!(
+            steps.iter().any(|s| s.contains("was not judged")),
+            "{steps:?}"
+        );
+    }
+
+    #[test]
+    fn this_machine_knows_its_uptime() {
+        assert!(real_uptime()().is_some_and(|uptime| !uptime.is_zero()));
     }
 
     #[tokio::test]
