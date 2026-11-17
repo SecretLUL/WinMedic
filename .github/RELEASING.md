@@ -39,6 +39,44 @@ and, after a clean VirusTotal scan, `chocolatey.yml`.
   place that disagrees.
 - A hand-pushed `v*` tag still releases, and fails if the tagged tree states a
   different version.
+- `./scripts/next-version.ps1 -Bump minor` prints the version a run would
+  pick, without starting one.
+
+## A pre-release
+
+For a change that should reach testers before it reaches everyone. It is the
+same workflow with one more tick, **Pre-release**, run on the branch that holds
+the change (*Use workflow from*) instead of on `main`:
+
+```powershell
+gh workflow run release.yml --ref <branch> -f bump=patch -f prerelease=true
+```
+
+The version is the next one by `bump` with `-pre.N` behind it, N counting up
+per version: after v0.18.0, `patch` gives `v0.18.1-pre.1`, then
+`v0.18.1-pre.2`; `minor` gives `v0.19.0-pre.1`. Everything else runs as for a
+release: the build, the check of what the binary calls itself, the `.sha256`,
+the PDB and VirusTotal.
+
+- That `-` is what makes it a pre-release, everywhere: GitHub marks it and
+  keeps *Latest* on the last release, WinGet and Chocolatey skip it, and the
+  update check never offers one. Nobody is moved onto a pre-release, and nobody
+  from one pre-release to the next: it is a download by hand. Whoever runs one
+  is offered the next release as usual. A version without the `-`, such as
+  `v0.18.1`, is a release whatever it is called, goes to WinGet and
+  Chocolatey, and takes that number from the real 0.18.1.
+- The branch keeps its version. The bump is committed for the tag alone and
+  pushed nowhere, or it would reach `main` with the pull request.
+- CI has to have passed on the branch's newest commit, in its pull request.
+  Without the tick the run counts only CI's runs on `main`, so a release
+  started on a branch by mistake stops there.
+- The run uses the branch's own copy of `release.yml`, and counts from the
+  newest release. So first release what is on `main`, then merge `main` into
+  the branch, then run the pre-release: started before, it would be numbered
+  below the release that follows it.
+- Notes go in `docs/release-notes/<tag>.md` on that branch
+  (`v0.18.1-pre.1.md`), or are generated from the commit list.
+- Once the change is ready, merge the pull request and release as usual.
 
 ## VirusTotal
 

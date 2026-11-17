@@ -547,6 +547,25 @@ mod tests {
         assert!(!is_update_available("1.0.0", "v1.0.0-rc1"));
     }
 
+    /// What release.yml's pre-release tick ships: `-pre.N` behind the next
+    /// version. Whoever runs one is offered nothing older and every release
+    /// from that version on.
+    #[test]
+    fn a_pre_release_build_is_offered_the_releases_after_it() {
+        assert_eq!(
+            SemVer::parse("0.18.1-pre.1"),
+            Some(SemVer {
+                major: 0,
+                minor: 18,
+                patch: 1,
+                pre: Some("pre.1".to_string())
+            })
+        );
+        assert!(!is_update_available("0.18.1-pre.1", "v0.18.0"));
+        assert!(is_update_available("0.18.1-pre.1", "v0.18.1"));
+        assert!(is_update_available("0.18.1-pre.1", "v0.19.0"));
+    }
+
     #[test]
     fn test_semver_parsing_invalid() {
         assert_eq!(SemVer::parse(""), None);
