@@ -1451,7 +1451,7 @@ fn test_tier1_f17_setting_row_six_is_verbose_logging_setting() {
     let (label, val, desc) = config.setting_row(6).unwrap();
     assert_eq!(label, "Enable verbose / debug logs");
     assert_eq!(val, "OFF");
-    assert!(desc.contains("debug"));
+    assert!(desc.contains("scan and repair logs"));
 }
 
 #[test]

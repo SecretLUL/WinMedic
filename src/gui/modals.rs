@@ -326,11 +326,8 @@ const SHORTCUTS: &[(&str, &str, bool)] = &[
     ("1 / 2", "Scan & Repair, Settings", false),
     ("E", "Export an HTML report", false),
     ("U", "Roll back a registry backup (Settings)", false),
-    (
-        "B",
-        "Move the arrow keys between settings and backups",
-        false,
-    ),
+    ("PgUp / PgDn", "Settings: the page before, the next", false),
+    ("B", "Settings: to the registry backups and back", false),
     (
         "Esc",
         "Unwind: filters, then focus, then a running operation",
