@@ -259,6 +259,10 @@ pub fn handle_key(app: &mut App, code: Key) {
         // these keys move the selection, which is what Enter and Space act on.
         Key::PageUp if app.active_tab == TAB_HOME => app.page_up_issue(PAGE_STEP),
         Key::PageDown if app.active_tab == TAB_HOME => app.page_down_issue(PAGE_STEP),
+        // On Settings there is no long list to jump through, and the same
+        // keys turn its pages.
+        Key::PageUp if app.active_tab == TAB_SETTINGS => app.prev_settings_page(),
+        Key::PageDown if app.active_tab == TAB_SETTINGS => app.next_settings_page(),
         Key::Home if app.active_tab == TAB_HOME => app.first_issue(),
         Key::End if app.active_tab == TAB_HOME => app.last_issue(),
 

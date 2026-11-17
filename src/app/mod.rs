@@ -40,6 +40,7 @@ pub mod welcome;
 pub use confirm::{ConfirmRequest, SystemActions};
 pub use input::{Key, handle_key};
 pub use scan_state::ScanState;
+pub use settings::SettingsPage;
 pub use state::{App, SafetyFocus, SettingInput};
 
 /// Maximum number of log lines kept in memory for scan and repair terminal buffers.

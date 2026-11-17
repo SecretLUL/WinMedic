@@ -307,7 +307,7 @@ impl AppConfig {
             3 => Some((
                 "Check for updates automatically",
                 on_off(self.check_for_updates),
-                "Checks GitHub for new WinMedic releases in the background at startup. [Space/Enter] Toggle.",
+                "Asks GitHub for a newer WinMedic at startup. [Space/Enter] Toggle.",
             )),
             4 => Some((
                 "Temp file threshold",
@@ -322,17 +322,17 @@ impl AppConfig {
             6 => Some((
                 "Enable verbose / debug logs",
                 on_off(self.verbose_logging),
-                "Shows detailed diagnostic traces, debug logs, module timing, and step-by-step command outputs in scan and repair logs. [Space/Enter] Toggle.",
+                "Adds every command, its output and timings to the scan and repair logs. [Space/Enter] Toggle.",
             )),
             7 => Some((
                 "WinMedicHelper background scan",
                 on_off(self.helper_enabled),
-                "Runs automated diagnostic scans in the background while you are signed in, even when WinMedic is closed. Windows skips runs on battery power. [Space/Enter] Toggle.",
+                "Scans while you are signed in, even when WinMedic is closed. Not on battery power. [Space/Enter] Toggle.",
             )),
             8 => Some((
                 "WinMedicHelper scan frequency",
                 format!("{} h", self.helper_frequency_hours),
-                "How often the WinMedicHelper background task scans the system: every 1-23 hours or every whole number of days. [Enter] Custom value, [+/-] ±6 h / ±1 day.",
+                "How often the background scan runs: every 1-23 hours or every whole number of days. [Enter] Custom value, [+/-] ±6 h / ±1 day.",
             )),
             _ => None,
         }

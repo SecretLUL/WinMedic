@@ -550,7 +550,7 @@ impl eframe::App for WinMedicApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{ConfirmRequest, TAB_COUNT, TAB_HOME};
+    use crate::app::{ConfirmRequest, SettingsPage, TAB_COUNT, TAB_HOME};
     use crate::engine::issue::{Issue, RiskScore, Severity};
     use crate::modules::ModuleStatus;
     use crate::safety::audit::AuditEntry;
@@ -721,20 +721,29 @@ mod tests {
             for fixture in FIXTURES {
                 // 960 x 527: what is left of 1920 x 1080 at 175 %.
                 for size in [smallest, (960.0, 527.0), (1400.0, 900.0), (1920.0, 1200.0)] {
-                    let mut app = fixture();
-                    app.active_tab = tab;
-                    let harness = sized_window(app, size);
+                    // Settings is five pages; the other view is one.
+                    let pages = if tab == TAB_SETTINGS {
+                        SettingsPage::ALL.len()
+                    } else {
+                        1
+                    };
+                    for page in 0..pages {
+                        let mut app = fixture();
+                        app.active_tab = tab;
+                        app.open_settings_page(SettingsPage::ALL[page]);
+                        let harness = sized_window(app, size);
 
-                    let help = harness.get_by_label("Help").rect();
-                    assert!(
-                        help.bottom() < 60.0 && help.right() <= size.0,
-                        "view {tab}: the navigation lost its Help button at {size:?}: {help:?}"
-                    );
-                    for title in TABS {
+                        let help = harness.get_by_label("Help").rect();
                         assert!(
-                            harness.query_by_label(title).is_some(),
-                            "view {tab} at {size:?} did not draw its navigation entry {title}"
+                            help.bottom() < 60.0 && help.right() <= size.0,
+                            "view {tab}: the navigation lost its Help button at {size:?}: {help:?}"
                         );
+                        for title in TABS {
+                            assert!(
+                                harness.query_by_label(title).is_some(),
+                                "view {tab} at {size:?} did not draw its navigation entry {title}"
+                            );
+                        }
                     }
                 }
             }
@@ -990,14 +999,16 @@ mod tests {
     /// a screen reader and for a click.
     #[test]
     fn a_page_that_came_in_stands_where_it_is_drawn_at_once() {
+        // A line only the page has: its title is in the list of pages too.
+        let line = SettingsPage::Repairs.summary();
         let mut settings = fresh_app();
         settings.active_tab = TAB_SETTINGS;
-        let at_once = window(settings).get_by_label("Options").rect();
+        let at_once = window(settings).get_by_label(line).rect();
 
         let mut harness = animated_window(fresh_app());
         harness.get_by_label("Settings").click();
         harness.step();
-        let coming = harness.get_by_label("Options").rect();
+        let coming = harness.get_by_label(line).rect();
         assert!(
             coming.top() > at_once.top() && coming.top() <= at_once.top() + 12.0,
             "on its way at {coming:?}, its place is {at_once:?}"
@@ -1006,7 +1017,7 @@ mod tests {
 
         // `run` gives up on an animation that does not end.
         harness.run();
-        assert_eq!(harness.get_by_label("Options").rect(), at_once);
+        assert_eq!(harness.get_by_label(line).rect(), at_once);
     }
 
     /// A dialog settles from a little larger into the size and place of one
@@ -1217,39 +1228,152 @@ mod tests {
         assert!(harness.state().pending_confirm.is_none());
     }
 
-    /// The whole point of that merge: none of the safety surface may go missing.
+    /// A window on the Settings tab, turned to `page`.
+    fn settings_window(mut app: App, page: SettingsPage) -> Harness<'static, App> {
+        app.active_tab = TAB_SETTINGS;
+        app.open_settings_page(page);
+        window(app)
+    }
+
+    /// The whole point of that merge: none of the safety surface may go
+    /// missing. It is spread over the pages now, and each still has its part.
     #[test]
     fn the_settings_view_carries_the_whole_safety_surface() {
-        let mut app = fresh_app();
-        app.active_tab = TAB_SETTINGS;
-        let harness = window(app);
+        let surface: [(SettingsPage, &[&str]); 5] = [
+            (
+                SettingsPage::Repairs,
+                &[
+                    "Create a VSS restore point before repairs",
+                    "Back up the registry before changing it",
+                    "Restart services automatically",
+                ],
+            ),
+            (
+                SettingsPage::Undo,
+                &[
+                    "Registry backups",
+                    "Startup entry removed",
+                    "Restore the selected snapshot",
+                    "System restore points",
+                    "255 | WinMedic Auto-Restore Point (before repairs) | ",
+                ],
+            ),
+            (
+                SettingsPage::Scans,
+                &[
+                    "Temp file threshold",
+                    "WinMedicHelper background scan",
+                    "Archived findings",
+                ],
+            ),
+            (
+                SettingsPage::Logs,
+                &["Recent activity", "Disabled a startup entry", "Log folder"],
+            ),
+            (
+                SettingsPage::General,
+                &[
+                    "Check for updates automatically",
+                    "Remove WinMedic from this PC",
+                ],
+            ),
+        ];
+        for (page, expected) in surface {
+            let harness = settings_window(fresh_app(), page);
+            for expected in expected {
+                assert!(
+                    harness.query_by_label_contains(expected).is_some(),
+                    "{page:?} lost: {expected}"
+                );
+            }
+            // Every page names all of them, so each is one click away.
+            for other in SettingsPage::ALL {
+                assert!(
+                    harness
+                        .query_by_role_and_label(Role::Tab, other.title())
+                        .is_some(),
+                    "{page:?} does not list {other:?}"
+                );
+            }
+            // The restore point's time is a date, not the WMI string (#183).
+            assert!(harness.query_by_label_contains("20261009201051").is_none());
+        }
+    }
 
-        for expected in [
-            "Options",
+    /// One page at a time: what belongs to another page is not drawn, which
+    /// is what keeps Easy mode's fixed window from filling up with text.
+    #[test]
+    fn a_settings_page_shows_only_its_own_part() {
+        let harness = settings_window(fresh_app(), SettingsPage::Repairs);
+        for elsewhere in [
             "Registry backups",
-            "System restore points",
+            "Temp file threshold",
             "Recent activity",
-            "Log folder",
-            "Startup entry removed",
-            "Restore the selected snapshot",
-            "Disabled a startup entry",
-            "255 | WinMedic Auto-Restore Point (before repairs) | ",
+            "Remove WinMedic from this PC",
         ] {
             assert!(
-                harness.query_by_label_contains(expected).is_some(),
-                "the safety surface lost: {expected}"
+                harness.query_by_label(elsewhere).is_none(),
+                "{elsewhere} is on the Repairs page"
             );
         }
-        // The restore point's time is a date, not the WMI string (#183).
-        assert!(harness.query_by_label_contains("20261009201051").is_none());
+    }
+
+    /// A click on a page's name turns to it, and the keyboard goes along.
+    #[test]
+    fn the_list_of_pages_turns_the_page() {
+        let mut app = fresh_app();
+        app.active_tab = TAB_SETTINGS;
+        let mut harness = window(app);
+        assert_eq!(harness.state().settings_page(), SettingsPage::Repairs);
+
+        for page in [
+            SettingsPage::Undo,
+            SettingsPage::Logs,
+            SettingsPage::Scans,
+            SettingsPage::General,
+            SettingsPage::Repairs,
+        ] {
+            harness
+                .get_by_role_and_label(Role::Tab, page.title())
+                .click();
+            harness.run_steps(2);
+            assert_eq!(harness.state().settings_page(), page);
+            assert!(harness.query_by_label(page.summary()).is_some());
+        }
+    }
+
+    /// Every page fits the window Easy mode locks: nothing of it is below
+    /// the fold on a PC that has not been repaired often.
+    #[test]
+    fn every_settings_page_fits_the_smallest_window_without_scrolling() {
+        let size = (window::MIN_SIZE.x, window::MIN_SIZE.y);
+        let last_line: [(SettingsPage, &str); 5] = [
+            (SettingsPage::Repairs, "Restart services automatically"),
+            (SettingsPage::Undo, "Refresh"),
+            (SettingsPage::Scans, "Nothing archived."),
+            (
+                SettingsPage::Logs,
+                "Every scan, repair, simulation and rollback is recorded here.",
+            ),
+            (SettingsPage::General, "Remove WinMedic from this PC"),
+        ];
+        for (page, label) in last_line {
+            let mut app = easy_fresh_app();
+            app.active_tab = TAB_SETTINGS;
+            app.open_settings_page(page);
+            let harness = sized_window(app, size);
+            let rect = harness.get_by_label(label).rect();
+            assert!(
+                rect.bottom() <= size.1 - 30.0 && rect.right() <= size.0,
+                "{page:?}: {label} is at {rect:?}"
+            );
+        }
     }
 
     /// The red button only asks; removing happens in the dialog.
     #[test]
     fn the_remove_button_asks_first() {
-        let mut app = fresh_app();
-        app.active_tab = TAB_SETTINGS;
-        let mut harness = window(app);
+        let mut harness = settings_window(fresh_app(), SettingsPage::General);
 
         harness.get_by_label("Remove WinMedic from this PC").click();
         harness.run();
@@ -2151,6 +2275,7 @@ mod tests {
         );
 
         harness.state_mut().active_tab = TAB_SETTINGS;
+        harness.state_mut().open_settings_page(SettingsPage::Scans);
         harness.run_steps(2);
         assert!(harness.query_by_label("DNS cache full").is_some());
         harness.get_by_label("Show again").click();
@@ -2185,9 +2310,8 @@ mod tests {
 
     #[test]
     fn settings_say_when_nothing_is_archived() {
-        let mut app = scanned_app();
-        app.active_tab = TAB_SETTINGS;
-        assert!(window(app).query_by_label("Nothing archived.").is_some());
+        let harness = settings_window(scanned_app(), SettingsPage::Scans);
+        assert!(harness.query_by_label("Nothing archived.").is_some());
     }
 
     /// Nowhere else either: Easy mode does not count it, and a repair of it
@@ -2406,26 +2530,45 @@ mod tests {
         assert!(in_window(leftmost(&harness, "Finding number 00")));
     }
 
-    /// The same for the settings, at the smallest window size.
+    /// The same for the settings, at the smallest window size: the arrow
+    /// keys walk every setting, and each is on screen when they reach it,
+    /// which past the last of a page means the page was turned.
     #[test]
-    fn the_settings_scroll_to_the_row_the_keyboard_moved_to() {
+    fn the_settings_turn_to_the_row_the_keyboard_moved_to() {
         let mut app = scanned_app();
         app.active_tab = TAB_SETTINGS;
-        let last = crate::config::AppConfig::SETTING_COUNT - 1;
-        let label = app.config.setting_row(last).unwrap().0;
+        app.selected_setting_index = 0;
         let mut harness = window_with_keys_at(app, window::MIN_SIZE);
         let in_window = |rect: egui::Rect| rect.top() >= 0.0 && rect.bottom() <= window::MIN_SIZE.y;
-        assert!(
-            !in_window(leftmost(&harness, label)),
-            "{label} fits already"
-        );
 
-        for _ in 0..last {
+        let mut walked = vec![0];
+        for _ in 1..crate::config::AppConfig::SETTING_COUNT {
             harness.key_press(egui::Key::ArrowDown);
             harness.run();
+            let index = harness.state().selected_setting_index;
+            let label = harness.state().config.setting_row(index).unwrap().0;
+            assert!(in_window(leftmost(&harness, label)), "{label} is not shown");
+            walked.push(index);
         }
-        assert_eq!(harness.state().selected_setting_index, last);
-        assert!(in_window(leftmost(&harness, label)));
+        walked.sort_unstable();
+        walked.dedup();
+        assert_eq!(walked.len(), crate::config::AppConfig::SETTING_COUNT);
+
+        // PgDn and PgUp turn the pages, B goes to the backups and back.
+        let page = harness.state().settings_page();
+        harness.key_press(egui::Key::PageUp);
+        harness.run();
+        assert_ne!(harness.state().settings_page(), page);
+        harness.key_press(egui::Key::PageDown);
+        harness.run();
+        assert_eq!(harness.state().settings_page(), page);
+        harness.event(egui::Event::Text("b".to_string()));
+        harness.run();
+        assert_eq!(harness.state().settings_page(), SettingsPage::Undo);
+        assert!(harness.query_by_label("Registry backups").is_some());
+        harness.event(egui::Event::Text("b".to_string()));
+        harness.run();
+        assert_eq!(harness.state().settings_page(), page);
     }
 
     /// F7 types nothing, so it works from inside the search box too — and

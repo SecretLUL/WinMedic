@@ -126,7 +126,7 @@ code is listed in [How WinMedic works](docs/how-it-works.md#cli-headless-automat
 
 ## Uninstall
 
-Click *Settings → Remove WinMedic from this PC*. WinMedic asks once, closes
+Click *Settings → General → Remove WinMedic from this PC*. WinMedic asks once, closes
 and deletes itself with everything it keeps: the background scan, your
 settings, logs and reports, the registry backups, and WinGet's entry if you
 installed it with WinGet. Nothing is left to do by hand. Windows' restore
