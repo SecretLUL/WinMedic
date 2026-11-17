@@ -1652,15 +1652,15 @@ mod tests {
         );
     }
 
-    /// Easy mode repairing, with the running step started `minutes` ago and
+    /// Easy mode repairing, with the running step started `seconds` ago and
     /// its tool at `percent`.
-    fn easy_repairing(minutes: u64, percent: Option<f32>) -> Harness<'static, App> {
+    fn easy_repairing(seconds: u64, percent: Option<f32>) -> Harness<'static, App> {
         let mut app = easy_scanned_app();
         app.is_fixing = true;
         app.total_to_fix = 8;
         app.fixed_count = 1;
         app.failed_count = 0;
-        app.repair_step_since = Instant::now().checked_sub(Duration::from_secs(minutes * 60));
+        app.repair_step_since = Instant::now().checked_sub(Duration::from_secs(seconds));
         app.repair_step_percent = percent;
         window(app)
     }
@@ -1671,7 +1671,7 @@ mod tests {
     /// it will take at the pace its tool reports.
     #[test]
     fn a_long_repair_in_easy_mode_says_all_is_well_and_how_long_it_takes() {
-        let harness = easy_repairing(3, Some(30.0));
+        let harness = easy_repairing(3 * 60, Some(30.0));
         assert!(harness.query_by_label(PATIENCE).is_some());
         assert!(
             harness
@@ -1682,14 +1682,37 @@ mod tests {
 
     #[test]
     fn a_long_repair_without_progress_says_how_long_it_has_run() {
-        let harness = easy_repairing(3, None);
+        let harness = easy_repairing(3 * 60, None);
         assert!(harness.query_by_label(PATIENCE).is_some());
         assert!(harness.query_by_label("Running for 3 minutes.").is_some());
     }
 
+    /// Half a minute of a bar that hardly moves is where someone new to this
+    /// starts to worry, so the word that all is well comes then. How long it
+    /// takes comes later: there is no whole minute to count yet, and an
+    /// estimate from DISM's first percent would be the number that frightens.
+    #[test]
+    fn a_repair_running_half_a_minute_says_all_is_well_and_no_time_yet() {
+        for percent in [Some(2.0), None] {
+            for seconds in [31, 60, 100] {
+                let harness = easy_repairing(seconds, percent);
+                assert!(
+                    harness.query_by_label(PATIENCE).is_some(),
+                    "nothing after {seconds} s"
+                );
+                for time in ["left for this step", "Running for"] {
+                    assert!(
+                        harness.query_by_label_contains(time).is_none(),
+                        "{time:?} after {seconds} s at {percent:?}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn a_short_repair_needs_no_reassurance() {
-        let harness = easy_repairing(1, Some(30.0));
+        let harness = easy_repairing(20, Some(30.0));
         assert!(harness.query_by_label("Repairing...").is_some());
         assert!(harness.query_by_label(PATIENCE).is_none());
     }
