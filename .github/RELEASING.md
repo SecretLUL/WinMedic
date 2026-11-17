@@ -19,8 +19,9 @@ and, after a clean VirusTotal scan, `chocolatey.yml`.
 `dry_run` rehearses all of it without tagging or publishing.
 
 - Release notes go in `docs/release-notes/<tag>.md` (`v0.6.0.md` for 0.6.0),
-  merged before the run. Without it the notes are generated from the commit
-  list.
+  merged before the run. Without it Claude writes them
+  ([below](#release-notes-written-by-claude)), and when that fails, they are
+  generated from the commit list.
 - The run stops unless CI passed on the commit it releases; wait for CI on
   `main` to finish first. CI does not run on a push that changes
   documentation only, such as the release notes: then it has to have passed
@@ -75,8 +76,89 @@ the PDB and VirusTotal.
   the branch, then run the pre-release: started before, it would be numbered
   below the release that follows it.
 - Notes go in `docs/release-notes/<tag>.md` on that branch
-  (`v0.18.1-pre.1.md`), or are generated from the commit list.
+  (`v0.18.1-pre.1.md`), or are written by Claude as for a release.
 - Once the change is ready, merge the pull request and release as usual.
+
+## Release notes written by Claude
+
+A release without `docs/release-notes/<tag>.md` gets its notes from Claude:
+the `notes` job of `release.yml` runs `scripts/release-notes.ps1`, which sends
+the commit messages and merged pull requests since the tag before, and the
+newest hand-written notes as the style to follow. A release counts from the
+release before it, a pre-release from the tag before it.
+
+- **Nobody reads them first.** They are published with the release. To read
+  them before, write the file, or let a `dry_run` show what Claude makes of
+  the changes: the job summary has the text. The real run writes it again, and
+  not word for word the same.
+- A file in `docs/release-notes/` always wins, and then nothing is sent.
+- Whatever fails is a warning on the run, never a failed release: the notes
+  are then GitHub's commit list, as before.
+- A commit message and a pull request that say what a user sees are what good
+  notes are written from.
+- `./scripts/release-notes.ps1 -Tag v0.19.0 -ShowRequest` prints what would be
+  sent, without sending it. Without `-ShowRequest` and with
+  `ANTHROPIC_API_KEY` set, it writes the notes by hand.
+
+### Set up once
+
+No API key is stored. The run proves to Claude's API who it is with a token
+GitHub signs for it (OIDC), and gets an access token for ten minutes in
+return: Workload Identity Federation.
+
+1. In the [Claude Console](https://platform.claude.com/settings/workload-identity-federation):
+   **Connect workload** → **GitHub Actions**. The API is billed apart from a
+   Claude subscription, so the organization needs credit.
+   The issuer step registers GitHub's by itself. In the rule step, *GitHub
+   organization* has to be filled in: `SecretLUL`, the account that owns the
+   repository. The other guided fields (*Repository*, *Branch / ref*,
+   *Allowed events*, *Organization numeric ID*) do not matter, because
+   **Advanced match options** takes their place once it is edited. Check it
+   last, in case filling in a guided field has reset it:
+   - *Subject pattern*:
+     `repo:SecretLUL@18047775/WinMedic@1334302961:ref:refs/*`. GitHub writes
+     the ids of the account and of the repository into the subject, which the
+     wizard's own suggestion (`repo:SecretLUL/WinMedic:*`) does not expect:
+     with it every run is refused as `match_subject_prefix`. The `*` is
+     needed: a release runs on `main`, a pre-release on its branch, a
+     hand-pushed tag on the tag. Pull requests have another subject and do not
+     match.
+   - *Additional claim conditions*, exactly these three rows:
+
+     | Claim | Value |
+     | :--- | :--- |
+     | `repository_owner` | `SecretLUL` |
+     | `repository_owner_id` | `18047775` |
+     | `workflow` | `Release` |
+
+     `Release` is what the first line of `release.yml` calls the workflow.
+     The number is the account's id on GitHub (`gh api users/SecretLUL --jq
+     .id`); it stays with the account when a name is given up and taken by
+     someone else. A row for a claim GitHub's token does not have matches no
+     run at all. The wizard adds rows of its own from the guided fields:
+     `repository` = `SecretLUL/WinMedic` may stay, `event_name` = `push` has
+     to go, because a release is started by hand and its event is
+     `workflow_dispatch`.
+   - *Expected audience* and *CEL condition*: empty.
+   - *Workspaces*: one, not *All workspaces*.
+   - **Advanced rule options**: *OAuth scope* `workspace:developer`, never
+     `org:admin`; *Token lifetime* 10 minutes. Writing the notes can take
+     a few minutes and is tried a second time, which a shorter token may
+     not last for.
+
+   The target step creates the service account; any name, such as
+   `winmedic-release-notes`.
+2. The repository **variables** (*Settings → Secrets and variables → Actions →
+   Variables*) `ANTHROPIC_FEDERATION_RULE_ID` (`fdrl_…`),
+   `ANTHROPIC_ORGANIZATION_ID` and `ANTHROPIC_SERVICE_ACCOUNT_ID` (`svac_…`).
+   `ANTHROPIC_WORKSPACE_ID` (`wrkspc_…`) only for a rule that covers more than
+   one workspace. They name things and sign nobody in, so they are not secrets.
+
+Without `ANTHROPIC_FEDERATION_RULE_ID` the job says so and writes nothing. When
+Claude does not accept the run ("Authentication failed"), the reason is on the
+Console's [authentication history](https://platform.claude.com/settings/workload-identity-federation?tab=history);
+`match_subject_prefix` there means the subject above does not fit the run;
+the entry shows the `sub` GitHub sent, to compare with.
 
 ## VirusTotal
 

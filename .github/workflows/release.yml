@@ -53,8 +53,103 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # A release without docs/release-notes/<tag>.md used to go out with GitHub's
+  # commit list. Claude writes the notes instead, from the commits and pull
+  # requests since the tag before (scripts/release-notes.ps1).
+  #
+  # No API key is stored for it. GitHub signs who is asking (this repository,
+  # this workflow, this ref), Claude's API checks that against a rule set up in
+  # the Claude Console and hands out a token for ten minutes
+  # (.github/RELEASING.md). That needs `id-token: write`, and a job of its own
+  # is how the build below, with its write access and every dependency's build
+  # script, stays without it.
+  #
+  # Nothing here can stop a release: whatever fails is a warning, and the
+  # release falls back to the commit list.
+  notes:
+    name: Write Release Notes
+    # Not for a release published by hand: its notes were written with it.
+    if: github.event_name != 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+    timeout-minutes: 15
+    outputs:
+      written: ${{ steps.write.outputs.written }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The commits since the previous tag, and the tags to find it by.
+          fetch-depth: 0
+
+      - name: Write the notes with Claude
+        id: write
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_BUMP: ${{ inputs.bump }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
+          EVENT_NAME: ${{ github.event_name }}
+          # Names of things in the Claude Console, not secrets: none of them
+          # signs anyone in without GitHub's signature for this workflow.
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          ANTHROPIC_WORKSPACE_ID: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          try {
+            # The same version "Resolve version" below arrives at; that step
+            # is the one that checks it.
+            $tag = if ($env:EVENT_NAME -eq 'workflow_dispatch') {
+              'v' + (./scripts/next-version.ps1 -Bump $env:INPUT_BUMP -PreRelease:($env:INPUT_PRERELEASE -eq 'true'))
+            } else {
+              $env:GITHUB_REF_NAME
+            }
+
+            if (Test-Path "docs/release-notes/$tag.md") {
+              Write-Host "docs/release-notes/$tag.md exists, so nothing is written."
+              exit 0
+            }
+            if (-not $env:ANTHROPIC_FEDERATION_RULE_ID) {
+              Write-Host "::notice::No ANTHROPIC_FEDERATION_RULE_ID variable, so Claude writes no release notes. .github/RELEASING.md says how to set it up."
+              exit 0
+            }
+
+            New-Item -ItemType Directory -Force generated-notes | Out-Null
+            ./scripts/release-notes.ps1 -Tag $tag -OutFile generated-notes/release-notes.md
+
+            # Shown here too, which is all a rehearsal publishes.
+            @("### Release notes of $tag, written by Claude", '', '---', '') + (Get-Content generated-notes/release-notes.md) |
+              Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            "written=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } catch {
+            $why = "$($_.Exception.Message)" -replace '\s+', ' '
+            Write-Host "::warning::Claude wrote no release notes, so the release gets GitHub's commit list: $why"
+            exit 0
+          }
+
+      # As a file, never through an output: the text is written from commit
+      # messages and pull requests, and an output would be spliced into the
+      # release job's expressions.
+      - name: Hand the notes to the release
+        if: steps.write.outputs.written == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-notes
+          path: generated-notes/release-notes.md
+          if-no-files-found: error
+          # A run started again writes the notes again.
+          overwrite: true
+          retention-days: 7
+
   release:
     name: Build & Publish Windows Release
+    # The notes come first, and a release goes on without them.
+    needs: notes
+    if: ${{ !cancelled() }}
     runs-on: windows-latest
     permissions:
       contents: write
@@ -276,9 +371,19 @@ jobs:
           TAG: ${{ steps.v.outputs.tag }}
         run: git push origin "refs/tags/$env:TAG"
 
-      # Hand-written notes live at docs/release-notes/<tag>.md. When a tag ships
-      # without one, fall back to GitHub's generated commit list rather than
-      # publishing a release with an empty body.
+      # Downloaded this late so the file is not in the tree while the bump is
+      # committed and the binary built.
+      - name: Fetch the notes Claude wrote
+        if: needs.notes.outputs.written == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: release-notes
+          path: generated-notes
+
+      # Hand-written notes live at docs/release-notes/<tag>.md and always win.
+      # Without one, the notes are the ones the `notes` job had Claude write,
+      # and when that did not work out, GitHub's generated commit list rather
+      # than a release with an empty body.
       - name: Resolve Release Notes
         id: notes
         shell: pwsh
@@ -286,10 +391,16 @@ jobs:
           TAG: ${{ steps.v.outputs.tag }}
         run: |
           $path = "docs/release-notes/$env:TAG.md"
+          $written = 'generated-notes/release-notes.md'
           if (Test-Path $path) {
             Write-Host "Using release notes from $path"
             "body_path=$path"  | Out-File -FilePath $env:GITHUB_OUTPUT -Append
             "generate=false"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } elseif ((Test-Path $written) -and (Select-String -Path $written -Pattern "^# WinMedic $([regex]::Escape($env:TAG))$" -Quiet)) {
+            # The title is the check that these notes are for this version.
+            Write-Host "Using the release notes Claude wrote"
+            "body_path=$written" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "generate=false"     | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           } else {
             Write-Host "No manual release notes found at $path, generating from commits"
             "body_path="       | Out-File -FilePath $env:GITHUB_OUTPUT -Append
