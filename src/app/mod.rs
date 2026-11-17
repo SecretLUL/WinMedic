@@ -17,6 +17,7 @@
 //! | [`safety`] | Registry backups, restore points, rollback requests |
 //! | [`confirm`] | The confirmation modal and the parked update notice |
 //! | [`settings`] | Settings navigation and persistence, the Easy / Advanced switch |
+//! | [`welcome`] | The introduction a first start opens with |
 
 use crate::utils::self_update::{InstalledUpdate, UpdateFailure};
 use crate::utils::updater::UpdateInfo;
@@ -34,6 +35,7 @@ pub mod safety;
 pub mod scan_state;
 pub mod settings;
 pub mod state;
+pub mod welcome;
 
 pub use confirm::{ConfirmRequest, SystemActions};
 pub use input::{Key, handle_key};

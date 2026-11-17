@@ -5,6 +5,9 @@
 //! "works again" line belongs to a repair that actually changes the thing it
 //! names. A finding no repair can change — hardware errors, crash
 //! history, a pending restart — promises nothing, so it adds no line.
+//!
+//! The one exception is how long the run takes ([`Pace`]): that is an
+//! estimate, and it is worded as one.
 
 use super::state::App;
 use crate::engine::issue::{Issue, Severity};
@@ -89,6 +92,45 @@ impl Benefit {
     }
 }
 
+/// About how long a repair run takes, slowest last.
+///
+/// Three steps and no number of minutes, because the tools that take long
+/// take as long as the disk, the damage and the download allow: on one PC
+/// DISM's repair ran for 13 minutes and the component store cleanup between
+/// one and four, while every other repair was done within seconds. SFC and
+/// chkdsk were not measured; they are counted as slow because WinMedic gives
+/// them the same hour ([`crate::modules::SERVICING_TIMEOUT`]). A number that a
+/// run then passes is worse than none, so the slow step names where it starts
+/// and no end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Pace {
+    /// A restore point and repairs of a few seconds each.
+    Quick,
+    /// The component store cleanup.
+    Minutes,
+    /// DISM's repair, SFC or chkdsk.
+    Long,
+}
+
+impl Pace {
+    pub fn text(self) -> &'static str {
+        match self {
+            Pace::Quick => "The repair takes about a minute.",
+            Pace::Minutes => "The repair takes a few minutes.",
+            Pace::Long => "The repair can take 15 minutes or longer.",
+        }
+    }
+
+    /// How long repairing `issue` takes.
+    pub fn of(issue: &Issue) -> Self {
+        match issue.id.as_str() {
+            "sys_dism_corrupt" | "sys_sfc_corrupt" | "storage_dirty_bit" => Pace::Long,
+            "sys_clean_winsxs" => Pace::Minutes,
+            _ => Pace::Quick,
+        }
+    }
+}
+
 /// The repair run the Repair button would start, told in advance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepairPreview {
@@ -102,6 +144,8 @@ pub struct RepairPreview {
     pub health_after: u8,
     /// At least one ticked repair only takes effect after a restart.
     pub needs_restart: bool,
+    /// How long the run takes: as long as its slowest repair.
+    pub pace: Pace,
 }
 
 impl RepairPreview {
@@ -156,6 +200,11 @@ impl App {
             benefits,
             health_after: DiagnosticEngine::calculate_health_score(&after),
             needs_restart: planned.iter().any(|i| i.requires_reboot),
+            pace: planned
+                .iter()
+                .map(|i| Pace::of(i))
+                .max()
+                .unwrap_or(Pace::Quick),
         }
     }
 }
@@ -343,6 +392,69 @@ mod tests {
             Benefit::of(&issue("tweak_policy_wu_blocked", Severity::Critical)),
             Some(Benefit::Updates)
         );
+    }
+
+    /// The four repairs that run a servicing tool, each for as long as it
+    /// needs; everything else is done within seconds.
+    #[test]
+    fn every_repair_that_takes_minutes_is_known_as_one() {
+        for id in ["sys_dism_corrupt", "sys_sfc_corrupt", "storage_dirty_bit"] {
+            assert_eq!(Pace::of(&issue(id, Severity::Critical)), Pace::Long, "{id}");
+        }
+        assert_eq!(
+            Pace::of(&issue("sys_clean_winsxs", Severity::Info)),
+            Pace::Minutes
+        );
+        for id in [
+            "storage_temp_bloat",
+            "sys_clean_browser_cache",
+            "sys_clean_recycle_bin",
+            "net_dns_failure",
+            "sys_wmi_broken",
+            "dev_failed_usb_vid_046d",
+            "pagefile_disabled",
+        ] {
+            assert_eq!(Pace::of(&issue(id, Severity::Warning)), Pace::Quick, "{id}");
+        }
+    }
+
+    /// The run takes as long as its slowest repair, and only a repair the
+    /// next run makes counts.
+    #[test]
+    fn a_run_is_as_slow_as_its_slowest_ticked_repair() {
+        let pace = |issues: Vec<Issue>| app_with(issues).repair_preview().pace;
+        let quick = || issue("storage_temp_bloat", Severity::Warning);
+
+        assert_eq!(pace(vec![quick()]), Pace::Quick);
+        assert_eq!(
+            pace(vec![quick(), issue("sys_clean_winsxs", Severity::Info)]),
+            Pace::Minutes
+        );
+        assert_eq!(
+            pace(vec![
+                issue("sys_clean_winsxs", Severity::Info),
+                issue("sys_sfc_corrupt", Severity::Critical),
+                quick(),
+            ]),
+            Pace::Long
+        );
+
+        let mut unticked = issue("sys_dism_corrupt", Severity::Critical);
+        unticked.is_selected = false;
+        let mut done = issue("sys_sfc_corrupt", Severity::Critical);
+        done.is_fixed = true;
+        assert_eq!(pace(vec![quick(), unticked, done]), Pace::Quick);
+    }
+
+    /// No number a run could pass: DISM is given an hour, and a promise of
+    /// thirty minutes that it breaks would be the thing that frightens.
+    #[test]
+    fn the_slow_run_names_no_end() {
+        assert_eq!(
+            Pace::Long.text(),
+            "The repair can take 15 minutes or longer."
+        );
+        assert!(Pace::Quick < Pace::Minutes && Pace::Minutes < Pace::Long);
     }
 
     #[test]

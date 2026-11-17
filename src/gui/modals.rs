@@ -246,6 +246,7 @@ fn setting_input(ctx: &egui::Context, app: &mut App, arrived: f32) {
 
 fn help(ctx: &egui::Context, app: &mut App, arrived: f32) {
     let mut close = false;
+    let mut introduction = false;
 
     modal_window(ctx, "Keyboard shortcuts", arrived).show(ctx, |ui| {
         ui.set_max_width(520.0);
@@ -281,12 +282,23 @@ fn help(ctx: &egui::Context, app: &mut App, arrived: f32) {
 
         ui.add_space(8.0);
         ui.separator();
-        if ui.button("Close").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            close = true;
-        }
+        ui.horizontal(|ui| {
+            if ui.button("Close").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                close = true;
+            }
+            if ui
+                .button("Show the introduction")
+                .on_hover_text("What WinMedic does and which buttons you need")
+                .clicked()
+            {
+                introduction = true;
+            }
+        });
     });
 
-    if close {
+    if introduction {
+        app.open_welcome();
+    } else if close {
         app.show_help = false;
     }
 }

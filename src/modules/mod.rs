@@ -41,6 +41,9 @@ use tokio::sync::mpsc::Sender;
 /// and went past ten minutes on the development machine, which is where the
 /// old limit stopped it. The user can cancel at any time, so this only has to
 /// catch a tool that never comes back.
+///
+/// A repair that is given this hour takes minutes, and Easy mode says so
+/// before it starts: name it in [`crate::app::preview::Pace::of`].
 pub const SERVICING_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 /// Keeps DISM from asking whether to restart Windows; every DISM call passes

@@ -6,7 +6,8 @@
 //! moved somewhere it can be exercised.
 //!
 //! Dispatch is layered, and the order matters: a pending confirmation swallows
-//! everything, then the help overlay, and only then the normal bindings.
+//! everything, then the introduction, then the help overlay, and only then
+//! the normal bindings.
 //!
 //! Text entry is deliberately absent from that list. It used to be a layer of
 //! its own, because a terminal has no text fields and the search box and the
@@ -94,6 +95,18 @@ pub fn handle_key(app: &mut App, code: Key) {
         match code {
             Key::Char('y') | Key::Char('Y') => app.confirm_pending_action(),
             Key::Char('n') | Key::Char('N') | Key::Esc => app.dismiss_confirm(),
+            _ => {}
+        }
+        return;
+    }
+
+    // The introduction takes the whole window, so every key that drives what
+    // it covers is inert: a stray `s` would start a scan behind it.
+    if app.welcome.is_some() {
+        match code {
+            Key::Enter | Key::Right => app.welcome_next(),
+            Key::Left | Key::Backspace => app.welcome_back(),
+            Key::Esc => app.close_welcome(),
             _ => {}
         }
         return;
@@ -734,6 +747,62 @@ mod tests {
         assert_eq!(app.active_tab, TAB_SETTINGS);
         handle_key(&mut app, Key::Char('?'));
         assert!(app.show_help);
+    }
+
+    /// The introduction covers the whole window, so no key may reach what is
+    /// behind it: nothing there is on screen to show what the key did.
+    #[test]
+    fn the_introduction_answers_its_own_keys_and_no_others() {
+        let mut app = app_with_issues();
+        app.config.advanced_mode = false;
+        app.active_tab = TAB_HOME;
+        app.welcome = Some(0);
+
+        for key in "sSrRfFdDqQ?12eEuUaAnNbB ".chars() {
+            handle_key(&mut app, Key::Char(key));
+        }
+        for key in [
+            Key::F7,
+            Key::Tab,
+            Key::BackTab,
+            Key::Up,
+            Key::Down,
+            Key::PageDown,
+            Key::End,
+            Key::Unbound,
+        ] {
+            handle_key(&mut app, key);
+        }
+        assert_eq!(app.welcome, Some(0), "still on its first page");
+        assert!(!app.is_scanning && !app.is_fixing, "nothing started");
+        assert_eq!(app.active_tab, TAB_HOME);
+        assert!(!app.config.advanced_mode, "F7 switched nothing");
+        assert!(!app.show_help && !app.should_quit && !app.dry_run);
+        assert!(app.issues.iter().all(|i| i.is_selected), "nothing unticked");
+
+        handle_key(&mut app, Key::Enter);
+        assert_eq!(app.welcome, Some(1));
+        handle_key(&mut app, Key::Right);
+        assert_eq!(app.welcome, Some(2));
+        handle_key(&mut app, Key::Left);
+        assert_eq!(app.welcome, Some(1));
+        handle_key(&mut app, Key::Backspace);
+        assert_eq!(app.welcome, Some(0));
+        handle_key(&mut app, Key::Esc);
+        assert_eq!(app.welcome, None, "Esc skips it");
+
+        // And the window's own keys answer again.
+        handle_key(&mut app, Key::Char('?'));
+        assert!(app.show_help);
+    }
+
+    /// Enter on the last page is its own button, Get started.
+    #[test]
+    fn enter_on_the_last_page_of_the_introduction_leaves_it() {
+        let mut app = app();
+        app.welcome = Some(crate::app::welcome::PAGES - 1);
+        handle_key(&mut app, Key::Enter);
+        assert_eq!(app.welcome, None);
     }
 
     /// The settings view looks the same in both modes, so it keys the same.
