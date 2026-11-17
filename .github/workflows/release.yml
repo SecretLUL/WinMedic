@@ -156,7 +156,7 @@ jobs:
       pull-requests: write
       # To read whether CI passed on the commit being released.
       actions: read
-    # Read by the `winget` job below (and by `virustotal` and `chocolatey`),
+    # Read by the `winget` job below (and by `prune`, `virustotal` and `chocolatey`),
     # which needs to know both which version
     # shipped and whether it actually reached the releases page.
     outputs:
@@ -621,6 +621,28 @@ jobs:
     # otherwise; it treats the secret as optional and explains itself when it is
     # missing rather than failing obscurely.
     secrets: inherit
+
+  # A pre-release is for testers until the next one, or the release, is out, so
+  # every other pre-release leaves the releases page here. The tags stay
+  # (scripts/prune-prereleases.ps1 says why). A job of its own for the reason
+  # WinGet has one: the release is complete without it.
+  prune:
+    name: Remove Older Pre-releases
+    needs: release
+    if: ${{ always() && needs.release.outputs.published == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Delete every pre-release but the one just published
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: ./scripts/prune-prereleases.ps1 -Keep $env:TAG -Delete
 
   # Microsoft flagged v0.6.0 as a trojan, a machine-learning false positive that
   # nobody noticed until the file was uploaded by hand. This uploads every
