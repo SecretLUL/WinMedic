@@ -2125,6 +2125,72 @@ mod tests {
         }
     }
 
+    /// Easy mode while a scan has run for `seconds` and waits for the checks
+    /// named in `unfinished`.
+    fn easy_scanning(seconds: u64, unfinished: &[&str]) -> Harness<'static, App> {
+        let mut app = easy_fresh_app();
+        app.is_scanning = true;
+        app.scan_overall_progress = 99;
+        app.scan_started_at = Instant::now().checked_sub(Duration::from_secs(seconds));
+        for module in &mut app.module_progress_list {
+            module.is_done = !unfinished.contains(&module.id.as_str());
+        }
+        sized_window(app, (window::MIN_SIZE.x, window::MIN_SIZE.y))
+    }
+
+    const STILL_CHECKING: &str =
+        "All good, WinMedic is still checking. The last checks take the longest.";
+
+    /// The bar stands at 99 % while the slowest check runs on. After half a
+    /// minute the page says that this is normal, in its own words, and which
+    /// check it is waiting for.
+    #[test]
+    fn a_scan_running_half_a_minute_says_all_is_well_and_what_it_waits_for() {
+        let harness = easy_scanning(63, &["system_cleaner"]);
+        assert!(harness.query_by_label(STILL_CHECKING).is_some());
+        assert!(
+            harness
+                .query_by_label("Still running: System & Cache Cleaner.")
+                .is_some()
+        );
+        assert!(
+            harness.query_by_label(PATIENCE).is_none(),
+            "the repair page's words are the repair page's"
+        );
+        // Under the Cancel button, which stays where the pointer is, and
+        // inside the window Easy mode locks.
+        let cancel = harness.get_by_label("Cancel").rect();
+        let said = harness.get_by_label(STILL_CHECKING).rect();
+        assert!(said.top() > cancel.bottom(), "{said:?} vs {cancel:?}");
+        assert!(said.bottom() < window::MIN_SIZE.y - 30.0, "{said:?}");
+
+        let two = easy_scanning(31, &["system_cleaner", "network"]);
+        assert!(
+            two.query_by_label_contains("Still running: ")
+                .is_some_and(|line| format!("{line:?}").contains(" and ")),
+            "two checks are named"
+        );
+        let many = easy_scanning(31, &["system_cleaner", "network", "storage"]);
+        assert!(many.query_by_label("Still running: 3 checks.").is_some());
+    }
+
+    #[test]
+    fn a_short_scan_needs_no_reassurance() {
+        let harness = easy_scanning(20, &["system_cleaner"]);
+        assert!(harness.query_by_label("Checking your PC...").is_some());
+        assert!(harness.query_by_label(STILL_CHECKING).is_none());
+        assert!(harness.query_by_label_contains("Still running").is_none());
+    }
+
+    /// The scan's time stays on the result page; its reassurance does not.
+    #[test]
+    fn a_finished_scan_shows_no_reassurance() {
+        let mut app = easy_scanned_app();
+        app.scan_duration = Some(Duration::from_secs(122));
+        let harness = window(app);
+        assert!(harness.query_by_label(STILL_CHECKING).is_none());
+    }
+
     #[test]
     fn a_short_repair_needs_no_reassurance() {
         let harness = easy_repairing(20, Some(30.0));
