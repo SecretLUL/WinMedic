@@ -1037,6 +1037,52 @@ mod tests {
         assert_eq!(harness.get_by_label(line).rect(), at_once);
     }
 
+    /// Picking another page of Settings from its list brings that page up
+    /// into its place the same way, while the list itself stays where it is.
+    #[test]
+    fn a_settings_page_picked_from_the_list_comes_in_and_the_list_stays() {
+        let line = SettingsPage::Scans.summary();
+        let at_once = settings_window(fresh_app(), SettingsPage::Scans)
+            .get_by_label(line)
+            .rect();
+
+        let mut app = fresh_app();
+        app.active_tab = TAB_SETTINGS;
+        let mut harness = animated_window(app);
+        let entry = |harness: &Harness<'static, App>| {
+            harness
+                .get_by_role_and_label(Role::Tab, SettingsPage::Scans.title())
+                .rect()
+        };
+        let entry_at_rest = entry(&harness);
+
+        harness
+            .get_by_role_and_label(Role::Tab, SettingsPage::Scans.title())
+            .click();
+        harness.step();
+        harness.step();
+        let coming = harness.get_by_label(line).rect();
+        assert!(
+            coming.top() > at_once.top() && coming.top() <= at_once.top() + 12.0,
+            "on its way at {coming:?}, its place is {at_once:?}"
+        );
+        assert_eq!(coming.left(), at_once.left());
+        assert_eq!(entry(&harness), entry_at_rest, "the list does not move");
+
+        // `run` gives up on an animation that does not end.
+        harness.run();
+        assert_eq!(harness.get_by_label(line).rect(), at_once);
+        assert_eq!(entry(&harness), entry_at_rest);
+
+        // Coming back to Settings from the other view, only the view comes
+        // in: the page inside it is the one that was there.
+        harness.get_by_label("Scan & Repair").click();
+        harness.run();
+        harness.get_by_label("Settings").click();
+        harness.run();
+        assert_eq!(harness.get_by_label(line).rect(), at_once);
+    }
+
     /// A dialog settles from a little larger into the size and place of one
     /// that was open when the window was first drawn.
     #[test]

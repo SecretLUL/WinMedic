@@ -10,7 +10,7 @@
 //! of small print in Easy mode's window, which cannot be made larger.
 
 use crate::app::{App, SafetyFocus, SettingsPage};
-use crate::gui::theme;
+use crate::gui::{motion, theme};
 use eframe::egui::{self, RichText};
 
 /// The width of the list of pages on the left.
@@ -42,51 +42,67 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
     ui.scope_builder(
         egui::UiBuilder::new().max_rect(rest).layout(top_down),
         |ui| {
-            egui::ScrollArea::vertical()
-                .id_salt(("settings_page", page.title()))
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.set_max_width(ui.available_width().min(COLUMN));
-                    ui.label(theme::heading(ui, page.title(), 20.0));
-                    ui.label(theme::muted(app.settings_summary(page)));
-                    ui.add_space(10.0);
-                    for index in app.settings_on(page) {
-                        setting(ui, app, index);
-                    }
-                    match page {
-                        SettingsPage::Repairs => {}
-                        SettingsPage::Undo => {
-                            backups(ui, app);
-                            ui.add_space(SECTION_GAP);
-                            restore_points(ui, app);
-                        }
-                        SettingsPage::Scans => {
-                            ui.add_space(SECTION_GAP);
-                            archived(ui, app);
-                        }
-                        SettingsPage::Logs => {
-                            ui.add_space(SECTION_GAP);
-                            activity(ui, app);
-                            ui.add_space(SECTION_GAP);
-                            log_folder(ui, app);
-                        }
-                        SettingsPage::General => {
-                            ui.add_space(SECTION_GAP);
-                            remove(ui, app);
-                        }
-                    }
-                });
+            // The page picked comes up into its place as the two views do
+            // when the navigation switches between them; the list stays.
+            motion::entrance_in(
+                ui,
+                egui::Id::unique("winmedic_settings_page"),
+                egui::Id::unique(("settings_page", page.title())),
+                |ui| page_body(ui, app, page),
+            );
         },
     );
+}
+
+/// The page picked from the list: its title, its settings and what else
+/// belongs to it.
+fn page_body(ui: &mut egui::Ui, app: &mut App, page: SettingsPage) {
+    egui::ScrollArea::vertical()
+        .id_salt(("settings_page", page.title()))
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.set_max_width(ui.available_width().min(COLUMN));
+            ui.label(theme::heading(ui, page.title(), 20.0));
+            ui.label(theme::muted(app.settings_summary(page)));
+            ui.add_space(10.0);
+            for index in app.settings_on(page) {
+                setting(ui, app, index);
+            }
+            match page {
+                SettingsPage::Repairs => {}
+                SettingsPage::Undo => {
+                    backups(ui, app);
+                    ui.add_space(SECTION_GAP);
+                    restore_points(ui, app);
+                }
+                SettingsPage::Scans => {
+                    ui.add_space(SECTION_GAP);
+                    archived(ui, app);
+                }
+                SettingsPage::Logs => {
+                    ui.add_space(SECTION_GAP);
+                    activity(ui, app);
+                    ui.add_space(SECTION_GAP);
+                    log_folder(ui, app);
+                }
+                SettingsPage::General => {
+                    ui.add_space(SECTION_GAP);
+                    remove(ui, app);
+                }
+            }
+        });
 }
 
 /// The room above a section that follows something else on its page.
 const SECTION_GAP: f32 = 16.0;
 
 /// The list of pages. The one on screen carries the accent mark Windows
-/// gives the current entry of a navigation list.
+/// gives the current entry of a navigation list: one mark for all entries,
+/// which glides to the page picked as the bar under the navigation does.
 fn pages(ui: &mut egui::Ui, app: &mut App, current: SettingsPage) {
     ui.spacing_mut().item_spacing.y = 2.0;
+    let top = ui.cursor().top();
+    let mut current_entry = None;
     for page in SettingsPage::ALL {
         let selected = page == current;
         let (rect, response) =
@@ -107,12 +123,7 @@ fn pages(ui: &mut egui::Ui, app: &mut App, current: SettingsPage) {
             ui.painter().rect_filled(rect, 4, fill);
         }
         if selected {
-            let mark = egui::Rect::from_center_size(
-                egui::pos2(rect.left() + 1.5, rect.center().y),
-                egui::vec2(3.0, 16.0),
-            );
-            ui.painter()
-                .rect_filled(mark, 1.5, theme::palette(ui).accent);
+            current_entry = Some(rect);
         }
         let color = if selected {
             ui.visuals().strong_text_color()
@@ -131,6 +142,33 @@ fn pages(ui: &mut egui::Ui, app: &mut App, current: SettingsPage) {
             app.open_settings_page(page);
         }
     }
+    if let Some(entry) = current_entry {
+        current_page_mark(ui, entry, top);
+    }
+}
+
+/// The accent mark at the left of the list's current entry, `entry`. Where
+/// it is on its way is counted from the list's `top`: the whole view moves
+/// while it comes in, and the mark is to move with the list then, not to
+/// chase it.
+fn current_page_mark(ui: &egui::Ui, entry: egui::Rect, top: f32) {
+    const HALF_HEIGHT: f32 = 8.0;
+    let (lead, trail) = motion::glide(
+        ui.ctx(),
+        egui::Id::unique("winmedic_settings_page_mark"),
+        entry.center().y - top,
+        motion::SLOW,
+    );
+    let rows = egui::Rangef::new(
+        top + lead.min(trail) - HALF_HEIGHT,
+        top + lead.max(trail) + HALF_HEIGHT,
+    );
+    let columns = egui::Rangef::new(entry.left(), entry.left() + 3.0);
+    ui.painter().rect_filled(
+        egui::Rect::from_x_y_ranges(columns, rows),
+        1.5,
+        theme::palette(ui).accent,
+    );
 }
 
 /// The settings that take a number, and open the input dialog to get one.
