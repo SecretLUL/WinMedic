@@ -135,13 +135,26 @@ fn repairing(ui: &mut egui::Ui, app: &mut App) {
     }
 }
 
-/// How long one repair runs before the page says that this is normal. DISM
-/// takes ten minutes and more, with a bar that hardly moves.
-const PATIENCE: Duration = Duration::from_secs(2 * 60);
+/// How long one repair runs before the page says that this is normal. Nearly
+/// every repair is done within seconds, so one still running after half a
+/// minute is most likely one of the servicing tools: DISM, which ran for 13
+/// minutes on one PC, with a bar that hardly moves. Half a minute of that is
+/// where someone who has never seen it starts to wonder whether the window
+/// hangs.
+const PATIENCE: Duration = Duration::from_secs(30);
 
-/// Nothing is wrong, and about how long it still takes.
-fn patience(ui: &mut egui::Ui, app: &App, elapsed: Duration) {
-    let when = match app.repair_step_remaining() {
+/// From when the reassurance also says how long. Earlier there are no whole
+/// minutes to count, and DISM's first percent say little about its pace: the
+/// estimate from them would be the number that frightens.
+const TIMED: Duration = Duration::from_secs(2 * 60);
+
+/// How long the running step still takes, or has taken; nothing before
+/// [`TIMED`].
+fn patience_time(app: &App, elapsed: Duration) -> Option<String> {
+    if elapsed < TIMED {
+        return None;
+    }
+    Some(match app.repair_step_remaining() {
         Some(left) if left < Duration::from_secs(60) => {
             "Less than a minute left for this step.".to_string()
         }
@@ -154,7 +167,12 @@ fn patience(ui: &mut egui::Ui, app: &App, elapsed: Duration) {
             "Running for {}.",
             plural(elapsed.as_secs() as usize / 60, "minute")
         ),
-    };
+    })
+}
+
+/// Nothing is wrong, and after a while about how long it still takes.
+fn patience(ui: &mut egui::Ui, app: &App, elapsed: Duration) {
+    let when = patience_time(app, elapsed);
     egui::Frame::NONE
         .fill(ui.visuals().faint_bg_color)
         .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
@@ -169,7 +187,9 @@ fn patience(ui: &mut egui::Ui, app: &App, elapsed: Duration) {
                         ui,
                         "Don't worry, everything is fine. WinMedic needs some time to heal.",
                     );
-                    note(ui, when);
+                    if let Some(when) = when {
+                        note(ui, when);
+                    }
                 });
             });
         });
@@ -260,6 +280,11 @@ fn result(ui: &mut egui::Ui, app: &mut App) {
 
     if to_repair > 0 {
         forecast(ui, app);
+        // A simulation runs no repair, so it is over in a moment.
+        if !app.dry_run {
+            ui.add_space(10.0);
+            line(ui, app.repair_preview().pace.text());
+        }
         ui.add_space(16.0);
     } else {
         line(ui, "None of them is repaired automatically.");

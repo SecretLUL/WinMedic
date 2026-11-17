@@ -43,8 +43,12 @@ time: click *More info*, then *Run anyway*.
 3. **Click Repair.** WinMedic fixes what it can and tells you if Windows needs
    a restart.
 
+The first start shows a short introduction to these two buttons; *Skip* leaves
+it at once.
+
 WinMedic opens in **Easy mode**: how your PC is doing, what Repair will do (for
-example "Frees about 8.4 GB of disk space") and two big buttons. Press **F7**,
+example "Frees about 8.4 GB of disk space"), about how long that takes, and two
+big buttons. Press **F7**,
 or click *Advanced mode* top right, for **Advanced mode**:
 every detail, filters, the logs, and a simulation that shows what a repair would
 do without doing it.

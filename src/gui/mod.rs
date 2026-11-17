@@ -70,6 +70,20 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
     // context rather than nested inside a `Ui`.
     let ctx = ui.ctx().clone();
 
+    // The introduction takes the whole window: the navigation and the
+    // banners are what it has not explained yet.
+    if let Some(page) = app.welcome {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::central_panel(ui.style()).inner_margin(12))
+            .show(ui, |ui| {
+                motion::entrance(ui, egui::Id::unique(("welcome", page)), |ui| {
+                    views::welcome::show(ui, app)
+                });
+            });
+        modals::show(&ctx, app);
+        return;
+    }
+
     egui::Panel::top("navigation").show(ui, |ui| {
         ui.add_space(4.0);
         navigation(ui, app);
@@ -1289,45 +1303,55 @@ mod tests {
                     harness.run();
                 }
 
-                // Both properties, because AccessKit splits them: an
-                // interactive widget carries its text in `label`, while a
-                // plain piece of text — which is most of what this window is —
-                // is a node of role `Label` carrying its text in `value`.
-                // Reading only the former collects the buttons and none of the
-                // prose.
-                let drawn = std::cell::RefCell::new(Vec::new());
-                harness
-                    .query_all_by(|node| {
-                        let mut drawn = drawn.borrow_mut();
-                        drawn.extend(node.label());
-                        drawn.extend(node.value());
-                        false
-                    })
-                    .count();
-                let drawn = drawn.into_inner();
                 // Easy mode before the first scan is the sparsest page the
                 // window draws, at 14 strings. Reading only the labels, the
                 // mistake this guards against, collects about six.
+                let drawn = strings_with_glyphs(&harness, &format!("view {tab}"));
                 assert!(
-                    drawn.len() >= 10,
-                    "view {tab} produced only {} strings, so this asserts on nothing",
-                    drawn.len()
+                    drawn >= 10,
+                    "view {tab} produced only {drawn} strings, so this asserts on nothing"
                 );
-
-                let font = egui::FontId::proportional(14.0);
-                harness.ctx.fonts_mut(|fonts| {
-                    for label in &drawn {
-                        for character in label.chars() {
-                            assert!(
-                                fonts.has_glyph(&font, character),
-                                "view {tab}: no glyph for U+{:04X} ({character:?}) in {label:?}",
-                                character as u32
-                            );
-                        }
-                    }
-                });
             }
         }
+        for page in 0..crate::app::welcome::PAGES {
+            let harness = window(welcome_app(page));
+            let drawn = strings_with_glyphs(&harness, &format!("introduction page {page}"));
+            assert!(drawn >= 6, "page {page} produced only {drawn} strings");
+        }
+    }
+
+    /// Every string `harness` draws, checked for a glyph per character; how
+    /// many strings that was.
+    fn strings_with_glyphs(harness: &Harness<'static, App>, what: &str) -> usize {
+        // Both properties, because AccessKit splits them: an interactive
+        // widget carries its text in `label`, while a plain piece of text —
+        // which is most of what this window is — is a node of role `Label`
+        // carrying its text in `value`. Reading only the former collects the
+        // buttons and none of the prose.
+        let drawn = std::cell::RefCell::new(Vec::new());
+        harness
+            .query_all_by(|node| {
+                let mut drawn = drawn.borrow_mut();
+                drawn.extend(node.label());
+                drawn.extend(node.value());
+                false
+            })
+            .count();
+        let drawn = drawn.into_inner();
+
+        let font = egui::FontId::proportional(14.0);
+        harness.ctx.fonts_mut(|fonts| {
+            for label in &drawn {
+                for character in label.chars() {
+                    assert!(
+                        fonts.has_glyph(&font, character),
+                        "{what}: no glyph for U+{:04X} ({character:?}) in {label:?}",
+                        character as u32
+                    );
+                }
+            }
+        });
+        drawn.len()
     }
 
     const GB: u64 = 1024 * 1024 * 1024;
@@ -1388,6 +1412,54 @@ mod tests {
         // A module that gave up is named, but its error text is not.
         assert!(harness.query_by_label_contains("Could not check").is_some());
         assert!(harness.query_by_label_contains("0x800f081f").is_none());
+    }
+
+    /// Before the repair starts, the page says about how long it takes: a
+    /// minute for the usual cleanups, and no end for a run with DISM in it.
+    /// A simulation runs no repair and says nothing.
+    #[test]
+    fn easy_mode_says_about_how_long_the_repair_takes() {
+        const QUICK: &str = "The repair takes about a minute.";
+        const LONG: &str = "The repair can take 15 minutes or longer.";
+
+        let harness = window(easy_forecast_app());
+        assert!(harness.query_by_label(QUICK).is_some());
+
+        let mut app = easy_forecast_app();
+        app.issues[0].id = "sys_dism_corrupt".to_string();
+        let harness = window(app);
+        assert!(harness.query_by_label(LONG).is_some());
+        assert!(harness.query_by_label(QUICK).is_none());
+
+        // Unticked, DISM is not part of the run.
+        let mut app = easy_forecast_app();
+        app.issues[0].id = "sys_dism_corrupt".to_string();
+        app.issues[0].is_selected = false;
+        let harness = window(app);
+        assert!(harness.query_by_label(QUICK).is_some());
+
+        let mut app = easy_forecast_app();
+        app.issues[1].id = "sys_clean_winsxs".to_string();
+        let harness = window(app);
+        assert!(
+            harness
+                .query_by_label("The repair takes a few minutes.")
+                .is_some()
+        );
+
+        let mut app = easy_forecast_app();
+        app.issues[0].id = "sys_dism_corrupt".to_string();
+        app.dry_run = true;
+        let harness = window(app);
+        assert!(harness.query_by_label_contains("The repair").is_none());
+
+        // With nothing to repair there is no run to time.
+        let mut app = easy_forecast_app();
+        for issue in &mut app.issues {
+            issue.is_selected = false;
+        }
+        let harness = window(app);
+        assert!(harness.query_by_label_contains("The repair").is_none());
     }
 
     /// #180: a cleanup deletes files, and System Restore leaves personal
@@ -1652,15 +1724,15 @@ mod tests {
         );
     }
 
-    /// Easy mode repairing, with the running step started `minutes` ago and
+    /// Easy mode repairing, with the running step started `seconds` ago and
     /// its tool at `percent`.
-    fn easy_repairing(minutes: u64, percent: Option<f32>) -> Harness<'static, App> {
+    fn easy_repairing(seconds: u64, percent: Option<f32>) -> Harness<'static, App> {
         let mut app = easy_scanned_app();
         app.is_fixing = true;
         app.total_to_fix = 8;
         app.fixed_count = 1;
         app.failed_count = 0;
-        app.repair_step_since = Instant::now().checked_sub(Duration::from_secs(minutes * 60));
+        app.repair_step_since = Instant::now().checked_sub(Duration::from_secs(seconds));
         app.repair_step_percent = percent;
         window(app)
     }
@@ -1671,7 +1743,7 @@ mod tests {
     /// it will take at the pace its tool reports.
     #[test]
     fn a_long_repair_in_easy_mode_says_all_is_well_and_how_long_it_takes() {
-        let harness = easy_repairing(3, Some(30.0));
+        let harness = easy_repairing(3 * 60, Some(30.0));
         assert!(harness.query_by_label(PATIENCE).is_some());
         assert!(
             harness
@@ -1682,14 +1754,37 @@ mod tests {
 
     #[test]
     fn a_long_repair_without_progress_says_how_long_it_has_run() {
-        let harness = easy_repairing(3, None);
+        let harness = easy_repairing(3 * 60, None);
         assert!(harness.query_by_label(PATIENCE).is_some());
         assert!(harness.query_by_label("Running for 3 minutes.").is_some());
     }
 
+    /// Half a minute of a bar that hardly moves is where someone new to this
+    /// starts to worry, so the word that all is well comes then. How long it
+    /// takes comes later: there is no whole minute to count yet, and an
+    /// estimate from DISM's first percent would be the number that frightens.
+    #[test]
+    fn a_repair_running_half_a_minute_says_all_is_well_and_no_time_yet() {
+        for percent in [Some(2.0), None] {
+            for seconds in [31, 60, 100] {
+                let harness = easy_repairing(seconds, percent);
+                assert!(
+                    harness.query_by_label(PATIENCE).is_some(),
+                    "nothing after {seconds} s"
+                );
+                for time in ["left for this step", "Running for"] {
+                    assert!(
+                        harness.query_by_label_contains(time).is_none(),
+                        "{time:?} after {seconds} s at {percent:?}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn a_short_repair_needs_no_reassurance() {
-        let harness = easy_repairing(1, Some(30.0));
+        let harness = easy_repairing(20, Some(30.0));
         assert!(harness.query_by_label("Repairing...").is_some());
         assert!(harness.query_by_label(PATIENCE).is_none());
     }
@@ -2358,6 +2453,208 @@ mod tests {
         harness.event(egui::Event::Text("?".to_string()));
         harness.run();
         assert!(harness.state().show_help);
+    }
+
+    /// Easy mode before the first scan, behind page `page` of the
+    /// introduction: what a first start draws.
+    fn welcome_app(page: usize) -> App {
+        let mut app = easy_fresh_app();
+        app.welcome = Some(page);
+        app
+    }
+
+    /// A first start says what WinMedic does, which two buttons do it and
+    /// what can be left alone, before it shows the window that has them.
+    #[test]
+    fn the_introduction_says_what_winmedic_does_and_what_to_press() {
+        let pages: [&[&str]; crate::app::welcome::PAGES] = [
+            &[
+                "Introduction, page 1 of 3",
+                "Welcome to WinMedic",
+                "WinMedic finds common Windows problems and repairs them.",
+                "Next",
+                "Skip",
+            ],
+            &[
+                "Introduction, page 2 of 3",
+                "Scan first, then repair",
+                "Scan now",
+                "Checks your PC for problems. A scan changes nothing.",
+                "Repair",
+                "Repairs what WinMedic can fix. A restore point is created first.",
+                "Next",
+                "Skip",
+                "Back",
+            ],
+            &[
+                "Introduction, page 3 of 3",
+                "What you can leave alone",
+                "Advanced mode (F7)",
+                "Settings",
+                "Help, at the top right, shows this introduction again.",
+                "Get started",
+                "Back",
+            ],
+        ];
+        for (page, expected) in pages.iter().enumerate() {
+            let harness = window(welcome_app(page));
+            for label in *expected {
+                assert!(
+                    harness.query_by_label(label).is_some(),
+                    "page {page} does not say {label:?}"
+                );
+            }
+            // It takes the whole window: nothing is on offer that it has not
+            // explained yet.
+            for behind in [
+                "Help",
+                "Export report",
+                "This PC has not been checked yet",
+                "Ready",
+            ] {
+                assert!(
+                    harness.query_by_label(behind).is_none(),
+                    "page {page} draws {behind:?}"
+                );
+            }
+            assert_eq!(
+                harness.query_all_by_role(Role::Button).count(),
+                [2, 3, 2][page],
+                "page {page}"
+            );
+        }
+        assert!(window(welcome_app(0)).query_by_label("Back").is_none());
+    }
+
+    /// Whoever has repaired Windows before leaves with one click, on a
+    /// button as big as the one that reads on.
+    #[test]
+    fn skip_is_as_big_as_next_and_leaves_at_once() {
+        let normal = window(scanned_app())
+            .get_by_label("Scan again")
+            .rect()
+            .height();
+        for page in 0..crate::app::welcome::PAGES - 1 {
+            let mut harness = window(welcome_app(page));
+            let next = harness.get_by_label("Next").rect();
+            let skip = harness.get_by_label("Skip").rect();
+            assert!(
+                skip.height() >= 44.0 && skip.height() > normal + 10.0,
+                "Skip is {} px tall",
+                skip.height()
+            );
+            assert_eq!(skip.size(), next.size(), "page {page}");
+
+            harness.get_by_label("Skip").click();
+            harness.run();
+            assert_eq!(harness.state().welcome, None);
+            assert!(harness.query_by_label("Scan now").is_some());
+            assert!(harness.query_by_label("Help").is_some());
+        }
+    }
+
+    #[test]
+    fn next_reads_through_the_introduction_and_into_the_window() {
+        let mut harness = window(welcome_app(0));
+        for (button, lands_on) in [
+            ("Next", Some(1)),
+            ("Next", Some(2)),
+            ("Back", Some(1)),
+            ("Next", Some(2)),
+            ("Get started", None),
+        ] {
+            harness.get_by_label(button).click();
+            harness.run();
+            assert_eq!(harness.state().welcome, lands_on, "after {button}");
+        }
+        assert!(
+            harness
+                .query_by_label("This PC has not been checked yet")
+                .is_some()
+        );
+        assert!(harness.query_by_label("Scan now").is_some());
+    }
+
+    /// Next is clicked from page to page without moving the pointer, so it
+    /// stands in one place, and every page fits the window Easy mode locks.
+    #[test]
+    fn the_introduction_fits_the_smallest_window_and_its_buttons_stay_put() {
+        let pages = crate::app::welcome::PAGES;
+        for size in [
+            (window::MIN_SIZE.x, window::MIN_SIZE.y),
+            (960.0, 527.0),
+            (1400.0, 900.0),
+        ] {
+            let mut stands_at: Option<egui::Rect> = None;
+            for page in 0..pages {
+                let harness = sized_window(welcome_app(page), size);
+                let last = page + 1 == pages;
+                let forward = harness
+                    .get_by_label(if last { "Get started" } else { "Next" })
+                    .rect();
+                let mut buttons = vec![forward];
+                if !last {
+                    buttons.push(harness.get_by_label("Skip").rect());
+                }
+                for button in &buttons {
+                    assert!(
+                        button.top() >= 0.0
+                            && button.bottom() <= size.1
+                            && button.right() <= size.0,
+                        "page {page} at {size:?}: a button is outside the window, {button:?}"
+                    );
+                }
+                let first = *stands_at.get_or_insert(forward);
+                assert!(
+                    (first.min - forward.min).length() < 0.5 && first.size() == forward.size(),
+                    "page {page} at {size:?}: the button moved from {first:?} to {forward:?}"
+                );
+            }
+        }
+    }
+
+    /// Help shows the second page again, by which time the restore point may
+    /// be switched off: the page promises what the next repair does.
+    #[test]
+    fn the_introduction_promises_a_restore_point_only_while_one_is_made() {
+        let mut app = welcome_app(1);
+        app.config.create_vss_before_repair = false;
+        let harness = window(app);
+        assert!(
+            harness
+                .query_by_label("Repairs what WinMedic can fix.")
+                .is_some()
+        );
+        assert!(harness.query_by_label_contains("restore point").is_none());
+    }
+
+    #[test]
+    fn help_brings_the_introduction_back() {
+        let mut app = easy_fresh_app();
+        app.show_help = true;
+        let mut harness = window(app);
+        harness.get_by_label("Show the introduction").click();
+        harness.run();
+        assert_eq!(harness.state().welcome, Some(0));
+        assert!(!harness.state().show_help);
+        assert!(harness.query_by_label("Welcome to WinMedic").is_some());
+        assert!(harness.query_by_label("Keyboard shortcuts").is_none());
+    }
+
+    /// Enter reads on and Esc skips, through the window's own key handling.
+    #[test]
+    fn the_keyboard_reads_on_and_skips_the_introduction() {
+        let mut harness = window_with_keys(welcome_app(0));
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        assert_eq!(harness.state().welcome, Some(1));
+        harness.event(egui::Event::Text("s".to_string()));
+        harness.run();
+        assert!(!harness.state().is_scanning, "no scan behind the page");
+        assert_eq!(harness.state().welcome, Some(1));
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+        assert_eq!(harness.state().welcome, None);
     }
 
     /// Help lists the keys the current mode binds, and no others.
