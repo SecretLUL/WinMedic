@@ -280,6 +280,11 @@ fn result(ui: &mut egui::Ui, app: &mut App) {
 
     if to_repair > 0 {
         forecast(ui, app);
+        // A simulation runs no repair, so it is over in a moment.
+        if !app.dry_run {
+            ui.add_space(10.0);
+            line(ui, app.repair_preview().pace.text());
+        }
         ui.add_space(16.0);
     } else {
         line(ui, "None of them is repaired automatically.");

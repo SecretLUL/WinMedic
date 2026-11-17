@@ -1390,6 +1390,54 @@ mod tests {
         assert!(harness.query_by_label_contains("0x800f081f").is_none());
     }
 
+    /// Before the repair starts, the page says about how long it takes: a
+    /// minute for the usual cleanups, and no end for a run with DISM in it.
+    /// A simulation runs no repair and says nothing.
+    #[test]
+    fn easy_mode_says_about_how_long_the_repair_takes() {
+        const QUICK: &str = "The repair takes about a minute.";
+        const LONG: &str = "The repair can take 15 minutes or longer.";
+
+        let harness = window(easy_forecast_app());
+        assert!(harness.query_by_label(QUICK).is_some());
+
+        let mut app = easy_forecast_app();
+        app.issues[0].id = "sys_dism_corrupt".to_string();
+        let harness = window(app);
+        assert!(harness.query_by_label(LONG).is_some());
+        assert!(harness.query_by_label(QUICK).is_none());
+
+        // Unticked, DISM is not part of the run.
+        let mut app = easy_forecast_app();
+        app.issues[0].id = "sys_dism_corrupt".to_string();
+        app.issues[0].is_selected = false;
+        let harness = window(app);
+        assert!(harness.query_by_label(QUICK).is_some());
+
+        let mut app = easy_forecast_app();
+        app.issues[1].id = "sys_clean_winsxs".to_string();
+        let harness = window(app);
+        assert!(
+            harness
+                .query_by_label("The repair takes a few minutes.")
+                .is_some()
+        );
+
+        let mut app = easy_forecast_app();
+        app.issues[0].id = "sys_dism_corrupt".to_string();
+        app.dry_run = true;
+        let harness = window(app);
+        assert!(harness.query_by_label_contains("The repair").is_none());
+
+        // With nothing to repair there is no run to time.
+        let mut app = easy_forecast_app();
+        for issue in &mut app.issues {
+            issue.is_selected = false;
+        }
+        let harness = window(app);
+        assert!(harness.query_by_label_contains("The repair").is_none());
+    }
+
     /// #180: a cleanup deletes files, and System Restore leaves personal
     /// files alone, so no restore point brings them back. The Recycle Bin,
     /// which "Select all" ticks, or any other cleanup: neither page promises
