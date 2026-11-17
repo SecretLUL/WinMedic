@@ -78,6 +78,12 @@ the PDB and VirusTotal.
 - Notes go in `docs/release-notes/<tag>.md` on that branch
   (`v0.18.1-pre.1.md`), or are written by Claude as for a release.
 - Once the change is ready, merge the pull request and release as usual.
+- Every published release, pre-release or not, takes all other pre-releases
+  off the releases page (`scripts/prune-prereleases.ps1`; without `-Delete` it
+  prints what would go). That includes the pre-release of a change that is not
+  merged yet: run a new one for it after the release, as above. The tags
+  stay, because `-pre.N` counts from them, and so does each run's PDB. A
+  branch gets this once `main` is merged into it.
 
 ## Release notes written by Claude
 
