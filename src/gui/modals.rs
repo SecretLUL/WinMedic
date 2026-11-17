@@ -104,7 +104,13 @@ fn confirm(ctx: &egui::Context, app: &mut App, arrived: f32) {
             let confirm = if removes {
                 theme::danger_button(ui, confirm_label)
             } else {
-                theme::primary_button(ui, true, RichText::new(confirm_label), egui::Vec2::ZERO)
+                theme::primary_button(
+                    ui,
+                    true,
+                    RichText::new(confirm_label),
+                    None,
+                    egui::Vec2::ZERO,
+                )
             };
             if confirm.clicked() {
                 confirmed = true;
@@ -161,7 +167,13 @@ fn crash_report(ctx: &egui::Context, app: &mut App, arrived: f32) {
         ui.add_space(8.0);
         ui.separator();
         ui.horizontal(|ui| {
-            if theme::primary_button(ui, true, RichText::new("Open on GitHub"), egui::Vec2::ZERO)
+            if theme::primary_button(
+                ui,
+                true,
+                RichText::new("Open on GitHub"),
+                None,
+                egui::Vec2::ZERO,
+            )
                 .clicked()
             {
                 send = true;
@@ -271,7 +283,8 @@ fn setting_input(ctx: &egui::Context, app: &mut App, arrived: f32) {
 
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            let save = theme::primary_button(ui, true, RichText::new("Save"), egui::Vec2::ZERO);
+            let save =
+                theme::primary_button(ui, true, RichText::new("Save"), None, egui::Vec2::ZERO);
             if save.clicked() || entered {
                 submitted = true;
             }

@@ -84,10 +84,7 @@ fn unscanned(ui: &mut egui::Ui, app: &mut App) {
         "A scan finds common Windows problems. It changes nothing.",
     );
     ui.add_space(20.0);
-    if theme::big_button(ui, "Scan now", true, true)
-        .on_hover_text("S")
-        .clicked()
-    {
+    if theme::big_button(ui, "Scan now", Some("S"), true, true).clicked() {
         app.start_scan();
     }
 }
@@ -104,7 +101,7 @@ fn scanning(ui: &mut egui::Ui, app: &mut App) {
     ui.add_space(6.0);
     line(ui, "This takes a minute or two. Nothing is changed.");
     ui.add_space(16.0);
-    if ui.button("Cancel").on_hover_text("Esc").clicked() {
+    if ui.add(theme::keyed(ui, "Cancel", "Esc")).clicked() {
         app.cancel_current_operation();
     }
     // Below the button, as on the repair page. The bar reaches 99 % within
@@ -155,7 +152,7 @@ fn repairing(ui: &mut egui::Ui, app: &mut App) {
     progress(ui, app.repair_fraction());
     note(ui, format!("{done} of {} done", app.total_to_fix));
     ui.add_space(16.0);
-    if ui.button("Cancel").on_hover_text("Esc").clicked() {
+    if ui.add(theme::keyed(ui, "Cancel", "Esc")).clicked() {
         app.cancel_current_operation();
     }
     // Below the button, so it does not move away from the pointer when this
@@ -269,7 +266,7 @@ fn result(ui: &mut egui::Ui, app: &mut App) {
         );
         ui.add_space(20.0);
         ui.horizontal(|ui| {
-            if theme::big_button(ui, "Restart now", true, true).clicked() {
+            if theme::big_button(ui, "Restart now", None, true, true).clicked() {
                 app.show_reboot_notice();
             }
             scan_again(ui, app, false);
@@ -328,10 +325,7 @@ fn result(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         if to_repair > 0 {
             let label = repair_label(app.dry_run, to_repair, "problem");
-            if theme::big_button(ui, &label, true, true)
-                .on_hover_text("F")
-                .clicked()
-            {
+            if theme::big_button(ui, &label, Some("F"), true, true).clicked() {
                 app.start_repairs();
             }
         }
@@ -429,10 +423,7 @@ fn forecast(ui: &mut egui::Ui, app: &App) {
 }
 
 fn scan_again(ui: &mut egui::Ui, app: &mut App, primary: bool) {
-    if theme::big_button(ui, "Scan again", primary, true)
-        .on_hover_text("S")
-        .clicked()
-    {
+    if theme::big_button(ui, "Scan again", Some("S"), primary, true).clicked() {
         app.start_scan();
     }
 }

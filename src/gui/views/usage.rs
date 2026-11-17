@@ -48,13 +48,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
                 .show(ui, |ui| text(ui, app, receiver));
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                if theme::big_button(ui, "No, thanks", false, true)
-                    .on_hover_text("Esc")
-                    .clicked()
-                {
+                if theme::big_button(ui, "No, thanks", Some("Esc"), false, true).clicked() {
                     app.answer_usage_question(false);
                 }
-                if theme::big_button(ui, "Yes, share", false, true).clicked() {
+                if theme::big_button(ui, "Yes, share", None, false, true).clicked() {
                     app.answer_usage_question(true);
                 }
             });
