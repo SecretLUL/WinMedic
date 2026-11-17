@@ -120,6 +120,23 @@ pub fn handle_key(app: &mut App, code: Key) {
         return;
     }
 
+    // "Show what is sent" lies over the question and over Settings.
+    if app.usage_preview.is_some() {
+        if code == Key::Esc {
+            app.close_usage_preview();
+        }
+        return;
+    }
+
+    // The question about usage data takes the whole window too. Esc leaves
+    // it unanswered, which is a no; a yes takes a click on Yes.
+    if app.usage_question {
+        if code == Key::Esc {
+            app.answer_usage_question(false);
+        }
+        return;
+    }
+
     // A pending setting numeric input modal captures typing until saved or cancelled.
     if let Some(input) = app.setting_input.as_mut() {
         match code {
@@ -629,6 +646,44 @@ mod tests {
 
         handle_key(&mut app, Key::Esc);
         assert_eq!(app.active_tab, TAB_HOME);
+    }
+
+    /// Enter and the arrow keys moved through the introduction a moment
+    /// ago. On the question that follows it they must not be a yes.
+    #[test]
+    fn no_key_agrees_to_usage_data_and_esc_declines() {
+        for key in [
+            Key::Enter,
+            Key::Right,
+            Key::Left,
+            Key::Char(' '),
+            Key::Char('y'),
+            Key::Char('s'),
+            Key::Tab,
+            Key::F7,
+        ] {
+            let mut app = app();
+            app.usage_question = true;
+            let mode = app.config.advanced_mode;
+            handle_key(&mut app, key);
+            assert!(app.usage_question, "{key:?} left the question");
+            assert!(!app.config.share_usage_data, "{key:?} agreed");
+            assert!(!app.is_scanning, "{key:?} reached the window behind");
+            assert_eq!(app.config.advanced_mode, mode);
+        }
+
+        let mut app = app();
+        app.usage_question = true;
+        app.usage_preview = Some("[]".to_string());
+        handle_key(&mut app, Key::Esc);
+        assert!(
+            app.usage_preview.is_none(),
+            "the first Esc closes the preview"
+        );
+        assert!(app.usage_question);
+        handle_key(&mut app, Key::Esc);
+        assert!(!app.usage_question);
+        assert!(!app.config.share_usage_data);
     }
 
     #[test]

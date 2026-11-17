@@ -48,9 +48,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
                 .show(ui, |ui| {
                     ui.set_max_width(ui.available_width().min(COLUMN));
                     ui.label(theme::heading(ui, page.title(), 20.0));
-                    ui.label(theme::muted(page.summary()));
+                    ui.label(theme::muted(app.settings_summary(page)));
                     ui.add_space(10.0);
-                    for &index in page.settings() {
+                    for index in app.settings_on(page) {
                         setting(ui, app, index);
                     }
                     match page {
@@ -188,7 +188,15 @@ fn setting(ui: &mut egui::Ui, app: &mut App, index: usize) {
                     left: NAME_INDENT as i8,
                     ..egui::Margin::ZERO
                 })
-                .show(ui, |ui| ui.label(theme::muted(description).size(12.5)));
+                .show(ui, |ui| {
+                    ui.label(theme::muted(description).size(12.5));
+                    // Not behind the switch: looking takes no yes.
+                    if index == crate::config::AppConfig::USAGE_DATA_SETTING
+                        && ui.link("Show what is sent").clicked()
+                    {
+                        app.open_usage_preview();
+                    }
+                });
             clicked
         });
     if keyboard {

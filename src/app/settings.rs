@@ -65,7 +65,7 @@ impl SettingsPage {
             Self::Undo => &[],
             Self::Scans => &[4, 5, 7, 8],
             Self::Logs => &[6],
-            Self::General => &[3],
+            Self::General => &[3, AppConfig::USAGE_DATA_SETTING],
         }
     }
 
@@ -78,16 +78,27 @@ impl SettingsPage {
     }
 }
 
-/// Every setting in the order the arrow keys walk them: page by page, top to
-/// bottom, which is the order they are drawn in.
-fn settings_in_order() -> Vec<usize> {
-    SettingsPage::ALL
-        .into_iter()
-        .flat_map(|page| page.settings().iter().copied())
-        .collect()
-}
-
 impl App {
+    /// The settings `page` shows in this build: all of
+    /// [`SettingsPage::settings`], but the switch for usage data only when
+    /// there is somewhere to send it.
+    pub fn settings_on(&self, page: SettingsPage) -> Vec<usize> {
+        page.settings()
+            .iter()
+            .copied()
+            .filter(|index| *index != AppConfig::USAGE_DATA_SETTING || self.offers_usage_data())
+            .collect()
+    }
+
+    /// Every setting in the order the arrow keys walk them: page by page,
+    /// top to bottom, which is the order they are drawn in.
+    fn settings_in_order(&self) -> Vec<usize> {
+        SettingsPage::ALL
+            .into_iter()
+            .flat_map(|page| self.settings_on(page))
+            .collect()
+    }
+
     /// The page of the Settings view on screen: the one the keyboard is on.
     ///
     /// Not kept beside the selection but read from it, so the two cannot
@@ -141,13 +152,13 @@ impl App {
     }
 
     pub fn prev_setting(&mut self) {
-        self.step_setting(settings_in_order().len() - 1);
+        self.step_setting(self.settings_in_order().len() - 1);
     }
 
     /// Move through the settings in the order they are drawn, from the last
     /// of a page to the first of the next one, which turns the page.
     fn step_setting(&mut self, by: usize) {
-        let order = settings_in_order();
+        let order = self.settings_in_order();
         let at = order
             .iter()
             .position(|index| *index == self.selected_setting_index)
@@ -155,7 +166,31 @@ impl App {
         self.selected_setting_index = order[(at + by) % order.len()];
     }
 
+    /// Usage data is switched on by the question's Yes and by nothing
+    /// else, so that whoever agrees has read where it goes. Switching it on
+    /// here opens that page; switching it off needs no page.
+    fn asks_before_sharing(&mut self) -> bool {
+        let asks = self.selected_setting_index == AppConfig::USAGE_DATA_SETTING
+            && !self.config.share_usage_data;
+        if asks && self.offers_usage_data() {
+            self.usage_question = true;
+        }
+        asks
+    }
+
+    /// One line under a page's title: what the page is for.
+    pub fn settings_summary(&self, page: SettingsPage) -> &'static str {
+        if page == SettingsPage::General && self.offers_usage_data() {
+            "Updates, usage data, and removing WinMedic."
+        } else {
+            page.summary()
+        }
+    }
+
     pub fn toggle_current_setting(&mut self) {
+        if self.asks_before_sharing() {
+            return;
+        }
         let changed = match self.selected_setting_index {
             4 | 5 | 8 => self
                 .config
@@ -168,6 +203,9 @@ impl App {
     }
 
     pub fn adjust_current_setting(&mut self, increase: bool) {
+        if self.asks_before_sharing() {
+            return;
+        }
         if self
             .config
             .adjust_setting(self.selected_setting_index, increase)
@@ -392,7 +430,7 @@ mod tests {
     #[test]
     fn setting_navigation_wraps_in_both_directions() {
         let mut app = App::new();
-        let order = settings_in_order();
+        let order = app.settings_in_order();
         app.selected_setting_index = order[0];
 
         app.prev_setting();
@@ -419,11 +457,20 @@ mod tests {
     /// would be walked twice.
     #[test]
     fn every_setting_is_on_exactly_one_page() {
-        let mut order = settings_in_order();
+        let mut app = App::new();
+        app.usage_receiver = Some(crate::app::usage::tests::RECEIVER);
+        let mut order = app.settings_in_order();
         order.sort_unstable();
         let all: Vec<usize> = (0..AppConfig::SETTING_COUNT).collect();
         assert_eq!(order, all);
         assert_eq!(App::new().settings_page(), SettingsPage::ALL[0]);
+
+        // Without a receiver the switch for usage data is on no page, and
+        // the arrow keys never reach it.
+        app.usage_receiver = None;
+        let order = app.settings_in_order();
+        assert_eq!(order.len(), AppConfig::SETTING_COUNT - 1);
+        assert!(!order.contains(&AppConfig::USAGE_DATA_SETTING));
     }
 
     /// The arrow keys walk the settings as they are drawn, and the page on
@@ -431,6 +478,7 @@ mod tests {
     #[test]
     fn the_page_follows_the_keyboard() {
         let mut app = App::new();
+        app.usage_receiver = Some(crate::app::usage::tests::RECEIVER);
         app.selected_setting_index = 0;
         let mut seen = vec![app.settings_page()];
         for _ in 1..AppConfig::SETTING_COUNT {
@@ -450,6 +498,36 @@ mod tests {
             .filter(|page| !page.settings().is_empty())
             .collect();
         assert_eq!(seen, with_settings);
+    }
+
+    /// The switch in Settings cannot be a yes nobody was told about: on
+    /// goes through the question, by the mouse and by every key that
+    /// changes a setting. Off is at once.
+    #[test]
+    fn switching_usage_data_on_in_settings_asks_the_question() {
+        let mut app = App::new();
+        app.usage_receiver = Some(crate::app::usage::tests::RECEIVER);
+        app.selected_setting_index = AppConfig::USAGE_DATA_SETTING;
+
+        app.toggle_current_setting();
+        assert!(app.usage_question);
+        assert!(!app.config.share_usage_data);
+        app.answer_usage_question(false);
+
+        for increase in [true, false] {
+            app.adjust_current_setting(increase);
+            assert!(app.usage_question);
+            assert!(!app.config.share_usage_data);
+            app.answer_usage_question(false);
+        }
+        app.open_setting_input();
+        assert!(app.usage_question);
+        app.answer_usage_question(true);
+        assert!(app.config.share_usage_data);
+
+        app.toggle_current_setting();
+        assert!(!app.config.share_usage_data, "off needs no question");
+        assert!(!app.usage_question);
     }
 
     #[test]

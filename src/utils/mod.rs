@@ -19,3 +19,4 @@ pub mod service;
 #[cfg(test)]
 pub mod test_guard;
 pub mod updater;
+pub mod usage_data;

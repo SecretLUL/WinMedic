@@ -35,6 +35,7 @@ pub mod safety;
 pub mod scan_state;
 pub mod settings;
 pub mod state;
+pub mod usage;
 pub mod welcome;
 
 pub use confirm::{ConfirmRequest, SystemActions};

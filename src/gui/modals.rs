@@ -15,6 +15,8 @@ pub fn show(ctx: &egui::Context, app: &mut App) {
         Some(Overlay::Confirm)
     } else if app.crash_report.is_some() {
         Some(Overlay::CrashReport)
+    } else if app.usage_preview.is_some() {
+        Some(Overlay::UsagePreview)
     } else if app.setting_input.is_some() {
         Some(Overlay::SettingInput)
     } else if app.show_help {
@@ -33,6 +35,7 @@ pub fn show(ctx: &egui::Context, app: &mut App) {
     match overlay {
         Some(Overlay::Confirm) => confirm(ctx, app, arrived),
         Some(Overlay::CrashReport) => crash_report(ctx, app, arrived),
+        Some(Overlay::UsagePreview) => usage_preview(ctx, app, arrived),
         Some(Overlay::SettingInput) => setting_input(ctx, app, arrived),
         Some(Overlay::Help) => help(ctx, app, arrived),
         None => {}
@@ -43,6 +46,7 @@ pub fn show(ctx: &egui::Context, app: &mut App) {
 enum Overlay {
     Confirm,
     CrashReport,
+    UsagePreview,
     SettingInput,
     Help,
 }
@@ -179,6 +183,46 @@ fn crash_report(ctx: &egui::Context, app: &mut App, arrived: f32) {
         app.save_crash_report();
     } else if close {
         app.close_crash_report();
+    }
+}
+
+/// "Show what is sent": a usage report as the sender is handed it.
+fn usage_preview(ctx: &egui::Context, app: &mut App, arrived: f32) {
+    let Some(report) = app.usage_preview.clone() else {
+        return;
+    };
+    let mut close = false;
+
+    modal_window(ctx, "What is sent", arrived).show(ctx, |ui| {
+        ui.set_max_width(560.0);
+        ui.label(theme::heading(ui, "What is sent", 15.0));
+        ui.add_space(8.0);
+        ui.label(
+            "This is the whole report of a scan, with the numbers of your last scan (zero before the first). A repair sends the same with its own counts: repaired and failed, per check.",
+        );
+        ui.label(theme::muted(
+            "Every report that was sent is also written to usage-data.log in the log folder.",
+        ));
+        ui.add_space(6.0);
+        egui::ScrollArea::vertical()
+            .max_height(300.0)
+            .show(ui, |ui| {
+                let mut text = report.as_str();
+                ui.add(
+                    egui::TextEdit::multiline(&mut text)
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(f32::INFINITY),
+                );
+            });
+        ui.add_space(8.0);
+        ui.separator();
+        if ui.button("Close").clicked() {
+            close = true;
+        }
+    });
+
+    if close {
+        app.close_usage_preview();
     }
 }
 
