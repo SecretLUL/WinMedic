@@ -209,12 +209,12 @@ fn navigation(ui: &mut egui::Ui, app: &mut App) {
             current_page_bar(ui, *current);
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("Help").on_hover_text("?").clicked() {
+            if ui.add(theme::keyed(ui, "Help", "?")).clicked() {
                 app.show_help = true;
             }
             if ui
-                .button("Export report")
-                .on_hover_text("E - save the findings as an HTML report")
+                .add(theme::keyed(ui, "Export report", "E"))
+                .on_hover_text("Save the findings as an HTML report")
                 .clicked()
             {
                 app.status_message = Some(match app.export_report() {
@@ -224,14 +224,18 @@ fn navigation(ui: &mut egui::Ui, app: &mut App) {
             }
             // Named after where it goes, the way a BIOS labels the same key.
             let (label, hover) = if app.config.advanced_mode {
-                ("Easy mode (F7)", "Show only what needs doing")
+                ("Easy mode", "Show only what needs doing")
             } else {
                 (
-                    "Advanced mode (F7)",
+                    "Advanced mode",
                     "Show every finding with its details, the filters, the logs and simulation",
                 )
             };
-            if ui.button(label).on_hover_text(hover).clicked() {
+            if ui
+                .add(theme::keyed(ui, label, "F7"))
+                .on_hover_text(hover)
+                .clicked()
+            {
                 app.toggle_advanced_mode();
             }
         });
@@ -341,15 +345,22 @@ fn update_banner(ui: &mut egui::Ui, app: &mut App, update: &UpdateInfo) {
                     }
                     None => busy_spinner(ui),
                 }
-            } else if ui
-                .add(egui::Button::new(RichText::new("Update now").strong()))
-                .on_hover_text("U")
-                .clicked()
-            {
+            } else if update_now(ui, app).clicked() {
                 app.show_update_notice();
             }
         });
     });
+}
+
+/// The update banner's button. On Settings `U` restores a snapshot, so
+/// there the button shows no key.
+fn update_now(ui: &mut egui::Ui, app: &App) -> egui::Response {
+    let label = RichText::new("Update now").strong();
+    if app.active_tab == TAB_SETTINGS {
+        ui.add(egui::Button::new(label))
+    } else {
+        ui.add(theme::keyed(ui, label, "U"))
+    }
 }
 
 /// How wide the update banner draws the download's bar.
@@ -2693,6 +2704,40 @@ mod tests {
         assert!(harness.query_by_label("Help").is_some());
     }
 
+    /// A button shows the key that presses it, and only where that key does
+    /// what the button does. On Settings `U` restores a snapshot, so "Update
+    /// now" shows no key there and is narrower by the cap.
+    #[test]
+    fn update_now_shows_its_key_only_where_the_key_opens_the_update() {
+        let width = |tab: usize| {
+            let mut app = with_update(scanned_app());
+            app.active_tab = tab;
+            window(app).get_by_label("Update now").rect().width()
+        };
+        let (home, settings) = (width(crate::app::TAB_HOME), width(TAB_SETTINGS));
+        assert!(
+            home > settings + 10.0,
+            "no key cap on Scan & Repair: {home} vs {settings} on Settings"
+        );
+    }
+
+    /// While a filter is set, Esc clears the filter before it stops a scan:
+    /// "Cancel scan" shows Esc only when Esc cancels.
+    #[test]
+    fn cancel_scan_shows_esc_only_while_esc_cancels() {
+        let width = |filter: Option<Severity>| {
+            let mut app = scanned_app();
+            app.is_scanning = true;
+            app.severity_filter = filter;
+            window(app).get_by_label("Cancel scan").rect().width()
+        };
+        let (plain, filtered) = (width(None), width(Some(Severity::Critical)));
+        assert!(
+            plain > filtered + 10.0,
+            "no key cap without a filter: {plain} vs {filtered} with one"
+        );
+    }
+
     /// Where the user asked for it: top right, left of "Export report". It is
     /// named after where it goes, the way a BIOS labels the same key.
     #[test]
@@ -2700,18 +2745,18 @@ mod tests {
         let mut harness = window(easy_fresh_app());
 
         let export = harness.get_by_label("Export report").rect();
-        let mode = harness.get_by_label("Advanced mode (F7)").rect();
+        let mode = harness.get_by_label("Advanced mode").rect();
         assert!(
             mode.right() <= export.left() && (mode.center().y - export.center().y).abs() < 2.0,
             "the button is not beside Export report: {mode:?} vs {export:?}"
         );
 
-        harness.get_by_label("Advanced mode (F7)").click();
+        harness.get_by_label("Advanced mode").click();
         harness.run();
         assert!(harness.state().config.advanced_mode);
         assert!(harness.query_by_label("Show log").is_some());
 
-        harness.get_by_label("Easy mode (F7)").click();
+        harness.get_by_label("Easy mode").click();
         harness.run();
         assert!(!harness.state().config.advanced_mode);
     }

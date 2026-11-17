@@ -161,18 +161,11 @@ fn buttons(ui: &mut egui::Ui, app: &mut App, page: usize) {
     let last = page + 1 == PAGES;
     ui.horizontal(|ui| {
         let forward = if last { "Get started" } else { "Next" };
-        if theme::big_button(ui, forward, true, true)
-            .on_hover_text("Enter")
-            .clicked()
-        {
+        if theme::big_button(ui, forward, Some("Enter"), true, true).clicked() {
             app.welcome_next();
         }
         // The last page's own button leaves the introduction.
-        if !last
-            && theme::big_button(ui, "Skip", false, true)
-                .on_hover_text("Esc")
-                .clicked()
-        {
+        if !last && theme::big_button(ui, "Skip", Some("Esc"), false, true).clicked() {
             app.close_welcome();
         }
         if page > 0 && ui.button("Back").clicked() {

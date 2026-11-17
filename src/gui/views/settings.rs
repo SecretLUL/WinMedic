@@ -349,9 +349,9 @@ fn backups(ui: &mut egui::Ui, app: &mut App) {
     if ui
         .add_enabled(
             !app.is_restoring,
-            egui::Button::new("Restore the selected snapshot"),
+            theme::keyed(ui, "Restore the selected snapshot", "U"),
         )
-        .on_hover_text("U - asks for confirmation first")
+        .on_hover_text("Asks for confirmation first")
         .clicked()
     {
         app.request_rollback();
