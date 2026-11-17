@@ -32,6 +32,15 @@ on:
           - minor
           - major
         default: patch
+      # For something that is not ready for everyone: the version gets `-pre.N`
+      # behind it, and that `-` is what GitHub's flag, WinGet, Chocolatey and
+      # WinMedic's own update check go by. Run it on the branch that holds the
+      # change ("Use workflow from"); the branch keeps its version.
+      prerelease:
+        description: 'Pre-release: publish as vX.Y.Z-pre.N for testers, from this branch, without WinGet, Chocolatey or update offers'
+        required: false
+        type: boolean
+        default: false
       dry_run:
         description: 'Rehearsal: build and verify everything, but push no tag and publish no release'
         required: false
@@ -69,32 +78,43 @@ jobs:
       # finished: branch protection guards merges, not this workflow. Checked
       # first, before ten minutes of LTO build. A rehearsal skips it, so the
       # workflow itself can be tried on any commit.
+      #
+      # A release counts the runs CI made for a push, which only `main` gets.
+      # A pre-release comes from a branch, whose commits CI has only seen in
+      # its pull request, so there those runs count too. Only there: a release
+      # started on a branch by mistake still stops here.
       - name: Require a green CI run on this commit
         if: github.event_name != 'workflow_dispatch' || !inputs.dry_run
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.sha }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
         run: |
           $ErrorActionPreference = 'Stop'
+          $events = if ($env:INPUT_PRERELEASE -eq 'true') { 'push', 'pull_request' } else { , 'push' }
+          $where  = if ($env:INPUT_PRERELEASE -eq 'true') { 'the branch (its pull request has to be green)' } else { 'main' }
           # CI does not run on a push that changes documentation only, such
           # as the release notes merged right before a release, so the newest
           # commit it ran on can be one before this.
           $tested = $null
           foreach ($commit in @(git rev-list --first-parent --max-count=50 $env:SHA)) {
-            # A run that has not finished has no conclusion yet, only a status.
-            $runs = @(gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$commit&event=push&per_page=20" --jq '.workflow_runs[] | if .status == "completed" then .conclusion else "running" end')
-            if ($LASTEXITCODE) { throw "Could not read the CI runs of $commit." }
+            $runs = @()
+            foreach ($kind in $events) {
+              # A run that has not finished has no conclusion yet, only a status.
+              $runs += @(gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$commit&event=$kind&per_page=20" --jq '.workflow_runs[] | if .status == "completed" then .conclusion else "running" end')
+              if ($LASTEXITCODE) { throw "Could not read the CI runs of $commit." }
+            }
             if ($runs) { $tested = $commit; break }
           }
           if (-not $tested) {
-            throw "CI has not run on $env:SHA or on the 49 commits before it. Fix main first."
+            throw "CI has not run on $env:SHA or on the 49 commits before it. Fix $where first."
           }
           if ($runs -notcontains 'success') {
             if ($runs -contains 'running') {
               throw "CI is still running on $tested. Start the release again once it is green."
             }
-            throw "CI has not passed on $tested (runs: $($runs -join ', ')). Fix main first."
+            throw "CI has not passed on $tested (runs: $($runs -join ', ')). Fix $where first."
           }
           if ($tested -ne $env:SHA) {
             # The files ci.yml's push trigger ignores, as labels.yml lists them.
@@ -121,29 +141,17 @@ jobs:
         shell: pwsh
         env:
           INPUT_BUMP: ${{ inputs.bump }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
           EVENT_TAG: ${{ github.event.release.tag_name }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
           $ErrorActionPreference = 'Stop'
 
           if ($env:EVENT_NAME -eq 'workflow_dispatch') {
-            # Counted from the newest tag, not from Cargo.toml: after a run that
-            # could not bring the branch up, the branch still states the
-            # release before, and counting from it would pick one that shipped.
-            # Pre-release tags such as v1.0.0-rc1 do not count.
-            $latest = git ls-remote --tags origin 'refs/tags/v*' |
-              ForEach-Object { if ($_ -match 'refs/tags/v(\d+\.\d+\.\d+)$') { [version]$Matches[1] } } |
-              Sort-Object -Descending |
-              Select-Object -First 1
-            if (-not $latest) { throw 'No release tag to count from.' }
-
-            $version = switch ($env:INPUT_BUMP) {
-              'major' { "$($latest.Major + 1).0.0" }
-              'minor' { "$($latest.Major).$($latest.Minor + 1).0" }
-              'patch' { "$($latest.Major).$($latest.Minor).$($latest.Build + 1)" }
-              default { throw "Unknown bump: '$env:INPUT_BUMP'" }
-            }
-            Write-Host "$env:INPUT_BUMP after v$latest"
+            # Counted from the newest release tag, and for a pre-release with
+            # `-pre.N` behind it; the script says why and can be run by hand.
+            $version = ./scripts/next-version.ps1 -Bump $env:INPUT_BUMP -PreRelease:($env:INPUT_PRERELEASE -eq 'true')
+            if (-not $version) { throw 'next-version.ps1 printed no version.' }
           } else {
             $version = if ($env:EVENT_TAG) { $env:EVENT_TAG } else { $env:GITHUB_REF_NAME }
           }
@@ -357,8 +365,12 @@ jobs:
       # turn it green either, and is not meant to: "Resolve version" refuses a
       # tag that already exists, so the run stands as the record that the branch
       # needed a human.
+      #
+      # Not for a pre-release: its `-pre.N` belongs to the tag alone. Pushed to
+      # the branch it would reach `main` with the pull request, and every build
+      # from there would call itself a pre-release.
       - name: Bring the branch up to the released version
-        if: github.event_name == 'workflow_dispatch' && !inputs.dry_run
+        if: github.event_name == 'workflow_dispatch' && !inputs.dry_run && !inputs.prerelease
         shell: pwsh
         env:
           BRANCH: ${{ github.ref_name }}
