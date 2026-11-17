@@ -3906,6 +3906,8 @@ mod tests {
         assert!(!keeps_services_grouped(DEFAULT_SPLIT_THRESHOLD_KB, small));
         assert!(!keeps_services_grouped(DEFAULT_SPLIT_THRESHOLD_KB, 2 * GB));
         assert!(!keeps_services_grouped(TUNED_THRESHOLD, small));
+        // A RAM size that could not be read is 0: nothing is judged by it.
+        assert!(!keeps_services_grouped(TUNED_THRESHOLD, 0));
         // Exactly 3.5 GB and more: the default splits, a higher value does not.
         let enough = DEFAULT_SPLIT_THRESHOLD_KB * 1024;
         assert!(!keeps_services_grouped(DEFAULT_SPLIT_THRESHOLD_KB, enough));
