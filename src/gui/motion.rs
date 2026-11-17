@@ -109,7 +109,20 @@ pub fn since_change(ctx: &egui::Context, slot: Id, key: Id, seconds: f32) -> f32
 /// The page is laid out lower, not painted lower: what is under the pointer
 /// is what is drawn there.
 pub fn entrance<R>(ui: &mut egui::Ui, key: Id, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    let arrived = since_change(ui.ctx(), Id::unique("winmedic_page"), key, SLOW);
+    entrance_in(ui, Id::unique("winmedic_page"), key, add)
+}
+
+/// [`entrance`] for a part of a page that changes while the rest of it
+/// stays, such as the page of Settings picked from the list beside it.
+/// `slot` names the part, so that it and the page around it each come in
+/// when they themselves change, and not when the other does.
+pub fn entrance_in<R>(
+    ui: &mut egui::Ui,
+    slot: Id,
+    key: Id,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let arrived = since_change(ui.ctx(), slot, key, SLOW);
     let below = egui::vec2(0.0, ((1.0 - arrived) * RISE).round());
     let place = ui.available_rect_before_wrap().translate(below);
     // A scope in either case, so that a widget keeps its id, and with it its
@@ -323,6 +336,29 @@ mod tests {
         }
         assert_eq!(last, 0.8);
         assert_eq!(frame(&ctx, 3.0, ask(0.0)), (0.0, false));
+    }
+
+    /// A part of a page comes in when it changes, and stays put when the
+    /// page around it does: the two are told apart by their slot.
+    #[test]
+    fn a_part_of_a_page_and_the_page_around_it_come_in_on_their_own() {
+        let ctx = context();
+        let (page, part) = (Id::unique("page"), Id::unique("part"));
+        let ask = |page_key: &'static str, part_key: &'static str| {
+            move |ctx: &egui::Context| {
+                (
+                    since_change(ctx, page, Id::unique(page_key), SLOW),
+                    since_change(ctx, part, Id::unique(part_key), SLOW),
+                )
+            }
+        };
+
+        assert_eq!(frame(&ctx, 1.0, ask("home", "repairs")).0, (1.0, 1.0));
+        let ((page_in, part_in), _) = frame(&ctx, 2.0, ask("home", "scans"));
+        assert!(page_in == 1.0 && part_in < 0.5, "{page_in} {part_in}");
+        frame(&ctx, 3.0, ask("home", "scans"));
+        let ((page_in, part_in), _) = frame(&ctx, 4.0, ask("settings", "scans"));
+        assert!(page_in < 0.5 && part_in == 1.0, "{page_in} {part_in}");
     }
 
     /// With Windows' animations off, every state is there at once and nothing
