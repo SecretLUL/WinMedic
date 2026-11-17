@@ -34,11 +34,24 @@ pub struct Receiver {
     pub app_key: &'static str,
 }
 
-/// The receiver this build sends to.
+/// The receiver this build sends to: an Aptabase the maintainer hosts
+/// himself, so that no analytics company sits in between.
 ///
-/// `None` until there is one. Then nothing asks for usage data, Settings
-/// offers no switch for it and nothing is sent, whatever config.json says.
-pub const RECEIVER: Option<Receiver> = None;
+/// With `None` nothing asks for usage data, Settings offers no switch for it
+/// and nothing is sent, whatever config.json says.
+///
+/// The address is in every released copy, which goes on posting to it: it
+/// must keep answering there. What `where_it_goes` promises is kept by the
+/// server's own setup: its entry proxy hands the statistics no address and
+/// writes no log, and the reverse proxy in front has both of its logs
+/// switched off for this address.
+pub const RECEIVER: Option<Receiver> = Some(Receiver {
+    where_it_goes: "To the developer's own server in Germany, by way of Cloudflare. Like every \
+                    server, both see your IP address. The developer's server does not write \
+                    it down and does not pass it on to the statistics.",
+    url: "https://winmedic-usage.ammarnashar.dev/api/v0/events",
+    app_key: "A-SH-4549551502",
+});
 
 /// One report: its name and its numbers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -291,6 +304,28 @@ mod tests {
         )
     }
 
+    /// What the window promises under "Where it goes" names everyone who
+    /// sees the sender's address, and the reports go out encrypted.
+    #[test]
+    fn the_receiver_of_this_build_says_who_sees_the_ip_address() {
+        let receiver = super::RECEIVER.expect("this build has a receiver");
+        assert!(receiver.url.starts_with("https://"), "{}", receiver.url);
+        assert!(receiver.url.ends_with("/api/v0/events"), "{}", receiver.url);
+        assert!(receiver.app_key.starts_with("A-"), "{}", receiver.app_key);
+        for named in [
+            "IP address",
+            "Cloudflare",
+            "own server",
+            "does not write it down",
+        ] {
+            assert!(
+                receiver.where_it_goes.contains(named),
+                "{named} is missing: {}",
+                receiver.where_it_goes
+            );
+        }
+    }
+
     /// The whole report, so that a field added to it shows up here: what a
     /// user agreed to is this and nothing more.
     #[test]
@@ -439,6 +474,45 @@ mod tests {
             assert_eq!(
                 send(&mock, &RECEIVER, "[]", Duration::from_secs(10)).await,
                 Err(expected.to_string())
+            );
+        }
+    }
+
+    /// What curl printed for the sender's own command line against the real
+    /// receiver (tests/fixtures/README.md): the answers above are typed, these
+    /// are captured.
+    #[tokio::test]
+    async fn the_receivers_real_answers_are_read_as_what_they_are() {
+        let captured: [(&[u8], Result<(), String>); 4] = [
+            (
+                include_bytes!("../../tests/fixtures/console/curl_usage_report_accepted.bin"),
+                Ok(()),
+            ),
+            (
+                include_bytes!("../../tests/fixtures/console/curl_usage_report_unknown_key.bin"),
+                Err(
+                    "the server dropped it: Application not found with given app key: \
+                     A-SH-0000000000. Events are not being recorded."
+                        .to_string(),
+                ),
+            ),
+            (
+                include_bytes!("../../tests/fixtures/console/curl_usage_report_rate_limited.bin"),
+                Err("the server answered 429".to_string()),
+            ),
+            (
+                include_bytes!("../../tests/fixtures/console/curl_usage_report_no_answer.bin"),
+                Err("no answer from the server".to_string()),
+            ),
+        ];
+        for (bytes, expected) in captured {
+            let printed = String::from_utf8(bytes.to_vec()).unwrap();
+            let mock = MockCommandRunner::new();
+            mock.add_response("curl.exe", CmdOutput::ok(printed.clone()));
+            assert_eq!(
+                send(&mock, &RECEIVER, "[]", Duration::from_secs(10)).await,
+                expected,
+                "{printed:?}"
             );
         }
     }

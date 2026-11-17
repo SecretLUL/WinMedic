@@ -87,7 +87,8 @@ Exactly what each check looks at and runs is in
 
 ## Privacy
 
-WinMedic collects no data and has no telemetry. It goes online only for this:
+WinMedic sends nothing about you or your PC unless you say yes. It goes online
+only for this:
 
 - **Updates:** it asks GitHub whether there is a newer version and downloads
   it when you click *Update now*. You can turn the check off under
@@ -105,6 +106,22 @@ WinMedic collects no data and has no telemetry. It goes online only for this:
   report. It shows the report first, with your user name, computer name and
   user folder replaced, and only *Open on GitHub* opens GitHub's bug report
   form with it in your browser, where you post it or not.
+- **Anonymous usage data, only if you agree:** after the introduction of a
+  first start WinMedic asks once whether to share it. It is off until you
+  click *Yes, share*, and **Settings → General** switches it on or off at any
+  time. With it on, the window sends a short report after each scan and each
+  repair: the WinMedic version, the Windows build number, Easy or Advanced
+  mode, how long the scan took, the health score, and for each check only
+  numbers (found, repaired, failed), with the time and a random number that
+  is new at every start. Never names of devices, files or folders, your user
+  or computer name, the text of a finding, or a number that stays the same
+  from one start to the next. *Show what is sent* shows a report before
+  anything goes out, and every report that was sent is also written to
+  `usage-data.log` in the log folder. The reports go to the developer's own
+  server in Germany, by way of Cloudflare; like every server, both see your
+  IP address. The developer's server does not write it down and does not
+  pass it on to the statistics. `--scan`, `--auto-fix` and the background
+  scan send nothing.
 
 ## For IT admins
 

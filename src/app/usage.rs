@@ -208,7 +208,8 @@ pub(crate) mod tests {
     #[test]
     fn without_a_receiver_nothing_is_on_and_nothing_is_sent() {
         let mut app = App::new();
-        assert!(!app.offers_usage_data(), "this build has no receiver yet");
+        app.usage_receiver = None;
+        assert!(!app.offers_usage_data());
         app.usage_question = true;
         app.answer_usage_question(true);
         assert!(!app.config.share_usage_data);

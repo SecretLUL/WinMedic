@@ -21,6 +21,22 @@ module was written against.
   built in the exact shape of the real format. It is listed as constructed here,
   with the reason.
 
+## Usage reports — `console/curl_usage_report_*`
+
+What `curl.exe` printed for the command line of `usage_data::send`
+(`-s -w "\n%{http_code}"`, so the answer and then the status on a line of its
+own) against the receiver in `usage_data::RECEIVER`, a self-hosted Aptabase
+behind an nginx. Captured on Windows 11 Pro 10.0.26300 with curl 8.19.0 (the
+one Git for Windows brings), 2026-11-17. Nothing was replaced: the answers
+name no machine and no user.
+
+| File | Sent | Notes |
+| --- | --- | --- |
+| `curl_usage_report_accepted.bin` | one scan report with the app key of this build | `{}` and 200: recorded. |
+| `curl_usage_report_unknown_key.bin` | the same with the key `A-SH-0000000000` | Also 200. Only the body says that nothing was recorded, which is why `send` reads it. |
+| `curl_usage_report_rate_limited.bin` | the same after 15 posts within a few seconds | 429 with nginx's own HTML page, from the receiver's entry proxy (30 a minute for each sender). |
+| `curl_usage_report_no_answer.bin` | the same to port 9 of the host, where nothing listens | curl exits 7 and prints only the status `000`. |
+
 ## Console output — `console/`
 
 Captured on Windows 11 Pro 10.0.26200, German display language, OEM code page
