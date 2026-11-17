@@ -221,6 +221,9 @@ pub struct App {
     // UI state
     pub status_message: Option<String>,
     pub show_help: bool,
+    /// The page of the introduction on screen ([`super::welcome`]), which
+    /// then takes the whole window.
+    pub welcome: Option<usize>,
     pub pending_confirm: Option<ConfirmRequest>,
     pub available_update: Option<UpdateInfo>,
     /// WinMedic's newest crash since the last start, in a banner until the
@@ -282,10 +285,26 @@ impl App {
     }
 
     /// The app the window runs: the user's settings, their last scan and
-    /// their registry backups.
+    /// their registry backups. A first start opens with the introduction.
     pub fn from_disk() -> Self {
         let (config, config_status) = AppConfig::load_reporting();
-        Self::build(config, config_status, ScanState::load(), true)
+        Self::opening(config, config_status, ScanState::load(), true)
+    }
+
+    /// [`Self::build`], on the introduction when what was found on disk
+    /// makes this a first start.
+    pub(super) fn opening(
+        config: AppConfig,
+        config_status: ConfigStatus,
+        saved: Option<ScanState>,
+        list_backups: bool,
+    ) -> Self {
+        let first_start = super::welcome::is_first_start(&config_status, saved.is_some());
+        let mut app = Self::build(config, config_status, saved, list_backups);
+        if first_start {
+            app.welcome = Some(0);
+        }
+        app
     }
 
     pub(super) fn build(
@@ -419,6 +438,7 @@ impl App {
                     .unwrap_or_else(|| "Ready".to_string()),
             ),
             show_help: false,
+            welcome: None,
             pending_confirm: None,
             available_update: None,
             crash_offer: None,
@@ -657,6 +677,7 @@ impl App {
             || self.crash_report.is_some()
             || self.setting_input.is_some()
             || self.show_help
+            || self.welcome.is_some()
     }
 
     /// Advance to the next tab in cyclic order (BIOS-style right navigation).
