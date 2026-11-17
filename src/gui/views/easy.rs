@@ -107,6 +107,37 @@ fn scanning(ui: &mut egui::Ui, app: &mut App) {
     if ui.button("Cancel").on_hover_text("Esc").clicked() {
         app.cancel_current_operation();
     }
+    // Below the button, as on the repair page. The bar reaches 99 % within
+    // seconds and then waits for the slowest check, the component store's,
+    // for a minute or more: that is where it looks stuck.
+    if app
+        .scan_elapsed()
+        .is_some_and(|elapsed| app.is_scanning && elapsed >= PATIENCE)
+    {
+        ui.add_space(16.0);
+        reassurance(
+            ui,
+            "All good, WinMedic is still checking. The last checks take the longest.",
+            still_checking(app),
+        );
+    }
+}
+
+/// Which checks the scan is still waiting for: their names while there are
+/// one or two, so the page says what takes so long, and their number else.
+fn still_checking(app: &App) -> Option<String> {
+    let running: Vec<&str> = app
+        .module_progress_list
+        .iter()
+        .filter(|module| !module.is_done)
+        .map(|module| module.name.as_str())
+        .collect();
+    match running[..] {
+        [] => None,
+        [one] => Some(format!("Still running: {one}.")),
+        [one, other] => Some(format!("Still running: {one} and {other}.")),
+        _ => Some(format!("Still running: {} checks.", running.len())),
+    }
 }
 
 fn repairing(ui: &mut egui::Ui, app: &mut App) {
@@ -131,11 +162,16 @@ fn repairing(ui: &mut egui::Ui, app: &mut App) {
     // appears.
     if let Some(elapsed) = app.repair_step_elapsed().filter(|e| *e >= PATIENCE) {
         ui.add_space(16.0);
-        patience(ui, app, elapsed);
+        reassurance(
+            ui,
+            "Don't worry, everything is fine. WinMedic needs some time to heal.",
+            patience_time(app, elapsed),
+        );
     }
 }
 
-/// How long one repair runs before the page says that this is normal. Nearly
+/// How long a scan, or one repair, runs before the page says that this is
+/// normal. Nearly
 /// every repair is done within seconds, so one still running after half a
 /// minute is most likely one of the servicing tools: DISM, which ran for 13
 /// minutes on one PC, with a bar that hardly moves. Half a minute of that is
@@ -170,9 +206,10 @@ fn patience_time(app: &App, elapsed: Duration) -> Option<String> {
     })
 }
 
-/// Nothing is wrong, and after a while about how long it still takes.
-fn patience(ui: &mut egui::Ui, app: &App, elapsed: Duration) {
-    let when = patience_time(app, elapsed);
+/// Nothing is wrong, in the words of the page it is on, and under them what
+/// the page knows about the wait: how long it still takes, or what it is
+/// waiting for.
+fn reassurance(ui: &mut egui::Ui, text: &str, detail: Option<String>) {
     egui::Frame::NONE
         .fill(ui.visuals().faint_bg_color)
         .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
@@ -183,12 +220,9 @@ fn patience(ui: &mut egui::Ui, app: &App, elapsed: Duration) {
             ui.horizontal_top(|ui| {
                 theme::severity_mark(ui, Severity::Info, 18.0);
                 ui.vertical(|ui| {
-                    line(
-                        ui,
-                        "Don't worry, everything is fine. WinMedic needs some time to heal.",
-                    );
-                    if let Some(when) = when {
-                        note(ui, when);
+                    line(ui, text);
+                    if let Some(detail) = detail {
+                        note(ui, detail);
                     }
                 });
             });
