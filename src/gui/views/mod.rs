@@ -10,4 +10,3 @@ pub mod easy;
 pub mod findings;
 pub mod home;
 pub mod settings;
-pub mod welcome;
