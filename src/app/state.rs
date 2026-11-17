@@ -342,7 +342,7 @@ impl App {
             let rebooted = super::scan_state::restarted_since(
                 &saved,
                 super::scan_state::current_boot_id(),
-                sysinfo::System::boot_time(),
+                super::scan_state::current_boot_time(),
             );
             let mut all = std::mem::take(&mut saved.issues);
             all.append(&mut saved.archived_issues);

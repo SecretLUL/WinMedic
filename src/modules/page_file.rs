@@ -31,14 +31,24 @@ use tokio::time::sleep;
 const MEMORY_MANAGEMENT_KEY: &str =
     r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management";
 
-/// Physical memory in bytes. A function, so that a test can pick the machine.
+/// Physical memory in bytes, 0 when it is not known. A function, so that a
+/// test can pick the machine.
 pub type RamSource = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 /// `GlobalMemoryStatusEx`, the same number `Win32_ComputerSystem` reports as
 /// `TotalPhysicalMemory`.
+///
+/// `sysinfo` 0.40 returns a `Result` from `System::new()`. On Windows it is
+/// always `Ok`; an error reads as 0, which is what `sysinfo` already reports
+/// when `GlobalMemoryStatusEx` itself fails. At 0 a finding can be missed
+/// but none is invented: no page file is "critical at this RAM size", the
+/// size checks fall back to their fixed floors, and no service split
+/// threshold is above it.
 pub fn real_ram() -> RamSource {
     Arc::new(|| {
-        let mut system = sysinfo::System::new();
+        let Ok(mut system) = sysinfo::System::new() else {
+            return 0;
+        };
         system.refresh_memory_specifics(sysinfo::MemoryRefreshKind::nothing().with_ram());
         system.total_memory()
     })
@@ -873,6 +883,24 @@ mod tests {
             "32 GB of RAM go a long way"
         );
         assert!(issue.technical_details.contains("PagingFiles: (empty)"));
+    }
+
+    /// A RAM size that could not be read is 0. The missing page file is
+    /// still reported, but not as critical "at this RAM size".
+    #[tokio::test]
+    async fn a_ram_size_that_is_not_known_is_not_a_small_one() {
+        let issues = module(mock_system("", "", "", ROOMY_DISK), 0)
+            .scan(None)
+            .await
+            .unwrap();
+        let issue = issues.iter().find(|i| i.id == "pagefile_disabled").unwrap();
+        assert_eq!(issue.severity, Severity::Warning);
+        assert!(!issue.description.contains("At this RAM size"));
+    }
+
+    #[test]
+    fn this_machine_knows_its_ram_size() {
+        assert!(real_ram()() > GIB);
     }
 
     #[tokio::test]
