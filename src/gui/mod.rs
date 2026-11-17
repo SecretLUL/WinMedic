@@ -84,6 +84,19 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
         return;
     }
 
+    // So does the one question that follows a first start's introduction.
+    if app.usage_question {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::central_panel(ui.style()).inner_margin(12))
+            .show(ui, |ui| {
+                motion::entrance(ui, egui::Id::unique("usage_question"), |ui| {
+                    views::usage::show(ui, app)
+                });
+            });
+        modals::show(&ctx, app);
+        return;
+    }
+
     egui::Panel::top("navigation").show(ui, |ui| {
         ui.add_space(4.0);
         navigation(ui, app);
@@ -601,6 +614,10 @@ mod tests {
             status.3 = ModuleStatus::Idle;
         }
         app.selected_filtered_index = 0;
+        // A build that has somewhere to send usage data, so that what it
+        // adds to the window is drawn and tested. Nothing is sent: the
+        // sender of a test is inert.
+        app.usage_receiver = Some(crate::app::usage::tests::RECEIVER);
         app.backup_records = vec![BackupRecord {
             id: "b1".to_string(),
             timestamp: "2026-01-01 12:00:00".to_string(),
@@ -1274,6 +1291,8 @@ mod tests {
                 SettingsPage::General,
                 &[
                     "Check for updates automatically",
+                    "Share anonymous usage data",
+                    "Show what is sent",
                     "Remove WinMedic from this PC",
                 ],
             ),
@@ -1318,6 +1337,205 @@ mod tests {
         }
     }
 
+    /// The question after a first start's introduction, as the window
+    /// draws it.
+    fn asked_app() -> App {
+        let mut app = easy_fresh_app();
+        app.usage_question = true;
+        app
+    }
+
+    /// The page says all of it at once, in the window Easy mode locks: what
+    /// is sent, what never is, where it goes, and both answers.
+    #[test]
+    fn the_usage_question_says_everything_on_one_page_of_the_smallest_window() {
+        let size = (window::MIN_SIZE.x, window::MIN_SIZE.y);
+        // 960 x 527: what is left of 1920 x 1080 at 175 %. There the text
+        // scrolls, and the two answers stay on screen.
+        for size in [size, (960.0, 527.0), (1400.0, 900.0)] {
+            let harness = sized_window(asked_app(), size);
+            for expected in [
+                "Share anonymous usage data?",
+                "What is sent",
+                "What is never sent",
+                "Where it goes",
+                "To an example server in Germany",
+                "Show exactly what is sent",
+                "Nothing is sent unless you choose Yes.",
+            ] {
+                assert!(
+                    harness.query_by_label_contains(expected).is_some(),
+                    "the question lost: {expected}"
+                );
+            }
+            for button in ["No, thanks", "Yes, share"] {
+                let rect = harness.get_by_label(button).rect();
+                assert!(
+                    rect.bottom() <= size.1 && rect.right() <= size.0 && rect.left() >= 0.0,
+                    "{button} is at {rect:?} in {size:?}"
+                );
+            }
+            // The window behind it is not drawn: nothing to click past it.
+            assert!(harness.query_by_label("Settings").is_none());
+            assert!(harness.query_by_label("Scan now").is_none());
+        }
+    }
+
+    #[test]
+    fn the_usage_question_is_answered_by_its_two_buttons_only() {
+        let mut harness = window(asked_app());
+        harness.get_by_label("Yes, share").click();
+        harness.run_steps(2);
+        assert!(!harness.state().usage_question);
+        assert!(harness.state().config.share_usage_data);
+        assert!(
+            harness.query_by_label("Scan now").is_some(),
+            "the window is back"
+        );
+
+        let mut harness = window(asked_app());
+        harness.get_by_label("No, thanks").click();
+        harness.run_steps(2);
+        assert!(!harness.state().usage_question);
+        assert!(!harness.state().config.share_usage_data);
+
+        // Enter, which moved through the introduction, agrees to nothing.
+        let mut harness = window_with_keys(asked_app());
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        assert!(harness.state().usage_question);
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+        assert!(!harness.state().usage_question);
+        assert!(!harness.state().config.share_usage_data);
+    }
+
+    /// The click that left the introduction, made again in the same place,
+    /// does not land on Yes.
+    #[test]
+    fn a_click_where_the_introduction_was_left_does_not_agree() {
+        let smallest = (window::MIN_SIZE.x, window::MIN_SIZE.y);
+        for size in [smallest, (960.0, 527.0), (1400.0, 900.0)] {
+            let yes = sized_window(asked_app(), size)
+                .get_by_label("Yes, share")
+                .rect();
+            for (page, button) in [
+                (crate::app::welcome::PAGES - 1, "Get started"),
+                (0, "Next"),
+                (0, "Skip"),
+                (1, "Skip"),
+            ] {
+                let left_by = sized_window(welcome_app(page), size)
+                    .get_by_label(button)
+                    .rect();
+                assert!(
+                    !yes.intersects(left_by),
+                    "at {size:?} Yes at {yes:?} is under {button} at {left_by:?}"
+                );
+            }
+        }
+    }
+
+    /// From the introduction of a first start to the question, in the
+    /// window: read to the end, and skipped.
+    #[test]
+    fn a_first_start_ends_on_the_usage_question() {
+        for leave in ["Get started", "Skip"] {
+            let page = if leave == "Skip" {
+                0
+            } else {
+                crate::app::welcome::PAGES - 1
+            };
+            let mut app = welcome_app(page);
+            app.ask_usage_after_welcome = true;
+            let mut harness = window(app);
+            harness.get_by_label(leave).click();
+            harness.run_steps(2);
+            assert_eq!(harness.state().welcome, None);
+            assert!(
+                harness
+                    .query_by_label("Share anonymous usage data?")
+                    .is_some(),
+                "after {leave}"
+            );
+        }
+    }
+
+    /// "Show what is sent" opens the report itself, from the question and
+    /// from Settings, and closes again without answering anything.
+    #[test]
+    fn the_report_can_be_read_before_and_after_the_answer() {
+        let mut harness = window_with_keys(asked_app());
+        harness.get_by_label("Show exactly what is sent").click();
+        harness.run_steps(2);
+        assert!(
+            harness
+                .query_by_label_contains("This is the whole report of a scan")
+                .is_some()
+        );
+        let shown = harness.state().usage_preview.clone().unwrap();
+        assert!(shown.contains("\"eventName\": \"scan\""), "{shown}");
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+        assert!(harness.state().usage_preview.is_none());
+        assert!(harness.state().usage_question, "still to be answered");
+
+        let mut harness = settings_window(fresh_app(), SettingsPage::General);
+        harness.get_by_label("Show what is sent").click();
+        harness.run_steps(2);
+        assert!(harness.state().usage_preview.is_some());
+        assert!(!harness.state().config.share_usage_data);
+        harness.get_by_label("Close").click();
+        harness.run_steps(2);
+        assert!(harness.state().usage_preview.is_none());
+    }
+
+    /// The switch in Settings is the question's answer, changed later.
+    #[test]
+    fn settings_switch_usage_data_on_and_off() {
+        // On: the tick opens the question, with where the data goes, and
+        // only its Yes switches it on.
+        let mut harness = settings_window(fresh_app(), SettingsPage::General);
+        harness.get_by_label("Share anonymous usage data").click();
+        harness.run_steps(2);
+        assert!(!harness.state().config.share_usage_data);
+        assert!(
+            harness
+                .query_by_label_contains("To an example server in Germany")
+                .is_some()
+        );
+        assert!(harness.query_by_label("Settings > General").is_some());
+        harness.get_by_label("Yes, share").click();
+        harness.run_steps(2);
+        assert!(harness.state().config.share_usage_data);
+        assert_eq!(harness.state().active_tab, TAB_SETTINGS);
+
+        // Off: at once.
+        harness.get_by_label("Share anonymous usage data").click();
+        harness.run_steps(2);
+        assert!(!harness.state().config.share_usage_data);
+        assert!(!harness.state().usage_question);
+    }
+
+    /// A build with nowhere to send it offers nothing: no switch, no link.
+    #[test]
+    fn a_build_without_a_receiver_offers_no_usage_data() {
+        let mut app = fresh_app();
+        app.usage_receiver = None;
+        let harness = settings_window(app, SettingsPage::General);
+        assert!(
+            harness
+                .query_by_label("Check for updates automatically")
+                .is_some()
+        );
+        assert!(
+            harness
+                .query_by_label("Share anonymous usage data")
+                .is_none()
+        );
+        assert!(harness.query_by_label("Show what is sent").is_none());
+    }
+
     /// A click on a page's name turns to it, and the keyboard goes along.
     #[test]
     fn the_list_of_pages_turns_the_page() {
@@ -1338,7 +1556,8 @@ mod tests {
                 .click();
             harness.run_steps(2);
             assert_eq!(harness.state().settings_page(), page);
-            assert!(harness.query_by_label(page.summary()).is_some());
+            let summary = harness.state().settings_summary(page);
+            assert!(harness.query_by_label(summary).is_some());
         }
     }
 

@@ -50,9 +50,19 @@ impl App {
     /// whatever else wrote them or did not. A save that fails shows the
     /// introduction once more, which is better than an error about a file on
     /// the first page a new user sees.
+    ///
+    /// After a first start's introduction comes the one question WinMedic
+    /// asks ([`super::usage`]), whichever way the introduction was left: a
+    /// skipped tour is no answer to it.
     pub fn close_welcome(&mut self) {
-        if self.welcome.take().is_some() && self.system_actions.persist_config {
+        if self.welcome.take().is_none() {
+            return;
+        }
+        if self.system_actions.persist_config {
             let _ = self.config.save();
+        }
+        if std::mem::take(&mut self.ask_usage_after_welcome) && self.offers_usage_data() {
+            self.usage_question = true;
         }
     }
 }
@@ -129,6 +139,65 @@ mod tests {
         app.welcome_next();
         app.welcome_back();
         assert_eq!(app.welcome, None);
+    }
+
+    /// The question follows a first start's introduction, read or skipped,
+    /// and only that one: Help's introduction ends where it began.
+    #[test]
+    fn a_first_start_asks_for_usage_data_after_the_introduction() {
+        use crate::app::ScanState;
+        use crate::config::AppConfig;
+        use crate::utils::usage_data::Receiver;
+        const RECEIVER: Receiver = Receiver {
+            where_it_goes: "To an example server in Germany, which does not store your IP address.",
+            url: "https://usage.example.test/api/v0/events",
+            app_key: "A-EU-0000000000",
+        };
+        let first_start = || {
+            let mut app = App::opening(AppConfig::default(), ConfigStatus::Missing, None, false);
+            app.usage_receiver = Some(RECEIVER);
+            app
+        };
+
+        // Read to the end.
+        let mut app = first_start();
+        for _ in 0..PAGES {
+            assert!(!app.usage_question);
+            app.welcome_next();
+        }
+        assert_eq!(app.welcome, None);
+        assert!(app.usage_question);
+        assert!(!app.config.share_usage_data, "asked is not agreed");
+
+        // Skipped on the first page.
+        let mut app = first_start();
+        app.close_welcome();
+        assert!(app.usage_question);
+
+        // Asked once: the introduction from Help does not ask again.
+        app.answer_usage_question(false);
+        app.open_welcome();
+        app.close_welcome();
+        assert!(!app.usage_question);
+
+        // Not a first start: no question, also after Help's introduction.
+        let scan = ScanState::new(0, Vec::new(), Vec::new(), None);
+        let mut app = App::opening(
+            AppConfig::default(),
+            ConfigStatus::Loaded,
+            Some(scan),
+            false,
+        );
+        app.usage_receiver = Some(RECEIVER);
+        app.open_welcome();
+        app.close_welcome();
+        assert!(!app.usage_question);
+
+        // A build without a receiver has nothing to ask for.
+        let mut app = App::opening(AppConfig::default(), ConfigStatus::Missing, None, false);
+        app.usage_receiver = None;
+        app.close_welcome();
+        assert!(!app.usage_question);
     }
 
     #[test]

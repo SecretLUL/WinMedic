@@ -224,6 +224,30 @@ pub struct App {
     /// The page of the introduction on screen ([`super::welcome`]), which
     /// then takes the whole window.
     pub welcome: Option<usize>,
+    /// The question whether to share anonymous usage data
+    /// ([`super::usage`]), on screen: it takes the whole window after a
+    /// first start's introduction.
+    pub usage_question: bool,
+    /// Set at a first start: leaving the introduction, read or skipped, then
+    /// asks the question, once.
+    pub ask_usage_after_welcome: bool,
+    /// Where usage reports go. `None` in a build without a receiver, which
+    /// neither asks nor offers the setting nor sends.
+    pub usage_receiver: Option<crate::utils::usage_data::Receiver>,
+    /// "Show what is sent", on screen: the report as text.
+    pub usage_preview: Option<String>,
+    /// The last report handed to the sender, as it went out.
+    pub last_usage_report: Option<String>,
+    /// The number this start's reports carry
+    /// ([`crate::utils::usage_data::new_session`]); the next start has another.
+    pub(super) usage_session: String,
+    /// When that number was made. After a day it is replaced: the receiver
+    /// drops reports whose number is older than a week, and a window left
+    /// open that long would report into nothing.
+    pub(super) usage_session_since: chrono::DateTime<chrono::Utc>,
+    /// What the repair run under way repaired and failed at, per check:
+    /// `(repaired, failed)`.
+    pub(super) repair_tally: std::collections::BTreeMap<String, (u64, u64)>,
     pub pending_confirm: Option<ConfirmRequest>,
     pub available_update: Option<UpdateInfo>,
     /// WinMedic's newest crash since the last start, in a banner until the
@@ -303,6 +327,7 @@ impl App {
         let mut app = Self::build(config, config_status, saved, list_backups);
         if first_start {
             app.welcome = Some(0);
+            app.ask_usage_after_welcome = true;
         }
         app
     }
@@ -439,6 +464,14 @@ impl App {
             ),
             show_help: false,
             welcome: None,
+            usage_question: false,
+            ask_usage_after_welcome: false,
+            usage_receiver: crate::utils::usage_data::RECEIVER,
+            usage_preview: None,
+            last_usage_report: None,
+            usage_session: crate::utils::usage_data::new_session(chrono::Utc::now()),
+            usage_session_since: chrono::Utc::now(),
+            repair_tally: std::collections::BTreeMap::new(),
             pending_confirm: None,
             available_update: None,
             crash_offer: None,
@@ -678,6 +711,8 @@ impl App {
             || self.setting_input.is_some()
             || self.show_help
             || self.welcome.is_some()
+            || self.usage_question
+            || self.usage_preview.is_some()
     }
 
     /// Advance to the next tab in cyclic order (BIOS-style right navigation).

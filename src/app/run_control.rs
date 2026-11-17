@@ -115,6 +115,7 @@ impl App {
         self.active_tab = TAB_HOME;
         self.fixed_count = 0;
         self.failed_count = 0;
+        self.repair_tally.clear();
         self.total_to_fix = selected_count;
         self.vss_status = if self.dry_run {
             "Simulation".to_string()
