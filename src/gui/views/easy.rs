@@ -35,6 +35,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
                 ui.add_space(((ui.available_width() - width) / 2.0).max(0.0));
                 ui.vertical(|ui| {
                     ui.set_width(width);
+                    let mut more = false;
                     if app.is_scanning {
                         scanning(ui, app);
                     } else if app.is_fixing {
@@ -42,9 +43,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
                     } else if !has_scanned(app) {
                         unscanned(ui, app);
                     } else {
-                        result(ui, app);
+                        more = result(ui, app);
                     }
-                    notices(ui, app);
+                    notices(ui, app, more);
                 });
             });
         });
@@ -242,7 +243,10 @@ pub(crate) fn asks_for_restart(app: &App) -> bool {
 }
 
 /// After a scan or a repair: how the PC is doing, and the next step.
-fn result(ui: &mut egui::Ui, app: &mut App) {
+///
+/// Returns whether it said something only Advanced mode shows in full, so
+/// that [`notices`] points there once for the whole page.
+fn result(ui: &mut egui::Ui, app: &mut App) -> bool {
     let palette = theme::palette(ui);
     let open: Vec<Severity> = app
         .issues
@@ -271,7 +275,7 @@ fn result(ui: &mut egui::Ui, app: &mut App) {
             }
             scan_again(ui, app, false);
         });
-        return;
+        return false;
     }
 
     if problems == 0 {
@@ -293,7 +297,7 @@ fn result(ui: &mut egui::Ui, app: &mut App) {
         line(ui, format!("Health {} / 100", app.health_score));
         ui.add_space(20.0);
         scan_again(ui, app, true);
-        return;
+        return false;
     }
 
     let worst = [Severity::Critical, Severity::Warning, Severity::Info]
@@ -366,26 +370,19 @@ fn result(ui: &mut egui::Ui, app: &mut App) {
     if failed > 0 {
         ui.colored_label(
             palette.red,
-            format!(
-                "{} did not work. Advanced mode (F7) shows why.",
-                plural(failed, "repair")
-            ),
+            format!("{} did not work.", plural(failed, "repair")),
         );
     }
 
     let left_alone = problems - to_repair;
     if left_alone > 0 {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(theme::muted(format!(
-                "{} more {} your decision.",
-                left_alone,
-                if left_alone == 1 { "needs" } else { "need" }
-            )));
-            if ui.link("Show in Advanced mode (F7)").clicked() {
-                app.toggle_advanced_mode();
-            }
-        });
+        ui.label(theme::muted(format!(
+            "{} more {} your decision.",
+            left_alone,
+            if left_alone == 1 { "needs" } else { "need" }
+        )));
     }
+    failed > 0 || left_alone > 0
 }
 
 /// What the Repair button will do, in a few short lines.
@@ -428,8 +425,13 @@ fn scan_again(ui: &mut egui::Ui, app: &mut App, primary: bool) {
     }
 }
 
-/// Modules that could not be checked, in one line.
-fn notices(ui: &mut egui::Ui, app: &mut App) {
+/// Modules that could not be checked, in one line, and below everything the
+/// page left to Advanced mode, the one link that goes there. `more` is
+/// whether the page above already said something of that kind.
+///
+/// Each of those lines named Advanced mode itself, and a page with a failed
+/// repair and a finding left alone pointed there three times.
+fn notices(ui: &mut egui::Ui, app: &mut App, mut more: bool) {
     let palette = theme::palette(ui);
 
     if !app.is_scanning {
@@ -445,11 +447,16 @@ fn notices(ui: &mut egui::Ui, app: &mut App) {
             ui.add_space(6.0);
             ui.colored_label(
                 palette.red,
-                format!(
-                    "Could not check {}. Advanced mode (F7) shows why.",
-                    failed.join(", ")
-                ),
+                format!("Could not check {}.", failed.join(", ")),
             );
+            more = true;
+        }
+    }
+
+    if more {
+        ui.add_space(2.0);
+        if ui.link("Show details in Advanced mode (F7)").clicked() {
+            app.toggle_advanced_mode();
         }
     }
 }
