@@ -2025,9 +2025,35 @@ mod tests {
                 .is_some()
         );
 
-        harness.get_by_label("Show in Advanced mode (F7)").click();
+        harness
+            .get_by_label("Show details in Advanced mode (F7)")
+            .click();
         harness.run();
         assert!(harness.state().config.advanced_mode);
+    }
+
+    /// A failed repair, a finding left alone and a check that gave up each
+    /// said "Advanced mode (F7)" in its own line. The page says what
+    /// happened and points there once.
+    #[test]
+    fn easy_mode_points_to_advanced_mode_once() {
+        let mut app = easy_forecast_app();
+        app.issues[0].fix_error = Some("access denied".to_string());
+        app.issues[1].is_selected = false;
+        let harness = window(app);
+
+        for said in [
+            "1 repair did not work.",
+            "1 more needs your decision.",
+            "Show details in Advanced mode (F7)",
+        ] {
+            assert!(
+                harness.query_by_label(said).is_some(),
+                "{said:?} is missing"
+            );
+        }
+        assert!(harness.query_by_label_contains("Could not check").is_some());
+        assert_eq!(harness.query_all_by_label_contains("(F7)").count(), 1);
     }
 
     #[test]
