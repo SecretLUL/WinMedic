@@ -62,17 +62,31 @@ pub fn current_boot_id() -> Option<u32> {
         .ok()
 }
 
+/// When Windows started, in seconds since 1970, or `None` when `sysinfo`
+/// cannot tell: on Windows that is a system clock set before 1970.
+pub fn current_boot_time() -> Option<u64> {
+    sysinfo::System::boot_time().ok()
+}
+
 /// How far a file without a boot counter lets the boot time drift before it
 /// counts as a restart.
 const BOOT_TIME_TOLERANCE_SECS: u64 = 10 * 60;
 
 /// Whether Windows has started again since `saved` was written.
-pub fn restarted_since(saved: &ScanState, boot_id: Option<u32>, boot_time_secs: u64) -> bool {
+///
+/// A boot time that is not known, then or now, is not a restart: a restart
+/// counted by mistake drops the repairs that still wait for the real one.
+pub fn restarted_since(
+    saved: &ScanState,
+    boot_id: Option<u32>,
+    boot_time_secs: Option<u64>,
+) -> bool {
     match (saved.boot_id, boot_id) {
         (Some(then), Some(now)) => then != now,
         _ => saved
             .boot_time_secs
-            .is_some_and(|then| boot_time_secs > then + BOOT_TIME_TOLERANCE_SECS),
+            .zip(boot_time_secs)
+            .is_some_and(|(then, now)| now > then + BOOT_TIME_TOLERANCE_SECS),
     }
 }
 
@@ -91,7 +105,7 @@ impl ScanState {
             archived_issues: Vec::new(),
             module_statuses,
             scan_duration_secs,
-            boot_time_secs: Some(sysinfo::System::boot_time()),
+            boot_time_secs: current_boot_time(),
             boot_id: current_boot_id(),
         }
     }
@@ -113,13 +127,9 @@ impl ScanState {
         previous: Option<ScanState>,
         archived: &[ArchivedFinding],
     ) -> Self {
-        let Some(previous) = previous.filter(|previous| {
-            !restarted_since(
-                previous,
-                self.boot_id,
-                self.boot_time_secs.unwrap_or_default(),
-            )
-        }) else {
+        let Some(previous) = previous
+            .filter(|previous| !restarted_since(previous, self.boot_id, self.boot_time_secs))
+        else {
             return self;
         };
         let mut known = previous.issues;
@@ -433,13 +443,16 @@ mod tests {
         assert!(!restarted_since(
             &saved(Some(835), Some(boot)),
             Some(835),
-            boot + 3
+            Some(boot + 3)
         ));
         assert!(restarted_since(
             &saved(Some(835), Some(boot)),
             Some(836),
-            boot
+            Some(boot)
         ));
+        // The counter needs no boot time.
+        assert!(restarted_since(&saved(Some(835), None), Some(836), None));
+        assert!(!restarted_since(&saved(Some(835), None), Some(835), None));
     }
 
     /// A file saved before the counter was, compared by boot time: a clock
@@ -448,9 +461,25 @@ mod tests {
     fn without_a_counter_the_boot_time_may_drift() {
         let boot = 1_790_000_000;
         let old = saved(None, Some(boot));
-        assert!(!restarted_since(&old, Some(836), boot + 1));
-        assert!(!restarted_since(&old, None, boot + 90));
-        assert!(restarted_since(&old, None, boot + 3600));
-        assert!(!restarted_since(&saved(None, None), Some(1), boot));
+        assert!(!restarted_since(&old, Some(836), Some(boot + 1)));
+        assert!(!restarted_since(&old, None, Some(boot + 90)));
+        assert!(restarted_since(&old, None, Some(boot + 3600)));
+        assert!(!restarted_since(&saved(None, None), Some(1), Some(boot)));
+    }
+
+    /// `sysinfo` 0.40 can fail to tell the boot time. Read as 0, as a missing
+    /// one was, it could never be later than the saved one; that stays so.
+    #[test]
+    fn a_boot_time_that_is_not_known_is_not_a_restart() {
+        let boot = 1_790_000_000;
+        assert!(!restarted_since(&saved(None, Some(boot)), None, None));
+        assert!(!restarted_since(&saved(None, Some(boot)), Some(836), None));
+        assert!(!restarted_since(&saved(None, None), None, None));
+        assert!(!restarted_since(&saved(Some(835), Some(boot)), None, None));
+    }
+
+    #[test]
+    fn this_machine_knows_when_it_started() {
+        assert!(current_boot_time().is_some_and(|secs| secs > 1_700_000_000));
     }
 }
