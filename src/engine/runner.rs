@@ -674,8 +674,9 @@ impl DiagnosticEngine {
                 .restore_point
                 .create("WinMedic Auto-Restore Point (before repairs)")
                 .await;
+            let vss_took = vss_started.elapsed();
             run_trace
-                .time(format!("restore point took {:.2?}", vss_started.elapsed()))
+                .time(format!("restore point took {:.2?}", vss_took))
                 .await;
             if !vss_res.success {
                 run_trace.explain_failure(&vss_res.message).await;
@@ -696,7 +697,7 @@ impl DiagnosticEngine {
                 } else {
                     "WARNING"
                 },
-                &vss_res.message,
+                &vss_res.audit_details(vss_took),
             );
 
             // A repair run promises a restore point first. Without a new one,
@@ -1380,6 +1381,105 @@ mod tests {
                 .is_some_and(|e| e.starts_with("Nothing was repaired: ")),
             "{:?}",
             issues[0].fix_error
+        );
+    }
+
+    /// The details of the run's `BACKUP` entry in the audit log, and the
+    /// entries of the run, with the restore point coming from `service`.
+    async fn restore_point_audit_entry(
+        name: &str,
+        service: RestorePointService,
+    ) -> (
+        crate::safety::audit::AuditEntry,
+        Vec<crate::safety::audit::AuditEntry>,
+        Vec<Issue>,
+    ) {
+        let dir =
+            std::env::temp_dir().join(format!("winmedic_engine_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let logger = AuditLogger::with_dir_and_size(dir.clone(), 5 * 1024 * 1024);
+        let engine = DiagnosticEngine::with_modules(vec![Arc::new(Answers(Ok("repaired")))])
+            .with_restore_points(service)
+            .with_audit_log(logger.clone());
+        let mut issues = vec![answered_issue()];
+        let (tx, _rx) = channel(50);
+        let options = RepairOptions {
+            create_vss: true,
+            ..LIVE
+        };
+
+        engine
+            .run_repairs(&mut issues, options, tx, CancellationToken::new())
+            .await;
+
+        let history = logger.get_history();
+        let text = std::fs::read_to_string(dir.join("audit.log")).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+        let backup = history
+            .iter()
+            .find(|e| e.action_type == "BACKUP" && e.module_id == "vss")
+            .unwrap_or_else(|| panic!("no BACKUP entry: {history:?}"))
+            .clone();
+        // The line a person reads says the same as the entry.
+        assert!(
+            text.lines().any(|line| line.ends_with(&format!(
+                "[BACKUP] [vss] System Restore Point -> {} | {}",
+                backup.status, backup.details
+            ))),
+            "{text}"
+        );
+        (backup, history, issues)
+    }
+
+    /// ` (12 s)` at the end of `details`, after `message`. The time is the
+    /// one the run measured, so the test does not say which number it is.
+    fn assert_ends_with_seconds(details: &str, message: &str) {
+        let seconds = details
+            .strip_prefix(message)
+            .and_then(|rest| rest.strip_prefix(" ("))
+            .and_then(|rest| rest.strip_suffix(" s)"));
+        assert!(
+            seconds.is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())),
+            "{details}"
+        );
+    }
+
+    /// #319. The audit log says how long a restore point took that was
+    /// created.
+    #[tokio::test]
+    async fn the_audit_log_says_how_long_the_restore_point_took() {
+        let (backup, _, issues) =
+            restore_point_audit_entry("vss_created", RestorePointService::created()).await;
+
+        assert_eq!(backup.status, "SUCCESS");
+        assert_ends_with_seconds(&backup.details, "A VSS restore point was created.");
+        assert!(issues[0].is_fixed, "the repairs ran after it");
+    }
+
+    /// #319. And how long one took that Windows did not create. The time is
+    /// in that entry only: not in the run's own entry, and not in what the
+    /// window shows for the repairs that did not start.
+    #[tokio::test]
+    async fn the_audit_log_says_how_long_a_missing_restore_point_took() {
+        let (backup, history, issues) =
+            restore_point_audit_entry("vss_declined", RestorePointService::declined()).await;
+        let message = RestorePointOutcome::Throttled.message();
+
+        assert_eq!(backup.status, "WARNING");
+        assert_ends_with_seconds(&backup.details, &message);
+
+        let nothing_repaired = format!("Nothing was repaired: {message}");
+        assert_eq!(
+            issues[0].fix_error.as_deref(),
+            Some(nothing_repaired.as_str())
+        );
+        let run = history
+            .iter()
+            .find(|e| e.action_type == "FIX" && e.module_id == "engine")
+            .unwrap_or_else(|| panic!("no entry for the run: {history:?}"));
+        assert_eq!(
+            run.details,
+            format!("{nothing_repaired} 1 selected repairs were not started.")
         );
     }
 
