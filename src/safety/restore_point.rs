@@ -76,6 +76,21 @@ impl RestorePointResult {
             description: description.to_string(),
         }
     }
+
+    /// The details of the audit entry: the message and how long Windows took,
+    /// in whole seconds, rounded: `A VSS restore point was created. (12 s)`.
+    ///
+    /// The audit log has no line for when the restore point began, so the
+    /// time it took was in no log that is kept (#319). Every answer Windows
+    /// gave carries it, a point that failed as much as one that was created.
+    /// [`RestorePointOutcome::NotRequested`] carries none: Windows was never
+    /// asked, so nothing took any time.
+    pub fn audit_details(&self, took: Duration) -> String {
+        if self.outcome == RestorePointOutcome::NotRequested {
+            return self.message.clone();
+        }
+        format!("{} ({:.0} s)", self.message, took.as_secs_f64().round())
+    }
 }
 
 /// Map the script's marker line onto an outcome.
@@ -363,6 +378,22 @@ impl RestorePointService {
             Box::pin(std::future::ready(RestorePointResult::from_outcome(
                 &description,
                 RestorePointOutcome::NotRequested,
+            )))
+        }
+        Self {
+            checkpoint,
+            live: false,
+        }
+    }
+
+    /// Reports [`RestorePointOutcome::Created`] without touching Windows:
+    /// what a run looks like after Windows created the point.
+    #[cfg(test)]
+    pub(crate) fn created() -> Self {
+        fn checkpoint(description: String) -> RestorePointFuture {
+            Box::pin(std::future::ready(RestorePointResult::from_outcome(
+                &description,
+                RestorePointOutcome::Created,
             )))
         }
         Self {
@@ -783,6 +814,46 @@ mod tests {
         assert_eq!(res.outcome, RestorePointOutcome::Throttled);
         assert_eq!(res.description, "Before repairs");
         assert!(!res.message.is_empty());
+    }
+
+    /// #319. The audit entry says how long the restore point took, whatever
+    /// Windows answered, in whole seconds.
+    #[test]
+    fn the_audit_details_say_how_long_the_restore_point_took() {
+        let details = |outcome: RestorePointOutcome, millis: u64| {
+            RestorePointResult::from_outcome("Before repairs", outcome)
+                .audit_details(Duration::from_millis(millis))
+        };
+
+        assert_eq!(
+            details(RestorePointOutcome::Created, 12_000),
+            "A VSS restore point was created. (12 s)"
+        );
+        assert_eq!(
+            details(
+                RestorePointOutcome::Failed("Access is denied".into()),
+                180_000
+            ),
+            "Restore point failed: Access is denied (180 s)"
+        );
+        for outcome in [
+            RestorePointOutcome::Throttled,
+            RestorePointOutcome::Unverified,
+        ] {
+            let message = outcome.message();
+            assert_eq!(details(outcome, 47_000), format!("{message} (47 s)"));
+        }
+
+        // Rounded, not cut off.
+        assert!(details(RestorePointOutcome::Created, 300).ends_with(" (0 s)"));
+        assert!(details(RestorePointOutcome::Created, 12_499).ends_with(" (12 s)"));
+        assert!(details(RestorePointOutcome::Created, 12_500).ends_with(" (13 s)"));
+
+        // Windows was never asked: there is no time to tell.
+        assert_eq!(
+            details(RestorePointOutcome::NotRequested, 12_000),
+            RestorePointOutcome::NotRequested.message()
+        );
     }
 
     /// What [`LIST_SCRIPT`] printed, elevated, on the development PC; see
