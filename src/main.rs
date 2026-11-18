@@ -428,6 +428,9 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         }
     }
 
+    // What the checks left unchecked, for the summary and the reports.
+    let notes: Vec<String> = not_checked.iter().map(|n| n.note.clone()).collect();
+
     // Archived findings are left out of everything below, as in the window:
     // the score, the reports, the repairs and the exit code.
     let (mut issues, archived) =
@@ -501,11 +504,11 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     // reflects the post-repair state instead of a snapshot that is already stale.
     let defer_json = args.json && args.runs_repairs() && !scan_cancelled;
     if !args.json && !args.helper {
-        DiagnosticReporter::print_cli_report(&issues, health_score, archived.len());
+        DiagnosticReporter::print_cli_report(&issues, health_score, archived.len(), &notes);
     } else if !defer_json && !args.helper {
         println!(
             "{}",
-            DiagnosticReporter::to_json(&issues, health_score, &this_run())
+            DiagnosticReporter::to_json(&issues, health_score, &this_run(), &notes)
         );
     }
 
@@ -610,7 +613,8 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
             DiagnosticReporter::to_json(
                 &issues,
                 DiagnosticEngine::calculate_health_score(&issues),
-                &this_run()
+                &this_run(),
+                &notes
             )
         );
     }
@@ -635,6 +639,7 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
             health,
             &audit_entries,
             archived.len(),
+            &notes,
         ) {
             Ok(()) => {
                 if !quiet {

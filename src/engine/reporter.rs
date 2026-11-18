@@ -155,8 +155,15 @@ impl DiagnosticReporter {
     }
 
     /// Print issues formatted in CLI console. `archived` findings are left
-    /// out, and the report says how many.
-    pub fn print_cli_report(issues: &[Issue], health_score: u8, archived: usize) {
+    /// out, and the report says how many. `not_checked` is what the scan left
+    /// unchecked in checks that finished: said before the findings, so that
+    /// "No issues found" is not read alone.
+    pub fn print_cli_report(
+        issues: &[Issue],
+        health_score: u8,
+        archived: usize,
+        not_checked: &[String],
+    ) {
         println!("\n{}", "═══ WINMEDIC DIAGNOSTIC REPORT ═══".cyan().bold());
         println!(
             "Overall health score: {}/100",
@@ -171,6 +178,9 @@ impl DiagnosticReporter {
         println!("Issues found: {}", issues.len());
         if let Some(note) = archived_note(archived) {
             println!("{note}");
+        }
+        for note in not_checked {
+            println!("{} {note}", "[!]".yellow().bold());
         }
         println!();
 
@@ -214,7 +224,14 @@ impl DiagnosticReporter {
     }
 
     /// Generate JSON representation with metadata, findings, and audit history.
-    pub fn to_json(issues: &[Issue], health_score: u8, audit_entries: &[AuditEntry]) -> String {
+    /// `not_checked` is one more field, empty after a scan that checked
+    /// everything; the others are as they were.
+    pub fn to_json(
+        issues: &[Issue],
+        health_score: u8,
+        audit_entries: &[AuditEntry],
+        not_checked: &[String],
+    ) -> String {
         #[derive(serde::Serialize)]
         struct Report<'a> {
             version: &'static str,
@@ -223,6 +240,7 @@ impl DiagnosticReporter {
             health_score: u8,
             issues_count: usize,
             issues: &'a [Issue],
+            not_checked: &'a [String],
             audit_entries: &'a [AuditEntry],
         }
 
@@ -237,6 +255,7 @@ impl DiagnosticReporter {
             health_score,
             issues_count: issues.len(),
             issues,
+            not_checked,
             audit_entries,
         };
 
@@ -253,6 +272,7 @@ impl DiagnosticReporter {
         health_score: u8,
         audit_entries: &[AuditEntry],
         archived: usize,
+        not_checked: &[String],
     ) -> String {
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let hostname = std::env::var("COMPUTERNAME")
@@ -298,6 +318,9 @@ impl DiagnosticReporter {
         );
         if let Some(note) = archived_note(archived) {
             md.push_str(&format!("{note}\n\n"));
+        }
+        for note in not_checked {
+            md.push_str(&format!("**{}**\n\n", escape_md(note)));
         }
         md.push_str("---\n\n## Findings\n\n");
 
@@ -377,6 +400,7 @@ impl DiagnosticReporter {
         health_score: u8,
         audit_entries: &[AuditEntry],
         archived: usize,
+        not_checked: &[String],
     ) -> String {
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let hostname = std::env::var("COMPUTERNAME")
@@ -879,6 +903,7 @@ impl DiagnosticReporter {
         <section class="section">
             <h2 class="section-heading">Diagnostic Findings &amp; Analysis</h2>
             {archived_html}
+            {not_checked_html}
             {issues_html}
         </section>
 
@@ -906,6 +931,13 @@ impl DiagnosticReporter {
             archived_html = archived_note(archived)
                 .map(|note| format!("<p class=\"meta-text\">{note}</p>"))
                 .unwrap_or_default(),
+            not_checked_html = not_checked
+                .iter()
+                .map(|note| format!(
+                    "<p class=\"meta-text\" style=\"color: var(--amber); margin-bottom: 12px;\"><strong>{}</strong></p>",
+                    escape_html(note)
+                ))
+                .collect::<String>(),
             issues_html = issues_html,
             audit_html = audit_html,
             version = env!("CARGO_PKG_VERSION"),
@@ -928,7 +960,9 @@ impl DiagnosticReporter {
 
     /// Save report to `path` detecting format by extension (`.html`, `.md`, `.json`).
     /// The HTML and Markdown reports say how many `archived` findings they
-    /// leave out; the JSON report is for scripts and stays as it was.
+    /// leave out; the JSON report is for scripts and stays as it was. All
+    /// three say what the scan left unchecked (`not_checked`): a report
+    /// without it reads as a clean scan (#337).
     ///
     /// The report is written beside its place and then renamed there, so a
     /// write that fails partway (a full disk, a share that went away) leaves
@@ -939,6 +973,7 @@ impl DiagnosticReporter {
         health_score: u8,
         audit_entries: &[AuditEntry],
         archived: usize,
+        not_checked: &[String],
     ) -> std::io::Result<()> {
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
@@ -953,9 +988,11 @@ impl DiagnosticReporter {
             .to_lowercase();
 
         let content = match extension.as_str() {
-            "json" => Self::to_json(issues, health_score, audit_entries),
-            "md" | "markdown" => Self::to_markdown(issues, health_score, audit_entries, archived),
-            _ => Self::to_html(issues, health_score, audit_entries, archived),
+            "json" => Self::to_json(issues, health_score, audit_entries, not_checked),
+            "md" | "markdown" => {
+                Self::to_markdown(issues, health_score, audit_entries, archived, not_checked)
+            }
+            _ => Self::to_html(issues, health_score, audit_entries, archived, not_checked),
         };
 
         let mut beside = path.as_os_str().to_owned();
@@ -1006,7 +1043,7 @@ mod tests {
     #[test]
     fn test_to_json_validity() {
         let issues = sample_issues();
-        let json = DiagnosticReporter::to_json(&issues, 75, &[]);
+        let json = DiagnosticReporter::to_json(&issues, 75, &[], &[]);
         assert!(json.contains("sys_sfc_corrupt"));
         assert!(json.contains("\"health_score\": 75"));
     }
@@ -1014,7 +1051,7 @@ mod tests {
     #[test]
     fn test_to_markdown_contains_sections() {
         let issues = sample_issues();
-        let md = DiagnosticReporter::to_markdown(&issues, 65, &[], 0);
+        let md = DiagnosticReporter::to_markdown(&issues, 65, &[], 0, &[]);
         assert!(md.contains("# WinMedic Diagnostic & System Report"));
         assert!(md.contains("Corrupted system files found"));
         assert!(md.contains("65/100"));
@@ -1023,7 +1060,7 @@ mod tests {
     #[test]
     fn test_to_html_contains_structure() {
         let issues = sample_issues();
-        let html = DiagnosticReporter::to_html(&issues, 80, &[], 0);
+        let html = DiagnosticReporter::to_html(&issues, 80, &[], 0, &[]);
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("WinMedic Diagnostic Report"));
         assert!(html.contains("CRITICAL"));
@@ -1034,7 +1071,7 @@ mod tests {
     /// The header carries the app icon itself, not a text stand-in for it.
     #[test]
     fn the_html_report_header_draws_the_logo() {
-        let html = DiagnosticReporter::to_html(&sample_issues(), 80, &[], 0);
+        let html = DiagnosticReporter::to_html(&sample_issues(), 80, &[], 0, &[]);
         let header = &html[html.find("<header>").unwrap()..html.find("</header>").unwrap()];
         assert!(header.contains("<svg"), "no logo in the header");
         assert!(header.contains(r#"viewBox="0 0 256 256""#));
@@ -1043,20 +1080,44 @@ mod tests {
 
     /// Archived findings are left out, and the report says how many; the
     /// JSON report stays as scripts know it.
+    /// #337: a report of a scan that left a part unchecked read as a clean
+    /// one. Every format says it, with the sentence shown as text.
+    #[test]
+    fn a_report_says_what_the_scan_left_unchecked() {
+        let notes = ["The <store> was not checked: DISM's analysis | did not finish.".to_string()];
+
+        let html = DiagnosticReporter::to_html(&[], 100, &[], 0, &notes);
+        assert!(html.contains("<strong>The &lt;store&gt; was not checked"));
+        let md = DiagnosticReporter::to_markdown(&[], 100, &[], 0, &notes);
+        assert!(md.contains("**The "), "{md}");
+        assert!(!md.contains("<store>"), "{md}");
+        let json: serde_json::Value =
+            serde_json::from_str(&DiagnosticReporter::to_json(&[], 100, &[], &notes)).unwrap();
+        assert_eq!(json["not_checked"][0], notes[0]);
+
+        // A scan that checked everything: nothing about it, and an empty list.
+        assert!(!DiagnosticReporter::to_html(&[], 100, &[], 0, &[]).contains("not checked"));
+        assert!(!DiagnosticReporter::to_markdown(&[], 100, &[], 0, &[]).contains("not checked"));
+        let json: serde_json::Value =
+            serde_json::from_str(&DiagnosticReporter::to_json(&[], 100, &[], &[])).unwrap();
+        assert_eq!(json["not_checked"], serde_json::json!([]));
+        assert_eq!(json["issues_count"], 0);
+    }
+
     #[test]
     fn a_report_says_how_many_archived_findings_it_leaves_out() {
         let issues = sample_issues();
-        let md = DiagnosticReporter::to_markdown(&issues, 80, &[], 2);
+        let md = DiagnosticReporter::to_markdown(&issues, 80, &[], 2, &[]);
         assert!(
             md.contains("\n2 archived findings are not included.\n"),
             "{md}"
         );
-        let html = DiagnosticReporter::to_html(&issues, 80, &[], 1);
+        let html = DiagnosticReporter::to_html(&issues, 80, &[], 1, &[]);
         assert!(html.contains(">1 archived finding is not included.<"));
 
         for report in [
-            DiagnosticReporter::to_markdown(&issues, 80, &[], 0),
-            DiagnosticReporter::to_html(&issues, 80, &[], 0),
+            DiagnosticReporter::to_markdown(&issues, 80, &[], 0, &[]),
+            DiagnosticReporter::to_html(&issues, 80, &[], 0, &[]),
         ] {
             assert!(!report.contains("archived finding"));
         }
@@ -1075,7 +1136,7 @@ mod tests {
     #[test]
     fn a_repair_waiting_for_the_restart_is_not_open_in_the_markdown_report() {
         let issues = vec![waiting_for_restart(), sample_issues().remove(1)];
-        let md = DiagnosticReporter::to_markdown(&issues, 80, &[], 0);
+        let md = DiagnosticReporter::to_markdown(&issues, 80, &[], 0, &[]);
         assert!(
             md.contains("### 1. [!] CRITICAL [[RESTART]] Corrupted system files found"),
             "{md}"
@@ -1089,7 +1150,7 @@ mod tests {
     fn a_repair_waiting_for_the_restart_is_not_open_in_the_html_report() {
         let mut fixed = sample_issues().remove(1);
         fixed.is_fixed = true;
-        let html = DiagnosticReporter::to_html(&[waiting_for_restart(), fixed], 80, &[], 0);
+        let html = DiagnosticReporter::to_html(&[waiting_for_restart(), fixed], 80, &[], 0, &[]);
         assert!(html.contains(r#"<span class="status-pill status-restart">RESTART</span>"#));
         assert!(html.contains(r#"<span class="status-pill status-fixed">FIXED</span>"#));
         assert!(!html.contains(">OPEN</span>"));
@@ -1100,9 +1161,9 @@ mod tests {
     /// Without a repair waiting for the restart, the counts read as before.
     #[test]
     fn a_report_without_a_waiting_repair_counts_fixed_and_open() {
-        let md = DiagnosticReporter::to_markdown(&sample_issues(), 80, &[], 0);
+        let md = DiagnosticReporter::to_markdown(&sample_issues(), 80, &[], 0, &[]);
         assert!(md.contains("- **Status:** 0 fixed, 2 open\n"));
-        let html = DiagnosticReporter::to_html(&sample_issues(), 80, &[], 0);
+        let html = DiagnosticReporter::to_html(&sample_issues(), 80, &[], 0, &[]);
         assert!(html.contains(">Fixed / open<"));
         assert!(!html.contains("status-pill status-restart"));
         assert!(!html.contains("<span class=\"val-warn\">"));
@@ -1117,13 +1178,13 @@ mod tests {
             "Windows keeps both packages.".to_string(),
         )));
 
-        let md = DiagnosticReporter::to_markdown(&issues, 80, &[], 0);
+        let md = DiagnosticReporter::to_markdown(&issues, 80, &[], 0, &[]);
         assert!(
             md.contains("### 2. [!] WARNING [[NOTHING TO REMOVE]] Temp files"),
             "{md}"
         );
         assert!(md.contains("- **Status:** 1 fixed, 1 open\n"), "{md}");
-        let html = DiagnosticReporter::to_html(&issues, 80, &[], 0);
+        let html = DiagnosticReporter::to_html(&issues, 80, &[], 0, &[]);
         assert!(html.contains(r#"<span class="status-pill status-open">NOTHING TO REMOVE</span>"#));
         assert!(!html.contains(">FIXED</span>"));
     }
@@ -1139,12 +1200,12 @@ mod tests {
         // The folder cannot be made: its place is taken by a file.
         std::fs::write(dir.join("taken"), "a file").unwrap();
         let below_a_file = dir.join("taken").join("report.html");
-        assert!(DiagnosticReporter::save_report(&below_a_file, &issues, 80, &[], 0).is_err());
+        assert!(DiagnosticReporter::save_report(&below_a_file, &issues, 80, &[], 0, &[]).is_err());
 
         // A second report replaces the first, and only the report is there.
         let report = dir.join("report.json");
-        DiagnosticReporter::save_report(&report, &issues, 80, &[], 0).unwrap();
-        DiagnosticReporter::save_report(&report, &issues, 55, &[], 0).unwrap();
+        DiagnosticReporter::save_report(&report, &issues, 80, &[], 0, &[]).unwrap();
+        DiagnosticReporter::save_report(&report, &issues, 55, &[], 0, &[]).unwrap();
         assert!(
             std::fs::read_to_string(&report)
                 .unwrap()
@@ -1166,7 +1227,7 @@ mod tests {
         let issues = sample_issues();
 
         let html_path = temp_dir.join("report.html");
-        assert!(DiagnosticReporter::save_report(&html_path, &issues, 80, &[], 0).is_ok());
+        assert!(DiagnosticReporter::save_report(&html_path, &issues, 80, &[], 0, &[]).is_ok());
         assert!(
             std::fs::read_to_string(&html_path)
                 .unwrap()
@@ -1174,7 +1235,7 @@ mod tests {
         );
 
         let md_path = temp_dir.join("report.md");
-        assert!(DiagnosticReporter::save_report(&md_path, &issues, 80, &[], 0).is_ok());
+        assert!(DiagnosticReporter::save_report(&md_path, &issues, 80, &[], 0, &[]).is_ok());
         assert!(
             std::fs::read_to_string(&md_path)
                 .unwrap()
@@ -1182,7 +1243,7 @@ mod tests {
         );
 
         let json_path = temp_dir.join("report.json");
-        assert!(DiagnosticReporter::save_report(&json_path, &issues, 80, &[], 0).is_ok());
+        assert!(DiagnosticReporter::save_report(&json_path, &issues, 80, &[], 0, &[]).is_ok());
         assert!(
             std::fs::read_to_string(&json_path)
                 .unwrap()
@@ -1320,6 +1381,7 @@ mod tests {
             60,
             &[audit_entry("Repair | retry", "two | cells")],
             0,
+            &[],
         );
         let (outside, _) = outside_and_blocks(&md);
         assert_eq!(outside.lines().filter(|l| l.starts_with('|')).count(), 3);
@@ -1331,7 +1393,7 @@ mod tests {
     #[test]
     fn a_fence_longer_than_any_backtick_run_in_the_details_holds_them() {
         let details = "before\n```\nmiddle\n````\nafter";
-        let md = DiagnosticReporter::to_markdown(&[finding("Title", details)], 60, &[], 0);
+        let md = DiagnosticReporter::to_markdown(&[finding("Title", details)], 60, &[], 0, &[]);
         let (outside, blocks) = outside_and_blocks(&md);
         assert_eq!(blocks, vec![(5, details.to_string())]);
         assert!(outside.contains(r"**Recommended fix:** A fix\."));
@@ -1345,6 +1407,7 @@ mod tests {
             60,
             &[audit_entry(tag, "details")],
             0,
+            &[],
         );
         let (outside, _) = outside_and_blocks(&md);
         for line in outside.lines() {
@@ -1362,8 +1425,13 @@ mod tests {
     fn a_line_break_in_a_value_stays_on_its_line() {
         let mut issue = finding("Title", "details");
         issue.description = "first\n# not a heading\n| not a cell |".to_string();
-        let md =
-            DiagnosticReporter::to_markdown(&[issue], 60, &[audit_entry("Title", "one\r\ntwo")], 0);
+        let md = DiagnosticReporter::to_markdown(
+            &[issue],
+            60,
+            &[audit_entry("Title", "one\r\ntwo")],
+            0,
+            &[],
+        );
         let (outside, _) = outside_and_blocks(&md);
         assert!(
             outside.contains("- **Description:** first \\# not a heading \\| not a cell \\|\n")

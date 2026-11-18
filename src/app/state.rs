@@ -811,12 +811,14 @@ impl App {
             None => Vec::new(),
         };
 
+        let notes: Vec<String> = self.not_checked.iter().map(|n| n.note.clone()).collect();
         DiagnosticReporter::save_report(
             &path,
             &self.issues,
             health,
             &entries,
             self.archived_issues.len(),
+            &notes,
         )
         .map(|_| path)
         .map_err(|e| format!("Export failed: {}", e))
