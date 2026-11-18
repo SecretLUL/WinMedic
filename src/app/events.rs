@@ -28,19 +28,27 @@ impl App {
             .find(|m| m.id == module_id)
     }
 
-    /// The overall bar is the mean of the per-module bars.
+    /// The overall bar is the mean of the per-module bars, each counted by
+    /// its weight.
     ///
     /// Modules run concurrently, so there is no single "current" module whose
     /// progress could stand in for the run — averaging is what makes the bar
-    /// keep moving while one module is stuck on a slow external command.
+    /// keep moving while one module is stuck on a slow external command. The
+    /// weight is for the module that takes minutes while the others take
+    /// seconds: counted like any other, its whole run was the bar's last few
+    /// percent, and a scan stood at 99% for most of its time.
     fn recalculate_scan_progress(&mut self) {
-        let total = self.module_progress_list.len().max(1);
+        let total: usize = self
+            .module_progress_list
+            .iter()
+            .map(|m| m.weight as usize)
+            .sum();
         let sum: usize = self
             .module_progress_list
             .iter()
-            .map(|m| m.percent as usize)
+            .map(|m| m.percent as usize * m.weight as usize)
             .sum();
-        self.scan_overall_progress = (sum / total) as u8;
+        self.scan_overall_progress = (sum / total.max(1)) as u8;
     }
 
     fn process_scan_events(&mut self) {
@@ -711,11 +719,15 @@ mod tests {
     }
 
     /// The overall bar is the mean of the module bars, so it keeps moving even
-    /// while one module sits on a slow external command.
+    /// while one module sits on a slow external command. The cleaner, whose
+    /// component store analysis is most of a scan, counts for more.
     #[tokio::test]
-    async fn overall_progress_averages_the_modules() {
+    async fn overall_progress_averages_the_modules_by_their_weight() {
         let (mut app, tx) = scanning_app();
-        let total = app.module_progress_list.len();
+        let weight = find(&app, "system_cleaner").weight as usize;
+        assert!(weight > 1);
+        assert_eq!(find(&app, "network").weight, 1);
+        let total = app.module_progress_list.len() - 1 + weight;
 
         tx.send(progress("system_cleaner", 10, "Analysing..."))
             .await
@@ -725,7 +737,35 @@ mod tests {
             .unwrap();
         app.process_background_events();
 
-        assert_eq!(app.scan_overall_progress as usize, 90 / total);
+        assert_eq!(
+            app.scan_overall_progress as usize,
+            (10 * weight + 80) / total
+        );
+    }
+
+    /// With every other check through and the analysis halfway, the bar is
+    /// not at 99%.
+    #[tokio::test]
+    async fn the_bar_still_has_room_while_only_the_cleaner_runs() {
+        let (mut app, tx) = scanning_app();
+        let ids: Vec<String> = app
+            .module_progress_list
+            .iter()
+            .map(|m| m.id.clone())
+            .collect();
+        for id in ids.iter().filter(|id| *id != "system_cleaner") {
+            tx.send(progress(id, 100, "Done")).await.unwrap();
+        }
+        tx.send(progress("system_cleaner", 50, "Analysing..."))
+            .await
+            .unwrap();
+        app.process_background_events();
+
+        assert!(
+            (70..=80).contains(&app.scan_overall_progress),
+            "{}",
+            app.scan_overall_progress
+        );
     }
 
     // ------------------------------------------------------ in-place updates

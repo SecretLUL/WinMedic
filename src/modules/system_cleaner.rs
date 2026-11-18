@@ -918,6 +918,45 @@ pub struct CleanerPaths {
 /// every repair changed nothing.
 pub const WINSXS_PACKAGES_LEFT_FILE: &str = "winsxs_packages_left.txt";
 
+/// Where the cleaner remembers how many seconds the last finished component
+/// store analysis took: one decimal number, in [`CleanerPaths::data_dir`].
+///
+/// The analysis is most of a scan and says nothing a bar could follow: DISM's
+/// own percentage reached 97.8% and stayed there for 116 of its 156 progress
+/// lines in the 292 seconds of 2026-11-18 on the development PC. How long it
+/// took last time on this PC is the best guess at how long it takes now, and
+/// the scan's bar runs by it (see [`analysis_percent`]).
+pub const WINSXS_ANALYSIS_SECONDS_FILE: &str = "winsxs_analysis_seconds.txt";
+
+/// The guess while nothing is remembered: the two minutes the step text
+/// promised until #328.
+const ANALYSIS_EXPECTED_DEFAULT: Duration = Duration::from_secs(120);
+
+/// Where the cleaner's bar stands when the analysis starts: everything
+/// before it takes seconds.
+const ANALYSIS_STARTS_AT: u8 = 10;
+/// Where the bar waits for an analysis that takes longer than expected.
+const ANALYSIS_WAITS_AT: u8 = 95;
+
+/// The cleaner's bar after `elapsed` of an analysis expected to take
+/// `expected`: by the clock from [`ANALYSIS_STARTS_AT`] to
+/// [`ANALYSIS_WAITS_AT`], where it stays until DISM is through.
+fn analysis_percent(elapsed: Duration, expected: Duration) -> u8 {
+    let done = (elapsed.as_secs_f64() / expected.as_secs_f64().max(1.0)).min(1.0);
+    let range = f64::from(ANALYSIS_WAITS_AT - ANALYSIS_STARTS_AT);
+    ANALYSIS_STARTS_AT + (done * range) as u8
+}
+
+/// "4m 52s", for the step text.
+fn minutes_and_seconds(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    if seconds >= 60 {
+        format!("{}m {:02}s", seconds / 60, seconds % 60)
+    } else {
+        format!("{seconds}s")
+    }
+}
+
 impl CleanerPaths {
     /// The real Windows locations, resolved from the environment.
     ///
@@ -973,6 +1012,26 @@ impl CleanerPaths {
         std::fs::read_to_string(file).ok()?.trim().parse().ok()
     }
 
+    /// How long the last finished analysis took, if remembered.
+    fn last_analysis_duration(&self) -> Option<Duration> {
+        let file = self.data_dir.as_ref()?.join(WINSXS_ANALYSIS_SECONDS_FILE);
+        let seconds: u64 = std::fs::read_to_string(file).ok()?.trim().parse().ok()?;
+        Some(Duration::from_secs(seconds))
+    }
+
+    /// Remember how long an analysis took. Best effort: without the note the
+    /// next scan's bar runs by [`ANALYSIS_EXPECTED_DEFAULT`].
+    fn remember_analysis_duration(&self, took: Duration) {
+        let Some(dir) = &self.data_dir else {
+            return;
+        };
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::write(
+            dir.join(WINSXS_ANALYSIS_SECONDS_FILE),
+            took.as_secs().to_string(),
+        );
+    }
+
     /// Remember how many packages a cleanup left, or forget with `None`.
     ///
     /// Best effort: a note that cannot be written only means the finding comes
@@ -1008,6 +1067,8 @@ pub struct SystemCleanerModule {
     /// repair's "before". See [`SCAN_COUNT_MAX_AGE`].
     scan_count: Mutex<Option<(u32, Instant)>>,
     scan_count_max_age: Duration,
+    /// How often the bar moves while the analysis runs.
+    analysis_tick: Duration,
 }
 
 /// How long the WinSxS repair takes the scan's count of reclaimable packages
@@ -1042,6 +1103,7 @@ impl SystemCleanerModule {
             paths,
             scan_count: Mutex::new(None),
             scan_count_max_age: SCAN_COUNT_MAX_AGE,
+            analysis_tick: Duration::from_secs(1),
         }
     }
 
@@ -1049,6 +1111,12 @@ impl SystemCleanerModule {
     /// in for the repair's own.
     pub fn with_scan_count_max_age(mut self, max_age: Duration) -> Self {
         self.scan_count_max_age = max_age;
+        self
+    }
+
+    /// For tests: how often the bar moves while the analysis runs.
+    pub fn with_analysis_tick(mut self, tick: Duration) -> Self {
+        self.analysis_tick = tick;
         self
     }
 
@@ -1276,6 +1344,12 @@ impl DiagnosticModule for SystemCleanerModule {
         "[CLR]"
     }
 
+    /// As much as twelve other checks: they are through in seconds, the
+    /// component store analysis takes minutes.
+    fn scan_weight(&self) -> u32 {
+        12
+    }
+
     async fn scan(
         &self,
         progress_tx: Option<Sender<ModuleProgress>>,
@@ -1295,7 +1369,7 @@ impl DiagnosticModule for SystemCleanerModule {
         // 1. Delivery Optimization (WUDO) Cache
         Self::send_progress(
             &progress_tx,
-            22,
+            2,
             "Checking the Delivery Optimization (WUDO) cache...",
             Some("Scanning the WUDO cache directories..."),
         )
@@ -1334,7 +1408,7 @@ impl DiagnosticModule for SystemCleanerModule {
         // 2. Browser Caches
         Self::send_progress(
             &progress_tx,
-            34,
+            3,
             "Checking browser caches (Chrome, Edge, Brave, Opera, Firefox)...",
             Some("Scanning the installed Chromium and Firefox profiles..."),
         )
@@ -1373,7 +1447,7 @@ impl DiagnosticModule for SystemCleanerModule {
         // 3. Windows Setup & System Logs
         Self::send_progress(
             &progress_tx,
-            46,
+            4,
             "Checking Windows setup & system logs...",
             Some("Scanning the Panther, CBS, DISM and MoSetup logs..."),
         )
@@ -1408,7 +1482,7 @@ impl DiagnosticModule for SystemCleanerModule {
         // 4. Error Reporting & Crash Dumps
         Self::send_progress(
             &progress_tx,
-            58,
+            5,
             "Checking Windows error reports & crash dumps...",
             Some("Scanning the WER archives and CrashDumps..."),
         )
@@ -1444,7 +1518,7 @@ impl DiagnosticModule for SystemCleanerModule {
         // 5. DirectX Shader & Certificate Caches
         Self::send_progress(
             &progress_tx,
-            70,
+            6,
             "Checking DirectX shader & certificate caches...",
             Some("Scanning D3DSCache, DirectX ShaderCache and CryptnetUrlCache..."),
         )
@@ -1480,7 +1554,7 @@ impl DiagnosticModule for SystemCleanerModule {
         // 6. Windows Recycle Bin
         Self::send_progress(
             &progress_tx,
-            80,
+            7,
             "Checking the Windows Recycle Bin...",
             Some("Scanning $Recycle.Bin on the system drives..."),
         )
@@ -1525,7 +1599,7 @@ impl DiagnosticModule for SystemCleanerModule {
         // 7. Extended System Temp Directories
         Self::send_progress(
             &progress_tx,
-            90,
+            8,
             "Checking the extended system temp directories...",
             Some("Scanning systemprofile Temp and SystemTemp..."),
         )
@@ -1564,8 +1638,9 @@ impl DiagnosticModule for SystemCleanerModule {
         // Reliably the longest step in the whole scan: DISM walks the component
         // store itself and takes from a minute to five (see
         // DISM_ANALYZE_TIMEOUT), during which it says nothing. The step text
-        // carries that expectation, because a bar parked with no explanation
-        // reads as a hang rather than as patience.
+        // carries that expectation, and the bar runs by how long the analysis
+        // took last time, because a bar parked with no explanation reads as a
+        // hang rather than as patience.
         //
         // Last, and only once the other modules' PowerShell calls are through:
         // it reads the store in small pieces and keeps the disk busy while it
@@ -1574,18 +1649,51 @@ impl DiagnosticModule for SystemCleanerModule {
         // WMI and even fsutil queries timed out twice over, at a few percent
         // CPU.
         self.runner.after_pending_powershell().await;
+        let last_time = self.paths.last_analysis_duration();
+        let expected = last_time.unwrap_or(ANALYSIS_EXPECTED_DEFAULT);
+        let step = match last_time {
+            Some(took) => format!(
+                "Analysing the WinSxS component store (DISM, took {} last time)...",
+                minutes_and_seconds(took)
+            ),
+            None => "Analysing the WinSxS component store (DISM, can take several minutes)..."
+                .to_string(),
+        };
         Self::send_progress(
             &progress_tx,
-            97,
-            "Analysing the WinSxS component store (DISM, can take several minutes)...",
+            ANALYSIS_STARTS_AT,
+            &step,
             Some(&format!("dism.exe {}", DISM_ANALYZE_ARGS.join(" "))),
         )
         .await;
 
-        let dism_check = self
-            .runner
-            .run("dism.exe", DISM_ANALYZE_ARGS, DISM_ANALYZE_TIMEOUT)
-            .await;
+        let started = Instant::now();
+        let dism_check = {
+            let analysis = self
+                .runner
+                .run("dism.exe", DISM_ANALYZE_ARGS, DISM_ANALYZE_TIMEOUT);
+            tokio::pin!(analysis);
+            let mut tick = tokio::time::interval(self.analysis_tick);
+            loop {
+                tokio::select! {
+                    biased;
+                    out = &mut analysis => break out,
+                    _ = tick.tick() => {
+                        // The same step text, so that its clock runs on.
+                        Self::send_progress(
+                            &progress_tx,
+                            analysis_percent(started.elapsed(), expected),
+                            &step,
+                            None,
+                        )
+                        .await;
+                    }
+                }
+            }
+        };
+        if dism_check.as_ref().is_ok_and(dism_finished) {
+            self.paths.remember_analysis_duration(started.elapsed());
+        }
 
         // An analysis that did not finish is "not checked", and says so: a
         // scan without the finding otherwise reads as a store with nothing
@@ -2928,6 +3036,139 @@ The operation completed successfully.";
                 "{steps:?}"
             );
         }
+    }
+
+    /// The bar runs by the clock from where the analysis starts to where it
+    /// waits, and waits there however long the analysis goes on.
+    #[test]
+    fn the_analysis_bar_runs_by_the_clock_and_then_waits() {
+        let expected = Duration::from_secs(292);
+        let at = |seconds| analysis_percent(Duration::from_secs(seconds), expected);
+        assert_eq!(at(0), ANALYSIS_STARTS_AT);
+        assert_eq!(at(146), 52);
+        assert_eq!(at(292), ANALYSIS_WAITS_AT);
+        assert_eq!(at(900), ANALYSIS_WAITS_AT);
+        // A remembered 0 seconds is no reason to divide by it.
+        assert_eq!(
+            analysis_percent(Duration::from_secs(5), Duration::ZERO),
+            ANALYSIS_WAITS_AT
+        );
+    }
+
+    /// A runner whose component store analysis takes a while.
+    struct SlowAnalysis(MockCommandRunner, Duration);
+
+    #[async_trait::async_trait]
+    impl CommandRunner for SlowAnalysis {
+        async fn run(
+            &self,
+            program: &str,
+            args: &[&str],
+            limit: Duration,
+        ) -> Result<CmdOutput, String> {
+            if args.contains(&"/AnalyzeComponentStore") {
+                tokio::time::sleep(self.1).await;
+            }
+            self.0.run(program, args, limit).await
+        }
+
+        async fn run_streaming(
+            &self,
+            program: &str,
+            args: &[&str],
+            log_tx: Option<Sender<String>>,
+            limit: Duration,
+        ) -> Result<CmdOutput, String> {
+            self.0.run_streaming(program, args, log_tx, limit).await
+        }
+    }
+
+    fn analysis_seconds_file(td: &TestDir) -> PathBuf {
+        CleanerPaths::rooted_at(&td.path)
+            .data_dir
+            .unwrap()
+            .join(WINSXS_ANALYSIS_SECONDS_FILE)
+    }
+
+    /// While DISM analyses, the cleaner's bar moves by how long the analysis
+    /// took last time, under the same step text, and the scan remembers how
+    /// long it took now.
+    #[tokio::test]
+    async fn the_bar_moves_while_the_store_is_analysed() {
+        let td = TestDir::new("winsxs_bar_moves");
+        let note = analysis_seconds_file(&td);
+        create_dir_all(note.parent().unwrap()).unwrap();
+        std::fs::write(&note, "2").unwrap();
+
+        let mock = MockCommandRunner::new();
+        mock.add_response("AnalyzeComponentStore", store_with_reclaimable(2));
+        let runner = SlowAnalysis(mock, Duration::from_millis(600));
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<ModuleProgress>(1024);
+        sandboxed(&td, Arc::new(runner))
+            .with_analysis_tick(Duration::from_millis(50))
+            .scan(Some(tx))
+            .await
+            .unwrap();
+
+        let mut all = Vec::new();
+        while let Ok(p) = rx.try_recv() {
+            all.push((p.progress_percent, p.current_step));
+        }
+        let percents: Vec<u8> = all.iter().map(|(percent, _)| *percent).collect();
+        assert!(
+            percents.is_sorted(),
+            "the bar never goes back: {percents:?}"
+        );
+
+        let step = "Analysing the WinSxS component store (DISM, took 2s last time)...";
+        let during: Vec<u8> = all
+            .iter()
+            .filter(|(_, s)| s == step)
+            .map(|(percent, _)| *percent)
+            .collect();
+        assert_eq!(during.first(), Some(&ANALYSIS_STARTS_AT), "{all:?}");
+        assert!(during.len() >= 4, "{during:?}");
+        // 0.6 of 2 seconds: about 35%.
+        let last = *during.last().unwrap();
+        assert!((20..=50).contains(&last), "{during:?}");
+
+        assert_eq!(std::fs::read_to_string(&note).unwrap(), "0");
+    }
+
+    /// Without a note the step text promises no time, and an analysis that
+    /// did not finish leaves none.
+    #[tokio::test]
+    async fn only_a_finished_analysis_is_remembered() {
+        let td = TestDir::new("winsxs_bar_note");
+        let note = analysis_seconds_file(&td);
+
+        let refused = MockCommandRunner::new();
+        refused.add_response(
+            "AnalyzeComponentStore",
+            CmdOutput::with_output(740, String::from_utf8_lossy(DISM_ELEVATION_REQUIRED), ""),
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<ModuleProgress>(1024);
+        sandboxed(&td, Arc::new(refused))
+            .scan(Some(tx))
+            .await
+            .unwrap();
+        let mut steps = Vec::new();
+        while let Ok(p) = rx.try_recv() {
+            steps.push(p.current_step);
+        }
+        assert!(
+            steps
+                .iter()
+                .any(|s| s
+                    == "Analysing the WinSxS component store (DISM, can take several minutes)..."),
+            "{steps:?}"
+        );
+        assert!(!note.exists());
+
+        let mock = MockCommandRunner::new();
+        mock.add_response("AnalyzeComponentStore", store_with_reclaimable(0));
+        sandboxed(&td, Arc::new(mock)).scan(None).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&note).unwrap(), "0");
     }
 
     /// The repair counts before and after the cleanup with the same analysis,

@@ -235,6 +235,13 @@ pub trait DiagnosticModule: Send + Sync {
     fn description(&self) -> &'static str;
     fn icon(&self) -> &'static str;
 
+    /// How much of the scan's overall bar this module's own bar moves,
+    /// against the others: a module that takes most of a scan's time counts
+    /// for more than one that is through in a second.
+    fn scan_weight(&self) -> u32 {
+        1
+    }
+
     /// Run diagnostic checks and return any detected issues
     async fn scan(&self, progress_tx: Option<Sender<ModuleProgress>>)
     -> Result<Vec<Issue>, String>;
