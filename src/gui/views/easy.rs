@@ -451,10 +451,6 @@ fn notices(ui: &mut egui::Ui, app: &mut App, mut more: bool) {
             );
             more = true;
         }
-        for note in &app.not_checked {
-            ui.add_space(6.0);
-            ui.colored_label(palette.amber, note);
-        }
     }
 
     if more {
