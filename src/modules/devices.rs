@@ -241,7 +241,14 @@ pub struct DevicesModule {
     backup_dir: PathBuf,
     /// Where the graphics cards' driver files are.
     driver_store: DriverStore,
+    /// What the last scan left unchecked, see [`DiagnosticModule::not_checked`].
+    not_checked: crate::modules::Unchecked,
 }
+
+// What the window says after a scan that gave a part of this check up
+// (#338). Until then it was a line of the scan log only.
+const OPENGL_NOT_CHECKED: &str =
+    "The OpenGL driver of a graphics card was not checked: its settings could not be read.";
 
 impl Default for DevicesModule {
     fn default() -> Self {
@@ -263,6 +270,7 @@ impl DevicesModule {
             backup_registry: true,
             backup_dir: default_backup_dir(),
             driver_store: DriverStore::of_this_windows(),
+            not_checked: Default::default(),
         }
     }
 
@@ -671,10 +679,15 @@ impl DiagnosticModule for DevicesModule {
         "[DEV]"
     }
 
+    fn not_checked(&self) -> Vec<String> {
+        self.not_checked.notes()
+    }
+
     async fn scan(
         &self,
         progress_tx: Option<Sender<ModuleProgress>>,
     ) -> Result<Vec<Issue>, String> {
+        self.not_checked.clear();
         Self::send_progress(
             &progress_tx,
             10,
@@ -742,6 +755,8 @@ impl DiagnosticModule for DevicesModule {
             {
                 Ok(found) => issues.extend(found),
                 Err(why) => {
+                    // One sentence, however many cards there are.
+                    self.not_checked.push(OPENGL_NOT_CHECKED);
                     Self::send_progress(
                         &progress_tx,
                         60,
@@ -1644,13 +1659,14 @@ mod tests {
         assert_eq!(issues.len(), 1, "{issues:?}");
         assert_eq!(issues[0].id, opengl_driver::issue_id(&card()));
 
+        // A check that got through everything leaves no note, and takes
+        // the last scan's back.
         let in_order = pc(&[]);
-        let issues = module(&in_order)
-            .with_driver_store(store.store())
-            .scan(None)
-            .await
-            .unwrap();
+        let module = module(&in_order).with_driver_store(store.store());
+        module.not_checked.push("From the scan before.");
+        let issues = module.scan(None).await.unwrap();
         assert!(issues.is_empty(), "{issues:?}");
+        assert!(module.not_checked().is_empty());
     }
 
     /// A key that cannot be read is said in the log, and the scan goes on.
@@ -1664,12 +1680,11 @@ mod tests {
             CmdOutput::with_output(1, "", "FEHLER: Zugriff verweigert"),
         );
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
-        let issues = module(&mock)
-            .with_driver_store(store.store())
-            .scan(Some(tx))
-            .await
-            .unwrap();
+        let module = module(&mock).with_driver_store(store.store());
+        let issues = module.scan(Some(tx)).await.unwrap();
         assert!(issues.is_empty(), "{issues:?}");
+        // #338: the window is told, the log line is gone with the scan.
+        assert_eq!(module.not_checked(), [OPENGL_NOT_CHECKED]);
         let mut log = Vec::new();
         while let Ok(progress) = rx.try_recv() {
             log.extend(progress.log_message);

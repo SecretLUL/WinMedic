@@ -26,7 +26,16 @@ pub struct WindowsUpdatesModule {
     /// `%SystemRoot%\SoftwareDistribution` and `%SystemRoot%\System32\catroot2`,
     /// which the component reset renames.
     component_dirs: [PathBuf; 2],
+    /// What the last scan left unchecked, see [`DiagnosticModule::not_checked`].
+    not_checked: crate::modules::Unchecked,
 }
+
+// What the window says after a scan that gave a part of this check up
+// (#338). Until then each was only a step text, gone when the check finished.
+const SERVICE_NOT_CHECKED: &str =
+    "A service Windows Update needs was not checked: Windows did not report how it starts.";
+const FAILED_UPDATES_NOT_CHECKED: &str =
+    "Updates that keep failing were not checked: the event log could not be read.";
 
 /// The services that hold the update download cache open, in the order they
 /// are stopped.
@@ -491,6 +500,7 @@ impl WindowsUpdatesModule {
                 root.join("SoftwareDistribution"),
                 root.join(r"System32\catroot2"),
             ],
+            not_checked: Default::default(),
         }
     }
 
@@ -686,11 +696,16 @@ impl DiagnosticModule for WindowsUpdatesModule {
         "[UPD]"
     }
 
+    fn not_checked(&self) -> Vec<String> {
+        self.not_checked.notes()
+    }
+
     async fn scan(
         &self,
         progress_tx: Option<Sender<ModuleProgress>>,
     ) -> Result<Vec<Issue>, String> {
         let mut issues = Vec::new();
+        self.not_checked.clear();
 
         // 1. Service Status
         Self::send_progress(
@@ -740,6 +755,9 @@ impl DiagnosticModule for WindowsUpdatesModule {
                     .await;
                 }
                 Ok(None) | Err(_) => {
+                    // One sentence for all three: the window does not list
+                    // service names in Easy mode.
+                    self.not_checked.push(SERVICE_NOT_CHECKED);
                     Self::send_progress(
                         &progress_tx,
                         35,
@@ -862,6 +880,7 @@ impl DiagnosticModule for WindowsUpdatesModule {
                 issues.extend(failed_update_findings(self.id(), &failed));
             }
             Err(err) => {
+                self.not_checked.push(FAILED_UPDATES_NOT_CHECKED);
                 Self::send_progress(&progress_tx, 98, "Failed updates not checked", Some(&err))
                     .await;
             }
@@ -1531,6 +1550,40 @@ mod tests {
         assert!(issues[0].is_repairable());
         assert!(!issues[0].is_selected, "the update history is lost");
         assert_eq!(issues[0].risk_score, RiskScore::Medium);
+    }
+
+    /// What a scan tells the window it left unchecked, after one that left
+    /// a note of its own.
+    async fn notes_after(mock: MockCommandRunner) -> Vec<String> {
+        let module = WindowsUpdatesModule::with_runner(ModuleConfig::default(), Arc::new(mock))
+            .with_download_dir(std::env::temp_dir().join("winmedic_wu_no_such_cache"));
+        module.not_checked.push("From the scan before.");
+        module.scan(None).await.unwrap();
+        module.not_checked()
+    }
+
+    /// #338: three services without a start type are one sentence, and the
+    /// event log that could not be read is another.
+    #[tokio::test]
+    async fn services_and_an_event_log_that_did_not_answer_are_told_to_the_window() {
+        let mock = MockCommandRunner::new();
+        mock.add_response("sc.exe", CmdOutput::failed(5, "Access is denied."));
+        mock.add_response("wevtutil.exe", CmdOutput::failed(5, "Access is denied."));
+        assert_eq!(
+            notes_after(mock).await,
+            [SERVICE_NOT_CHECKED, FAILED_UPDATES_NOT_CHECKED]
+        );
+    }
+
+    /// A check that got through everything leaves no note, and takes the
+    /// last scan's back.
+    #[tokio::test]
+    async fn a_check_that_got_through_everything_leaves_no_note() {
+        let mock = MockCommandRunner::new();
+        mock.add_response("sc.exe", CmdOutput::ok(sc_qc_output("x", 3)));
+        mock.add_response("wevtutil.exe", CmdOutput::ok(""));
+        let notes = notes_after(mock).await;
+        assert!(notes.is_empty(), "{notes:?}");
     }
 
     #[tokio::test]

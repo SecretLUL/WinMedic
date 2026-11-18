@@ -503,7 +503,25 @@ pub struct NetworkModule {
     proxy_probe: ProxyProbe,
     /// Where registry backups go.
     backup_dir: PathBuf,
+    /// What the last scan left unchecked, see [`DiagnosticModule::not_checked`].
+    not_checked: crate::modules::Unchecked,
 }
+
+// What the window says after a scan that gave a part of this check up
+// (#338). Until then each was only a step text, gone when the check
+// finished. Only what could not be asked is here. A proxy or a DNS server
+// that is not judged because nothing at all is reachable is not: the
+// finding about the connection says that.
+const ADAPTERS_NOT_CHECKED: &str =
+    "The network adapters were not checked: Windows did not list them.";
+const DNS_SERVERS_NOT_CHECKED: &str =
+    "The adapters' DNS servers were not checked: their settings could not be read.";
+const RESOLVER_NOT_CHECKED: &str =
+    "Whether names resolve (DNS) was not checked: the test could not be started.";
+const PROXY_NOT_CHECKED: &str = "The proxy was not checked: its settings could not be read.";
+const WINHTTP_NOT_CHECKED: &str =
+    "The system proxy (WinHTTP) was not checked: its settings could not be read.";
+const WINSOCK_NOT_CHECKED: &str = "The Winsock catalog was not checked: Windows did not list it.";
 
 impl Default for NetworkModule {
     fn default() -> Self {
@@ -521,6 +539,7 @@ impl NetworkModule {
             runner,
             proxy_probe: real_proxy_probe(),
             backup_dir: RegBackupManager::new().backup_dir().to_path_buf(),
+            not_checked: Default::default(),
         }
     }
 
@@ -997,11 +1016,16 @@ impl DiagnosticModule for NetworkModule {
         "[NET]"
     }
 
+    fn not_checked(&self) -> Vec<String> {
+        self.not_checked.notes()
+    }
+
     async fn scan(
         &self,
         progress_tx: Option<Sender<ModuleProgress>>,
     ) -> Result<Vec<Issue>, String> {
         let mut issues = Vec::new();
+        self.not_checked.clear();
 
         // 1. Adapters that got no address from DHCP
         Self::send_progress(
@@ -1017,6 +1041,7 @@ impl DiagnosticModule for NetworkModule {
         let physical = match self.physical_adapters().await {
             Ok(physical) => physical,
             Err(err) => {
+                self.not_checked.push(ADAPTERS_NOT_CHECKED);
                 Self::send_progress(
                     &progress_tx,
                     15,
@@ -1196,6 +1221,7 @@ impl DiagnosticModule for NetworkModule {
                     }
                 }
                 Err(err) => {
+                    self.not_checked.push(DNS_SERVERS_NOT_CHECKED);
                     Self::send_progress(
                         &progress_tx,
                         18,
@@ -1209,6 +1235,7 @@ impl DiagnosticModule for NetworkModule {
 
         if resolver.is_none() {
             // Nobody asked the resolver, so there is no verdict on it.
+            self.not_checked.push(RESOLVER_NOT_CHECKED);
             Self::send_progress(
                 &progress_tx,
                 45,
@@ -1341,6 +1368,7 @@ impl DiagnosticModule for NetworkModule {
                 .await;
             }
             Err(err) => {
+                self.not_checked.push(PROXY_NOT_CHECKED);
                 Self::send_progress(
                     &progress_tx,
                     70,
@@ -1397,6 +1425,7 @@ impl DiagnosticModule for NetworkModule {
             }
             Ok(None) => {}
             Err(err) => {
+                self.not_checked.push(WINHTTP_NOT_CHECKED);
                 Self::send_progress(
                     &progress_tx,
                     75,
@@ -1425,6 +1454,10 @@ impl DiagnosticModule for NetworkModule {
                 Duration::from_secs(6),
             )
             .await;
+        // Not started or timed out left no trace at all, not even a step.
+        if !matches!(&winsock_audit, Ok(out) if out.success) {
+            self.not_checked.push(WINSOCK_NOT_CHECKED);
+        }
         if let Ok(out) = &winsock_audit
             && !out.success
         {
@@ -2833,6 +2866,85 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("still uses 10.0.0.53"), "{err}");
+    }
+
+    /// What a scan of `mock` tells the window it left unchecked, after one
+    /// that left a note of its own.
+    async fn notes_after(mock: MockCommandRunner) -> Vec<String> {
+        let module = NetworkModule::with_runner(Arc::new(mock))
+            .with_proxy_probe(Arc::new(|_: &str| Err("connection refused".to_string())));
+        module.not_checked.push("From the scan before.");
+        module.scan(None).await.unwrap();
+        module.not_checked()
+    }
+
+    /// #338: what could not be asked was a step text, gone when the check
+    /// finished. The window is told, once per part.
+    #[tokio::test]
+    async fn what_could_not_be_asked_is_told_to_the_window() {
+        let refused = || CmdOutput::failed(5, "Access is denied.");
+        let mock = MockCommandRunner::new();
+        mock.add_response(PHYSICAL, refused());
+        mock.add_response(PROBE, CmdOutput::failed(1, ""));
+        mock.add_response("ping.exe", ping_answers());
+        mock.add_response("reg.exe", refused());
+        mock.add_response("netsh.exe", refused());
+        assert_eq!(
+            notes_after(mock).await,
+            [
+                ADAPTERS_NOT_CHECKED,
+                RESOLVER_NOT_CHECKED,
+                PROXY_NOT_CHECKED,
+                WINHTTP_NOT_CHECKED,
+                WINSOCK_NOT_CHECKED
+            ]
+        );
+
+        // Names do not resolve, and the DNS servers set on the adapters
+        // cannot be read.
+        let mock = MockCommandRunner::new();
+        mock.add_response("Get-NetAdapter", CmdOutput::ok(real_adapters()));
+        mock.add_response(PROBE, not_resolved());
+        mock.add_response("ping.exe", ping_answers());
+        mock.add_response(r"Tcpip\Parameters\Interfaces", refused());
+        mock.add_response("reg.exe", CmdOutput::ok(real_internet_settings()));
+        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
+        assert_eq!(notes_after(mock).await, [DNS_SERVERS_NOT_CHECKED]);
+
+        // A netsh that does not start left not even a step.
+        let mock = MockCommandRunner::new();
+        mock.add_response("Get-NetAdapter", CmdOutput::ok(real_adapters()));
+        mock.add_response(PROBE, resolved());
+        mock.add_response("ping.exe", ping_answers());
+        mock.add_response("reg.exe", CmdOutput::ok(real_internet_settings()));
+        assert_eq!(notes_after(mock).await, [WINSOCK_NOT_CHECKED]);
+    }
+
+    /// A check that got through everything leaves no note, and takes the
+    /// last scan's back. A proxy that is not judged because nothing at all
+    /// is reachable is no note either: the finding says the PC is offline.
+    #[tokio::test]
+    async fn a_check_that_got_through_everything_leaves_no_note() {
+        let mock = MockCommandRunner::new();
+        mock.add_response("Get-NetAdapter", CmdOutput::ok(real_adapters()));
+        mock.add_response(PROBE, resolved());
+        mock.add_response("ping.exe", ping_answers());
+        mock.add_response("reg.exe", CmdOutput::ok(real_internet_settings()));
+        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
+        let notes = notes_after(mock).await;
+        assert!(notes.is_empty(), "{notes:?}");
+
+        let mock = MockCommandRunner::new();
+        mock.add_response("Get-NetAdapter", CmdOutput::ok(real_adapters()));
+        mock.add_response(
+            "reg.exe",
+            CmdOutput::ok(internet_settings_with_proxy("proxy.school:3128")),
+        );
+        mock.add_response(PROBE, not_resolved());
+        mock.add_response("ping.exe", CmdOutput::failed(1, ""));
+        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
+        let notes = notes_after(mock).await;
+        assert!(notes.is_empty(), "{notes:?}");
     }
 
     /// A scan of `mock`, with a proxy nothing answers at, and its steps.

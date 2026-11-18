@@ -951,7 +951,23 @@ pub struct TweaksModule {
     /// is gone, before each of three looks.
     defender_wait: Duration,
     ram: RamSource,
+    /// What the last scan left unchecked, see [`DiagnosticModule::not_checked`].
+    not_checked: crate::modules::Unchecked,
 }
+
+// What the window says after a scan that gave a part of this check up
+// (#338). Until then each was only a step text, gone when the check
+// finished. Policies left alone because the PC is in a domain or joined
+// to Entra ID are not here: that is a verdict, not a gap.
+const SYSTEM_DEVICES_NOT_CHECKED: &str =
+    "Windows' system devices were not checked: Windows did not list the devices.";
+const SERVICE_CHAINS_NOT_CHECKED: &str = "Services that stopped with an error were not followed to their devices: Windows did not list the services.";
+const SERVICE_GROUPING_NOT_CHECKED: &str =
+    "How Windows groups its services was not checked: the setting could not be read.";
+const POLICIES_NOT_CHECKED: &str =
+    "Windows Update, Store and Defender policies were not checked: they could not be read.";
+const MEMBERSHIP_NOT_KNOWN: &str = "Windows Update, Store and Defender policies were not checked: Windows did not say whether this PC belongs to an organisation.";
+const DEFENDER_POLICY_NOT_CHECKED: &str = "A policy that switches Defender off was not judged: neither Defender nor Windows Security answered.";
 
 impl TweaksModule {
     pub fn new(config: ModuleConfig) -> Self {
@@ -986,6 +1002,7 @@ impl TweaksModule {
             backup_dir,
             defender_wait: Duration::from_secs(5),
             ram: real_ram(),
+            not_checked: Default::default(),
         }
     }
 
@@ -1944,11 +1961,16 @@ impl DiagnosticModule for TweaksModule {
         "[TWK]"
     }
 
+    fn not_checked(&self) -> Vec<String> {
+        self.not_checked.notes()
+    }
+
     async fn scan(
         &self,
         progress_tx: Option<Sender<ModuleProgress>>,
     ) -> Result<Vec<Issue>, String> {
         let mut issues = Vec::new();
+        self.not_checked.clear();
 
         // 1. Services
         Self::send_progress(
@@ -1997,6 +2019,7 @@ impl DiagnosticModule for TweaksModule {
                 let failing = match service_chain::failing(&*self.runner, &devices).await {
                     Ok(failing) => failing,
                     Err(e) => {
+                        self.not_checked.push(SERVICE_CHAINS_NOT_CHECKED);
                         Self::send_progress(
                             &progress_tx,
                             44,
@@ -2024,6 +2047,7 @@ impl DiagnosticModule for TweaksModule {
                 issues.extend(self.driver_off_findings(&failing.drivers_off));
             }
             Err(e) => {
+                self.not_checked.push(SYSTEM_DEVICES_NOT_CHECKED);
                 Self::send_progress(&progress_tx, 45, "System devices not checked", Some(&e)).await;
             }
         }
@@ -2037,6 +2061,7 @@ impl DiagnosticModule for TweaksModule {
             // Not set: Windows uses its own.
             Ok(None) => {}
             Err(e) => {
+                self.not_checked.push(SERVICE_GROUPING_NOT_CHECKED);
                 Self::send_progress(&progress_tx, 47, "Service grouping not checked", Some(&e))
                     .await;
             }
@@ -2061,6 +2086,7 @@ impl DiagnosticModule for TweaksModule {
             } else if membership == Some(true) {
                 "This PC is joined to a domain, whose administrators set these policies on purpose."
             } else {
+                self.not_checked.push(MEMBERSHIP_NOT_KNOWN);
                 "WMI did not say whether this PC is joined to a domain, so its policies were not judged."
             };
             Self::send_progress(&progress_tx, 70, "Policies left alone", Some(why)).await;
@@ -2084,6 +2110,7 @@ impl DiagnosticModule for TweaksModule {
                                 Some(status)
                                     if status.realtime_failed && status.antivirus_failed =>
                                 {
+                                    self.not_checked.push(DEFENDER_POLICY_NOT_CHECKED);
                                     Self::send_progress(
                                         &progress_tx,
                                         70,
@@ -2165,6 +2192,7 @@ impl DiagnosticModule for TweaksModule {
                     }
                 }
                 Err(e) => {
+                    self.not_checked.push(POLICIES_NOT_CHECKED);
                     Self::send_progress(&progress_tx, 70, "Policies not checked", Some(&e)).await;
                 }
             }
@@ -2405,6 +2433,88 @@ mod tests {
             .await
             .unwrap();
         assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    /// What a scan of `mock` tells the window it left unchecked, after one
+    /// that left a note of its own.
+    async fn notes_after(name: &str, mock: MockCommandRunner) -> Vec<String> {
+        let dir = sandbox(name);
+        let module = module(mock, &dir, b"127.0.0.1 localhost\r\n");
+        module.not_checked.push("From the scan before.");
+        module.scan(None).await.unwrap();
+        module.not_checked()
+    }
+
+    /// The services `sc query` lists, all of them running.
+    fn services_listed(mock: &MockCommandRunner) {
+        use crate::utils::service::test_support::sc_query_output;
+        mock.add_response("query type=", CmdOutput::ok(sc_query_output("x", 4)));
+    }
+
+    /// A check that got through everything leaves no note, and takes the
+    /// last scan's back.
+    #[tokio::test]
+    async fn a_check_that_got_through_everything_leaves_no_note() {
+        let mock = MockCommandRunner::new();
+        services_listed(&mock);
+        healthy(&mock);
+        let notes = notes_after("no_note", mock).await;
+        assert!(notes.is_empty(), "{notes:?}");
+    }
+
+    /// #338: what could not be asked was a step text, gone when the check
+    /// finished. The window is told.
+    #[tokio::test]
+    async fn what_could_not_be_asked_is_told_to_the_window() {
+        let refused = || CmdOutput::failed(5, "Access is denied.");
+
+        // No list of services, a registry that refuses, and WMI silent
+        // about the domain.
+        let mock = MockCommandRunner::new();
+        mock.add_response("query type=", refused());
+        mock.add_response("reg.exe", refused());
+        mock.add_response("sc.exe", CmdOutput::ok(sc_qc_output("x", 3)));
+        assert_eq!(
+            notes_after("unasked", mock).await,
+            [
+                SERVICE_CHAINS_NOT_CHECKED,
+                SERVICE_GROUPING_NOT_CHECKED,
+                MEMBERSHIP_NOT_KNOWN
+            ]
+        );
+
+        // A standalone PC whose policies cannot be read.
+        let mock = MockCommandRunner::new();
+        services_listed(&mock);
+        mock.add_response("PartOfDomain", CmdOutput::ok("False\r\n"));
+        mock.add_response("reg.exe", refused());
+        mock.add_response("sc.exe", CmdOutput::ok(sc_qc_output("x", 3)));
+        assert_eq!(
+            notes_after("policies_unread", mock).await,
+            [SERVICE_GROUPING_NOT_CHECKED, POLICIES_NOT_CHECKED]
+        );
+
+        // Defender switched off by policy, and nobody says whether the PC
+        // is protected.
+        let mock = MockCommandRunner::new();
+        services_listed(&mock);
+        mock.add_response("PartOfDomain", CmdOutput::ok("False\r\n"));
+        mock.add_response(
+            format!("query {DEFENDER_POLICY_KEY}"),
+            CmdOutput::ok(defender_switched_off()),
+        );
+        mock.add_response(
+            "Get-MpComputerStatus",
+            CmdOutput::ok(
+                "MP|FAILED|HRESULT 0x80041010,Get-MpComputerStatus\r\nAV|FAILED|HRESULT 0x8004100e,Get-CimInstance\r\n",
+            ),
+        );
+        mock.add_response("reg.exe", CmdOutput::with_output(1, "", "FEHLER"));
+        mock.add_response("sc.exe", CmdOutput::ok(sc_qc_output("x", 3)));
+        assert_eq!(
+            notes_after("defender_unknown", mock).await,
+            [DEFENDER_POLICY_NOT_CHECKED]
+        );
     }
 
     #[tokio::test]

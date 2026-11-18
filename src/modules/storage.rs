@@ -25,7 +25,16 @@ pub struct StorageModule {
     temp_min_age: Duration,
     /// The drive Windows is on, as `C:`.
     system_drive: String,
+    /// What the last scan left unchecked, see [`DiagnosticModule::not_checked`].
+    not_checked: crate::modules::Unchecked,
 }
+
+// What the window says after a scan that gave a part of this check up
+// (#338). Until then each was only a step text, gone when the check finished.
+const SMART_NOT_CHECKED: &str =
+    "The drives' health (SMART) was not checked: Windows did not report it.";
+const STORAGE_ERRORS_NOT_CHECKED: &str =
+    "The storage errors Windows logged were not checked: the event log could not be read.";
 
 /// The icon cache files Explorer keeps: `iconcache_16.db`,
 /// `iconcache_256.db`, ... A few dozen MB is normal.
@@ -319,6 +328,7 @@ impl StorageModule {
             // The files under such folders were written a moment ago.
             temp_min_age: Duration::ZERO,
             system_drive: "C:".to_string(),
+            not_checked: Default::default(),
         }
     }
 
@@ -407,11 +417,16 @@ impl DiagnosticModule for StorageModule {
         "[DSK]"
     }
 
+    fn not_checked(&self) -> Vec<String> {
+        self.not_checked.notes()
+    }
+
     async fn scan(
         &self,
         progress_tx: Option<Sender<ModuleProgress>>,
     ) -> Result<Vec<Issue>, String> {
         let mut issues = Vec::new();
+        self.not_checked.clear();
 
         // 1. Filesystem Dirty Bit
         Self::send_progress(
@@ -526,6 +541,7 @@ impl DiagnosticModule for StorageModule {
                 }
             }
             Err(err) => {
+                self.not_checked.push(SMART_NOT_CHECKED);
                 Self::send_progress(
                     &progress_tx,
                     60,
@@ -563,6 +579,7 @@ impl DiagnosticModule for StorageModule {
                 }
             },
             Err(err) => {
+                self.not_checked.push(STORAGE_ERRORS_NOT_CHECKED);
                 Self::send_progress(&progress_tx, 70, "Storage errors not checked", Some(&err))
                     .await;
             }
@@ -1074,6 +1091,39 @@ mod tests {
             );
             assert!(!steps.iter().any(|s| s.starts_with("SMART status checked")));
         }
+    }
+
+    /// A scan whose disk query and event log answer as given, and what it
+    /// tells the window it left unchecked.
+    async fn notes_after(disks: CmdOutput, events: CmdOutput) -> Vec<String> {
+        let mock = MockCommandRunner::new();
+        mock.add_response("DirtyBitSet", CmdOutput::ok("False\r\n"));
+        mock.add_response("Get-PhysicalDisk", disks);
+        mock.add_response("wevtutil.exe", events);
+        let module =
+            StorageModule::with_paths(ModuleConfig::default(), Arc::new(mock), Vec::new(), None);
+        module.not_checked.push("From the scan before.");
+        module.scan(None).await.unwrap();
+        module.not_checked()
+    }
+
+    /// #338: the step text is gone with the scan, the window is told.
+    #[tokio::test]
+    async fn unread_disks_and_an_unread_event_log_are_told_to_the_window() {
+        let notes = notes_after(
+            CmdOutput::failed(1, "Get-PhysicalDisk : Access denied"),
+            CmdOutput::failed(5, "Access is denied."),
+        )
+        .await;
+        assert_eq!(notes, [SMART_NOT_CHECKED, STORAGE_ERRORS_NOT_CHECKED]);
+    }
+
+    /// A check that got through everything leaves no note, and takes the
+    /// last scan's back.
+    #[tokio::test]
+    async fn a_check_that_got_through_everything_leaves_no_note() {
+        let notes = notes_after(CmdOutput::ok(PHYSICAL_DISKS), CmdOutput::ok("")).await;
+        assert!(notes.is_empty(), "{notes:?}");
     }
 
     #[test]
