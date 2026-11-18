@@ -93,7 +93,9 @@ impl App {
                 ScanEvent::ModuleFinished {
                     module_id,
                     mut issues,
+                    not_checked,
                 } => {
+                    self.not_checked.extend(not_checked);
                     carry_over(&mut issues, &self.last_findings);
                     // A repair kept waiting since the scan started gives way
                     // to its fresh report, which carries the wait over.
@@ -161,6 +163,7 @@ impl App {
                         self.issues = before.issues;
                         self.archived_issues = before.archived_issues;
                         self.module_statuses = before.module_statuses;
+                        self.not_checked = before.not_checked;
                         self.health_score = before.health_score;
                     }
                     for item in &mut self.module_statuses {
@@ -1437,6 +1440,7 @@ mod tests {
             tx.send(ScanEvent::ModuleFinished {
                 module_id: module_id.to_string(),
                 issues,
+                not_checked: Vec::new(),
             })
             .await
             .unwrap();
@@ -1614,11 +1618,18 @@ mod tests {
         let health = app.health_score;
         assert!(health < 100);
 
+        app.not_checked = vec!["Not checked last time.".to_string()];
+
         let (mut app, tx) = scanning_again(app);
         assert!(app.issues.is_empty(), "off the screen while the scan runs");
+        assert!(
+            app.not_checked.is_empty(),
+            "and so is what it left unchecked"
+        );
         tx.send(ScanEvent::ModuleFinished {
             module_id: "network".to_string(),
             issues: Vec::new(),
+            not_checked: vec!["Not checked this time.".to_string()],
         })
         .await
         .unwrap();
@@ -1635,6 +1646,7 @@ mod tests {
         assert_eq!(shown, [dirty_bit().id.as_str()]);
         assert_eq!(app.health_score, health);
         assert_eq!(app.module_statuses[storage].3, ModuleStatus::Critical(1));
+        assert_eq!(app.not_checked, ["Not checked last time."]);
         assert_eq!(app.last_scan_timestamp.as_deref(), Some(scanned_at));
         assert_eq!(app.scan_duration, Some(std::time::Duration::from_secs(42)));
         let message = app.status_message.clone().unwrap();
@@ -1646,6 +1658,32 @@ mod tests {
         let saved = app.scan_to_save().expect("a scan to save");
         assert_eq!(saved.timestamp, scanned_at);
         assert_eq!(saved.issues.len(), 1);
+        assert_eq!(saved.not_checked, ["Not checked last time."]);
+    }
+
+    /// What a check that finished left unchecked is kept for the window,
+    /// and is no finding: the health stays what the findings make it.
+    #[tokio::test]
+    async fn what_a_finished_check_left_unchecked_is_kept_without_a_finding() {
+        let (mut app, tx) = scanning_again(App::new());
+        tx.send(ScanEvent::ModuleFinished {
+            module_id: "system_cleaner".to_string(),
+            issues: Vec::new(),
+            not_checked: vec!["The component store was not checked.".to_string()],
+        })
+        .await
+        .unwrap();
+        tx.send(ScanEvent::ScanCompleted {
+            total_issues: 0,
+            health_score: 100,
+        })
+        .await
+        .unwrap();
+        app.process_background_events();
+
+        assert_eq!(app.not_checked, ["The component store was not checked."]);
+        assert!(app.issues.is_empty());
+        assert_eq!(app.health_score, 100);
     }
 
     /// A first scan that is cancelled leaves no scan: no time, nothing to

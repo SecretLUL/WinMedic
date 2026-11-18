@@ -266,6 +266,7 @@ mod tests {
                 finding("crit", Severity::Critical),
                 finding("warn", Severity::Warning),
             ],
+            not_checked: Vec::new(),
         })
         .unwrap();
         tx.try_send(ScanEvent::ScanCompleted {

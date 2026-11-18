@@ -38,6 +38,10 @@ pub struct ScanState {
     #[serde(default)]
     pub archived_issues: Vec<Issue>,
     pub module_statuses: Vec<(String, String, String, ModuleStatus)>,
+    /// What checks that finished left unchecked, see
+    /// [`crate::modules::DiagnosticModule::not_checked`].
+    #[serde(default)]
+    pub not_checked: Vec<String>,
     #[serde(default)]
     pub scan_duration_secs: Option<u64>,
     #[serde(default)]
@@ -104,10 +108,17 @@ impl ScanState {
             issues,
             archived_issues: Vec::new(),
             module_statuses,
+            not_checked: Vec::new(),
             scan_duration_secs,
             boot_time_secs: current_boot_time(),
             boot_id: current_boot_id(),
         }
+    }
+
+    /// What the same scan left unchecked.
+    pub fn with_not_checked(mut self, not_checked: Vec<String>) -> Self {
+        self.not_checked = not_checked;
+        self
     }
 
     /// The findings of the same scan that the user archived.
@@ -239,8 +250,9 @@ mod tests {
 
         let mut archived = issue.clone();
         archived.id = "archived_iss".to_string();
-        let state =
-            ScanState::new(75, vec![issue], statuses, Some(12)).with_archived(vec![archived]);
+        let state = ScanState::new(75, vec![issue], statuses, Some(12))
+            .with_archived(vec![archived])
+            .with_not_checked(vec!["Not checked.".to_string()]);
         state.save_to(&tmp).unwrap();
 
         let loaded = ScanState::load_from(&tmp).expect("should load saved scan state");
@@ -251,6 +263,14 @@ mod tests {
         assert_eq!(loaded.archived_issues[0].id, "archived_iss");
         assert_eq!(loaded.module_statuses.len(), 1);
         assert_eq!(loaded.scan_duration_secs, Some(12));
+        assert_eq!(loaded.not_checked, ["Not checked."]);
+
+        // A file written before the notes existed has none.
+        let mut older = serde_json::to_value(&state).unwrap();
+        older.as_object_mut().unwrap().remove("not_checked");
+        std::fs::write(&tmp, older.to_string()).unwrap();
+        let loaded = ScanState::load_from(&tmp).expect("an older file still loads");
+        assert!(loaded.not_checked.is_empty());
 
         let _ = std::fs::remove_file(&tmp);
     }

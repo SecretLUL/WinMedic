@@ -24,6 +24,8 @@ pub enum ScanEvent {
     ModuleFinished {
         module_id: String,
         issues: Vec<Issue>,
+        /// [`crate::modules::DiagnosticModule::not_checked`] of this scan.
+        not_checked: Vec<String>,
     },
     ModuleFailed {
         module_id: String,
@@ -411,6 +413,7 @@ impl DiagnosticEngine {
                         .await;
                 }
                 let result = module.scan(Some(p_tx)).await;
+                let result = result.map(|issues| (issues, module.not_checked()));
                 (mod_id, mod_name, result)
             }));
             module_of_task.insert(task.id(), named);
@@ -446,7 +449,7 @@ impl DiagnosticEngine {
                     match join_result {
                         Ok((mod_id, mod_name, scan_result)) => {
                             match scan_result {
-                                Ok(issues) => {
+                                Ok((issues, not_checked)) => {
                                     if self.verbose_logging {
                                         let crit = issues
                                             .iter()
@@ -486,6 +489,7 @@ impl DiagnosticEngine {
                                         .send(ScanEvent::ModuleFinished {
                                             module_id: mod_id.clone(),
                                             issues: issues.clone(),
+                                            not_checked,
                                         })
                                         .await;
 

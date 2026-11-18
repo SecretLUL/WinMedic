@@ -131,6 +131,7 @@ pub(super) struct BeforeScan {
     pub issues: Vec<Issue>,
     pub archived_issues: Vec<Issue>,
     pub module_statuses: Vec<(String, String, String, ModuleStatus)>,
+    pub not_checked: Vec<String>,
     pub health_score: u8,
 }
 
@@ -181,6 +182,9 @@ pub struct App {
     pub last_scan_timestamp: Option<String>,
     pub module_progress_list: Vec<ModuleScanProgress>,
     pub module_statuses: Vec<(String, String, String, ModuleStatus)>,
+    /// What the scan on screen left unchecked in checks that finished, see
+    /// [`crate::modules::DiagnosticModule::not_checked`].
+    pub not_checked: Vec<String>,
     pub scan_log_messages: VecDeque<String>,
 
     // Live Repair State
@@ -359,6 +363,10 @@ impl App {
         let (bg_tx, bg_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let (module_progress_list, default_module_statuses) = Self::module_lists(&engine);
+        let not_checked = saved
+            .as_ref()
+            .map(|saved| saved.not_checked.clone())
+            .unwrap_or_default();
         let (
             saved_issues,
             archived_issues,
@@ -432,6 +440,7 @@ impl App {
             last_scan_timestamp: saved_timestamp,
             module_progress_list,
             module_statuses,
+            not_checked,
             scan_log_messages: VecDeque::from([init_msg]),
             is_fixing: false,
             dry_run: false,
@@ -839,7 +848,8 @@ impl App {
             self.module_statuses.clone(),
             self.scan_duration.map(|d| d.as_secs()),
         )
-        .with_archived(self.archived_issues.clone());
+        .with_archived(self.archived_issues.clone())
+        .with_not_checked(self.not_checked.clone());
         state.timestamp = timestamp;
         Some(state)
     }
@@ -878,6 +888,7 @@ impl App {
         let (_, default_statuses) = Self::module_lists(&self.engine);
         self.module_statuses =
             Self::reconcile_module_statuses(&default_statuses, &saved.module_statuses);
+        self.not_checked = std::mem::take(&mut saved.not_checked);
         self.health_score = DiagnosticEngine::calculate_health_score(&shown);
         self.issues = shown;
         self.archived_issues = archived;

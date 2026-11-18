@@ -387,6 +387,23 @@ const DISM_ANALYZE_ARGS: &[&str] = &[
 /// has to catch a DISM that never comes back; a scan can be stopped.
 const DISM_ANALYZE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
+/// The sentence the window shows after a scan whose analysis did not finish.
+///
+/// Running out of time is the case a slow disk produces on every scan, so it
+/// is said in words, not as "Command 'dism.exe' timed out after 900s". Any
+/// other reason is a command's error text, which the scan log has: Easy mode
+/// shows this sentence too, to people it says nothing to.
+fn store_not_checked(reason: &str) -> String {
+    if crate::utils::cmd::is_timeout(reason) {
+        format!(
+            "The component store was not checked: DISM's analysis took longer than {} minutes.",
+            DISM_ANALYZE_TIMEOUT.as_secs() / 60
+        )
+    } else {
+        "The component store was not checked: DISM's analysis did not finish.".to_string()
+    }
+}
+
 /// Remove the superseded packages the analysis above counted.
 const DISM_CLEANUP_ARGS: &[&str] = &[
     "/Online",
@@ -1069,6 +1086,8 @@ pub struct SystemCleanerModule {
     scan_count_max_age: Duration,
     /// How often the bar moves while the analysis runs.
     analysis_tick: Duration,
+    /// What the last scan left unchecked, see [`DiagnosticModule::not_checked`].
+    not_checked: Mutex<Vec<String>>,
 }
 
 /// How long the WinSxS repair takes the scan's count of reclaimable packages
@@ -1104,6 +1123,7 @@ impl SystemCleanerModule {
             scan_count: Mutex::new(None),
             scan_count_max_age: SCAN_COUNT_MAX_AGE,
             analysis_tick: Duration::from_secs(1),
+            not_checked: Mutex::new(Vec::new()),
         }
     }
 
@@ -1350,11 +1370,21 @@ impl DiagnosticModule for SystemCleanerModule {
         12
     }
 
+    fn not_checked(&self) -> Vec<String> {
+        self.not_checked
+            .lock()
+            .map(|notes| notes.clone())
+            .unwrap_or_default()
+    }
+
     async fn scan(
         &self,
         progress_tx: Option<Sender<ModuleProgress>>,
     ) -> Result<Vec<Issue>, String> {
         let mut issues = Vec::new();
+        if let Ok(mut notes) = self.not_checked.lock() {
+            notes.clear();
+        }
 
         if self.config.verbose_logging {
             Self::send_progress(
@@ -1697,7 +1727,8 @@ impl DiagnosticModule for SystemCleanerModule {
 
         // An analysis that did not finish is "not checked", and says so: a
         // scan without the finding otherwise reads as a store with nothing
-        // to reclaim (#328).
+        // to reclaim (#328). In the log, and in the window after the scan:
+        // the log is folded away, and the step below is gone a moment later.
         let unfinished = match &dism_check {
             Ok(out) if dism_finished(out) => None,
             Ok(out) => Some(match out.exit_code {
@@ -1707,6 +1738,9 @@ impl DiagnosticModule for SystemCleanerModule {
             Err(err) => Some(err.clone()),
         };
         if let Some(reason) = unfinished {
+            if let Ok(mut notes) = self.not_checked.lock() {
+                notes.push(store_not_checked(&reason));
+            }
             Self::send_progress(
                 &progress_tx,
                 99,
@@ -2970,11 +3004,16 @@ The operation completed successfully.";
     }
 
     /// What the scan said about the component store: its steps from the
-    /// analysis on, each with its log line.
-    async fn store_steps(mock: MockCommandRunner, dir: &str) -> (Vec<Issue>, Vec<String>) {
+    /// analysis on, each with its log line, and what it left for the window
+    /// to show afterwards.
+    async fn store_steps(
+        mock: MockCommandRunner,
+        dir: &str,
+    ) -> (Vec<Issue>, Vec<String>, Vec<String>) {
         let td = TestDir::new(dir);
         let (tx, mut rx) = tokio::sync::mpsc::channel::<ModuleProgress>(1024);
-        let issues = sandboxed(&td, Arc::new(mock)).scan(Some(tx)).await.unwrap();
+        let module = sandboxed(&td, Arc::new(mock));
+        let issues = module.scan(Some(tx)).await.unwrap();
         let mut steps = Vec::new();
         while let Ok(p) = rx.try_recv() {
             steps.push(format!(
@@ -2987,7 +3026,7 @@ The operation completed successfully.";
             .iter()
             .position(|s| s.starts_with("Analysing the WinSxS component store"))
             .expect("the analysis was announced");
-        (issues, steps.split_off(from + 1))
+        (issues, steps.split_off(from + 1), module.not_checked())
     }
 
     const DISM_ELEVATION_REQUIRED: &[u8] =
@@ -3012,7 +3051,7 @@ The operation completed successfully.";
                 "No mock response configured",
             ),
         ] {
-            let (issues, steps) = store_steps(mock, dir).await;
+            let (issues, steps, not_checked) = store_steps(mock, dir).await;
             assert!(issues.iter().all(|i| i.id != "sys_clean_winsxs"));
             assert!(
                 steps
@@ -3020,7 +3059,46 @@ The operation completed successfully.";
                     .any(|s| s.starts_with("Component store not checked: ") && s.contains(reason)),
                 "{steps:?}"
             );
+            // The log is folded away and the step is gone with the scan:
+            // the window is told too, without a finding that would count as
+            // a problem of the PC.
+            assert_eq!(
+                not_checked,
+                ["The component store was not checked: DISM's analysis did not finish."]
+            );
         }
+    }
+
+    /// The case a slow disk produces, in the runner's own words for it.
+    #[test]
+    fn an_analysis_that_ran_out_of_time_says_how_long_it_was_given() {
+        let reason = crate::utils::cmd::timed_out("dism.exe", DISM_ANALYZE_TIMEOUT);
+        assert_eq!(
+            store_not_checked(&reason),
+            "The component store was not checked: DISM's analysis took longer than 15 minutes."
+        );
+    }
+
+    /// The note is the last scan's: an analysis that finishes takes it back.
+    #[tokio::test]
+    async fn the_next_scan_that_finishes_takes_the_note_back() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "AnalyzeComponentStore",
+            CmdOutput::with_output(740, String::from_utf8_lossy(DISM_ELEVATION_REQUIRED), ""),
+        );
+        mock.add_response_after(
+            "AnalyzeComponentStore",
+            "AnalyzeComponentStore",
+            store_with_reclaimable(0),
+        );
+        let td = TestDir::new("winsxs_note_taken_back");
+        let module = sandboxed(&td, Arc::new(mock));
+
+        module.scan(None).await.unwrap();
+        assert_eq!(module.not_checked().len(), 1);
+        module.scan(None).await.unwrap();
+        assert!(module.not_checked().is_empty());
     }
 
     /// An analysis that finished is not called unchecked, with or without
@@ -3030,11 +3108,12 @@ The operation completed successfully.";
         for (packages, dir) in [(0, "winsxs_checked_0"), (2, "winsxs_checked_2")] {
             let mock = MockCommandRunner::new();
             mock.add_response("AnalyzeComponentStore", store_with_reclaimable(packages));
-            let (_, steps) = store_steps(mock, dir).await;
+            let (_, steps, not_checked) = store_steps(mock, dir).await;
             assert!(
                 !steps.iter().any(|s| s.contains("not checked")),
                 "{steps:?}"
             );
+            assert!(not_checked.is_empty(), "{not_checked:?}");
         }
     }
 

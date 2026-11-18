@@ -52,6 +52,7 @@ impl App {
             issues: self.issues.clone(),
             archived_issues: self.archived_issues.clone(),
             module_statuses: self.module_statuses.clone(),
+            not_checked: std::mem::take(&mut self.not_checked),
             health_score: self.health_score,
         });
         // What was decided against the findings on screen carries over to

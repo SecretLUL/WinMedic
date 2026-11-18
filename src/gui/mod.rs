@@ -114,6 +114,14 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
         &mut restart,
         |ui| restart_banner(ui, app),
     );
+    // Not while a scan runs: the notes are the last scan's, and this one may
+    // get the check done.
+    let mut not_checked = !app.is_scanning && !app.not_checked.is_empty();
+    banner_panel("not_checked_banner", theme::caution_fill(ui)).show_collapsible(
+        ui,
+        &mut not_checked,
+        |ui| not_checked_banner(ui, app),
+    );
     let update = app.available_update.clone();
     banner_panel("update_banner", ui.visuals().selection.bg_fill).show_collapsible(
         ui,
@@ -415,6 +423,16 @@ fn restart_banner(ui: &mut egui::Ui, app: &mut App) {
             }
         });
     });
+}
+
+/// What the scan on screen left unchecked in a check that finished, across
+/// the top of both modes until the next scan. A line under the result was
+/// easy to miss beside "Your PC is in good shape".
+fn not_checked_banner(ui: &mut egui::Ui, app: &App) {
+    let text = ui.visuals().strong_text_color();
+    for note in &app.not_checked {
+        ui.label(RichText::new(note).strong().size(15.0).color(text));
+    }
 }
 
 /// WinMedic's own last crash, offered once, at the start after it (#236). A
@@ -894,6 +912,27 @@ mod tests {
         );
         assert!(harness.query_by_label("2 repaired").is_some());
         assert!(harness.query_by_label("1 failed").is_some());
+    }
+
+    /// A check that finished but left a part unchecked says so in a banner
+    /// after the scan, in both modes: the log that also has it is folded
+    /// away. Not while the next scan runs, which may get the check done.
+    #[test]
+    fn a_finished_run_says_what_it_left_unchecked() {
+        let note =
+            "The component store was not checked: DISM's analysis took longer than 15 minutes.";
+        for mode in [scanned_app, easy_scanned_app] {
+            let mut app = mode();
+            app.not_checked = vec![note.to_string()];
+            let harness = window(app);
+            assert!(harness.query_by_label(note).is_some());
+        }
+        assert!(window(scanned_app()).query_by_label(note).is_none());
+
+        let mut scanning = scanned_app();
+        scanning.not_checked = vec![note.to_string()];
+        scanning.is_scanning = true;
+        assert!(window(scanning).query_by_label(note).is_none());
     }
 
     /// #181: a simulation of three findings repairs nothing. The header says
