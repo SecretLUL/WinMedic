@@ -376,6 +376,17 @@ const DISM_ANALYZE_ARGS: &[&str] = &[
     "/English",
 ];
 
+/// How long the analysis above may take before it is given up.
+///
+/// It was 120 seconds, and on the development PC (Windows 11 Pro,
+/// 10.0.26300.9974) the analysis took 292 seconds on 2026-11-18: each of the
+/// five scans since 2026-11-13 waited those two minutes, dropped what DISM
+/// had not finished, raised no finding for the 8 reclaimable packages and
+/// said nothing (#328). In October the same PC had taken 43 to 96 seconds.
+/// How long it takes depends on the store and the disk, so the limit only
+/// has to catch a DISM that never comes back; a scan can be stopped.
+const DISM_ANALYZE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
 /// Remove the superseded packages the analysis above counted.
 const DISM_CLEANUP_ARGS: &[&str] = &[
     "/Online",
@@ -1150,7 +1161,7 @@ impl SystemCleanerModule {
             &self.runner,
             "dism.exe",
             DISM_ANALYZE_ARGS,
-            Duration::from_secs(120),
+            DISM_ANALYZE_TIMEOUT,
         )
         .await
         .ok()
@@ -1551,9 +1562,10 @@ impl DiagnosticModule for SystemCleanerModule {
         // 8. WinSxS Component Store Deep Clean
         //
         // Reliably the longest step in the whole scan: DISM walks the component
-        // store itself and routinely takes a minute or two, during which it says
-        // nothing. The step text carries that expectation, because a bar parked
-        // with no explanation reads as a hang rather than as patience.
+        // store itself and takes from a minute to five (see
+        // DISM_ANALYZE_TIMEOUT), during which it says nothing. The step text
+        // carries that expectation, because a bar parked with no explanation
+        // reads as a hang rather than as patience.
         //
         // Last, and only once the other modules' PowerShell calls are through:
         // it reads the store in small pieces and keeps the disk busy while it
@@ -1565,15 +1577,38 @@ impl DiagnosticModule for SystemCleanerModule {
         Self::send_progress(
             &progress_tx,
             97,
-            "Analysing the WinSxS component store (DISM, 1-2 min)...",
+            "Analysing the WinSxS component store (DISM, can take several minutes)...",
             Some(&format!("dism.exe {}", DISM_ANALYZE_ARGS.join(" "))),
         )
         .await;
 
         let dism_check = self
             .runner
-            .run("dism.exe", DISM_ANALYZE_ARGS, Duration::from_secs(120))
+            .run("dism.exe", DISM_ANALYZE_ARGS, DISM_ANALYZE_TIMEOUT)
             .await;
+
+        // An analysis that did not finish is "not checked", and says so: a
+        // scan without the finding otherwise reads as a store with nothing
+        // to reclaim (#328).
+        let unfinished = match &dism_check {
+            Ok(out) if dism_finished(out) => None,
+            Ok(out) => Some(match out.exit_code {
+                Some(code) => format!("DISM ended with exit code {code}"),
+                None => "DISM ended without an exit code".to_string(),
+            }),
+            Err(err) => Some(err.clone()),
+        };
+        if let Some(reason) = unfinished {
+            Self::send_progress(
+                &progress_tx,
+                99,
+                "Component store not checked",
+                Some(&format!(
+                    "The component store analysis did not finish, so this scan cannot say whether it holds packages to reclaim: {reason}"
+                )),
+            )
+            .await;
+        }
 
         // A non-zero exit still yields `Ok(CmdOutput { success: false, .. })`, and
         // DISM prints partial store figures to stdout before it errors out — so
@@ -2824,6 +2859,75 @@ The operation completed successfully.";
             winsxs.is_some_and(|i| i.title.contains("(4 reclaimable packages)")),
             "{issues:?}"
         );
+    }
+
+    /// What the scan said about the component store: its steps from the
+    /// analysis on, each with its log line.
+    async fn store_steps(mock: MockCommandRunner, dir: &str) -> (Vec<Issue>, Vec<String>) {
+        let td = TestDir::new(dir);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<ModuleProgress>(1024);
+        let issues = sandboxed(&td, Arc::new(mock)).scan(Some(tx)).await.unwrap();
+        let mut steps = Vec::new();
+        while let Ok(p) = rx.try_recv() {
+            steps.push(format!(
+                "{}: {}",
+                p.current_step,
+                p.log_message.unwrap_or_default()
+            ));
+        }
+        let from = steps
+            .iter()
+            .position(|s| s.starts_with("Analysing the WinSxS component store"))
+            .expect("the analysis was announced");
+        (issues, steps.split_off(from + 1))
+    }
+
+    const DISM_ELEVATION_REQUIRED: &[u8] =
+        include_bytes!("../../tests/fixtures/console/dism_elevation_required_english.bin");
+
+    /// #328. An analysis that was given up or refused left a scan without
+    /// the WinSxS finding and without a word about it. The mock cannot run
+    /// out of time; an analysis that returns an error stands in for one that
+    /// did, which the runner reports the same way.
+    #[tokio::test]
+    async fn an_analysis_that_did_not_finish_is_said_to_be_unchecked() {
+        let refused = MockCommandRunner::new();
+        refused.add_response(
+            "AnalyzeComponentStore",
+            CmdOutput::with_output(740, String::from_utf8_lossy(DISM_ELEVATION_REQUIRED), ""),
+        );
+        for (mock, dir, reason) in [
+            (refused, "winsxs_refused", "DISM ended with exit code 740"),
+            (
+                MockCommandRunner::new(),
+                "winsxs_no_answer",
+                "No mock response configured",
+            ),
+        ] {
+            let (issues, steps) = store_steps(mock, dir).await;
+            assert!(issues.iter().all(|i| i.id != "sys_clean_winsxs"));
+            assert!(
+                steps
+                    .iter()
+                    .any(|s| s.starts_with("Component store not checked: ") && s.contains(reason)),
+                "{steps:?}"
+            );
+        }
+    }
+
+    /// An analysis that finished is not called unchecked, with or without
+    /// packages to reclaim.
+    #[tokio::test]
+    async fn an_analysis_that_finished_is_not_said_to_be_unchecked() {
+        for (packages, dir) in [(0, "winsxs_checked_0"), (2, "winsxs_checked_2")] {
+            let mock = MockCommandRunner::new();
+            mock.add_response("AnalyzeComponentStore", store_with_reclaimable(packages));
+            let (_, steps) = store_steps(mock, dir).await;
+            assert!(
+                !steps.iter().any(|s| s.contains("not checked")),
+                "{steps:?}"
+            );
+        }
     }
 
     /// The repair counts before and after the cleanup with the same analysis,
