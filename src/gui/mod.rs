@@ -116,6 +116,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
     );
     // Not while a scan runs: the notes are the last scan's, and this one may
     // get the check done.
+    if app.is_scanning {
+        // The next scan's notes start folded.
+        ui.data_mut(|data| data.remove::<bool>(not_checked_details_id()));
+    }
     let mut not_checked = !app.is_scanning && !app.not_checked.is_empty();
     banner_panel("not_checked_banner", theme::caution_fill(ui)).show_collapsible(
         ui,
@@ -428,17 +432,76 @@ fn restart_banner(ui: &mut egui::Ui, app: &mut App) {
 /// What the scan on screen left unchecked in a check that finished, across
 /// the top of both modes until the next scan. A line under the result was
 /// easy to miss beside "Your PC is in good shape".
+///
+/// One line, whatever the scan left: a single sentence is said as it is,
+/// several are counted, and "Show details" lists them by check. A PC whose
+/// registry and event log refuse leaves sixteen sentences (#338), which as
+/// a banner took two thirds of the smallest window.
 fn not_checked_banner(ui: &mut egui::Ui, app: &App) {
     let text = ui.visuals().strong_text_color();
-    for unchecked in &app.not_checked {
-        ui.label(
-            RichText::new(&unchecked.note)
-                .strong()
-                .size(15.0)
-                .color(text),
-        );
+    let line = |said: String| RichText::new(said).strong().size(15.0).color(text);
+    if let [only] = app.not_checked.as_slice() {
+        ui.label(line(only.note.clone()));
+        return;
     }
+
+    // The checks in the order they reported.
+    let mut checks: Vec<&str> = Vec::new();
+    for unchecked in &app.not_checked {
+        if !checks.contains(&unchecked.module_id.as_str()) {
+            checks.push(&unchecked.module_id);
+        }
+    }
+    let open_id = not_checked_details_id();
+    let mut open = ui.data(|data| data.get_temp::<bool>(open_id).unwrap_or(false));
+    ui.horizontal(|ui| {
+        ui.label(line(format!(
+            "{} could not check everything.",
+            views::home::plural(checks.len(), "check")
+        )));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let label = if open { "Hide details" } else { "Show details" };
+            if ui.button(label).clicked() {
+                open = !open;
+            }
+        });
+    });
+    ui.data_mut(|data| data.insert_temp(open_id, open));
+    if !open {
+        return;
+    }
+
+    ui.add_space(4.0);
+    egui::ScrollArea::vertical()
+        .id_salt("not_checked_notes")
+        .max_height(NOT_CHECKED_DETAILS_HEIGHT)
+        // egui's own 64 px is what a banner that slides in would keep.
+        .min_scrolled_height(NOT_CHECKED_DETAILS_HEIGHT)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            for check in checks {
+                let name = app
+                    .module_statuses
+                    .iter()
+                    .find(|(id, ..)| id == check)
+                    .map_or(check, |(_, name, ..)| name.as_str());
+                ui.label(RichText::new(name).strong().color(text));
+                for unchecked in app.not_checked.iter().filter(|n| n.module_id == check) {
+                    ui.label(RichText::new(&unchecked.note).color(text));
+                }
+                ui.add_space(4.0);
+            }
+        });
 }
+
+/// Where the window keeps whether the banner's details are open.
+fn not_checked_details_id() -> egui::Id {
+    egui::Id::unique("not_checked_details_open")
+}
+
+/// As much of the opened details as the smallest window has room for; the
+/// rest is scrolled.
+const NOT_CHECKED_DETAILS_HEIGHT: f32 = 190.0;
 
 /// WinMedic's own last crash, offered once, at the start after it (#236). A
 /// banner and not a dialog: it takes no keys, and the window works on below it.
@@ -939,6 +1002,79 @@ mod tests {
             crate::modules::NotChecked::of("system_cleaner", &[note.to_string()]);
         scanning.is_scanning = true;
         assert!(window(scanning).query_by_label(note).is_none());
+    }
+
+    /// #338: many checks can leave a part unchecked at once. The banner
+    /// stays one line that counts them, and lists them by check on request.
+    #[test]
+    fn several_notes_are_one_line_until_their_details_are_asked_for() {
+        let network = [
+            "The proxy was not checked.".to_string(),
+            "The Winsock catalog was not checked.".to_string(),
+        ];
+        let storage = ["The drives' health was not checked.".to_string()];
+        for mode in [scanned_app, easy_scanned_app] {
+            let mut app = mode();
+            app.not_checked = crate::modules::NotChecked::of("network", &network);
+            app.not_checked
+                .extend(crate::modules::NotChecked::of("storage", &storage));
+            let mut harness = window(app);
+            assert!(
+                harness
+                    .query_by_label("2 checks could not check everything.")
+                    .is_some()
+            );
+            assert!(harness.query_by_label(network[0].as_str()).is_none());
+
+            harness.get_by_label("Show details").click();
+            harness.run_steps(3);
+            for note in network.iter().chain(&storage) {
+                assert!(harness.query_by_label(note.as_str()).is_some(), "{note}");
+            }
+            harness.get_by_label("Hide details").click();
+            harness.run_steps(3);
+            assert!(harness.query_by_label(network[0].as_str()).is_none());
+        }
+    }
+
+    /// However many notes there are, the opened details keep their height,
+    /// so what is under the banner stays in the smallest window.
+    #[test]
+    fn the_opened_details_keep_their_height() {
+        // Where the line under the banner is with `count` notes in it.
+        let under = |count: usize| {
+            let notes: Vec<String> = (1..=count)
+                .map(|n| format!("Part {n} was not checked: Windows did not answer."))
+                .collect();
+            let mut app = fresh_app();
+            app.not_checked = crate::modules::NotChecked::of("network", &notes);
+            let mut harness = Harness::builder()
+                .with_size(crate::gui::window::MIN_SIZE)
+                .build_ui_state(
+                    |ui, app: &mut App| {
+                        not_checked_banner(ui, app);
+                        ui.label("Under the banner");
+                    },
+                    app,
+                );
+            harness.run_steps(3);
+            let folded = harness.get_by_label("Under the banner").rect().min.y;
+            harness.get_by_label("Show details").click();
+            harness.run_steps(3);
+            assert!(harness.query_by_label(notes[0].as_str()).is_some());
+            (
+                folded,
+                harness.get_by_label("Under the banner").rect().min.y,
+            )
+        };
+        let (folded, open) = under(16);
+        assert!(folded < 40.0, "the folded banner ends at {folded}");
+        assert!(
+            open <= folded + NOT_CHECKED_DETAILS_HEIGHT + 20.0,
+            "sixteen notes end at {open}"
+        );
+        assert_eq!(under(40), (folded, open));
+        assert!(under(2).1 < open, "few notes are as high as they are");
     }
 
     /// #336: the row of a check that left a part unchecked read "Passed"
