@@ -160,9 +160,14 @@ impl Unchecked {
         }
     }
 
+    /// A sentence that is already there is not said twice: a check that
+    /// gives up the same step for three services says it once.
     pub fn push(&self, note: impl Into<String>) {
-        if let Ok(mut notes) = self.0.lock() {
-            notes.push(note.into());
+        let note = note.into();
+        if let Ok(mut notes) = self.0.lock()
+            && !notes.contains(&note)
+        {
+            notes.push(note);
         }
     }
 

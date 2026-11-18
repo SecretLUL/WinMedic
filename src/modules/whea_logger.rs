@@ -36,7 +36,13 @@ pub struct WheaEventRecord {
 pub struct WheaLoggerModule {
     config: ModuleConfig,
     runner: Arc<dyn CommandRunner>,
+    /// What the last scan left unchecked, see [`DiagnosticModule::not_checked`].
+    not_checked: crate::modules::Unchecked,
 }
+
+// What the window says after a scan that gave a part of this check up
+// (#338). Until then it was a line of the verbose trace only.
+const OLDER_EVENTS_NOT_CHECKED: &str = "Older hardware errors were not checked: Windows logged more than this check reads at once, and the rest could not be read.";
 
 impl WheaLoggerModule {
     pub fn new(config: ModuleConfig) -> Self {
@@ -44,7 +50,11 @@ impl WheaLoggerModule {
     }
 
     pub fn with_runner(config: ModuleConfig, runner: Arc<dyn CommandRunner>) -> Self {
-        Self { config, runner }
+        Self {
+            config,
+            runner,
+            not_checked: Default::default(),
+        }
     }
 
     /// How many hours back the `wevtutil` query looks: the event log
@@ -88,6 +98,7 @@ impl WheaLoggerModule {
         match read_events(out) {
             Ok(severe) => severe.into_iter().filter(|e| !events.contains(e)).collect(),
             Err(err) => {
+                self.not_checked.push(OLDER_EVENTS_NOT_CHECKED);
                 dbg.warn(format!(
                     "The older fatal, processor and memory events could not be read: {err}"
                 ))
@@ -134,11 +145,16 @@ impl DiagnosticModule for WheaLoggerModule {
         "[WHEA]"
     }
 
+    fn not_checked(&self) -> Vec<String> {
+        self.not_checked.notes()
+    }
+
     async fn scan(
         &self,
         progress_tx: Option<Sender<ModuleProgress>>,
     ) -> Result<Vec<Issue>, String> {
         let mut issues = Vec::new();
+        self.not_checked.clear();
         let dbg = DebugTrace::scan(self.id(), progress_tx.clone(), self.config.verbose_logging);
 
         // Step 1: Initialise WHEA Query
@@ -1132,6 +1148,30 @@ mod tests {
                 .contains("Total Occurrences: 3\n")
         );
         assert!(!mock.executed().iter().any(|c| c.contains("EventID=47")));
+        // It got through everything: no note, and the last scan's is gone.
+        module.not_checked.push("From the scan before.");
+        module.scan(None).await.expect("scan failed");
+        assert!(module.not_checked().is_empty());
+    }
+
+    /// #338: the second query of a burst that Windows refuses was a line of
+    /// the verbose trace. The window is told.
+    #[tokio::test]
+    async fn older_events_that_could_not_be_read_are_told_to_the_window() {
+        let pcie = whea_event(
+            17,
+            3,
+            &[("Bus", "0x0"), ("Device", "0x1c"), ("Function", "0x5")],
+        );
+        let mock = MockCommandRunner::new();
+        mock.add_response("EventID=47", CmdOutput::failed(5, "Access is denied."));
+        mock.add_response("wevtutil.exe", CmdOutput::ok(pcie.repeat(WHEA_EVENT_LIMIT)));
+        let module = WheaLoggerModule::with_runner(ModuleConfig::default(), Arc::new(mock));
+
+        let issues = module.scan(None).await.expect("scan failed");
+
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(module.not_checked(), [OLDER_EVENTS_NOT_CHECKED]);
     }
 
     /// WHEA events 19 and 47 of 2026-08-20 and a memory test logged at

@@ -126,7 +126,14 @@ pub struct CrashAnalysisModule {
     windows_dir: String,
     /// Where registry backups go.
     backup_dir: PathBuf,
+    /// What the last scan left unchecked, see [`DiagnosticModule::not_checked`].
+    not_checked: crate::modules::Unchecked,
 }
+
+// What the window says after a scan that gave a part of this check up
+// (#338). Until then it was a line of the verbose trace only.
+const EXPLORER_NOT_CHECKED: &str =
+    "Explorer's crashes were not checked: the event log could not be read.";
 
 /// Dump files older than [`DUMP_EVIDENCE_DAYS`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -155,6 +162,7 @@ impl CrashAnalysisModule {
             dump_dir: minidump_dir(),
             windows_dir: windows_dir(),
             backup_dir: RegBackupManager::new().backup_dir().to_path_buf(),
+            not_checked: Default::default(),
         }
     }
 
@@ -177,6 +185,7 @@ impl CrashAnalysisModule {
             dump_dir: dump_dir.into(),
             windows_dir: windows_dir(),
             backup_dir: RegBackupManager::new().backup_dir().to_path_buf(),
+            not_checked: Default::default(),
         }
     }
 
@@ -402,11 +411,16 @@ impl DiagnosticModule for CrashAnalysisModule {
         "[DMP]"
     }
 
+    fn not_checked(&self) -> Vec<String> {
+        self.not_checked.notes()
+    }
+
     async fn scan(
         &self,
         progress_tx: Option<Sender<ModuleProgress>>,
     ) -> Result<Vec<Issue>, String> {
         let mut issues = Vec::new();
+        self.not_checked.clear();
         let dbg = DebugTrace::scan(self.id(), progress_tx.clone(), self.config.verbose_logging);
         let window_hours = self.config.max_event_log_hours.max(1);
 
@@ -415,6 +429,7 @@ impl DiagnosticModule for CrashAnalysisModule {
         match shell_extensions::findings(&*self.runner, self.id(), &self.windows_dir).await {
             Ok(found) => issues.extend(found),
             Err(err) => {
+                self.not_checked.push(EXPLORER_NOT_CHECKED);
                 dbg.warn(format!("Explorer's crashes were not checked: {err}"))
                     .await
             }
@@ -2001,8 +2016,35 @@ mod tests {
             Arc::new(mock),
             &dir,
         );
+        module.not_checked.push("From the scan before.");
         let issues = module.scan(None).await.expect("scan failed");
         assert!(issues.is_empty());
+        // It got through everything: no note, and the last scan's is gone.
+        assert!(module.not_checked().is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #338: the application log that could not be read was a line of the
+    /// verbose trace. The window is told.
+    #[tokio::test]
+    async fn explorer_crashes_that_could_not_be_read_are_told_to_the_window() {
+        let dir = temp_dump_dir("explorer_unread");
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "Application Error",
+            CmdOutput::failed(5, "Access is denied."),
+        );
+        empty_event_response(&mock);
+
+        let module = CrashAnalysisModule::with_runner_and_dump_dir(
+            ModuleConfig::default(),
+            Arc::new(mock),
+            &dir,
+        );
+        let issues = module.scan(None).await.expect("scan failed");
+        assert!(issues.is_empty(), "{issues:?}");
+        assert_eq!(module.not_checked(), [EXPLORER_NOT_CHECKED]);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

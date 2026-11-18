@@ -146,7 +146,21 @@ struct VolumeSpace {
 pub struct PageFileModule {
     runner: Arc<dyn CommandRunner>,
     ram: RamSource,
+    /// What the last scan left unchecked, see [`DiagnosticModule::not_checked`].
+    not_checked: crate::modules::Unchecked,
 }
+
+// What the window says after a scan that could not tell whether this PC
+// has a page file (#338). Until then it was a line of the scan log only.
+const PAGE_FILE_NOT_CHECKED: &str =
+    "Whether this PC has a page file was not checked: Windows holds no setting for it.";
+// These three left no step at all: the probe's answer was taken as empty.
+const USAGE_NOT_CHECKED: &str =
+    "The page files in use were not checked: Windows did not report them.";
+const LIMITS_NOT_CHECKED: &str =
+    "The size limits of the page file were not checked: Windows did not report them.";
+const DRIVES_NOT_CHECKED: &str =
+    "The free space on the page file's drive was not checked: Windows did not report the drives.";
 
 impl Default for PageFileModule {
     fn default() -> Self {
@@ -163,6 +177,7 @@ impl PageFileModule {
         Self {
             runner,
             ram: real_ram(),
+            not_checked: Default::default(),
         }
     }
 
@@ -300,6 +315,17 @@ impl PageFileModule {
     /// exactly how "this machine has no manually sized page file" looks. Only a
     /// query that could not be executed at all is reported as one, so the
     /// caller can tell the two apart instead of reading both as "nothing found".
+    /// [`Self::probe`], or nothing and `note` for the window when it failed.
+    async fn probe_or_note(&self, script: &str, note: &str) -> String {
+        match self.probe(script).await {
+            Ok(answer) => answer,
+            Err(_) => {
+                self.not_checked.push(note);
+                String::new()
+            }
+        }
+    }
+
     async fn probe(&self, script: &str) -> Result<String, String> {
         let out = self
             .runner
@@ -442,11 +468,16 @@ impl DiagnosticModule for PageFileModule {
         "[MEM]"
     }
 
+    fn not_checked(&self) -> Vec<String> {
+        self.not_checked.notes()
+    }
+
     async fn scan(
         &self,
         progress_tx: Option<Sender<ModuleProgress>>,
     ) -> Result<Vec<Issue>, String> {
         let mut issues = Vec::new();
+        self.not_checked.clear();
 
         Self::send_progress(
             &progress_tx,
@@ -473,7 +504,10 @@ impl DiagnosticModule for PageFileModule {
                 format_bytes(mb_to_bytes(ram_mb)),
                 files.join(", ")
             ),
-            None => CONFIG_MISSING.to_string(),
+            None => {
+                self.not_checked.push(PAGE_FILE_NOT_CHECKED);
+                CONFIG_MISSING.to_string()
+            }
         };
         Self::send_progress(
             &progress_tx,
@@ -486,12 +520,15 @@ impl DiagnosticModule for PageFileModule {
 
         // One unavailable class here costs its own check, not the whole module:
         // an unreadable disk inventory should not hide an undersized limit.
-        let raw_usage = self.probe(PAGE_FILE_USAGE_SCRIPT).await.unwrap_or_default();
+        let raw_usage = self
+            .probe_or_note(PAGE_FILE_USAGE_SCRIPT, USAGE_NOT_CHECKED)
+            .await;
         let raw_setting = self
-            .probe(PAGE_FILE_SETTING_SCRIPT)
-            .await
-            .unwrap_or_default();
-        let raw_disks = self.probe(LOGICAL_DISK_SCRIPT).await.unwrap_or_default();
+            .probe_or_note(PAGE_FILE_SETTING_SCRIPT, LIMITS_NOT_CHECKED)
+            .await;
+        let raw_disks = self
+            .probe_or_note(LOGICAL_DISK_SCRIPT, DRIVES_NOT_CHECKED)
+            .await;
 
         let usages = Self::parse_usage(&raw_usage);
         let settings = Self::parse_settings(&raw_setting);
@@ -847,7 +884,10 @@ mod tests {
             16,
         );
 
+        module.not_checked.push("From the scan before.");
         assert!(module.scan(None).await.unwrap().is_empty());
+        // It got through everything: no note, and the last scan's is gone.
+        assert!(module.not_checked().is_empty());
     }
 
     #[tokio::test]
@@ -912,6 +952,30 @@ mod tests {
         assert!(module.scan(None).await.unwrap().is_empty());
     }
 
+    /// #338: a probe that failed was taken as an empty answer, without a
+    /// step. The window is told which part that cost.
+    #[tokio::test]
+    async fn probes_that_failed_are_told_to_the_window() {
+        let mock = MockCommandRunner::new();
+        mock.add_response(
+            "Memory Management",
+            CmdOutput::ok(decode_output(MEMORY_MANAGEMENT)),
+        );
+        for class in [
+            "Win32_PageFileUsage",
+            "Win32_PageFileSetting",
+            "Win32_LogicalDisk",
+        ] {
+            mock.add_response(class, CmdOutput::failed(1, "Access denied"));
+        }
+        let module = module(mock, 16);
+        module.scan(None).await.unwrap();
+        assert_eq!(
+            module.not_checked(),
+            [USAGE_NOT_CHECKED, LIMITS_NOT_CHECKED, DRIVES_NOT_CHECKED]
+        );
+    }
+
     #[tokio::test]
     async fn a_missing_value_is_not_read_as_an_empty_one() {
         // Without `PagingFiles` nothing says whether a page file is set up, so
@@ -927,8 +991,11 @@ mod tests {
         mock.add_response("Win32_PageFileSetting", CmdOutput::ok(""));
         mock.add_response("Win32_LogicalDisk", CmdOutput::ok(ROOMY_DISK));
 
-        let issues = module(mock, 4).scan(None).await.unwrap();
+        let module = module(mock, 4);
+        let issues = module.scan(None).await.unwrap();
         assert!(!issues.iter().any(|i| i.id == "pagefile_disabled"));
+        // #338: the window is told, the log line is gone with the scan.
+        assert_eq!(module.not_checked(), [PAGE_FILE_NOT_CHECKED]);
     }
 
     #[tokio::test]
