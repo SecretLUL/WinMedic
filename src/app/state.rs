@@ -40,6 +40,9 @@ pub struct ModuleScanProgress {
     pub name: String,
     pub icon: String,
     pub percent: u8,
+    /// How much this bar counts in the overall one
+    /// ([`DiagnosticModule::scan_weight`](crate::modules::DiagnosticModule::scan_weight)).
+    pub weight: u32,
     /// Set once the module has finished, successfully or not.
     pub is_done: bool,
     /// Why the module failed, when it did.
@@ -53,12 +56,13 @@ pub struct ModuleScanProgress {
 }
 
 impl ModuleScanProgress {
-    pub(super) fn new(id: String, name: String, icon: String) -> Self {
+    pub(super) fn new(id: String, name: String, icon: String, weight: u32) -> Self {
         Self {
             id,
             name,
             icon,
             percent: 0,
+            weight,
             is_done: false,
             failure: None,
             step: String::new(),
@@ -623,6 +627,7 @@ impl App {
                 m.id().to_string(),
                 m.name().to_string(),
                 m.icon().to_string(),
+                m.scan_weight(),
             ));
             statuses.push((
                 m.id().to_string(),
