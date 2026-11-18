@@ -523,6 +523,11 @@ const WINHTTP_NOT_CHECKED: &str =
     "The system proxy (WinHTTP) was not checked: its settings could not be read.";
 const WINSOCK_NOT_CHECKED: &str = "The Winsock catalog was not checked: Windows did not list it.";
 
+/// How long `netsh winsock show catalog` gets. It answers in a tenth of a
+/// second on an idle PC; with 6 seconds it did not answer on CI's runner,
+/// where every check asks Windows something at the same time.
+const WINSOCK_TIMEOUT: Duration = Duration::from_secs(20);
+
 impl Default for NetworkModule {
     fn default() -> Self {
         Self::new()
@@ -1451,12 +1456,23 @@ impl DiagnosticModule for NetworkModule {
             .run(
                 "netsh.exe",
                 &["winsock", "show", "catalog"],
-                Duration::from_secs(6),
+                WINSOCK_TIMEOUT,
             )
             .await;
-        // Not started or timed out left no trace at all, not even a step.
         if !matches!(&winsock_audit, Ok(out) if out.success) {
             self.not_checked.push(WINSOCK_NOT_CHECKED);
+        }
+        // Not started or out of time left no trace at all, so the scan of
+        // #341 on CI's runner could say that the catalog was not checked
+        // but not why.
+        if let Err(err) = &winsock_audit {
+            Self::send_progress(
+                &progress_tx,
+                95,
+                "Winsock catalog not checked",
+                Some(&format!("netsh winsock show catalog did not answer: {err}")),
+            )
+            .await;
         }
         if let Ok(out) = &winsock_audit
             && !out.success
@@ -2917,7 +2933,24 @@ mod tests {
         mock.add_response(PROBE, resolved());
         mock.add_response("ping.exe", ping_answers());
         mock.add_response("reg.exe", CmdOutput::ok(real_internet_settings()));
-        assert_eq!(notes_after(mock).await, [WINSOCK_NOT_CHECKED]);
+        assert_eq!(notes_after(mock.clone()).await, [WINSOCK_NOT_CHECKED]);
+        // The scan log says so too, with the reason.
+        let (tx, mut rx) = tokio::sync::mpsc::channel(200);
+        NetworkModule::with_runner(Arc::new(mock))
+            .scan(Some(tx))
+            .await
+            .unwrap();
+        let mut reasons = Vec::new();
+        while let Ok(progress) = rx.try_recv() {
+            if progress.current_step == "Winsock catalog not checked" {
+                reasons.extend(progress.log_message);
+            }
+        }
+        assert_eq!(reasons.len(), 1, "{reasons:?}");
+        assert!(
+            reasons[0].starts_with("netsh winsock show catalog did not answer: "),
+            "{reasons:?}"
+        );
     }
 
     /// A check that got through everything leaves no note, and takes the
