@@ -14,7 +14,8 @@
 //! 3. A running program cannot delete its own file. So the last step is
 //!    handed to a hidden PowerShell ([`Removal::cleanup_script`]) that waits
 //!    for this process to end and then deletes winmedic.exe. For a WinGet
-//!    install it first has WinGet take its own entry out.
+//!    or Chocolatey install it first has that package manager take its own
+//!    entry out.
 //!
 //! What stays is Windows' own: the restore points, and what was repaired.
 
@@ -40,6 +41,13 @@ const WAIT_SECONDS: u32 = 150;
 /// that something still holds, such as a virus scanner looking at it.
 const DELETE_TRIES: u32 = 20;
 
+/// What Chocolatey calls WinMedic: the id of the package in
+/// `packaging/chocolatey/`, and the name of its folder under `lib`.
+const CHOCOLATEY_PACKAGE: &str = "winmedic";
+
+/// The name the Chocolatey package gives the program.
+const PROGRAM: &str = "winmedic.exe";
+
 static REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// Note that the user confirmed the removal. The window then closes, and
@@ -63,6 +71,15 @@ pub struct WingetInstall {
     pub product_code: String,
 }
 
+/// Chocolatey's own record of this installation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChocolateyInstall {
+    /// `choco.exe` of the Chocolatey that winmedic.exe runs from.
+    pub choco_exe: PathBuf,
+    /// The `tools` folder of the package, where winmedic.exe is.
+    pub tools: PathBuf,
+}
+
 /// Everything one removal deletes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Removal {
@@ -74,10 +91,12 @@ pub struct Removal {
     /// `%APPDATA%\WinMedic` and `%ProgramData%\WinMedic`.
     pub folders: Vec<PathBuf>,
     /// The folder winmedic.exe is in, when it is one made for it, such as
-    /// the `C:\Program Files\WinMedic` the background scan asks for. It
-    /// goes once it is empty; anything else in it keeps it.
+    /// the `C:\Program Files\WinMedic` the background scan asks for, or
+    /// the package folder Chocolatey made. It goes once it is empty;
+    /// anything else in it keeps it.
     pub program_folders: Vec<PathBuf>,
     pub winget: Option<WingetInstall>,
+    pub chocolatey: Option<ChocolateyInstall>,
 }
 
 impl Removal {
@@ -152,6 +171,22 @@ impl Removal {
             push_once(&mut own, folder);
         }
 
+        // Chocolatey removes its package folder itself. Should it leave
+        // the folder behind, it goes here once it is empty: `tools`, then
+        // the folder it is in.
+        let chocolatey = chocolatey_exe(&target)
+            .zip(target.parent())
+            .map(|(choco_exe, tools)| ChocolateyInstall {
+                choco_exe,
+                tools: tools.to_path_buf(),
+            });
+        if let Some(chocolatey) = &chocolatey {
+            push_once(&mut program_folders, chocolatey.tools.clone());
+            if let Some(package) = chocolatey.tools.parent() {
+                push_once(&mut program_folders, package.to_path_buf());
+            }
+        }
+
         let winget = winget_exe.and_then(|winget_exe| {
             Some(WingetInstall {
                 product_code: winget_product_code(&target)?,
@@ -165,6 +200,7 @@ impl Removal {
             folders: own,
             program_folders,
             winget,
+            chocolatey,
         })
     }
 
@@ -191,7 +227,7 @@ impl Removal {
     }
 
     /// The PowerShell script of the last step: wait for this process, have
-    /// WinGet remove its entry, delete the files.
+    /// WinGet or Chocolatey remove its entry, delete the files.
     ///
     /// Every path is a single-quoted literal. Errors are silent, because
     /// nobody is left to read them: a file that cannot be deleted stays.
@@ -211,6 +247,22 @@ impl Removal {
                 "& {} uninstall --product-code {} --force --silent --disable-interactivity | Out-Null; ",
                 ps_single_quoted(&winget.winget_exe.to_string_lossy()),
                 ps_single_quoted(&winget.product_code),
+            );
+        }
+        if let Some(chocolatey) = &self.chocolatey {
+            // `-y`: nobody is there to answer a question.
+            //
+            // Chocolatey keeps a file that changed since it installed it,
+            // and puts a copy named after the package's version beside it:
+            // after an update WinMedic installed itself that is
+            // winmedic.exe, as `winmedic.exe.0.17.0`. The copy goes here,
+            // the program with the other files below.
+            let _ = write!(
+                script,
+                "& {} uninstall {CHOCOLATEY_PACKAGE} -y --limit-output --no-progress | Out-Null; \
+                 Get-ChildItem -LiteralPath {} -Filter '{PROGRAM}.*' -File -Force | Remove-Item -Force; ",
+                ps_single_quoted(&chocolatey.choco_exe.to_string_lossy()),
+                ps_single_quoted(&chocolatey.tools.to_string_lossy()),
             );
         }
         let files: Vec<String> = self
@@ -338,6 +390,38 @@ pub fn winget_product_code(exe: &Path) -> Option<String> {
     plain.then(|| code.clone())
 }
 
+/// `choco.exe` of the Chocolatey that installed `exe`: the one beside the
+/// `lib` of `...\lib\winmedic\tools\winmedic.exe`, where the package in
+/// `packaging/chocolatey/` puts the program. `None` for a file anywhere else, and
+/// when no `choco.exe` is there.
+///
+/// Only from the program's own path, never through `PATH` or
+/// `%ChocolateyInstall%`: the last step runs as Administrator, and a
+/// variable is the user's to set. Who can change this `choco.exe` can change
+/// the winmedic.exe below it as well.
+pub fn chocolatey_exe(exe: &Path) -> Option<PathBuf> {
+    let choco = chocolatey_root(exe)?.join("choco.exe");
+    (choco.is_absolute() && choco.to_str().is_some() && choco.is_file()).then_some(choco)
+}
+
+/// The folder of the Chocolatey whose package folder `exe` is in, going by
+/// the path alone.
+fn chocolatey_root(exe: &Path) -> Option<PathBuf> {
+    let named = |path: &Path, name: &str| {
+        path.file_name()
+            .and_then(|part| part.to_str())
+            .is_some_and(|part| part.eq_ignore_ascii_case(name))
+    };
+    let tools = exe
+        .parent()
+        .filter(|path| named(exe, PROGRAM) && named(path, "tools"))?;
+    let package = tools
+        .parent()
+        .filter(|path| named(path, CHOCOLATEY_PACKAGE))?;
+    let lib = package.parent().filter(|path| named(path, "lib"))?;
+    lib.parent().map(Path::to_path_buf)
+}
+
 /// `winget.exe` of the account WinMedic runs as, when it has one.
 ///
 /// By its full path, not through `PATH`. The folder belongs to the user,
@@ -454,6 +538,7 @@ mod tests {
             folders: vec![other.clone()],
             program_folders: vec![],
             winget: None,
+            chocolatey: None,
         };
         assert!(forced.delete_folders().is_err());
         assert!(
@@ -676,6 +761,111 @@ mod tests {
         assert_eq!(no_winget.winget, None);
     }
 
+    // ----------------------------------------------------------- Chocolatey
+
+    /// A Chocolatey with the winmedic package in it, under the temp folder.
+    /// Its `choco.exe` is a text file: nothing here may start it.
+    fn chocolatey_with_winmedic(dir: &TempDir) -> (PathBuf, PathBuf) {
+        let choco = dir.file(r"chocolatey\choco.exe");
+        let exe = dir.file(r"chocolatey\lib\winmedic\tools\winmedic.exe");
+        (choco, exe)
+    }
+
+    /// What Chocolatey 2.6.0 logged when it uninstalled the package on a
+    /// real Windows, after the exe had been replaced as an update does: the
+    /// places it names are the ones the detection and the last step go by.
+    #[test]
+    fn the_places_chocolatey_logged_are_the_ones_the_removal_goes_by() {
+        let captured = String::from_utf8_lossy(include_bytes!(
+            "../../tests/fixtures/files/chocolatey_log_uninstall_changed_exe.bin"
+        ));
+        // The path a line names between `open` and `close`.
+        let named = |open: &str, close: &str, wanted: &str| {
+            captured
+                .lines()
+                .filter_map(|line| line.split_once(open))
+                .filter_map(|(_, rest)| rest.split_once(close))
+                .map(|(path, _)| PathBuf::from(path))
+                .find(|path| path.to_string_lossy().contains(wanted))
+                .unwrap_or_else(|| panic!("the capture names no {wanted}"))
+        };
+        let exe = named("Found '", "'", r"tools\winmedic.exe");
+        // Chocolatey does not close the quote on this line.
+        let shim = captured
+            .lines()
+            .find_map(|line| line.split_once("Removing shim for winmedic.exe at '"))
+            .map(|(_, path)| PathBuf::from(path.trim()))
+            .expect("the capture names no shim");
+        // Chocolatey kept the changed exe and put this copy beside it.
+        let copy = named(" to \"", "\".", "winmedic.exe.0");
+
+        // The shim is in `bin` of the folder `choco.exe` is looked for in.
+        let root = chocolatey_root(&exe).expect("not seen as a Chocolatey install");
+        assert_eq!(shim.parent().unwrap(), root.join("bin"));
+        // The copy is in `tools`, under a name the last step's filter takes.
+        assert_eq!(copy.parent(), exe.parent());
+        let name = copy.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with(&format!("{PROGRAM}.")), "{name}");
+    }
+
+    #[test]
+    fn only_winmedic_in_chocolateys_package_folder_is_a_chocolatey_install() {
+        let dir = TempDir::new("chocodetect");
+        let (choco, exe) = chocolatey_with_winmedic(&dir);
+
+        assert_eq!(chocolatey_exe(&exe), Some(choco));
+
+        // Another package's folder, another file, another place.
+        for other in [
+            r"chocolatey\lib\other\tools\winmedic.exe",
+            r"chocolatey\lib\winmedic\tools\other.exe",
+            r"chocolatey\lib\winmedic\winmedic.exe",
+            r"chocolatey\winmedic\tools\winmedic.exe",
+            r"Downloads\winmedic.exe",
+        ] {
+            assert_eq!(chocolatey_exe(&dir.file(other)), None, "{other}");
+        }
+
+        // A folder that only looks like one: no `choco.exe` to ask.
+        let lookalike = dir.file(r"elsewhere\lib\winmedic\tools\winmedic.exe");
+        assert_eq!(chocolatey_exe(&lookalike), None);
+    }
+
+    #[test]
+    fn chocolatey_is_asked_before_the_files_go() {
+        let dir = TempDir::new("choco");
+        let (_, exe) = chocolatey_with_winmedic(&dir);
+        let downloaded = dir.file(r"Downloads\winmedic.exe");
+
+        // Only the plan and the script's text: the script is never run.
+        let removal = Removal::of(&exe, vec![], 1, None).unwrap();
+        let chocolatey = removal.chocolatey.as_ref().expect("no Chocolatey install");
+        assert!(chocolatey.choco_exe.ends_with(r"chocolatey\choco.exe"));
+        assert!(chocolatey.tools.ends_with(r"chocolatey\lib\winmedic\tools"));
+
+        let script = removal.cleanup_script();
+        let asked = script
+            .find("choco.exe' uninstall winmedic -y --limit-output --no-progress | Out-Null; ")
+            .unwrap_or_else(|| panic!("Chocolatey is not asked: {script}"));
+        let copies = script
+            .find(r"tools' -Filter 'winmedic.exe.*' -File -Force | Remove-Item -Force; ")
+            .unwrap_or_else(|| panic!("the copy Chocolatey leaves stays: {script}"));
+        let files = script.find("$files = @(").unwrap();
+        assert!(asked < copies && copies < files, "{script}");
+        assert!(!script.contains('"'), "{script}");
+        assert!(!script.contains("-Recurse"), "{script}");
+
+        // What Chocolatey leaves of its package folder goes once it is
+        // empty: `tools` first, then the folder it is in.
+        assert_eq!(removal.program_folders.len(), 2, "{removal:?}");
+        assert!(removal.program_folders[0].ends_with(r"lib\winmedic\tools"));
+        assert!(removal.program_folders[1].ends_with(r"lib\winmedic"));
+
+        let by_hand = Removal::of(&downloaded, vec![], 1, None).unwrap();
+        assert_eq!(by_hand.chocolatey, None);
+        assert!(!by_hand.cleanup_script().contains("uninstall"));
+    }
+
     // --------------------------------------------------------------- script
 
     #[test]
@@ -689,6 +879,7 @@ mod tests {
             folders: vec![],
             program_folders: vec![PathBuf::from(r"C:\Program Files\WinMedic")],
             winget: None,
+            chocolatey: None,
         };
 
         let script = removal.cleanup_script();

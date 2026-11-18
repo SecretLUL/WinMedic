@@ -334,6 +334,10 @@ impl ConfirmRequest {
                     .as_deref()
                     .and_then(self_remove::winget_product_code)
                     .is_some();
+                let from_chocolatey = exe
+                    .as_deref()
+                    .and_then(self_remove::chocolatey_exe)
+                    .is_some();
                 let mut body = vec![
                     "WinMedic closes and deletes itself, with everything it keeps on this PC:"
                         .to_string(),
@@ -355,6 +359,9 @@ impl ConfirmRequest {
                 ];
                 if from_winget {
                     body.push("  • WinGet's entry for WinMedic".to_string());
+                }
+                if from_chocolatey {
+                    body.push("  • Chocolatey's entry for WinMedic".to_string());
                 }
                 body.extend([
                     String::new(),

@@ -154,12 +154,9 @@ code is listed in [How WinMedic works](docs/how-it-works.md#cli-headless-automat
 
 Click *Settings → General → Remove WinMedic from this PC*. WinMedic asks once, closes
 and deletes itself with everything it keeps: the background scan, your
-settings, logs and reports, the registry backups, and WinGet's entry if you
-installed it with WinGet. Nothing is left to do by hand. Windows' restore
-points stay.
-
-Chocolatey's entry is the exception: if you installed WinMedic with
-Chocolatey, run `choco uninstall winmedic` afterwards.
+settings, logs and reports, the registry backups, and WinGet's or
+Chocolatey's entry if you installed it with one of them. Nothing is left to
+do by hand. Windows' restore points stay.
 
 For scripts, `winmedic --uninstall` removes only the background scan and
 `winmedic --uninstall --purge` the data as well; see
