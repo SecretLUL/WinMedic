@@ -101,7 +101,7 @@ Releases without a checksum are still announced, but are never installed in plac
 
 The check itself is deliberately conservative: release *and* asset URLs must start with `https://github.com/` and may not contain shell metacharacters, backslashes or `.`/`..` path segments, downloads additionally have to come from `https://github.com/SecretLUL/WinMedic/releases/download/`, curl is pinned to HTTPS across redirects, asset names may not contain path separators, the browser is launched via `explorer.exe` rather than a shell, and draft and pre-releases are skipped. Version comparison is full SemVer including pre-release ordering, so `1.0.0-beta` correctly sorts below `1.0.0`. Disable the whole thing with the *Check for updates automatically* setting.
 
-If you installed WinMedic through WinGet, prefer `winget upgrade SecretLUL.WinMedic`. The in-place update works there too, but WinGet keeps believing the version it installed is the one on disk.
+If you installed WinMedic through WinGet, prefer `winget upgrade SecretLUL.WinMedic`. The in-place update works there too, but WinGet keeps believing the version it installed is the one on disk. The same goes for Chocolatey and `choco upgrade winmedic`; a new version is offered there once Chocolatey's moderation has approved it, which can be later than the release.
 
 
 ## The Window
@@ -250,14 +250,14 @@ WinMedic is one file with no installer, and it stays that way: it runs from a US
 
 Nothing is left to do by hand. Windows' own restore points stay, and so does what was repaired. The button is not offered while a scan, a repair, a rollback or an update runs.
 
-The folders and the registry key are deleted by WinMedic itself, after its window has closed; when that fails, a message says what could not be deleted. A running program cannot delete its own file, so the last step is a hidden PowerShell that waits for WinMedic to end and then deletes `winmedic.exe`. For a WinGet install it first runs `winget uninstall --product-code ...`, which only finds the package when WinMedic runs as the account that installed it.
+The folders and the registry key are deleted by WinMedic itself, after its window has closed; when that fails, a message says what could not be deleted. A running program cannot delete its own file, so the last step is a hidden PowerShell that waits for WinMedic to end and then deletes `winmedic.exe`. For a WinGet install it first runs `winget uninstall --product-code ...`, which only finds the package when WinMedic runs as the account that installed it. Chocolatey's entry is not removed: after a Chocolatey install, `choco uninstall winmedic` takes it out.
 
 A script does the same in steps, and keeps what it does not name:
 
 ```powershell
 winmedic --uninstall          # removes the task and turns its setting off; data stays
 winmedic --uninstall --purge  # also deletes %APPDATA%\WinMedic (settings, logs), %ProgramData%\WinMedic and HKLM\SOFTWARE\WinMedic (registry backups)
-winget uninstall SecretLUL.WinMedic   # or just delete the .exe
+winget uninstall SecretLUL.WinMedic   # or `choco uninstall winmedic`, or just delete the .exe
 ```
 
 

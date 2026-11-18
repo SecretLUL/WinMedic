@@ -29,6 +29,15 @@ WinMedic runs on 64-bit Windows 10 and 11.
 winget install SecretLUL.WinMedic
 ```
 
+**With Chocolatey:**
+
+```powershell
+choco install winmedic
+```
+
+Chocolatey checks every version before it offers it, so a new release can
+arrive there later than here.
+
 **Or by hand:** download `winmedic-<version>.exe` from the
 [latest release](https://github.com/SecretLUL/WinMedic/releases/latest) and
 start it. WinMedic is not code-signed yet, so Windows may warn you the first
@@ -148,6 +157,9 @@ and deletes itself with everything it keeps: the background scan, your
 settings, logs and reports, the registry backups, and WinGet's entry if you
 installed it with WinGet. Nothing is left to do by hand. Windows' restore
 points stay.
+
+Chocolatey's entry is the exception: if you installed WinMedic with
+Chocolatey, run `choco uninstall winmedic` afterwards.
 
 For scripts, `winmedic --uninstall` removes only the background scan and
 `winmedic --uninstall --purge` the data as well; see
