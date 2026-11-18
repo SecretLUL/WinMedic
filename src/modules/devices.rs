@@ -105,6 +105,8 @@ const NO_DRIVER_ID: &str = "dev_no_driver_";
 const FAILED_ID: &str = "dev_failed_";
 const CANNOT_START_ID: &str = "dev_cannot_start_";
 const DRIVERS_EXCLUDED_ID: &str = "dev_wu_drivers_excluded";
+/// The advice finding's title, which the failed search for a driver quotes.
+const DRIVERS_EXCLUDED_TITLE: &str = "Windows Update is not allowed to deliver drivers";
 
 /// Where the policy is switched off, after the ADMX and ADML in
 /// `C:\Windows\PolicyDefinitions`.
@@ -499,9 +501,17 @@ impl DevicesModule {
             Some(after) if after.problem == 0 => Ok(format!(
                 "Windows found a driver for {label} and installed it."
             )),
-            Some(after) if after.problem == NO_DRIVER => Err(format!(
-                "Windows looked again and has no driver for {label}. Look under Settings -> Windows Update -> Advanced options -> Optional updates -> Driver updates, or get the driver from the manufacturer's website."
-            )),
+            // With the policy, the optional drivers in Windows Update are
+            // the wrong place to send anybody: name the policy instead.
+            Some(after) if after.problem == NO_DRIVER => Err(if self.drivers_excluded().await {
+                format!(
+                    "Windows looked again and has no driver for {label}. {DRIVERS_EXCLUDED_TITLE} on this PC, so get the driver from the manufacturer's website, or switch the policy off: the finding \"{DRIVERS_EXCLUDED_TITLE}\" says where."
+                )
+            } else {
+                format!(
+                    "Windows looked again and has no driver for {label}. Look under Settings -> Windows Update -> Advanced options -> Optional updates -> Driver updates, or get the driver from the manufacturer's website."
+                )
+            }),
             Some(after) => Err(format!(
                 "Windows installed a driver for {label}, but the device now reports problem code {}: {}. {REINSTALL_DRIVER}",
                 after.problem,
@@ -596,7 +606,7 @@ impl DevicesModule {
         Issue::new(
             DRIVERS_EXCLUDED_ID,
             self.id(),
-            "Windows Update is not allowed to deliver drivers",
+            DRIVERS_EXCLUDED_TITLE,
             "Devices & Drivers",
             Severity::Info,
             RiskScore::Low,
@@ -1157,23 +1167,64 @@ mod tests {
         assert_eq!(pnputil_calls(&mock), vec!["pnputil.exe /scan-devices"]);
     }
 
-    /// What happened on the development PC: the scan finished at once with
-    /// exit 0 and both devices still had no driver.
-    #[tokio::test]
-    async fn still_no_driver_says_where_to_get_one() {
+    /// The scan for hardware changes finished at once with exit 0 and both
+    /// devices still had no driver, as on the development PC; `policy` is
+    /// what `reg query` answers for the WindowsUpdate policy key.
+    async fn still_no_driver(policy: Option<CmdOutput>) -> String {
         let amd = device(28, "", AMD, "");
         let mock = scan_devices_mock(scanned(), dev_pc());
-        let err = module(&mock)
+        if let Some(policy) = policy {
+            mock.add_response(
+                r"reg.exe query HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate",
+                policy,
+            );
+        }
+        module(&mock)
             .fix(&amd.finding_id().unwrap(), None)
             .await
-            .unwrap_err();
-        assert!(
-            err.starts_with(
-                r"Windows looked again and has no driver for an unknown device (ACPI\AMDI0204)."
-            ),
-            "{err}"
+            .unwrap_err()
+    }
+
+    /// No policy: the captured key with the value switched off, no key at
+    /// all, and a key that cannot be read.
+    #[tokio::test]
+    async fn still_no_driver_says_where_to_get_one() {
+        let off = decode_output(WU_POLICY).replace("0x1", "0x0");
+        assert!(off.contains("ExcludeWUDriversInQualityUpdate    REG_DWORD    0x0"));
+        for policy in [
+            Some(CmdOutput::ok(off)),
+            Some(CmdOutput::failed(1, "")),
+            None,
+        ] {
+            assert_eq!(
+                still_no_driver(policy).await,
+                r"Windows looked again and has no driver for an unknown device (ACPI\AMDI0204). Look under Settings -> Windows Update -> Advanced options -> Optional updates -> Driver updates, or get the driver from the manufacturer's website."
+            );
+        }
+    }
+
+    /// What happened on the development PC (#308): the policy keeps drivers
+    /// out of Windows Update, so its optional drivers are not where to look.
+    #[tokio::test]
+    async fn still_no_driver_names_the_policy_that_keeps_drivers_out() {
+        let err = still_no_driver(Some(CmdOutput::ok(decode_output(WU_POLICY)))).await;
+        assert_eq!(
+            err,
+            "Windows looked again and has no driver for an unknown device (ACPI\\AMDI0204). Windows Update is not allowed to deliver drivers on this PC, so get the driver from the manufacturer's website, or switch the policy off: the finding \"Windows Update is not allowed to deliver drivers\" says where."
         );
-        assert!(err.contains("Optional updates"), "{err}");
+        assert!(!err.contains("Optional updates"), "{err}");
+    }
+
+    /// A driver that turned up needs no policy: it is not asked.
+    #[tokio::test]
+    async fn the_policy_is_not_read_when_the_scan_found_a_driver() {
+        let mock = scan_devices_mock(scanned(), brio_reporting(0));
+        module(&mock).fix(&brio_id(28), None).await.unwrap();
+        assert!(
+            !mock.executed().iter().any(|c| c.contains("Policies")),
+            "{:?}",
+            mock.executed()
+        );
     }
 
     #[tokio::test]
