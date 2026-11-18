@@ -423,16 +423,23 @@ fn checks(ui: &mut egui::Ui, app: &mut App) {
                                 .iter()
                                 .find(|(id, ..)| *id == module.id)
                                 .map(|(.., status)| status);
+                            // A check that left a part unchecked did not pass
+                            // all of it, whatever its findings say (#336).
+                            let partly = app.not_checked.iter().any(|n| n.module_id == module.id);
                             let (text, color) = match status {
+                                Some(ModuleStatus::Passed) if partly => {
+                                    ("Partly not checked".to_string(), Some(palette.amber))
+                                }
                                 Some(ModuleStatus::Passed) => {
                                     ("Passed".to_string(), Some(palette.green))
                                 }
                                 Some(ModuleStatus::Warning(n)) => {
-                                    (plural(*n, "warning"), Some(palette.amber))
+                                    (with_gap(plural(*n, "warning"), partly), Some(palette.amber))
                                 }
-                                Some(ModuleStatus::Critical(n)) => {
-                                    (plural(*n, "critical finding"), Some(palette.red))
-                                }
+                                Some(ModuleStatus::Critical(n)) => (
+                                    with_gap(plural(*n, "critical finding"), partly),
+                                    Some(palette.red),
+                                ),
                                 Some(ModuleStatus::Failed(error)) => {
                                     (format!("Failed: {error}"), Some(palette.red))
                                 }
@@ -449,6 +456,15 @@ fn checks(ui: &mut egui::Ui, app: &mut App) {
                     }
                 });
         });
+}
+
+/// A check's findings, and that it left a part unchecked.
+fn with_gap(findings: String, partly: bool) -> String {
+    if partly {
+        format!("{findings}, partly not checked")
+    } else {
+        findings
+    }
 }
 
 pub(crate) fn plural(count: usize, noun: &str) -> String {

@@ -145,6 +145,27 @@ impl ModuleStatus {
     }
 }
 
+/// One sentence of [`DiagnosticModule::not_checked`], with the check that
+/// said it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotChecked {
+    pub module_id: String,
+    pub note: String,
+}
+
+impl NotChecked {
+    /// A check's notes, as the engine reports them, under its id.
+    pub fn of(module_id: &str, notes: &[String]) -> Vec<Self> {
+        notes
+            .iter()
+            .map(|note| Self {
+                module_id: module_id.to_string(),
+                note: note.clone(),
+            })
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ModuleProgress {
     pub module_id: String,

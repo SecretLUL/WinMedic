@@ -95,7 +95,8 @@ impl App {
                     mut issues,
                     not_checked,
                 } => {
-                    self.not_checked.extend(not_checked);
+                    self.not_checked
+                        .extend(crate::modules::NotChecked::of(&module_id, &not_checked));
                     carry_over(&mut issues, &self.last_findings);
                     // A repair kept waiting since the scan started gives way
                     // to its fresh report, which carries the wait over.
@@ -1618,7 +1619,9 @@ mod tests {
         let health = app.health_score;
         assert!(health < 100);
 
-        app.not_checked = vec!["Not checked last time.".to_string()];
+        let last_time =
+            crate::modules::NotChecked::of("storage", &["Not checked last time.".to_string()]);
+        app.not_checked = last_time.clone();
 
         let (mut app, tx) = scanning_again(app);
         assert!(app.issues.is_empty(), "off the screen while the scan runs");
@@ -1646,7 +1649,7 @@ mod tests {
         assert_eq!(shown, [dirty_bit().id.as_str()]);
         assert_eq!(app.health_score, health);
         assert_eq!(app.module_statuses[storage].3, ModuleStatus::Critical(1));
-        assert_eq!(app.not_checked, ["Not checked last time."]);
+        assert_eq!(app.not_checked, last_time);
         assert_eq!(app.last_scan_timestamp.as_deref(), Some(scanned_at));
         assert_eq!(app.scan_duration, Some(std::time::Duration::from_secs(42)));
         let message = app.status_message.clone().unwrap();
@@ -1658,7 +1661,7 @@ mod tests {
         let saved = app.scan_to_save().expect("a scan to save");
         assert_eq!(saved.timestamp, scanned_at);
         assert_eq!(saved.issues.len(), 1);
-        assert_eq!(saved.not_checked, ["Not checked last time."]);
+        assert_eq!(saved.not_checked, last_time);
     }
 
     /// What a check that finished left unchecked is kept for the window,
@@ -1681,7 +1684,13 @@ mod tests {
         .unwrap();
         app.process_background_events();
 
-        assert_eq!(app.not_checked, ["The component store was not checked."]);
+        assert_eq!(
+            app.not_checked,
+            crate::modules::NotChecked::of(
+                "system_cleaner",
+                &["The component store was not checked.".to_string()]
+            )
+        );
         assert!(app.issues.is_empty());
         assert_eq!(app.health_score, 100);
     }

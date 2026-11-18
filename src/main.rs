@@ -379,8 +379,10 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
         match &evt {
             ScanEvent::ScanCancelled { .. } => scan_cancelled = true,
             ScanEvent::ModuleFinished {
-                not_checked: notes, ..
-            } => not_checked.extend(notes.iter().cloned()),
+                module_id,
+                not_checked: notes,
+                ..
+            } => not_checked.extend(modules::NotChecked::of(module_id, notes)),
             ScanEvent::ModuleFailed { module_id, error } => {
                 failed_modules.insert(module_id.clone(), error.clone());
             }
