@@ -670,6 +670,19 @@ pub fn offline_packages(packages: &[AppxPackage]) -> Vec<AppxPackage> {
         .collect()
 }
 
+// What the window says after a scan that gave a part of this check up
+// (#338). Until then each was a step text, gone when the check finished, and
+// a line in the folded scan log. "For damage", because the cleaner has a
+// note about the component store too: whether it holds packages to reclaim.
+const STORE_HEALTH_NOT_CHECKED: &str =
+    "The component store was not checked for damage: DISM gave no answer.";
+const VSS_NOT_CHECKED: &str =
+    "Volume Shadow Copy was not checked: Windows did not say how the service starts.";
+const RECOVERY_NOT_CHECKED: &str =
+    "The recovery environment was not checked: its settings file could not be read.";
+const APP_PACKAGES_NOT_CHECKED: &str =
+    "The app packages were not checked: Windows did not list them.";
+
 pub struct SystemIntegrityModule {
     runner: Arc<dyn CommandRunner>,
     cbs_log: PathBuf,
@@ -678,6 +691,8 @@ pub struct SystemIntegrityModule {
     downloads: Option<PathBuf>,
     /// The setting "Restart services automatically".
     restart_services: bool,
+    /// What the last scan left unchecked, see [`DiagnosticModule::not_checked`].
+    not_checked: crate::modules::Unchecked,
 }
 
 impl Default for SystemIntegrityModule {
@@ -703,6 +718,7 @@ impl SystemIntegrityModule {
             reagent_xml: default_reagent_xml(),
             downloads: dirs::download_dir(),
             restart_services: true,
+            not_checked: Default::default(),
         }
     }
 
@@ -1135,11 +1151,16 @@ impl DiagnosticModule for SystemIntegrityModule {
         "[SYS]"
     }
 
+    fn not_checked(&self) -> Vec<String> {
+        self.not_checked.notes()
+    }
+
     async fn scan(
         &self,
         progress_tx: Option<Sender<ModuleProgress>>,
     ) -> Result<Vec<Issue>, String> {
         let mut issues = Vec::new();
+        self.not_checked.clear();
 
         // 1. DISM CheckHealth
         Self::send_progress(
@@ -1235,6 +1256,7 @@ impl DiagnosticModule for SystemIntegrityModule {
                 ComponentStoreHealth::Unknown(reason) => {
                     // Not "intact": nothing was checked, and saying otherwise
                     // is how an unelevated scan used to pass a damaged store.
+                    self.not_checked.push(STORE_HEALTH_NOT_CHECKED);
                     Self::send_progress(
                         &progress_tx,
                         35,
@@ -1245,6 +1267,7 @@ impl DiagnosticModule for SystemIntegrityModule {
                 }
             },
             Err(e) => {
+                self.not_checked.push(STORE_HEALTH_NOT_CHECKED);
                 Self::send_progress(
                     &progress_tx,
                     35,
@@ -1290,6 +1313,7 @@ impl DiagnosticModule for SystemIntegrityModule {
                 .await;
             }
             Ok(None) | Err(_) => {
+                self.not_checked.push(VSS_NOT_CHECKED);
                 Self::send_progress(
                     &progress_tx,
                     70,
@@ -1384,6 +1408,7 @@ impl DiagnosticModule for SystemIntegrityModule {
                 .await;
             }
             None => {
+                self.not_checked.push(RECOVERY_NOT_CHECKED);
                 Self::send_progress(
                     &progress_tx,
                     92,
@@ -1452,6 +1477,7 @@ impl DiagnosticModule for SystemIntegrityModule {
                 }
             }
             Err(err) => {
+                self.not_checked.push(APP_PACKAGES_NOT_CHECKED);
                 Self::send_progress(&progress_tx, 99, "App packages not checked", Some(&err)).await;
             }
         }
@@ -2379,7 +2405,19 @@ mod tests {
         let mock = MockCommandRunner::new();
         mock.add_response("dism.exe", refused);
         healthy_vss(&mock);
-        assert!(module_with(mock).scan(None).await.unwrap().is_empty());
+        let module = module_with(mock);
+        assert!(module.scan(None).await.unwrap().is_empty());
+        // #338: the window is told. The mock lists no app packages either.
+        let notes = module.not_checked();
+        assert!(
+            notes.contains(&STORE_HEALTH_NOT_CHECKED.to_string()),
+            "{notes:?}"
+        );
+        assert!(
+            notes.contains(&APP_PACKAGES_NOT_CHECKED.to_string()),
+            "{notes:?}"
+        );
+        assert!(!notes.contains(&VSS_NOT_CHECKED.to_string()), "{notes:?}");
     }
 
     #[test]

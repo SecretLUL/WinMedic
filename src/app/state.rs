@@ -7,9 +7,9 @@ use crate::config::{AppConfig, ConfigStatus};
 use crate::engine::issue::{Issue, Severity};
 use crate::engine::reporter::DiagnosticReporter;
 use crate::engine::runner::{DiagnosticEngine, RepairEvent, ScanEvent};
-use crate::modules::ModuleStatus;
 use crate::modules::clock_restart::RESTART_OVERDUE;
 use crate::modules::windows_updates::REBOOT_PENDING;
+use crate::modules::{ModuleStatus, NotChecked};
 use crate::safety::audit::{AuditEntry, AuditLogger};
 use crate::safety::reg_backup::{BackupRecord, RegBackupManager};
 use crate::utils::cmd::SystemCommandRunner;
@@ -131,7 +131,7 @@ pub(super) struct BeforeScan {
     pub issues: Vec<Issue>,
     pub archived_issues: Vec<Issue>,
     pub module_statuses: Vec<(String, String, String, ModuleStatus)>,
-    pub not_checked: Vec<String>,
+    pub not_checked: Vec<NotChecked>,
     pub health_score: u8,
 }
 
@@ -184,7 +184,7 @@ pub struct App {
     pub module_statuses: Vec<(String, String, String, ModuleStatus)>,
     /// What the scan on screen left unchecked in checks that finished, see
     /// [`crate::modules::DiagnosticModule::not_checked`].
-    pub not_checked: Vec<String>,
+    pub not_checked: Vec<NotChecked>,
     pub scan_log_messages: VecDeque<String>,
 
     // Live Repair State
@@ -811,12 +811,14 @@ impl App {
             None => Vec::new(),
         };
 
+        let notes: Vec<String> = self.not_checked.iter().map(|n| n.note.clone()).collect();
         DiagnosticReporter::save_report(
             &path,
             &self.issues,
             health,
             &entries,
             self.archived_issues.len(),
+            &notes,
         )
         .map(|_| path)
         .map_err(|e| format!("Export failed: {}", e))

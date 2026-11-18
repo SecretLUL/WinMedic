@@ -169,11 +169,19 @@ fn real_uptime() -> UptimeSource {
     Arc::new(|| sysinfo::System::uptime().ok().map(Duration::from_secs))
 }
 
+// What the window says after a scan that gave a part of this check up
+// (#338). Until then each was only a step text, gone when the check finished.
+const CLOCK_NOT_CHECKED: &str = "The clock was not checked: the time server did not answer.";
+const RESTART_NOT_CHECKED: &str =
+    "The last restart was not checked: Windows did not say how long it has been running.";
+
 pub struct ClockRestartModule {
     config: ModuleConfig,
     runner: Arc<dyn CommandRunner>,
     uptime: UptimeSource,
     backup_dir: PathBuf,
+    /// What the last scan left unchecked, see [`DiagnosticModule::not_checked`].
+    not_checked: crate::modules::Unchecked,
 }
 
 impl ClockRestartModule {
@@ -187,6 +195,7 @@ impl ClockRestartModule {
             runner,
             uptime: real_uptime(),
             backup_dir: RegBackupManager::new().backup_dir().to_path_buf(),
+            not_checked: Default::default(),
         }
     }
 
@@ -374,11 +383,16 @@ impl DiagnosticModule for ClockRestartModule {
         "[CLK]"
     }
 
+    fn not_checked(&self) -> Vec<String> {
+        self.not_checked.notes()
+    }
+
     async fn scan(
         &self,
         progress_tx: Option<Sender<ModuleProgress>>,
     ) -> Result<Vec<Issue>, String> {
         let mut issues = Vec::new();
+        self.not_checked.clear();
 
         Self::send_progress(
             &progress_tx,
@@ -425,6 +439,7 @@ impl DiagnosticModule for ClockRestartModule {
                 .await;
             }
             Ok(None) | Err(_) => {
+                self.not_checked.push(CLOCK_NOT_CHECKED);
                 Self::send_progress(
                     &progress_tx,
                     40,
@@ -445,6 +460,7 @@ impl DiagnosticModule for ClockRestartModule {
         let uptime = (self.uptime)();
         if uptime.is_none() {
             // Not checked is not "restarted lately": say so, raise nothing.
+            self.not_checked.push(RESTART_NOT_CHECKED);
             Self::send_progress(
                 &progress_tx,
                 80,
@@ -714,8 +730,25 @@ mod tests {
             CmdOutput::ok(decode_output(STRIPCHART_UNREACHABLE)),
             missing_key(),
         );
-        let issues = module(&mock, 0).scan(None).await.unwrap();
+        let module = module(&mock, 0);
+        let issues = module.scan(None).await.unwrap();
         assert!(issues.is_empty(), "{issues:?}");
+        // #338: the window is told, the step text is gone with the scan.
+        assert_eq!(module.not_checked(), [CLOCK_NOT_CHECKED]);
+    }
+
+    /// A check that got through everything leaves no note, and takes the
+    /// last scan's back.
+    #[tokio::test]
+    async fn a_check_that_got_through_everything_leaves_no_note() {
+        let module = module(&machine(true), 0);
+        module.not_checked.push("From the scan before.");
+        module.scan(None).await.unwrap();
+        assert!(
+            module.not_checked().is_empty(),
+            "{:?}",
+            module.not_checked()
+        );
     }
 
     #[tokio::test]
@@ -762,6 +795,7 @@ mod tests {
             steps.iter().any(|s| s.contains("was not judged")),
             "{steps:?}"
         );
+        assert_eq!(module.not_checked(), [RESTART_NOT_CHECKED]);
     }
 
     #[test]

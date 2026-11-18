@@ -430,8 +430,13 @@ fn restart_banner(ui: &mut egui::Ui, app: &mut App) {
 /// easy to miss beside "Your PC is in good shape".
 fn not_checked_banner(ui: &mut egui::Ui, app: &App) {
     let text = ui.visuals().strong_text_color();
-    for note in &app.not_checked {
-        ui.label(RichText::new(note).strong().size(15.0).color(text));
+    for unchecked in &app.not_checked {
+        ui.label(
+            RichText::new(&unchecked.note)
+                .strong()
+                .size(15.0)
+                .color(text),
+        );
     }
 }
 
@@ -923,16 +928,52 @@ mod tests {
             "The component store was not checked: DISM's analysis took longer than 15 minutes.";
         for mode in [scanned_app, easy_scanned_app] {
             let mut app = mode();
-            app.not_checked = vec![note.to_string()];
+            app.not_checked = crate::modules::NotChecked::of("system_cleaner", &[note.to_string()]);
             let harness = window(app);
             assert!(harness.query_by_label(note).is_some());
         }
         assert!(window(scanned_app()).query_by_label(note).is_none());
 
         let mut scanning = scanned_app();
-        scanning.not_checked = vec![note.to_string()];
+        scanning.not_checked =
+            crate::modules::NotChecked::of("system_cleaner", &[note.to_string()]);
         scanning.is_scanning = true;
         assert!(window(scanning).query_by_label(note).is_none());
+    }
+
+    /// #336: the row of a check that left a part unchecked read "Passed"
+    /// right under the banner that said so.
+    #[test]
+    fn a_check_that_left_a_part_unchecked_is_not_listed_as_passed() {
+        let scanned = |cleaner: ModuleStatus| {
+            let mut app = fresh_app();
+            app.last_scan_timestamp = Some("2026-11-18 21:30:00".to_string());
+            for status in &mut app.module_statuses {
+                status.3 = if status.0 == "system_cleaner" {
+                    cleaner.clone()
+                } else {
+                    ModuleStatus::Passed
+                };
+            }
+            app.not_checked = crate::modules::NotChecked::of(
+                "system_cleaner",
+                &["The component store was not checked.".to_string()],
+            );
+            window(app)
+        };
+
+        let passed = scanned(ModuleStatus::Passed);
+        assert_eq!(passed.query_all_by_label("Partly not checked").count(), 1);
+        let others = passed.query_all_by_label("Passed").count();
+        assert!(others > 0, "the other checks passed");
+
+        let warned = scanned(ModuleStatus::Warning(2));
+        assert!(
+            warned
+                .query_by_label("2 warnings, partly not checked")
+                .is_some()
+        );
+        assert_eq!(warned.query_all_by_label("Passed").count(), others);
     }
 
     /// #181: a simulation of three findings repairs nothing. The header says

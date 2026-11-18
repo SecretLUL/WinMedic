@@ -12,9 +12,9 @@ use super::state::{carry_over, keep_waiting};
 use crate::config::ArchivedFinding;
 use crate::engine::issue::{Issue, Severity};
 use crate::engine::runner::DiagnosticEngine;
-use crate::modules::ModuleStatus;
 use crate::modules::clock_restart::RESTART_OVERDUE;
 use crate::modules::windows_updates::REBOOT_PENDING;
+use crate::modules::{ModuleStatus, NotChecked};
 
 pub const SCAN_STATE_FILE_NAME: &str = "last_scan.json";
 
@@ -41,7 +41,7 @@ pub struct ScanState {
     /// What checks that finished left unchecked, see
     /// [`crate::modules::DiagnosticModule::not_checked`].
     #[serde(default)]
-    pub not_checked: Vec<String>,
+    pub not_checked: Vec<NotChecked>,
     #[serde(default)]
     pub scan_duration_secs: Option<u64>,
     #[serde(default)]
@@ -116,7 +116,7 @@ impl ScanState {
     }
 
     /// What the same scan left unchecked.
-    pub fn with_not_checked(mut self, not_checked: Vec<String>) -> Self {
+    pub fn with_not_checked(mut self, not_checked: Vec<NotChecked>) -> Self {
         self.not_checked = not_checked;
         self
     }
@@ -252,7 +252,7 @@ mod tests {
         archived.id = "archived_iss".to_string();
         let state = ScanState::new(75, vec![issue], statuses, Some(12))
             .with_archived(vec![archived])
-            .with_not_checked(vec!["Not checked.".to_string()]);
+            .with_not_checked(NotChecked::of("storage", &["Not checked.".to_string()]));
         state.save_to(&tmp).unwrap();
 
         let loaded = ScanState::load_from(&tmp).expect("should load saved scan state");
@@ -263,7 +263,9 @@ mod tests {
         assert_eq!(loaded.archived_issues[0].id, "archived_iss");
         assert_eq!(loaded.module_statuses.len(), 1);
         assert_eq!(loaded.scan_duration_secs, Some(12));
-        assert_eq!(loaded.not_checked, ["Not checked."]);
+        assert_eq!(loaded.not_checked.len(), 1);
+        assert_eq!(loaded.not_checked[0].module_id, "storage");
+        assert_eq!(loaded.not_checked[0].note, "Not checked.");
 
         // A file written before the notes existed has none.
         let mut older = serde_json::to_value(&state).unwrap();

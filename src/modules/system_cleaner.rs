@@ -393,11 +393,11 @@ const DISM_ANALYZE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// is said in words, not as "Command 'dism.exe' timed out after 900s". Any
 /// other reason is a command's error text, which the scan log has: Easy mode
 /// shows this sentence too, to people it says nothing to.
-fn store_not_checked(reason: &str) -> String {
+fn store_not_checked(reason: &str, limit: Duration) -> String {
     if crate::utils::cmd::is_timeout(reason) {
         format!(
             "The component store was not checked: DISM's analysis took longer than {} minutes.",
-            DISM_ANALYZE_TIMEOUT.as_secs() / 60
+            limit.as_secs() / 60
         )
     } else {
         "The component store was not checked: DISM's analysis did not finish.".to_string()
@@ -1086,8 +1086,10 @@ pub struct SystemCleanerModule {
     scan_count_max_age: Duration,
     /// How often the bar moves while the analysis runs.
     analysis_tick: Duration,
+    /// [`DISM_ANALYZE_TIMEOUT`], or a test's own limit.
+    analysis_timeout: Duration,
     /// What the last scan left unchecked, see [`DiagnosticModule::not_checked`].
-    not_checked: Mutex<Vec<String>>,
+    not_checked: crate::modules::Unchecked,
 }
 
 /// How long the WinSxS repair takes the scan's count of reclaimable packages
@@ -1123,7 +1125,8 @@ impl SystemCleanerModule {
             scan_count: Mutex::new(None),
             scan_count_max_age: SCAN_COUNT_MAX_AGE,
             analysis_tick: Duration::from_secs(1),
-            not_checked: Mutex::new(Vec::new()),
+            analysis_timeout: DISM_ANALYZE_TIMEOUT,
+            not_checked: Default::default(),
         }
     }
 
@@ -1131,6 +1134,13 @@ impl SystemCleanerModule {
     /// in for the repair's own.
     pub fn with_scan_count_max_age(mut self, max_age: Duration) -> Self {
         self.scan_count_max_age = max_age;
+        self
+    }
+
+    /// For tests: how long the scan gives the analysis. A real DISM runs
+    /// into a short limit on purpose (#339); nothing else can make it late.
+    pub fn with_analysis_timeout(mut self, limit: Duration) -> Self {
+        self.analysis_timeout = limit;
         self
     }
 
@@ -1371,10 +1381,7 @@ impl DiagnosticModule for SystemCleanerModule {
     }
 
     fn not_checked(&self) -> Vec<String> {
-        self.not_checked
-            .lock()
-            .map(|notes| notes.clone())
-            .unwrap_or_default()
+        self.not_checked.notes()
     }
 
     async fn scan(
@@ -1382,9 +1389,7 @@ impl DiagnosticModule for SystemCleanerModule {
         progress_tx: Option<Sender<ModuleProgress>>,
     ) -> Result<Vec<Issue>, String> {
         let mut issues = Vec::new();
-        if let Ok(mut notes) = self.not_checked.lock() {
-            notes.clear();
-        }
+        self.not_checked.clear();
 
         if self.config.verbose_logging {
             Self::send_progress(
@@ -1701,7 +1706,7 @@ impl DiagnosticModule for SystemCleanerModule {
         let dism_check = {
             let analysis = self
                 .runner
-                .run("dism.exe", DISM_ANALYZE_ARGS, DISM_ANALYZE_TIMEOUT);
+                .run("dism.exe", DISM_ANALYZE_ARGS, self.analysis_timeout);
             tokio::pin!(analysis);
             let mut tick = tokio::time::interval(self.analysis_tick);
             loop {
@@ -1738,9 +1743,8 @@ impl DiagnosticModule for SystemCleanerModule {
             Err(err) => Some(err.clone()),
         };
         if let Some(reason) = unfinished {
-            if let Ok(mut notes) = self.not_checked.lock() {
-                notes.push(store_not_checked(&reason));
-            }
+            self.not_checked
+                .push(store_not_checked(&reason, self.analysis_timeout));
             Self::send_progress(
                 &progress_tx,
                 99,
@@ -3074,7 +3078,7 @@ The operation completed successfully.";
     fn an_analysis_that_ran_out_of_time_says_how_long_it_was_given() {
         let reason = crate::utils::cmd::timed_out("dism.exe", DISM_ANALYZE_TIMEOUT);
         assert_eq!(
-            store_not_checked(&reason),
+            store_not_checked(&reason, DISM_ANALYZE_TIMEOUT),
             "The component store was not checked: DISM's analysis took longer than 15 minutes."
         );
     }

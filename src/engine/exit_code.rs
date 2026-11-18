@@ -41,6 +41,14 @@ pub fn from_command_line(is_error: bool) -> u8 {
 /// `failed_modules` is the number of modules whose check could not run. Their
 /// findings are missing, so a clean list proves nothing about them: it outranks
 /// the warnings and an all-clear, but not a critical finding, which is definite.
+///
+/// A check that finished and left a part unchecked
+/// ([`crate::modules::DiagnosticModule::not_checked`]) is not counted: the
+/// output and the JSON report say it, and the code stays what the findings
+/// give (#337). A PC that cannot reach the time server, or whose component
+/// store analysis runs out of time, would otherwise end every run with
+/// [`INCOMPLETE`], and a script could no longer tell that from a check that
+/// did not run at all.
 pub fn from_issues(issues: &[Issue], failed_fixes: usize, failed_modules: usize) -> u8 {
     if failed_fixes > 0 {
         return FIX_FAILED;
