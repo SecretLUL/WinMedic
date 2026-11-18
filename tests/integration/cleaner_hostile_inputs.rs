@@ -416,15 +416,14 @@ async fn adv_test_progress_reporting_all_steps() {
     let _ = module.scan(Some(tx)).await.unwrap();
     let steps = handle.await.unwrap();
 
-    assert!(steps.iter().any(|(pct, _)| *pct == 22));
-    assert!(steps.iter().any(|(pct, _)| *pct == 34));
-    assert!(steps.iter().any(|(pct, _)| *pct == 46));
-    assert!(steps.iter().any(|(pct, _)| *pct == 58));
-    assert!(steps.iter().any(|(pct, _)| *pct == 70));
-    assert!(steps.iter().any(|(pct, _)| *pct == 80));
-    assert!(steps.iter().any(|(pct, _)| *pct == 90));
-    assert!(steps.iter().any(|(pct, _)| *pct == 97));
-    assert!(steps.iter().any(|(pct, _)| *pct == 100));
+    // The steps before the component store analysis share the first 10%,
+    // the analysis starts there, and the scan ends at 100%.
+    for expected in [2, 3, 4, 5, 6, 7, 8, 10, 100] {
+        assert!(
+            steps.iter().any(|(pct, _)| *pct == expected),
+            "no step at {expected}%: {steps:?}"
+        );
+    }
 }
 
 #[tokio::test]
