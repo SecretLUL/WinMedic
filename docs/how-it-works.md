@@ -245,12 +245,12 @@ WinMedic is one file with no installer, and it stays that way: it runs from a US
 - the background scan task, when you turned it on,
 - `%APPDATA%\WinMedic` (settings, logs, saved reports),
 - `%ProgramData%\WinMedic` and `HKLM\SOFTWARE\WinMedic` (the registry backups a rollback needs),
-- WinGet's entry, when WinGet installed it,
+- WinGet's or Chocolatey's entry, when one of them installed it,
 - and `winmedic.exe` itself, with what an update left beside it, and its folder when that is one named `WinMedic` (such as `C:\Program Files\WinMedic`) with nothing else in it.
 
 Nothing is left to do by hand. Windows' own restore points stay, and so does what was repaired. The button is not offered while a scan, a repair, a rollback or an update runs.
 
-The folders and the registry key are deleted by WinMedic itself, after its window has closed; when that fails, a message says what could not be deleted. A running program cannot delete its own file, so the last step is a hidden PowerShell that waits for WinMedic to end and then deletes `winmedic.exe`. For a WinGet install it first runs `winget uninstall --product-code ...`, which only finds the package when WinMedic runs as the account that installed it. Chocolatey's entry is not removed: after a Chocolatey install, `choco uninstall winmedic` takes it out.
+The folders and the registry key are deleted by WinMedic itself, after its window has closed; when that fails, a message says what could not be deleted. A running program cannot delete its own file, so the last step is a hidden PowerShell that waits for WinMedic to end and then deletes `winmedic.exe`. For a WinGet install it first runs `winget uninstall --product-code ...`, which only finds the package when WinMedic runs as the account that installed it. For a Chocolatey install it runs `choco uninstall winmedic` with the `choco.exe` of the Chocolatey that winmedic.exe is in. Chocolatey keeps a file that changed since it installed it, which winmedic.exe is after an update it installed itself, and leaves a copy beside it; both are deleted afterwards, and the package folder with them.
 
 A script does the same in steps, and keeps what it does not name:
 

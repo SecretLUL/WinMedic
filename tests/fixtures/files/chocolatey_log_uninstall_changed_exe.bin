@@ -1,0 +1,51 @@
+2026-11-18 21:30:50,803 4108 [DEBUG] - _ Chocolatey:ChocolateyUninstallCommand - Normal Run Mode _
+2026-11-18 21:30:50,803 4108 [INFO ] - Uninstalling the following packages:
+2026-11-18 21:30:50,803 4108 [INFO ] - winmedic
+2026-11-18 21:30:51,055 4108 [DEBUG] - winmedic 0.17.0
+2026-11-18 21:30:51,070 4108 [DEBUG] - winmedic 0.17.0
+2026-11-18 21:30:51,133 4108 [DEBUG] - winmedic 0.17.0
+winmedic v0.17.0
+2026-11-18 21:30:51,148 4108 [DEBUG] - Running beforeModify step for 'winmedic'
+2026-11-18 21:30:51,148 4108 [DEBUG] - Backing up package files for 'winmedic'
+2026-11-18 21:30:51,195 4108 [DEBUG] - Attempting to create directory "C:\ProgramData\chocolatey\lib-bkp\winmedic".
+2026-11-18 21:30:51,195 4108 [DEBUG] - Moving C:\ProgramData\chocolatey\lib\winmedic to C:\ProgramData\chocolatey\lib-bkp\winmedic\0.17.0
+2026-11-18 21:30:51,195 4108 [DEBUG] - Moving 'C:\ProgramData\chocolatey\lib\winmedic'
+ to 'C:\ProgramData\chocolatey\lib-bkp\winmedic\0.17.0'
+2026-11-18 21:30:53,211 4108 [DEBUG] - Attempting to create directory "C:\ProgramData\chocolatey\lib\winmedic".
+2026-11-18 21:30:53,211 4108 [DEBUG] - Attempting to copy "C:\ProgramData\chocolatey\lib-bkp\winmedic\0.17.0\winmedic.nupkg"
+ to "C:\ProgramData\chocolatey\lib\winmedic\winmedic.nupkg".
+2026-11-18 21:30:53,211 4108 [DEBUG] - Attempting to copy "C:\ProgramData\chocolatey\lib-bkp\winmedic\0.17.0\winmedic.nuspec"
+ to "C:\ProgramData\chocolatey\lib\winmedic\winmedic.nuspec".
+2026-11-18 21:30:53,211 4108 [DEBUG] - Attempting to create directory "C:\ProgramData\chocolatey\lib\winmedic\tools".
+2026-11-18 21:30:53,211 4108 [DEBUG] - Attempting to copy "C:\ProgramData\chocolatey\lib-bkp\winmedic\0.17.0\tools\chocolateyInstall.ps1"
+ to "C:\ProgramData\chocolatey\lib\winmedic\tools\chocolateyInstall.ps1".
+2026-11-18 21:30:53,211 4108 [DEBUG] - Attempting to copy "C:\ProgramData\chocolatey\lib-bkp\winmedic\0.17.0\tools\winmedic.exe"
+ to "C:\ProgramData\chocolatey\lib\winmedic\tools\winmedic.exe".
+2026-11-18 21:30:53,217 4108 [DEBUG] - Attempting to copy "C:\ProgramData\chocolatey\lib-bkp\winmedic\0.17.0\tools\winmedic.exe.gui"
+ to "C:\ProgramData\chocolatey\lib\winmedic\tools\winmedic.exe.gui".
+2026-11-18 21:30:53,217 4108 [DEBUG] - Attempting to copy "C:\ProgramData\chocolatey\lib-bkp\winmedic\0.17.0\tools\winmedic.exe.old-v0.0.1"
+ to "C:\ProgramData\chocolatey\lib\winmedic\tools\winmedic.exe.old-v0.0.1".
+2026-11-18 21:30:54,719 4108 [DEBUG] - Capturing package files in 'C:\ProgramData\chocolatey\lib\winmedic'
+2026-11-18 21:30:54,719 4108 [DEBUG] -  Found 'C:\ProgramData\chocolatey\lib\winmedic\winmedic.nupkg'
+2026-11-18 21:30:54,719 4108 [DEBUG] -  Found 'C:\ProgramData\chocolatey\lib\winmedic\winmedic.nuspec'
+2026-11-18 21:30:54,719 4108 [DEBUG] -  Found 'C:\ProgramData\chocolatey\lib\winmedic\tools\chocolateyInstall.ps1'
+2026-11-18 21:30:54,719 4108 [DEBUG] -  Found 'C:\ProgramData\chocolatey\lib\winmedic\tools\winmedic.exe'
+2026-11-18 21:30:54,719 4108 [DEBUG] -  Found 'C:\ProgramData\chocolatey\lib\winmedic\tools\winmedic.exe.gui'
+2026-11-18 21:30:54,719 4108 [DEBUG] -  Found 'C:\ProgramData\chocolatey\lib\winmedic\tools\winmedic.exe.old-v0.0.1'
+2026-11-18 21:30:54,719 4108 [DEBUG] - Attempting to copy "C:\ProgramData\chocolatey\lib\winmedic\tools\winmedic.exe"
+ to "C:\ProgramData\chocolatey\lib\winmedic\tools\winmedic.exe.0.17.0".
+2026-11-18 21:30:54,719 4108 [DEBUG] - Attempting to delete file "C:\ProgramData\chocolatey\lib\winmedic\tools\winmedic.exe.gui".
+2026-11-18 21:30:54,719 4108 [DEBUG] - Removing shim for winmedic.exe at 'C:\ProgramData\chocolatey\bin\winmedic.exe
+2026-11-18 21:30:54,719 4108 [DEBUG] - Attempting to delete file "C:\ProgramData\chocolatey\bin\winmedic.exe".
+2026-11-18 21:30:54,719 4108 [INFO ] -  Skipping auto uninstaller - No registry snapshot.
+2026-11-18 21:30:54,767 4108 [DEBUG] - Attempting to delete directory "C:\ProgramData\chocolatey\lib-bkp\winmedic".
+2026-11-18 21:30:54,767 4108 [DEBUG] -  Found 'C:\ProgramData\chocolatey\lib\winmedic\winmedic.nupkg'
+2026-11-18 21:30:54,767 4108 [DEBUG] - Attempting to delete file "C:\ProgramData\chocolatey\lib\winmedic\winmedic.nupkg".
+2026-11-18 21:30:54,767 4108 [DEBUG] -  Found 'C:\ProgramData\chocolatey\lib\winmedic\winmedic.nuspec'
+2026-11-18 21:30:54,767 4108 [DEBUG] - Attempting to delete file "C:\ProgramData\chocolatey\lib\winmedic\winmedic.nuspec".
+2026-11-18 21:30:54,767 4108 [DEBUG] -  Found 'C:\ProgramData\chocolatey\lib\winmedic\tools\chocolateyInstall.ps1'
+2026-11-18 21:30:54,767 4108 [DEBUG] - Attempting to delete file "C:\ProgramData\chocolatey\lib\winmedic\tools\chocolateyInstall.ps1".
+2026-11-18 21:30:54,767 4108 [DEBUG] -  Found 'C:\ProgramData\chocolatey\lib\winmedic\tools\winmedic.exe'
+2026-11-18 21:30:54,767 4108 [INFO ] -  winmedic has been successfully uninstalled.
+2026-11-18 21:30:54,767 4108 [DEBUG] -  Found 'C:\ProgramData\chocolatey\lib\winmedic\tools\winmedic.exe'
+Chocolatey uninstalled 1/1 packages. 
