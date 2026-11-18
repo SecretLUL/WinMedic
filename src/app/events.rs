@@ -222,6 +222,8 @@ impl App {
             self.audit_entries = self.audit_logger.recent_history();
             if end == ScanEnd::Completed {
                 self.save_scan_state();
+                let report = self.scan_usage_report();
+                self.report_usage(report);
             }
             self.catch_up_on_settings();
         }
@@ -335,6 +337,21 @@ impl App {
                             // before the last one is through.
                             repair_recorded = true;
                         }
+                        // For the usage report: the check's word and a
+                        // count, nothing of the finding itself.
+                        if !self.dry_run
+                            && let Some(check) = self
+                                .issues
+                                .iter()
+                                .find(|i| i.id == issue_id)
+                                .map(|i| i.module_id.clone())
+                        {
+                            let counts = self.repair_tally.entry(check).or_default();
+                            match &result {
+                                Ok(_) => counts.0 += 1,
+                                Err(_) => counts.1 += 1,
+                            }
+                        }
                         match result {
                             Ok(repaired) => {
                                 self.fixed_count += 1;
@@ -414,6 +431,9 @@ impl App {
             self.backup_records = self.reg_backup_mgr.list_backups();
             self.clamp_backup_selection();
             self.save_scan_state();
+            if let Some(report) = self.repair_usage_report() {
+                self.report_usage(report);
+            }
             self.catch_up_on_settings();
             if self.quit_when_repairs_end {
                 self.should_quit = true;
@@ -1428,6 +1448,104 @@ mod tests {
         .await
         .unwrap();
         app.process_background_events();
+    }
+
+    fn page_file_issue(id: &str) -> Issue {
+        Issue::new(
+            id,
+            "page_file",
+            "Page file disabled on every drive",
+            "Page File & Memory",
+            crate::engine::issue::Severity::Warning,
+            crate::engine::issue::RiskScore::High,
+            "Description",
+            "Details",
+            "Fix",
+            vec!["Step 1".to_string()],
+        )
+    }
+
+    /// End a repair run in which `first` was repaired and `second` failed.
+    async fn repair_run(app: &mut App, first: &str, second: &str) {
+        let (tx, rx) = channel::<RepairEvent>(10);
+        app.repair_event_rx = Some(rx);
+        app.is_fixing = true;
+        app.repair_tally.clear();
+        tx.send(RepairEvent::FixFinished {
+            issue_id: first.to_string(),
+            result: Ok(Repaired::Changed("Done.".to_string())),
+        })
+        .await
+        .unwrap();
+        tx.send(RepairEvent::FixFinished {
+            issue_id: second.to_string(),
+            result: Err("access denied".to_string()),
+        })
+        .await
+        .unwrap();
+        tx.send(RepairEvent::AllRepairsCompleted {
+            fixed_count: 1,
+            failed_count: 1,
+        })
+        .await
+        .unwrap();
+        app.process_background_events();
+    }
+
+    /// A scan and a repair run that ended are each reported once, as the
+    /// check's word and counts. A simulation is no repair and reports none.
+    #[tokio::test]
+    async fn a_finished_scan_and_repair_run_are_reported_when_the_user_agreed() {
+        let sent = |app: &mut App| -> serde_json::Value {
+            serde_json::from_str(&app.last_usage_report.take().expect("a report")).unwrap()
+        };
+        let mut app = App::new();
+        app.usage_receiver = Some(crate::app::usage::tests::RECEIVER);
+        app.config.share_usage_data = true;
+
+        let (mut app, tx) = scanning_again(app);
+        finish(
+            &mut app,
+            &tx,
+            vec![(
+                "page_file",
+                vec![page_file_issue("one"), page_file_issue("two")],
+            )],
+        )
+        .await;
+        let scan = sent(&mut app);
+        assert_eq!(scan[0]["eventName"], "scan");
+        assert_eq!(scan[0]["props"]["findings"], 2);
+        assert_eq!(scan[0]["props"]["found_page_file"], 2);
+
+        repair_run(&mut app, "one", "two").await;
+        let repair = sent(&mut app);
+        assert_eq!(repair[0]["eventName"], "repair");
+        assert_eq!(repair[0]["props"]["repaired"], 1);
+        assert_eq!(repair[0]["props"]["failed"], 1);
+        assert_eq!(repair[0]["props"]["repaired_page_file"], 1);
+        assert_eq!(repair[0]["props"]["repair_failed_page_file"], 1);
+        assert_eq!(repair[0]["sessionId"], scan[0]["sessionId"]);
+
+        app.dry_run = true;
+        repair_run(&mut app, "one", "two").await;
+        assert_eq!(app.last_usage_report, None, "a simulation repaired nothing");
+    }
+
+    /// Without the yes, the same scan and the same repairs send nothing.
+    #[tokio::test]
+    async fn nothing_is_reported_for_a_user_who_did_not_agree() {
+        let mut app = App::new();
+        app.usage_receiver = Some(crate::app::usage::tests::RECEIVER);
+        let (mut app, tx) = scanning_again(app);
+        finish(
+            &mut app,
+            &tx,
+            vec![("page_file", vec![page_file_issue("one")])],
+        )
+        .await;
+        repair_run(&mut app, "one", "missing").await;
+        assert_eq!(app.last_usage_report, None);
     }
 
     /// #255: Q, or the close button, while repairs run. The window does not

@@ -801,7 +801,7 @@ async fn test_github_api_release_url_with_dot_segments_or_backslash_is_dropped()
 fn test_appconfig_default_and_setting_count() {
     let cfg = AppConfig::default();
     assert!(cfg.check_for_updates);
-    assert_eq!(AppConfig::SETTING_COUNT, 9);
+    assert_eq!(AppConfig::SETTING_COUNT, 10);
 }
 
 #[test]

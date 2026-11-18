@@ -105,8 +105,24 @@ pub(crate) fn stage(app: &App) -> Stage {
 ///
 /// Filled, so the eye finds it first. Every other control on the page is a
 /// plain button and can wait.
-fn primary(ui: &mut egui::Ui, enabled: bool, text: &str) -> egui::Response {
-    theme::primary_button(ui, enabled, RichText::new(text), egui::vec2(0.0, 28.0))
+fn primary(ui: &mut egui::Ui, enabled: bool, text: &str, key: &str) -> egui::Response {
+    theme::primary_button(
+        ui,
+        enabled,
+        RichText::new(text),
+        Some(key),
+        egui::vec2(0.0, 28.0),
+    )
+}
+
+/// The button that stops a scan or a repair run. While a filter is set, Esc
+/// clears that first, so the button shows the key only when Esc stops.
+fn cancel(ui: &mut egui::Ui, app: &App, text: &str) -> egui::Response {
+    if app.has_active_filters() {
+        ui.button(text)
+    } else {
+        ui.add(theme::keyed(ui, text, "Esc"))
+    }
 }
 
 fn header(ui: &mut egui::Ui, app: &mut App) {
@@ -130,7 +146,7 @@ fn header(ui: &mut egui::Ui, app: &mut App) {
         }
         ui.add(egui::Label::new(line.join(" · ")).truncate());
         ui.add_space(4.0);
-        if ui.button("Cancel scan").on_hover_text("Esc").clicked() {
+        if cancel(ui, app, "Cancel scan").clicked() {
             app.cancel_current_operation();
         }
     } else if app.is_fixing {
@@ -161,7 +177,7 @@ fn header(ui: &mut egui::Ui, app: &mut App) {
         }
         ui.add(egui::Label::new(line).truncate());
         ui.add_space(4.0);
-        if ui.button("Cancel repair").on_hover_text("Esc").clicked() {
+        if cancel(ui, app, "Cancel repair").clicked() {
             app.cancel_current_operation();
         }
     } else if !has_scanned(app) {
@@ -172,7 +188,7 @@ fn header(ui: &mut egui::Ui, app: &mut App) {
              choose to repair something.",
         );
         ui.add_space(4.0);
-        if primary(ui, true, "Scan now").on_hover_text("S").clicked() {
+        if primary(ui, true, "Scan now", "S").clicked() {
             app.start_scan();
         }
     } else {
@@ -293,19 +309,16 @@ fn actions(ui: &mut egui::Ui, app: &mut App, open: usize) {
         if open > 0 {
             let selected = selected_for_repair(app);
             let label = repair_label(app.dry_run, selected, "finding");
-            let response = primary(ui, selected > 0, &label);
-            let response = if selected == 0 {
-                response.on_disabled_hover_text("Tick at least one finding below first")
-            } else {
-                response.on_hover_text("F")
-            };
-            if response.clicked() {
+            if primary(ui, selected > 0, &label, "F")
+                .on_disabled_hover_text("Tick at least one finding below first")
+                .clicked()
+            {
                 app.start_repairs();
             }
-            if ui.button("Scan again").on_hover_text("S").clicked() {
+            if ui.add(theme::keyed(ui, "Scan again", "S")).clicked() {
                 app.start_scan();
             }
-        } else if primary(ui, true, "Scan again").on_hover_text("S").clicked() {
+        } else if primary(ui, true, "Scan again", "S").clicked() {
             app.start_scan();
         }
 

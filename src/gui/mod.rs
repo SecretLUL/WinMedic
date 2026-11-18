@@ -70,6 +70,33 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
     // context rather than nested inside a `Ui`.
     let ctx = ui.ctx().clone();
 
+    // The introduction takes the whole window: the navigation and the
+    // banners are what it has not explained yet.
+    if let Some(page) = app.welcome {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::central_panel(ui.style()).inner_margin(12))
+            .show(ui, |ui| {
+                motion::entrance(ui, egui::Id::unique(("welcome", page)), |ui| {
+                    views::welcome::show(ui, app)
+                });
+            });
+        modals::show(&ctx, app);
+        return;
+    }
+
+    // So does the one question that follows a first start's introduction.
+    if app.usage_question {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::central_panel(ui.style()).inner_margin(12))
+            .show(ui, |ui| {
+                motion::entrance(ui, egui::Id::unique("usage_question"), |ui| {
+                    views::usage::show(ui, app)
+                });
+            });
+        modals::show(&ctx, app);
+        return;
+    }
+
     egui::Panel::top("navigation").show(ui, |ui| {
         ui.add_space(4.0);
         navigation(ui, app);
@@ -182,12 +209,12 @@ fn navigation(ui: &mut egui::Ui, app: &mut App) {
             current_page_bar(ui, *current);
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("Help").on_hover_text("?").clicked() {
+            if ui.add(theme::keyed(ui, "Help", "?")).clicked() {
                 app.show_help = true;
             }
             if ui
-                .button("Export report")
-                .on_hover_text("E - save the findings as an HTML report")
+                .add(theme::keyed(ui, "Export report", "E"))
+                .on_hover_text("Save the findings as an HTML report")
                 .clicked()
             {
                 app.status_message = Some(match app.export_report() {
@@ -197,14 +224,18 @@ fn navigation(ui: &mut egui::Ui, app: &mut App) {
             }
             // Named after where it goes, the way a BIOS labels the same key.
             let (label, hover) = if app.config.advanced_mode {
-                ("Easy mode (F7)", "Show only what needs doing")
+                ("Easy mode", "Show only what needs doing")
             } else {
                 (
-                    "Advanced mode (F7)",
+                    "Advanced mode",
                     "Show every finding with its details, the filters, the logs and simulation",
                 )
             };
-            if ui.button(label).on_hover_text(hover).clicked() {
+            if ui
+                .add(theme::keyed(ui, label, "F7"))
+                .on_hover_text(hover)
+                .clicked()
+            {
                 app.toggle_advanced_mode();
             }
         });
@@ -314,15 +345,22 @@ fn update_banner(ui: &mut egui::Ui, app: &mut App, update: &UpdateInfo) {
                     }
                     None => busy_spinner(ui),
                 }
-            } else if ui
-                .add(egui::Button::new(RichText::new("Update now").strong()))
-                .on_hover_text("U")
-                .clicked()
-            {
+            } else if update_now(ui, app).clicked() {
                 app.show_update_notice();
             }
         });
     });
+}
+
+/// The update banner's button. On Settings `U` restores a snapshot, so
+/// there the button shows no key.
+fn update_now(ui: &mut egui::Ui, app: &App) -> egui::Response {
+    let label = RichText::new("Update now").strong();
+    if app.active_tab == TAB_SETTINGS {
+        ui.add(egui::Button::new(label))
+    } else {
+        ui.add(theme::keyed(ui, label, "U"))
+    }
 }
 
 /// How wide the update banner draws the download's bar.
@@ -536,7 +574,7 @@ impl eframe::App for WinMedicApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{ConfirmRequest, TAB_COUNT, TAB_HOME};
+    use crate::app::{ConfirmRequest, SettingsPage, TAB_COUNT, TAB_HOME};
     use crate::engine::issue::{Issue, RiskScore, Severity};
     use crate::modules::ModuleStatus;
     use crate::safety::audit::AuditEntry;
@@ -587,6 +625,10 @@ mod tests {
             status.3 = ModuleStatus::Idle;
         }
         app.selected_filtered_index = 0;
+        // A build that has somewhere to send usage data, so that what it
+        // adds to the window is drawn and tested. Nothing is sent: the
+        // sender of a test is inert.
+        app.usage_receiver = Some(crate::app::usage::tests::RECEIVER);
         app.backup_records = vec![BackupRecord {
             id: "b1".to_string(),
             timestamp: "2026-01-01 12:00:00".to_string(),
@@ -707,20 +749,29 @@ mod tests {
             for fixture in FIXTURES {
                 // 960 x 527: what is left of 1920 x 1080 at 175 %.
                 for size in [smallest, (960.0, 527.0), (1400.0, 900.0), (1920.0, 1200.0)] {
-                    let mut app = fixture();
-                    app.active_tab = tab;
-                    let harness = sized_window(app, size);
+                    // Settings is five pages; the other view is one.
+                    let pages = if tab == TAB_SETTINGS {
+                        SettingsPage::ALL.len()
+                    } else {
+                        1
+                    };
+                    for page in 0..pages {
+                        let mut app = fixture();
+                        app.active_tab = tab;
+                        app.open_settings_page(SettingsPage::ALL[page]);
+                        let harness = sized_window(app, size);
 
-                    let help = harness.get_by_label("Help").rect();
-                    assert!(
-                        help.bottom() < 60.0 && help.right() <= size.0,
-                        "view {tab}: the navigation lost its Help button at {size:?}: {help:?}"
-                    );
-                    for title in TABS {
+                        let help = harness.get_by_label("Help").rect();
                         assert!(
-                            harness.query_by_label(title).is_some(),
-                            "view {tab} at {size:?} did not draw its navigation entry {title}"
+                            help.bottom() < 60.0 && help.right() <= size.0,
+                            "view {tab}: the navigation lost its Help button at {size:?}: {help:?}"
                         );
+                        for title in TABS {
+                            assert!(
+                                harness.query_by_label(title).is_some(),
+                                "view {tab} at {size:?} did not draw its navigation entry {title}"
+                            );
+                        }
                     }
                 }
             }
@@ -976,14 +1027,16 @@ mod tests {
     /// a screen reader and for a click.
     #[test]
     fn a_page_that_came_in_stands_where_it_is_drawn_at_once() {
+        // A line only the page has: its title is in the list of pages too.
+        let line = SettingsPage::Repairs.summary();
         let mut settings = fresh_app();
         settings.active_tab = TAB_SETTINGS;
-        let at_once = window(settings).get_by_label("Options").rect();
+        let at_once = window(settings).get_by_label(line).rect();
 
         let mut harness = animated_window(fresh_app());
         harness.get_by_label("Settings").click();
         harness.step();
-        let coming = harness.get_by_label("Options").rect();
+        let coming = harness.get_by_label(line).rect();
         assert!(
             coming.top() > at_once.top() && coming.top() <= at_once.top() + 12.0,
             "on its way at {coming:?}, its place is {at_once:?}"
@@ -992,7 +1045,53 @@ mod tests {
 
         // `run` gives up on an animation that does not end.
         harness.run();
-        assert_eq!(harness.get_by_label("Options").rect(), at_once);
+        assert_eq!(harness.get_by_label(line).rect(), at_once);
+    }
+
+    /// Picking another page of Settings from its list brings that page up
+    /// into its place the same way, while the list itself stays where it is.
+    #[test]
+    fn a_settings_page_picked_from_the_list_comes_in_and_the_list_stays() {
+        let line = SettingsPage::Scans.summary();
+        let at_once = settings_window(fresh_app(), SettingsPage::Scans)
+            .get_by_label(line)
+            .rect();
+
+        let mut app = fresh_app();
+        app.active_tab = TAB_SETTINGS;
+        let mut harness = animated_window(app);
+        let entry = |harness: &Harness<'static, App>| {
+            harness
+                .get_by_role_and_label(Role::Tab, SettingsPage::Scans.title())
+                .rect()
+        };
+        let entry_at_rest = entry(&harness);
+
+        harness
+            .get_by_role_and_label(Role::Tab, SettingsPage::Scans.title())
+            .click();
+        harness.step();
+        harness.step();
+        let coming = harness.get_by_label(line).rect();
+        assert!(
+            coming.top() > at_once.top() && coming.top() <= at_once.top() + 12.0,
+            "on its way at {coming:?}, its place is {at_once:?}"
+        );
+        assert_eq!(coming.left(), at_once.left());
+        assert_eq!(entry(&harness), entry_at_rest, "the list does not move");
+
+        // `run` gives up on an animation that does not end.
+        harness.run();
+        assert_eq!(harness.get_by_label(line).rect(), at_once);
+        assert_eq!(entry(&harness), entry_at_rest);
+
+        // Coming back to Settings from the other view, only the view comes
+        // in: the page inside it is the one that was there.
+        harness.get_by_label("Scan & Repair").click();
+        harness.run();
+        harness.get_by_label("Settings").click();
+        harness.run();
+        assert_eq!(harness.get_by_label(line).rect(), at_once);
     }
 
     /// A dialog settles from a little larger into the size and place of one
@@ -1203,39 +1302,354 @@ mod tests {
         assert!(harness.state().pending_confirm.is_none());
     }
 
-    /// The whole point of that merge: none of the safety surface may go missing.
+    /// A window on the Settings tab, turned to `page`.
+    fn settings_window(mut app: App, page: SettingsPage) -> Harness<'static, App> {
+        app.active_tab = TAB_SETTINGS;
+        app.open_settings_page(page);
+        window(app)
+    }
+
+    /// The whole point of that merge: none of the safety surface may go
+    /// missing. It is spread over the pages now, and each still has its part.
     #[test]
     fn the_settings_view_carries_the_whole_safety_surface() {
-        let mut app = fresh_app();
-        app.active_tab = TAB_SETTINGS;
-        let harness = window(app);
+        let surface: [(SettingsPage, &[&str]); 5] = [
+            (
+                SettingsPage::Repairs,
+                &[
+                    "Create a VSS restore point before repairs",
+                    "Back up the registry before changing it",
+                    "Restart services automatically",
+                ],
+            ),
+            (
+                SettingsPage::Undo,
+                &[
+                    "Registry backups",
+                    "Startup entry removed",
+                    "Restore the selected snapshot",
+                    "System restore points",
+                    "255 | WinMedic Auto-Restore Point (before repairs) | ",
+                ],
+            ),
+            (
+                SettingsPage::Scans,
+                &[
+                    "Temp file threshold",
+                    "WinMedicHelper background scan",
+                    "Archived findings",
+                ],
+            ),
+            (
+                SettingsPage::Logs,
+                &["Recent activity", "Disabled a startup entry", "Log folder"],
+            ),
+            (
+                SettingsPage::General,
+                &[
+                    "Check for updates automatically",
+                    "Share anonymous usage data",
+                    "Show what is sent",
+                    "Remove WinMedic from this PC",
+                ],
+            ),
+        ];
+        for (page, expected) in surface {
+            let harness = settings_window(fresh_app(), page);
+            for expected in expected {
+                assert!(
+                    harness.query_by_label_contains(expected).is_some(),
+                    "{page:?} lost: {expected}"
+                );
+            }
+            // Every page names all of them, so each is one click away.
+            for other in SettingsPage::ALL {
+                assert!(
+                    harness
+                        .query_by_role_and_label(Role::Tab, other.title())
+                        .is_some(),
+                    "{page:?} does not list {other:?}"
+                );
+            }
+            // The restore point's time is a date, not the WMI string (#183).
+            assert!(harness.query_by_label_contains("20261009201051").is_none());
+        }
+    }
 
-        for expected in [
-            "Options",
+    /// One page at a time: what belongs to another page is not drawn, which
+    /// is what keeps Easy mode's fixed window from filling up with text.
+    #[test]
+    fn a_settings_page_shows_only_its_own_part() {
+        let harness = settings_window(fresh_app(), SettingsPage::Repairs);
+        for elsewhere in [
             "Registry backups",
-            "System restore points",
+            "Temp file threshold",
             "Recent activity",
-            "Log folder",
-            "Startup entry removed",
-            "Restore the selected snapshot",
-            "Disabled a startup entry",
-            "255 | WinMedic Auto-Restore Point (before repairs) | ",
+            "Remove WinMedic from this PC",
         ] {
             assert!(
-                harness.query_by_label_contains(expected).is_some(),
-                "the safety surface lost: {expected}"
+                harness.query_by_label(elsewhere).is_none(),
+                "{elsewhere} is on the Repairs page"
             );
         }
-        // The restore point's time is a date, not the WMI string (#183).
-        assert!(harness.query_by_label_contains("20261009201051").is_none());
+    }
+
+    /// The question after a first start's introduction, as the window
+    /// draws it.
+    fn asked_app() -> App {
+        let mut app = easy_fresh_app();
+        app.usage_question = true;
+        app
+    }
+
+    /// The page says all of it at once, in the window Easy mode locks: what
+    /// is sent, what never is, where it goes, and both answers.
+    #[test]
+    fn the_usage_question_says_everything_on_one_page_of_the_smallest_window() {
+        let size = (window::MIN_SIZE.x, window::MIN_SIZE.y);
+        // 960 x 527: what is left of 1920 x 1080 at 175 %. There the text
+        // scrolls, and the two answers stay on screen.
+        for size in [size, (960.0, 527.0), (1400.0, 900.0)] {
+            let harness = sized_window(asked_app(), size);
+            for expected in [
+                "Share anonymous usage data?",
+                "What is sent",
+                "What is never sent",
+                "Where it goes",
+                "To an example server in Germany",
+                "Show exactly what is sent",
+                "Nothing is sent unless you choose Yes.",
+            ] {
+                assert!(
+                    harness.query_by_label_contains(expected).is_some(),
+                    "the question lost: {expected}"
+                );
+            }
+            for button in ["No, thanks", "Yes, share"] {
+                let rect = harness.get_by_label(button).rect();
+                assert!(
+                    rect.bottom() <= size.1 && rect.right() <= size.0 && rect.left() >= 0.0,
+                    "{button} is at {rect:?} in {size:?}"
+                );
+            }
+            // The window behind it is not drawn: nothing to click past it.
+            assert!(harness.query_by_label("Settings").is_none());
+            assert!(harness.query_by_label("Scan now").is_none());
+        }
+    }
+
+    #[test]
+    fn the_usage_question_is_answered_by_its_two_buttons_only() {
+        let mut harness = window(asked_app());
+        harness.get_by_label("Yes, share").click();
+        harness.run_steps(2);
+        assert!(!harness.state().usage_question);
+        assert!(harness.state().config.share_usage_data);
+        assert!(
+            harness.query_by_label("Scan now").is_some(),
+            "the window is back"
+        );
+
+        let mut harness = window(asked_app());
+        harness.get_by_label("No, thanks").click();
+        harness.run_steps(2);
+        assert!(!harness.state().usage_question);
+        assert!(!harness.state().config.share_usage_data);
+
+        // Enter, which moved through the introduction, agrees to nothing.
+        let mut harness = window_with_keys(asked_app());
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        assert!(harness.state().usage_question);
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+        assert!(!harness.state().usage_question);
+        assert!(!harness.state().config.share_usage_data);
+    }
+
+    /// The click that left the introduction, made again in the same place,
+    /// does not land on Yes.
+    #[test]
+    fn a_click_where_the_introduction_was_left_does_not_agree() {
+        let smallest = (window::MIN_SIZE.x, window::MIN_SIZE.y);
+        for size in [smallest, (960.0, 527.0), (1400.0, 900.0)] {
+            let yes = sized_window(asked_app(), size)
+                .get_by_label("Yes, share")
+                .rect();
+            for (page, button) in [
+                (crate::app::welcome::PAGES - 1, "Get started"),
+                (0, "Next"),
+                (0, "Skip"),
+                (1, "Skip"),
+            ] {
+                let left_by = sized_window(welcome_app(page), size)
+                    .get_by_label(button)
+                    .rect();
+                assert!(
+                    !yes.intersects(left_by),
+                    "at {size:?} Yes at {yes:?} is under {button} at {left_by:?}"
+                );
+            }
+        }
+    }
+
+    /// From the introduction of a first start to the question, in the
+    /// window: read to the end, and skipped.
+    #[test]
+    fn a_first_start_ends_on_the_usage_question() {
+        for leave in ["Get started", "Skip"] {
+            let page = if leave == "Skip" {
+                0
+            } else {
+                crate::app::welcome::PAGES - 1
+            };
+            let mut app = welcome_app(page);
+            app.ask_usage_after_welcome = true;
+            let mut harness = window(app);
+            harness.get_by_label(leave).click();
+            harness.run_steps(2);
+            assert_eq!(harness.state().welcome, None);
+            assert!(
+                harness
+                    .query_by_label("Share anonymous usage data?")
+                    .is_some(),
+                "after {leave}"
+            );
+        }
+    }
+
+    /// "Show what is sent" opens the report itself, from the question and
+    /// from Settings, and closes again without answering anything.
+    #[test]
+    fn the_report_can_be_read_before_and_after_the_answer() {
+        let mut harness = window_with_keys(asked_app());
+        harness.get_by_label("Show exactly what is sent").click();
+        harness.run_steps(2);
+        assert!(
+            harness
+                .query_by_label_contains("This is the whole report of a scan")
+                .is_some()
+        );
+        let shown = harness.state().usage_preview.clone().unwrap();
+        assert!(shown.contains("\"eventName\": \"scan\""), "{shown}");
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+        assert!(harness.state().usage_preview.is_none());
+        assert!(harness.state().usage_question, "still to be answered");
+
+        let mut harness = settings_window(fresh_app(), SettingsPage::General);
+        harness.get_by_label("Show what is sent").click();
+        harness.run_steps(2);
+        assert!(harness.state().usage_preview.is_some());
+        assert!(!harness.state().config.share_usage_data);
+        harness.get_by_label("Close").click();
+        harness.run_steps(2);
+        assert!(harness.state().usage_preview.is_none());
+    }
+
+    /// The switch in Settings is the question's answer, changed later.
+    #[test]
+    fn settings_switch_usage_data_on_and_off() {
+        // On: the tick opens the question, with where the data goes, and
+        // only its Yes switches it on.
+        let mut harness = settings_window(fresh_app(), SettingsPage::General);
+        harness.get_by_label("Share anonymous usage data").click();
+        harness.run_steps(2);
+        assert!(!harness.state().config.share_usage_data);
+        assert!(
+            harness
+                .query_by_label_contains("To an example server in Germany")
+                .is_some()
+        );
+        assert!(harness.query_by_label("Settings > General").is_some());
+        harness.get_by_label("Yes, share").click();
+        harness.run_steps(2);
+        assert!(harness.state().config.share_usage_data);
+        assert_eq!(harness.state().active_tab, TAB_SETTINGS);
+
+        // Off: at once.
+        harness.get_by_label("Share anonymous usage data").click();
+        harness.run_steps(2);
+        assert!(!harness.state().config.share_usage_data);
+        assert!(!harness.state().usage_question);
+    }
+
+    /// A build with nowhere to send it offers nothing: no switch, no link.
+    #[test]
+    fn a_build_without_a_receiver_offers_no_usage_data() {
+        let mut app = fresh_app();
+        app.usage_receiver = None;
+        let harness = settings_window(app, SettingsPage::General);
+        assert!(
+            harness
+                .query_by_label("Check for updates automatically")
+                .is_some()
+        );
+        assert!(
+            harness
+                .query_by_label("Share anonymous usage data")
+                .is_none()
+        );
+        assert!(harness.query_by_label("Show what is sent").is_none());
+    }
+
+    /// A click on a page's name turns to it, and the keyboard goes along.
+    #[test]
+    fn the_list_of_pages_turns_the_page() {
+        let mut app = fresh_app();
+        app.active_tab = TAB_SETTINGS;
+        let mut harness = window(app);
+        assert_eq!(harness.state().settings_page(), SettingsPage::Repairs);
+
+        for page in [
+            SettingsPage::Undo,
+            SettingsPage::Logs,
+            SettingsPage::Scans,
+            SettingsPage::General,
+            SettingsPage::Repairs,
+        ] {
+            harness
+                .get_by_role_and_label(Role::Tab, page.title())
+                .click();
+            harness.run_steps(2);
+            assert_eq!(harness.state().settings_page(), page);
+            let summary = harness.state().settings_summary(page);
+            assert!(harness.query_by_label(summary).is_some());
+        }
+    }
+
+    /// Every page fits the window Easy mode locks: nothing of it is below
+    /// the fold on a PC that has not been repaired often.
+    #[test]
+    fn every_settings_page_fits_the_smallest_window_without_scrolling() {
+        let size = (window::MIN_SIZE.x, window::MIN_SIZE.y);
+        let last_line: [(SettingsPage, &str); 5] = [
+            (SettingsPage::Repairs, "Restart services automatically"),
+            (SettingsPage::Undo, "Refresh"),
+            (SettingsPage::Scans, "Nothing archived."),
+            (
+                SettingsPage::Logs,
+                "Every scan, repair, simulation and rollback is recorded here.",
+            ),
+            (SettingsPage::General, "Remove WinMedic from this PC"),
+        ];
+        for (page, label) in last_line {
+            let mut app = easy_fresh_app();
+            app.active_tab = TAB_SETTINGS;
+            app.open_settings_page(page);
+            let harness = sized_window(app, size);
+            let rect = harness.get_by_label(label).rect();
+            assert!(
+                rect.bottom() <= size.1 - 30.0 && rect.right() <= size.0,
+                "{page:?}: {label} is at {rect:?}"
+            );
+        }
     }
 
     /// The red button only asks; removing happens in the dialog.
     #[test]
     fn the_remove_button_asks_first() {
-        let mut app = fresh_app();
-        app.active_tab = TAB_SETTINGS;
-        let mut harness = window(app);
+        let mut harness = settings_window(fresh_app(), SettingsPage::General);
 
         harness.get_by_label("Remove WinMedic from this PC").click();
         harness.run();
@@ -1289,45 +1703,55 @@ mod tests {
                     harness.run();
                 }
 
-                // Both properties, because AccessKit splits them: an
-                // interactive widget carries its text in `label`, while a
-                // plain piece of text — which is most of what this window is —
-                // is a node of role `Label` carrying its text in `value`.
-                // Reading only the former collects the buttons and none of the
-                // prose.
-                let drawn = std::cell::RefCell::new(Vec::new());
-                harness
-                    .query_all_by(|node| {
-                        let mut drawn = drawn.borrow_mut();
-                        drawn.extend(node.label());
-                        drawn.extend(node.value());
-                        false
-                    })
-                    .count();
-                let drawn = drawn.into_inner();
                 // Easy mode before the first scan is the sparsest page the
                 // window draws, at 14 strings. Reading only the labels, the
                 // mistake this guards against, collects about six.
+                let drawn = strings_with_glyphs(&harness, &format!("view {tab}"));
                 assert!(
-                    drawn.len() >= 10,
-                    "view {tab} produced only {} strings, so this asserts on nothing",
-                    drawn.len()
+                    drawn >= 10,
+                    "view {tab} produced only {drawn} strings, so this asserts on nothing"
                 );
-
-                let font = egui::FontId::proportional(14.0);
-                harness.ctx.fonts_mut(|fonts| {
-                    for label in &drawn {
-                        for character in label.chars() {
-                            assert!(
-                                fonts.has_glyph(&font, character),
-                                "view {tab}: no glyph for U+{:04X} ({character:?}) in {label:?}",
-                                character as u32
-                            );
-                        }
-                    }
-                });
             }
         }
+        for page in 0..crate::app::welcome::PAGES {
+            let harness = window(welcome_app(page));
+            let drawn = strings_with_glyphs(&harness, &format!("introduction page {page}"));
+            assert!(drawn >= 6, "page {page} produced only {drawn} strings");
+        }
+    }
+
+    /// Every string `harness` draws, checked for a glyph per character; how
+    /// many strings that was.
+    fn strings_with_glyphs(harness: &Harness<'static, App>, what: &str) -> usize {
+        // Both properties, because AccessKit splits them: an interactive
+        // widget carries its text in `label`, while a plain piece of text —
+        // which is most of what this window is — is a node of role `Label`
+        // carrying its text in `value`. Reading only the former collects the
+        // buttons and none of the prose.
+        let drawn = std::cell::RefCell::new(Vec::new());
+        harness
+            .query_all_by(|node| {
+                let mut drawn = drawn.borrow_mut();
+                drawn.extend(node.label());
+                drawn.extend(node.value());
+                false
+            })
+            .count();
+        let drawn = drawn.into_inner();
+
+        let font = egui::FontId::proportional(14.0);
+        harness.ctx.fonts_mut(|fonts| {
+            for label in &drawn {
+                for character in label.chars() {
+                    assert!(
+                        fonts.has_glyph(&font, character),
+                        "{what}: no glyph for U+{:04X} ({character:?}) in {label:?}",
+                        character as u32
+                    );
+                }
+            }
+        });
+        drawn.len()
     }
 
     const GB: u64 = 1024 * 1024 * 1024;
@@ -1601,9 +2025,35 @@ mod tests {
                 .is_some()
         );
 
-        harness.get_by_label("Show in Advanced mode (F7)").click();
+        harness
+            .get_by_label("Show details in Advanced mode (F7)")
+            .click();
         harness.run();
         assert!(harness.state().config.advanced_mode);
+    }
+
+    /// A failed repair, a finding left alone and a check that gave up each
+    /// said "Advanced mode (F7)" in its own line. The page says what
+    /// happened and points there once.
+    #[test]
+    fn easy_mode_points_to_advanced_mode_once() {
+        let mut app = easy_forecast_app();
+        app.issues[0].fix_error = Some("access denied".to_string());
+        app.issues[1].is_selected = false;
+        let harness = window(app);
+
+        for said in [
+            "1 repair did not work.",
+            "1 more needs your decision.",
+            "Show details in Advanced mode (F7)",
+        ] {
+            assert!(
+                harness.query_by_label(said).is_some(),
+                "{said:?} is missing"
+            );
+        }
+        assert!(harness.query_by_label_contains("Could not check").is_some());
+        assert_eq!(harness.query_all_by_label_contains("(F7)").count(), 1);
     }
 
     #[test]
@@ -1756,6 +2206,72 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Easy mode while a scan has run for `seconds` and waits for the checks
+    /// named in `unfinished`.
+    fn easy_scanning(seconds: u64, unfinished: &[&str]) -> Harness<'static, App> {
+        let mut app = easy_fresh_app();
+        app.is_scanning = true;
+        app.scan_overall_progress = 99;
+        app.scan_started_at = Instant::now().checked_sub(Duration::from_secs(seconds));
+        for module in &mut app.module_progress_list {
+            module.is_done = !unfinished.contains(&module.id.as_str());
+        }
+        sized_window(app, (window::MIN_SIZE.x, window::MIN_SIZE.y))
+    }
+
+    const STILL_CHECKING: &str =
+        "All good, WinMedic is still checking. The last checks take the longest.";
+
+    /// The bar stands at 99 % while the slowest check runs on. After half a
+    /// minute the page says that this is normal, in its own words, and which
+    /// check it is waiting for.
+    #[test]
+    fn a_scan_running_half_a_minute_says_all_is_well_and_what_it_waits_for() {
+        let harness = easy_scanning(63, &["system_cleaner"]);
+        assert!(harness.query_by_label(STILL_CHECKING).is_some());
+        assert!(
+            harness
+                .query_by_label("Still running: System & Cache Cleaner.")
+                .is_some()
+        );
+        assert!(
+            harness.query_by_label(PATIENCE).is_none(),
+            "the repair page's words are the repair page's"
+        );
+        // Under the Cancel button, which stays where the pointer is, and
+        // inside the window Easy mode locks.
+        let cancel = harness.get_by_label("Cancel").rect();
+        let said = harness.get_by_label(STILL_CHECKING).rect();
+        assert!(said.top() > cancel.bottom(), "{said:?} vs {cancel:?}");
+        assert!(said.bottom() < window::MIN_SIZE.y - 30.0, "{said:?}");
+
+        let two = easy_scanning(31, &["system_cleaner", "network"]);
+        assert!(
+            two.query_by_label_contains("Still running: ")
+                .is_some_and(|line| format!("{line:?}").contains(" and ")),
+            "two checks are named"
+        );
+        let many = easy_scanning(31, &["system_cleaner", "network", "storage"]);
+        assert!(many.query_by_label("Still running: 3 checks.").is_some());
+    }
+
+    #[test]
+    fn a_short_scan_needs_no_reassurance() {
+        let harness = easy_scanning(20, &["system_cleaner"]);
+        assert!(harness.query_by_label("Checking your PC...").is_some());
+        assert!(harness.query_by_label(STILL_CHECKING).is_none());
+        assert!(harness.query_by_label_contains("Still running").is_none());
+    }
+
+    /// The scan's time stays on the result page; its reassurance does not.
+    #[test]
+    fn a_finished_scan_shows_no_reassurance() {
+        let mut app = easy_scanned_app();
+        app.scan_duration = Some(Duration::from_secs(122));
+        let harness = window(app);
+        assert!(harness.query_by_label(STILL_CHECKING).is_none());
     }
 
     #[test]
@@ -2127,6 +2643,7 @@ mod tests {
         );
 
         harness.state_mut().active_tab = TAB_SETTINGS;
+        harness.state_mut().open_settings_page(SettingsPage::Scans);
         harness.run_steps(2);
         assert!(harness.query_by_label("DNS cache full").is_some());
         harness.get_by_label("Show again").click();
@@ -2161,9 +2678,8 @@ mod tests {
 
     #[test]
     fn settings_say_when_nothing_is_archived() {
-        let mut app = scanned_app();
-        app.active_tab = TAB_SETTINGS;
-        assert!(window(app).query_by_label("Nothing archived.").is_some());
+        let harness = settings_window(scanned_app(), SettingsPage::Scans);
+        assert!(harness.query_by_label("Nothing archived.").is_some());
     }
 
     /// Nowhere else either: Easy mode does not count it, and a repair of it
@@ -2214,6 +2730,40 @@ mod tests {
         assert!(harness.query_by_label("Help").is_some());
     }
 
+    /// A button shows the key that presses it, and only where that key does
+    /// what the button does. On Settings `U` restores a snapshot, so "Update
+    /// now" shows no key there and is narrower by the cap.
+    #[test]
+    fn update_now_shows_its_key_only_where_the_key_opens_the_update() {
+        let width = |tab: usize| {
+            let mut app = with_update(scanned_app());
+            app.active_tab = tab;
+            window(app).get_by_label("Update now").rect().width()
+        };
+        let (home, settings) = (width(crate::app::TAB_HOME), width(TAB_SETTINGS));
+        assert!(
+            home > settings + 10.0,
+            "no key cap on Scan & Repair: {home} vs {settings} on Settings"
+        );
+    }
+
+    /// While a filter is set, Esc clears the filter before it stops a scan:
+    /// "Cancel scan" shows Esc only when Esc cancels.
+    #[test]
+    fn cancel_scan_shows_esc_only_while_esc_cancels() {
+        let width = |filter: Option<Severity>| {
+            let mut app = scanned_app();
+            app.is_scanning = true;
+            app.severity_filter = filter;
+            window(app).get_by_label("Cancel scan").rect().width()
+        };
+        let (plain, filtered) = (width(None), width(Some(Severity::Critical)));
+        assert!(
+            plain > filtered + 10.0,
+            "no key cap without a filter: {plain} vs {filtered} with one"
+        );
+    }
+
     /// Where the user asked for it: top right, left of "Export report". It is
     /// named after where it goes, the way a BIOS labels the same key.
     #[test]
@@ -2221,18 +2771,18 @@ mod tests {
         let mut harness = window(easy_fresh_app());
 
         let export = harness.get_by_label("Export report").rect();
-        let mode = harness.get_by_label("Advanced mode (F7)").rect();
+        let mode = harness.get_by_label("Advanced mode").rect();
         assert!(
             mode.right() <= export.left() && (mode.center().y - export.center().y).abs() < 2.0,
             "the button is not beside Export report: {mode:?} vs {export:?}"
         );
 
-        harness.get_by_label("Advanced mode (F7)").click();
+        harness.get_by_label("Advanced mode").click();
         harness.run();
         assert!(harness.state().config.advanced_mode);
         assert!(harness.query_by_label("Show log").is_some());
 
-        harness.get_by_label("Easy mode (F7)").click();
+        harness.get_by_label("Easy mode").click();
         harness.run();
         assert!(!harness.state().config.advanced_mode);
     }
@@ -2382,26 +2932,45 @@ mod tests {
         assert!(in_window(leftmost(&harness, "Finding number 00")));
     }
 
-    /// The same for the settings, at the smallest window size.
+    /// The same for the settings, at the smallest window size: the arrow
+    /// keys walk every setting, and each is on screen when they reach it,
+    /// which past the last of a page means the page was turned.
     #[test]
-    fn the_settings_scroll_to_the_row_the_keyboard_moved_to() {
+    fn the_settings_turn_to_the_row_the_keyboard_moved_to() {
         let mut app = scanned_app();
         app.active_tab = TAB_SETTINGS;
-        let last = crate::config::AppConfig::SETTING_COUNT - 1;
-        let label = app.config.setting_row(last).unwrap().0;
+        app.selected_setting_index = 0;
         let mut harness = window_with_keys_at(app, window::MIN_SIZE);
         let in_window = |rect: egui::Rect| rect.top() >= 0.0 && rect.bottom() <= window::MIN_SIZE.y;
-        assert!(
-            !in_window(leftmost(&harness, label)),
-            "{label} fits already"
-        );
 
-        for _ in 0..last {
+        let mut walked = vec![0];
+        for _ in 1..crate::config::AppConfig::SETTING_COUNT {
             harness.key_press(egui::Key::ArrowDown);
             harness.run();
+            let index = harness.state().selected_setting_index;
+            let label = harness.state().config.setting_row(index).unwrap().0;
+            assert!(in_window(leftmost(&harness, label)), "{label} is not shown");
+            walked.push(index);
         }
-        assert_eq!(harness.state().selected_setting_index, last);
-        assert!(in_window(leftmost(&harness, label)));
+        walked.sort_unstable();
+        walked.dedup();
+        assert_eq!(walked.len(), crate::config::AppConfig::SETTING_COUNT);
+
+        // PgDn and PgUp turn the pages, B goes to the backups and back.
+        let page = harness.state().settings_page();
+        harness.key_press(egui::Key::PageUp);
+        harness.run();
+        assert_ne!(harness.state().settings_page(), page);
+        harness.key_press(egui::Key::PageDown);
+        harness.run();
+        assert_eq!(harness.state().settings_page(), page);
+        harness.event(egui::Event::Text("b".to_string()));
+        harness.run();
+        assert_eq!(harness.state().settings_page(), SettingsPage::Undo);
+        assert!(harness.query_by_label("Registry backups").is_some());
+        harness.event(egui::Event::Text("b".to_string()));
+        harness.run();
+        assert_eq!(harness.state().settings_page(), page);
     }
 
     /// F7 types nothing, so it works from inside the search box too — and
@@ -2429,6 +2998,208 @@ mod tests {
         harness.event(egui::Event::Text("?".to_string()));
         harness.run();
         assert!(harness.state().show_help);
+    }
+
+    /// Easy mode before the first scan, behind page `page` of the
+    /// introduction: what a first start draws.
+    fn welcome_app(page: usize) -> App {
+        let mut app = easy_fresh_app();
+        app.welcome = Some(page);
+        app
+    }
+
+    /// A first start says what WinMedic does, which two buttons do it and
+    /// what can be left alone, before it shows the window that has them.
+    #[test]
+    fn the_introduction_says_what_winmedic_does_and_what_to_press() {
+        let pages: [&[&str]; crate::app::welcome::PAGES] = [
+            &[
+                "Introduction, page 1 of 3",
+                "Welcome to WinMedic",
+                "WinMedic finds common Windows problems and repairs them.",
+                "Next",
+                "Skip",
+            ],
+            &[
+                "Introduction, page 2 of 3",
+                "Scan first, then repair",
+                "Scan now",
+                "Checks your PC for problems. A scan changes nothing.",
+                "Repair",
+                "Repairs what WinMedic can fix. A restore point is created first.",
+                "Next",
+                "Skip",
+                "Back",
+            ],
+            &[
+                "Introduction, page 3 of 3",
+                "What you can leave alone",
+                "Advanced mode (F7)",
+                "Settings",
+                "Help, at the top right, shows this introduction again.",
+                "Get started",
+                "Back",
+            ],
+        ];
+        for (page, expected) in pages.iter().enumerate() {
+            let harness = window(welcome_app(page));
+            for label in *expected {
+                assert!(
+                    harness.query_by_label(label).is_some(),
+                    "page {page} does not say {label:?}"
+                );
+            }
+            // It takes the whole window: nothing is on offer that it has not
+            // explained yet.
+            for behind in [
+                "Help",
+                "Export report",
+                "This PC has not been checked yet",
+                "Ready",
+            ] {
+                assert!(
+                    harness.query_by_label(behind).is_none(),
+                    "page {page} draws {behind:?}"
+                );
+            }
+            assert_eq!(
+                harness.query_all_by_role(Role::Button).count(),
+                [2, 3, 2][page],
+                "page {page}"
+            );
+        }
+        assert!(window(welcome_app(0)).query_by_label("Back").is_none());
+    }
+
+    /// Whoever has repaired Windows before leaves with one click, on a
+    /// button as big as the one that reads on.
+    #[test]
+    fn skip_is_as_big_as_next_and_leaves_at_once() {
+        let normal = window(scanned_app())
+            .get_by_label("Scan again")
+            .rect()
+            .height();
+        for page in 0..crate::app::welcome::PAGES - 1 {
+            let mut harness = window(welcome_app(page));
+            let next = harness.get_by_label("Next").rect();
+            let skip = harness.get_by_label("Skip").rect();
+            assert!(
+                skip.height() >= 44.0 && skip.height() > normal + 10.0,
+                "Skip is {} px tall",
+                skip.height()
+            );
+            assert_eq!(skip.size(), next.size(), "page {page}");
+
+            harness.get_by_label("Skip").click();
+            harness.run();
+            assert_eq!(harness.state().welcome, None);
+            assert!(harness.query_by_label("Scan now").is_some());
+            assert!(harness.query_by_label("Help").is_some());
+        }
+    }
+
+    #[test]
+    fn next_reads_through_the_introduction_and_into_the_window() {
+        let mut harness = window(welcome_app(0));
+        for (button, lands_on) in [
+            ("Next", Some(1)),
+            ("Next", Some(2)),
+            ("Back", Some(1)),
+            ("Next", Some(2)),
+            ("Get started", None),
+        ] {
+            harness.get_by_label(button).click();
+            harness.run();
+            assert_eq!(harness.state().welcome, lands_on, "after {button}");
+        }
+        assert!(
+            harness
+                .query_by_label("This PC has not been checked yet")
+                .is_some()
+        );
+        assert!(harness.query_by_label("Scan now").is_some());
+    }
+
+    /// Next is clicked from page to page without moving the pointer, so it
+    /// stands in one place, and every page fits the window Easy mode locks.
+    #[test]
+    fn the_introduction_fits_the_smallest_window_and_its_buttons_stay_put() {
+        let pages = crate::app::welcome::PAGES;
+        for size in [
+            (window::MIN_SIZE.x, window::MIN_SIZE.y),
+            (960.0, 527.0),
+            (1400.0, 900.0),
+        ] {
+            let mut stands_at: Option<egui::Rect> = None;
+            for page in 0..pages {
+                let harness = sized_window(welcome_app(page), size);
+                let last = page + 1 == pages;
+                let forward = harness
+                    .get_by_label(if last { "Get started" } else { "Next" })
+                    .rect();
+                let mut buttons = vec![forward];
+                if !last {
+                    buttons.push(harness.get_by_label("Skip").rect());
+                }
+                for button in &buttons {
+                    assert!(
+                        button.top() >= 0.0
+                            && button.bottom() <= size.1
+                            && button.right() <= size.0,
+                        "page {page} at {size:?}: a button is outside the window, {button:?}"
+                    );
+                }
+                let first = *stands_at.get_or_insert(forward);
+                assert!(
+                    (first.min - forward.min).length() < 0.5 && first.size() == forward.size(),
+                    "page {page} at {size:?}: the button moved from {first:?} to {forward:?}"
+                );
+            }
+        }
+    }
+
+    /// Help shows the second page again, by which time the restore point may
+    /// be switched off: the page promises what the next repair does.
+    #[test]
+    fn the_introduction_promises_a_restore_point_only_while_one_is_made() {
+        let mut app = welcome_app(1);
+        app.config.create_vss_before_repair = false;
+        let harness = window(app);
+        assert!(
+            harness
+                .query_by_label("Repairs what WinMedic can fix.")
+                .is_some()
+        );
+        assert!(harness.query_by_label_contains("restore point").is_none());
+    }
+
+    #[test]
+    fn help_brings_the_introduction_back() {
+        let mut app = easy_fresh_app();
+        app.show_help = true;
+        let mut harness = window(app);
+        harness.get_by_label("Show the introduction").click();
+        harness.run();
+        assert_eq!(harness.state().welcome, Some(0));
+        assert!(!harness.state().show_help);
+        assert!(harness.query_by_label("Welcome to WinMedic").is_some());
+        assert!(harness.query_by_label("Keyboard shortcuts").is_none());
+    }
+
+    /// Enter reads on and Esc skips, through the window's own key handling.
+    #[test]
+    fn the_keyboard_reads_on_and_skips_the_introduction() {
+        let mut harness = window_with_keys(welcome_app(0));
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        assert_eq!(harness.state().welcome, Some(1));
+        harness.event(egui::Event::Text("s".to_string()));
+        harness.run();
+        assert!(!harness.state().is_scanning, "no scan behind the page");
+        assert_eq!(harness.state().welcome, Some(1));
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+        assert_eq!(harness.state().welcome, None);
     }
 
     /// Help lists the keys the current mode binds, and no others.

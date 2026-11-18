@@ -1,21 +1,196 @@
-use super::state::{App, SettingInput};
+use super::state::{App, SafetyFocus, SettingInput};
 use crate::config::AppConfig;
 use crate::utils::background_task::helper_schedule;
 
+/// One page of the Settings view.
+///
+/// The view showed every setting, the backups, the restore points, the
+/// activity and the log folder at once, which in Easy mode's fixed window was
+/// two columns of small print. Now it shows one of these at a time, picked
+/// from a list on the left, as the Settings of Windows do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsPage {
+    /// What a repair does before and while it changes something.
+    Repairs,
+    /// The way back: registry backups and restore points.
+    Undo,
+    /// What a scan reports, the background scan, the archived findings.
+    Scans,
+    /// What WinMedic did, and where it is written down.
+    Logs,
+    /// Updates, and removing WinMedic.
+    General,
+}
+
+impl SettingsPage {
+    /// Every page, in the order the list on the left names them.
+    pub const ALL: [Self; 5] = [
+        Self::Repairs,
+        Self::Undo,
+        Self::Scans,
+        Self::Logs,
+        Self::General,
+    ];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Repairs => "Repairs",
+            Self::Undo => "Undo changes",
+            Self::Scans => "Scans",
+            Self::Logs => "Logs",
+            Self::General => "General",
+        }
+    }
+
+    /// One line under the title: what the page is for.
+    pub fn summary(self) -> &'static str {
+        match self {
+            Self::Repairs => "What WinMedic does before and while it repairs.",
+            Self::Undo => "Take back what a repair changed.",
+            Self::Scans => "What a scan reports, and when it runs.",
+            Self::Logs => "What WinMedic did on this PC.",
+            Self::General => "Updates, and removing WinMedic.",
+        }
+    }
+
+    /// The settings the page shows, top to bottom, by their index in
+    /// [`crate::config::AppConfig::setting_row`].
+    ///
+    /// Every page but [`Self::Undo`] has at least one, which is what lets the
+    /// page on screen follow from where the keyboard is
+    /// ([`App::settings_page`]).
+    pub fn settings(self) -> &'static [usize] {
+        match self {
+            Self::Repairs => &[0, 1, 2],
+            Self::Undo => &[],
+            Self::Scans => &[4, 5, 7, 8],
+            Self::Logs => &[6],
+            Self::General => &[3, AppConfig::USAGE_DATA_SETTING],
+        }
+    }
+
+    /// The page that shows setting `index`.
+    pub fn of_setting(index: usize) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|page| page.settings().contains(&index))
+            .unwrap_or(Self::Repairs)
+    }
+}
+
 impl App {
+    /// The settings `page` shows in this build: all of
+    /// [`SettingsPage::settings`], but the switch for usage data only when
+    /// there is somewhere to send it.
+    pub fn settings_on(&self, page: SettingsPage) -> Vec<usize> {
+        page.settings()
+            .iter()
+            .copied()
+            .filter(|index| *index != AppConfig::USAGE_DATA_SETTING || self.offers_usage_data())
+            .collect()
+    }
+
+    /// Every setting in the order the arrow keys walk them: page by page,
+    /// top to bottom, which is the order they are drawn in.
+    fn settings_in_order(&self) -> Vec<usize> {
+        SettingsPage::ALL
+            .into_iter()
+            .flat_map(|page| self.settings_on(page))
+            .collect()
+    }
+
+    /// The page of the Settings view on screen: the one the keyboard is on.
+    ///
+    /// Not kept beside the selection but read from it, so the two cannot
+    /// part: Enter and Space change the selected setting, and one on a page
+    /// that is not shown would be changed unseen.
+    pub fn settings_page(&self) -> SettingsPage {
+        if self.backups_focused() {
+            SettingsPage::Undo
+        } else {
+            SettingsPage::of_setting(self.selected_setting_index)
+        }
+    }
+
+    /// Turn to `page`, as a click on its name does. The keyboard goes with
+    /// it: to the backup list on [`SettingsPage::Undo`], otherwise to the
+    /// page's first setting, unless it is on that page already.
+    pub fn open_settings_page(&mut self, page: SettingsPage) {
+        if page == self.settings_page() {
+            return;
+        }
+        match page.settings().first() {
+            Some(&first) => {
+                self.safety_focus = SafetyFocus::Settings;
+                self.selected_setting_index = first;
+            }
+            None => self.safety_focus = SafetyFocus::Backups,
+        }
+    }
+
+    /// The page below the one on screen in the list, and the first after the
+    /// last.
+    pub fn next_settings_page(&mut self) {
+        self.step_settings_page(1);
+    }
+
+    pub fn prev_settings_page(&mut self) {
+        self.step_settings_page(SettingsPage::ALL.len() - 1);
+    }
+
+    fn step_settings_page(&mut self, by: usize) {
+        let pages = SettingsPage::ALL;
+        let at = pages
+            .iter()
+            .position(|page| *page == self.settings_page())
+            .unwrap_or(0);
+        self.open_settings_page(pages[(at + by) % pages.len()]);
+    }
+
     pub fn next_setting(&mut self) {
-        self.selected_setting_index = (self.selected_setting_index + 1) % AppConfig::SETTING_COUNT;
+        self.step_setting(1);
     }
 
     pub fn prev_setting(&mut self) {
-        if self.selected_setting_index == 0 {
-            self.selected_setting_index = AppConfig::SETTING_COUNT - 1;
+        self.step_setting(self.settings_in_order().len() - 1);
+    }
+
+    /// Move through the settings in the order they are drawn, from the last
+    /// of a page to the first of the next one, which turns the page.
+    fn step_setting(&mut self, by: usize) {
+        let order = self.settings_in_order();
+        let at = order
+            .iter()
+            .position(|index| *index == self.selected_setting_index)
+            .unwrap_or(0);
+        self.selected_setting_index = order[(at + by) % order.len()];
+    }
+
+    /// Usage data is switched on by the question's Yes and by nothing
+    /// else, so that whoever agrees has read where it goes. Switching it on
+    /// here opens that page; switching it off needs no page.
+    fn asks_before_sharing(&mut self) -> bool {
+        let asks = self.selected_setting_index == AppConfig::USAGE_DATA_SETTING
+            && !self.config.share_usage_data;
+        if asks && self.offers_usage_data() {
+            self.usage_question = true;
+        }
+        asks
+    }
+
+    /// One line under a page's title: what the page is for.
+    pub fn settings_summary(&self, page: SettingsPage) -> &'static str {
+        if page == SettingsPage::General && self.offers_usage_data() {
+            "Updates, usage data, and removing WinMedic."
         } else {
-            self.selected_setting_index -= 1;
+            page.summary()
         }
     }
 
     pub fn toggle_current_setting(&mut self) {
+        if self.asks_before_sharing() {
+            return;
+        }
         let changed = match self.selected_setting_index {
             4 | 5 | 8 => self
                 .config
@@ -28,6 +203,9 @@ impl App {
     }
 
     pub fn adjust_current_setting(&mut self, increase: bool) {
+        if self.asks_before_sharing() {
+            return;
+        }
         if self
             .config
             .adjust_setting(self.selected_setting_index, increase)
@@ -252,13 +430,14 @@ mod tests {
     #[test]
     fn setting_navigation_wraps_in_both_directions() {
         let mut app = App::new();
-        app.selected_setting_index = 0;
+        let order = app.settings_in_order();
+        app.selected_setting_index = order[0];
 
         app.prev_setting();
-        assert_eq!(app.selected_setting_index, AppConfig::SETTING_COUNT - 1);
+        assert_eq!(app.selected_setting_index, *order.last().unwrap());
 
         app.next_setting();
-        assert_eq!(app.selected_setting_index, 0);
+        assert_eq!(app.selected_setting_index, order[0]);
     }
 
     #[test]
@@ -272,6 +451,120 @@ mod tests {
             );
             app.next_setting();
         }
+    }
+
+    /// A setting no page shows could not be reached, and one on two pages
+    /// would be walked twice.
+    #[test]
+    fn every_setting_is_on_exactly_one_page() {
+        let mut app = App::new();
+        app.usage_receiver = Some(crate::app::usage::tests::RECEIVER);
+        let mut order = app.settings_in_order();
+        order.sort_unstable();
+        let all: Vec<usize> = (0..AppConfig::SETTING_COUNT).collect();
+        assert_eq!(order, all);
+        assert_eq!(App::new().settings_page(), SettingsPage::ALL[0]);
+
+        // Without a receiver the switch for usage data is on no page, and
+        // the arrow keys never reach it.
+        app.usage_receiver = None;
+        let order = app.settings_in_order();
+        assert_eq!(order.len(), AppConfig::SETTING_COUNT - 1);
+        assert!(!order.contains(&AppConfig::USAGE_DATA_SETTING));
+    }
+
+    /// The arrow keys walk the settings as they are drawn, and the page on
+    /// screen is the one the keyboard is on.
+    #[test]
+    fn the_page_follows_the_keyboard() {
+        let mut app = App::new();
+        app.usage_receiver = Some(crate::app::usage::tests::RECEIVER);
+        app.selected_setting_index = 0;
+        let mut seen = vec![app.settings_page()];
+        for _ in 1..AppConfig::SETTING_COUNT {
+            app.next_setting();
+            assert!(
+                app.settings_page()
+                    .settings()
+                    .contains(&app.selected_setting_index)
+            );
+            if seen.last() != Some(&app.settings_page()) {
+                seen.push(app.settings_page());
+            }
+        }
+        // Every page with settings, each once, in the list's order.
+        let with_settings: Vec<_> = SettingsPage::ALL
+            .into_iter()
+            .filter(|page| !page.settings().is_empty())
+            .collect();
+        assert_eq!(seen, with_settings);
+    }
+
+    /// The switch in Settings cannot be a yes nobody was told about: on
+    /// goes through the question, by the mouse and by every key that
+    /// changes a setting. Off is at once.
+    #[test]
+    fn switching_usage_data_on_in_settings_asks_the_question() {
+        let mut app = App::new();
+        app.usage_receiver = Some(crate::app::usage::tests::RECEIVER);
+        app.selected_setting_index = AppConfig::USAGE_DATA_SETTING;
+
+        app.toggle_current_setting();
+        assert!(app.usage_question);
+        assert!(!app.config.share_usage_data);
+        app.answer_usage_question(false);
+
+        for increase in [true, false] {
+            app.adjust_current_setting(increase);
+            assert!(app.usage_question);
+            assert!(!app.config.share_usage_data);
+            app.answer_usage_question(false);
+        }
+        app.open_setting_input();
+        assert!(app.usage_question);
+        app.answer_usage_question(true);
+        assert!(app.config.share_usage_data);
+
+        app.toggle_current_setting();
+        assert!(!app.config.share_usage_data, "off needs no question");
+        assert!(!app.usage_question);
+    }
+
+    #[test]
+    fn opening_a_page_takes_the_keyboard_along() {
+        let mut app = App::new();
+        app.selected_setting_index = 1;
+
+        // The page it is on already: the selection stays.
+        app.open_settings_page(SettingsPage::Repairs);
+        assert_eq!(app.selected_setting_index, 1);
+
+        app.open_settings_page(SettingsPage::Scans);
+        assert_eq!(app.settings_page(), SettingsPage::Scans);
+        assert_eq!(
+            app.selected_setting_index,
+            SettingsPage::Scans.settings()[0]
+        );
+
+        app.open_settings_page(SettingsPage::Undo);
+        assert_eq!(app.settings_page(), SettingsPage::Undo);
+        assert!(app.backups_focused(), "the arrow keys walk the backups");
+
+        app.open_settings_page(SettingsPage::General);
+        assert!(!app.backups_focused());
+        assert_eq!(app.settings_page(), SettingsPage::General);
+    }
+
+    #[test]
+    fn the_pages_are_turned_in_the_order_of_the_list_and_around() {
+        let mut app = App::new();
+        app.selected_setting_index = 0;
+        for page in SettingsPage::ALL.into_iter().cycle().skip(1).take(5) {
+            app.next_settings_page();
+            assert_eq!(app.settings_page(), page);
+        }
+        app.prev_settings_page();
+        assert_eq!(app.settings_page(), *SettingsPage::ALL.last().unwrap());
     }
 
     #[test]

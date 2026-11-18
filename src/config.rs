@@ -142,6 +142,11 @@ pub struct AppConfig {
     /// When the window last looked for WinMedic's own crashes, each of which
     /// it offers once (#236). Not a setting.
     pub crashes_offered_until: Option<chrono::DateTime<chrono::Utc>>,
+    /// Send anonymous usage data after a scan or a repair
+    /// ([`crate::utils::usage_data`]). Off until the user says yes: a config
+    /// written before the question existed, and one of a user who was never
+    /// asked, load as off.
+    pub share_usage_data: bool,
 }
 
 impl Default for AppConfig {
@@ -159,6 +164,7 @@ impl Default for AppConfig {
             advanced_mode: false,
             archived_findings: Vec::new(),
             crashes_offered_until: None,
+            share_usage_data: false,
         }
     }
 }
@@ -277,7 +283,11 @@ impl AppConfig {
     }
 
     /// Number of editable settings exposed in the settings tab.
-    pub const SETTING_COUNT: usize = 9;
+    pub const SETTING_COUNT: usize = 10;
+
+    /// The index of "Share anonymous usage data", which Settings shows only
+    /// in a build that has somewhere to send it.
+    pub const USAGE_DATA_SETTING: usize = 9;
 
     /// Human readable label, current value and explanation for setting `index`.
     pub fn setting_row(&self, index: usize) -> Option<(&'static str, String, &'static str)> {
@@ -307,7 +317,7 @@ impl AppConfig {
             3 => Some((
                 "Check for updates automatically",
                 on_off(self.check_for_updates),
-                "Checks GitHub for new WinMedic releases in the background at startup. [Space/Enter] Toggle.",
+                "Asks GitHub for a newer WinMedic at startup. [Space/Enter] Toggle.",
             )),
             4 => Some((
                 "Temp file threshold",
@@ -322,17 +332,22 @@ impl AppConfig {
             6 => Some((
                 "Enable verbose / debug logs",
                 on_off(self.verbose_logging),
-                "Shows detailed diagnostic traces, debug logs, module timing, and step-by-step command outputs in scan and repair logs. [Space/Enter] Toggle.",
+                "Adds every command, its output and timings to the scan and repair logs. [Space/Enter] Toggle.",
             )),
             7 => Some((
                 "WinMedicHelper background scan",
                 on_off(self.helper_enabled),
-                "Runs automated diagnostic scans in the background while you are signed in, even when WinMedic is closed. Windows skips runs on battery power. [Space/Enter] Toggle.",
+                "Scans while you are signed in, even when WinMedic is closed. Not on battery power. [Space/Enter] Toggle.",
             )),
             8 => Some((
                 "WinMedicHelper scan frequency",
                 format!("{} h", self.helper_frequency_hours),
-                "How often the WinMedicHelper background task scans the system: every 1-23 hours or every whole number of days. [Enter] Custom value, [+/-] ±6 h / ±1 day.",
+                "How often the background scan runs: every 1-23 hours or every whole number of days. [Enter] Custom value, [+/-] ±6 h / ±1 day.",
+            )),
+            9 => Some((
+                "Share anonymous usage data",
+                on_off(self.share_usage_data),
+                "Sends counts after a scan or a repair: which checks found something, which repairs failed. No names, no files. [Space/Enter] Toggle.",
             )),
             _ => None,
         }
@@ -347,6 +362,7 @@ impl AppConfig {
             3 => self.check_for_updates = !self.check_for_updates,
             6 => self.verbose_logging = !self.verbose_logging,
             7 => self.helper_enabled = !self.helper_enabled,
+            9 => self.share_usage_data = !self.share_usage_data,
             _ => return false,
         }
         true
@@ -716,6 +732,29 @@ mod tests {
         assert!(!restored.check_for_updates);
         assert!(restored.verbose_logging);
         assert_eq!(restored.temp_clean_threshold_mb, 600);
+    }
+
+    /// Nobody shares usage data without having said so: not a new user, and
+    /// not one whose config was written before the question existed.
+    #[test]
+    fn usage_data_is_off_until_it_is_switched_on() {
+        assert!(!AppConfig::default().share_usage_data);
+        let older: AppConfig = serde_json::from_str(r#"{"check_for_updates": true}"#).unwrap();
+        assert!(!older.share_usage_data);
+
+        let mut cfg = AppConfig::default();
+        assert!(cfg.toggle_setting(AppConfig::USAGE_DATA_SETTING));
+        assert!(cfg.share_usage_data);
+        assert_eq!(
+            cfg.setting_row(AppConfig::USAGE_DATA_SETTING).unwrap().1,
+            "ON"
+        );
+        let json = serde_json::to_string(&cfg).unwrap();
+        let restored: AppConfig = serde_json::from_str(&json).unwrap();
+        assert!(
+            restored.share_usage_data,
+            "and the choice survives a restart"
+        );
     }
 
     /// Easy mode is where a first start lands, and so does a config written

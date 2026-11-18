@@ -15,6 +15,8 @@ pub fn show(ctx: &egui::Context, app: &mut App) {
         Some(Overlay::Confirm)
     } else if app.crash_report.is_some() {
         Some(Overlay::CrashReport)
+    } else if app.usage_preview.is_some() {
+        Some(Overlay::UsagePreview)
     } else if app.setting_input.is_some() {
         Some(Overlay::SettingInput)
     } else if app.show_help {
@@ -33,6 +35,7 @@ pub fn show(ctx: &egui::Context, app: &mut App) {
     match overlay {
         Some(Overlay::Confirm) => confirm(ctx, app, arrived),
         Some(Overlay::CrashReport) => crash_report(ctx, app, arrived),
+        Some(Overlay::UsagePreview) => usage_preview(ctx, app, arrived),
         Some(Overlay::SettingInput) => setting_input(ctx, app, arrived),
         Some(Overlay::Help) => help(ctx, app, arrived),
         None => {}
@@ -43,6 +46,7 @@ pub fn show(ctx: &egui::Context, app: &mut App) {
 enum Overlay {
     Confirm,
     CrashReport,
+    UsagePreview,
     SettingInput,
     Help,
 }
@@ -100,7 +104,13 @@ fn confirm(ctx: &egui::Context, app: &mut App, arrived: f32) {
             let confirm = if removes {
                 theme::danger_button(ui, confirm_label)
             } else {
-                theme::primary_button(ui, true, RichText::new(confirm_label), egui::Vec2::ZERO)
+                theme::primary_button(
+                    ui,
+                    true,
+                    RichText::new(confirm_label),
+                    None,
+                    egui::Vec2::ZERO,
+                )
             };
             if confirm.clicked() {
                 confirmed = true;
@@ -157,7 +167,13 @@ fn crash_report(ctx: &egui::Context, app: &mut App, arrived: f32) {
         ui.add_space(8.0);
         ui.separator();
         ui.horizontal(|ui| {
-            if theme::primary_button(ui, true, RichText::new("Open on GitHub"), egui::Vec2::ZERO)
+            if theme::primary_button(
+                ui,
+                true,
+                RichText::new("Open on GitHub"),
+                None,
+                egui::Vec2::ZERO,
+            )
                 .clicked()
             {
                 send = true;
@@ -179,6 +195,46 @@ fn crash_report(ctx: &egui::Context, app: &mut App, arrived: f32) {
         app.save_crash_report();
     } else if close {
         app.close_crash_report();
+    }
+}
+
+/// "Show what is sent": a usage report as the sender is handed it.
+fn usage_preview(ctx: &egui::Context, app: &mut App, arrived: f32) {
+    let Some(report) = app.usage_preview.clone() else {
+        return;
+    };
+    let mut close = false;
+
+    modal_window(ctx, "What is sent", arrived).show(ctx, |ui| {
+        ui.set_max_width(560.0);
+        ui.label(theme::heading(ui, "What is sent", 15.0));
+        ui.add_space(8.0);
+        ui.label(
+            "This is the whole report of a scan, with the numbers of your last scan (zero before the first). A repair sends the same with its own counts: repaired and failed, per check.",
+        );
+        ui.label(theme::muted(
+            "Every report that was sent is also written to usage-data.log in the log folder.",
+        ));
+        ui.add_space(6.0);
+        egui::ScrollArea::vertical()
+            .max_height(300.0)
+            .show(ui, |ui| {
+                let mut text = report.as_str();
+                ui.add(
+                    egui::TextEdit::multiline(&mut text)
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(f32::INFINITY),
+                );
+            });
+        ui.add_space(8.0);
+        ui.separator();
+        if ui.button("Close").clicked() {
+            close = true;
+        }
+    });
+
+    if close {
+        app.close_usage_preview();
     }
 }
 
@@ -227,7 +283,8 @@ fn setting_input(ctx: &egui::Context, app: &mut App, arrived: f32) {
 
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            let save = theme::primary_button(ui, true, RichText::new("Save"), egui::Vec2::ZERO);
+            let save =
+                theme::primary_button(ui, true, RichText::new("Save"), None, egui::Vec2::ZERO);
             if save.clicked() || entered {
                 submitted = true;
             }
@@ -246,6 +303,7 @@ fn setting_input(ctx: &egui::Context, app: &mut App, arrived: f32) {
 
 fn help(ctx: &egui::Context, app: &mut App, arrived: f32) {
     let mut close = false;
+    let mut introduction = false;
 
     modal_window(ctx, "Keyboard shortcuts", arrived).show(ctx, |ui| {
         ui.set_max_width(520.0);
@@ -281,12 +339,23 @@ fn help(ctx: &egui::Context, app: &mut App, arrived: f32) {
 
         ui.add_space(8.0);
         ui.separator();
-        if ui.button("Close").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            close = true;
-        }
+        ui.horizontal(|ui| {
+            if ui.button("Close").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                close = true;
+            }
+            if ui
+                .button("Show the introduction")
+                .on_hover_text("What WinMedic does and which buttons you need")
+                .clicked()
+            {
+                introduction = true;
+            }
+        });
     });
 
-    if close {
+    if introduction {
+        app.open_welcome();
+    } else if close {
         app.show_help = false;
     }
 }
@@ -314,11 +383,8 @@ const SHORTCUTS: &[(&str, &str, bool)] = &[
     ("1 / 2", "Scan & Repair, Settings", false),
     ("E", "Export an HTML report", false),
     ("U", "Roll back a registry backup (Settings)", false),
-    (
-        "B",
-        "Move the arrow keys between settings and backups",
-        false,
-    ),
+    ("PgUp / PgDn", "Settings: the page before, the next", false),
+    ("B", "Settings: to the registry backups and back", false),
     (
         "Esc",
         "Unwind: filters, then focus, then a running operation",

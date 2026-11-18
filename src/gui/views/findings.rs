@@ -101,12 +101,16 @@ fn filters(ui: &mut egui::Ui, app: &mut App) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // A running repair keeps the ticks it started with.
             let free = !app.selection_locked();
-            let none = ui.add_enabled(free, egui::Button::new("Select none"));
-            if none.on_hover_text("N").clicked() {
+            if ui
+                .add_enabled(free, theme::keyed(ui, "Select none", "N"))
+                .clicked()
+            {
                 app.deselect_all_issues();
             }
-            let all = ui.add_enabled(free, egui::Button::new("Select all"));
-            if all.on_hover_text("A").clicked() {
+            if ui
+                .add_enabled(free, theme::keyed(ui, "Select all", "A"))
+                .clicked()
+            {
                 app.select_all_issues();
             }
         });

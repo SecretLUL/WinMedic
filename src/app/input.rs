@@ -6,7 +6,8 @@
 //! moved somewhere it can be exercised.
 //!
 //! Dispatch is layered, and the order matters: a pending confirmation swallows
-//! everything, then the help overlay, and only then the normal bindings.
+//! everything, then the introduction, then the help overlay, and only then
+//! the normal bindings.
 //!
 //! Text entry is deliberately absent from that list. It used to be a layer of
 //! its own, because a terminal has no text fields and the search box and the
@@ -99,10 +100,39 @@ pub fn handle_key(app: &mut App, code: Key) {
         return;
     }
 
+    // The introduction takes the whole window, so every key that drives what
+    // it covers is inert: a stray `s` would start a scan behind it.
+    if app.welcome.is_some() {
+        match code {
+            Key::Enter | Key::Right => app.welcome_next(),
+            Key::Left | Key::Backspace => app.welcome_back(),
+            Key::Esc => app.close_welcome(),
+            _ => {}
+        }
+        return;
+    }
+
     // The crash report on screen swallows keys too: sending takes a click.
     if app.crash_report.is_some() {
         if code == Key::Esc {
             app.close_crash_report();
+        }
+        return;
+    }
+
+    // "Show what is sent" lies over the question and over Settings.
+    if app.usage_preview.is_some() {
+        if code == Key::Esc {
+            app.close_usage_preview();
+        }
+        return;
+    }
+
+    // The question about usage data takes the whole window too. Esc leaves
+    // it unanswered, which is a no; a yes takes a click on Yes.
+    if app.usage_question {
+        if code == Key::Esc {
+            app.answer_usage_question(false);
         }
         return;
     }
@@ -246,6 +276,10 @@ pub fn handle_key(app: &mut App, code: Key) {
         // these keys move the selection, which is what Enter and Space act on.
         Key::PageUp if app.active_tab == TAB_HOME => app.page_up_issue(PAGE_STEP),
         Key::PageDown if app.active_tab == TAB_HOME => app.page_down_issue(PAGE_STEP),
+        // On Settings there is no long list to jump through, and the same
+        // keys turn its pages.
+        Key::PageUp if app.active_tab == TAB_SETTINGS => app.prev_settings_page(),
+        Key::PageDown if app.active_tab == TAB_SETTINGS => app.next_settings_page(),
         Key::Home if app.active_tab == TAB_HOME => app.first_issue(),
         Key::End if app.active_tab == TAB_HOME => app.last_issue(),
 
@@ -614,6 +648,44 @@ mod tests {
         assert_eq!(app.active_tab, TAB_HOME);
     }
 
+    /// Enter and the arrow keys moved through the introduction a moment
+    /// ago. On the question that follows it they must not be a yes.
+    #[test]
+    fn no_key_agrees_to_usage_data_and_esc_declines() {
+        for key in [
+            Key::Enter,
+            Key::Right,
+            Key::Left,
+            Key::Char(' '),
+            Key::Char('y'),
+            Key::Char('s'),
+            Key::Tab,
+            Key::F7,
+        ] {
+            let mut app = app();
+            app.usage_question = true;
+            let mode = app.config.advanced_mode;
+            handle_key(&mut app, key);
+            assert!(app.usage_question, "{key:?} left the question");
+            assert!(!app.config.share_usage_data, "{key:?} agreed");
+            assert!(!app.is_scanning, "{key:?} reached the window behind");
+            assert_eq!(app.config.advanced_mode, mode);
+        }
+
+        let mut app = app();
+        app.usage_question = true;
+        app.usage_preview = Some("[]".to_string());
+        handle_key(&mut app, Key::Esc);
+        assert!(
+            app.usage_preview.is_none(),
+            "the first Esc closes the preview"
+        );
+        assert!(app.usage_question);
+        handle_key(&mut app, Key::Esc);
+        assert!(!app.usage_question);
+        assert!(!app.config.share_usage_data);
+    }
+
     #[test]
     fn b_does_nothing_outside_the_settings_tab() {
         let mut app = app();
@@ -734,6 +806,62 @@ mod tests {
         assert_eq!(app.active_tab, TAB_SETTINGS);
         handle_key(&mut app, Key::Char('?'));
         assert!(app.show_help);
+    }
+
+    /// The introduction covers the whole window, so no key may reach what is
+    /// behind it: nothing there is on screen to show what the key did.
+    #[test]
+    fn the_introduction_answers_its_own_keys_and_no_others() {
+        let mut app = app_with_issues();
+        app.config.advanced_mode = false;
+        app.active_tab = TAB_HOME;
+        app.welcome = Some(0);
+
+        for key in "sSrRfFdDqQ?12eEuUaAnNbB ".chars() {
+            handle_key(&mut app, Key::Char(key));
+        }
+        for key in [
+            Key::F7,
+            Key::Tab,
+            Key::BackTab,
+            Key::Up,
+            Key::Down,
+            Key::PageDown,
+            Key::End,
+            Key::Unbound,
+        ] {
+            handle_key(&mut app, key);
+        }
+        assert_eq!(app.welcome, Some(0), "still on its first page");
+        assert!(!app.is_scanning && !app.is_fixing, "nothing started");
+        assert_eq!(app.active_tab, TAB_HOME);
+        assert!(!app.config.advanced_mode, "F7 switched nothing");
+        assert!(!app.show_help && !app.should_quit && !app.dry_run);
+        assert!(app.issues.iter().all(|i| i.is_selected), "nothing unticked");
+
+        handle_key(&mut app, Key::Enter);
+        assert_eq!(app.welcome, Some(1));
+        handle_key(&mut app, Key::Right);
+        assert_eq!(app.welcome, Some(2));
+        handle_key(&mut app, Key::Left);
+        assert_eq!(app.welcome, Some(1));
+        handle_key(&mut app, Key::Backspace);
+        assert_eq!(app.welcome, Some(0));
+        handle_key(&mut app, Key::Esc);
+        assert_eq!(app.welcome, None, "Esc skips it");
+
+        // And the window's own keys answer again.
+        handle_key(&mut app, Key::Char('?'));
+        assert!(app.show_help);
+    }
+
+    /// Enter on the last page is its own button, Get started.
+    #[test]
+    fn enter_on_the_last_page_of_the_introduction_leaves_it() {
+        let mut app = app();
+        app.welcome = Some(crate::app::welcome::PAGES - 1);
+        handle_key(&mut app, Key::Enter);
+        assert_eq!(app.welcome, None);
     }
 
     /// The settings view looks the same in both modes, so it keys the same.

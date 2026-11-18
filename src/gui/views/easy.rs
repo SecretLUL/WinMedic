@@ -35,6 +35,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
                 ui.add_space(((ui.available_width() - width) / 2.0).max(0.0));
                 ui.vertical(|ui| {
                     ui.set_width(width);
+                    let mut more = false;
                     if app.is_scanning {
                         scanning(ui, app);
                     } else if app.is_fixing {
@@ -42,9 +43,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
                     } else if !has_scanned(app) {
                         unscanned(ui, app);
                     } else {
-                        result(ui, app);
+                        more = result(ui, app);
                     }
-                    notices(ui, app);
+                    notices(ui, app, more);
                 });
             });
         });
@@ -84,10 +85,7 @@ fn unscanned(ui: &mut egui::Ui, app: &mut App) {
         "A scan finds common Windows problems. It changes nothing.",
     );
     ui.add_space(20.0);
-    if theme::big_button(ui, "Scan now", true, true)
-        .on_hover_text("S")
-        .clicked()
-    {
+    if theme::big_button(ui, "Scan now", Some("S"), true, true).clicked() {
         app.start_scan();
     }
 }
@@ -104,8 +102,39 @@ fn scanning(ui: &mut egui::Ui, app: &mut App) {
     ui.add_space(6.0);
     line(ui, "This takes a minute or two. Nothing is changed.");
     ui.add_space(16.0);
-    if ui.button("Cancel").on_hover_text("Esc").clicked() {
+    if ui.add(theme::keyed(ui, "Cancel", "Esc")).clicked() {
         app.cancel_current_operation();
+    }
+    // Below the button, as on the repair page. The bar reaches 99 % within
+    // seconds and then waits for the slowest check, the component store's,
+    // for a minute or more: that is where it looks stuck.
+    if app
+        .scan_elapsed()
+        .is_some_and(|elapsed| app.is_scanning && elapsed >= PATIENCE)
+    {
+        ui.add_space(16.0);
+        reassurance(
+            ui,
+            "All good, WinMedic is still checking. The last checks take the longest.",
+            still_checking(app),
+        );
+    }
+}
+
+/// Which checks the scan is still waiting for: their names while there are
+/// one or two, so the page says what takes so long, and their number else.
+fn still_checking(app: &App) -> Option<String> {
+    let running: Vec<&str> = app
+        .module_progress_list
+        .iter()
+        .filter(|module| !module.is_done)
+        .map(|module| module.name.as_str())
+        .collect();
+    match running[..] {
+        [] => None,
+        [one] => Some(format!("Still running: {one}.")),
+        [one, other] => Some(format!("Still running: {one} and {other}.")),
+        _ => Some(format!("Still running: {} checks.", running.len())),
     }
 }
 
@@ -124,18 +153,23 @@ fn repairing(ui: &mut egui::Ui, app: &mut App) {
     progress(ui, app.repair_fraction());
     note(ui, format!("{done} of {} done", app.total_to_fix));
     ui.add_space(16.0);
-    if ui.button("Cancel").on_hover_text("Esc").clicked() {
+    if ui.add(theme::keyed(ui, "Cancel", "Esc")).clicked() {
         app.cancel_current_operation();
     }
     // Below the button, so it does not move away from the pointer when this
     // appears.
     if let Some(elapsed) = app.repair_step_elapsed().filter(|e| *e >= PATIENCE) {
         ui.add_space(16.0);
-        patience(ui, app, elapsed);
+        reassurance(
+            ui,
+            "Don't worry, everything is fine. WinMedic needs some time to heal.",
+            patience_time(app, elapsed),
+        );
     }
 }
 
-/// How long one repair runs before the page says that this is normal. Nearly
+/// How long a scan, or one repair, runs before the page says that this is
+/// normal. Nearly
 /// every repair is done within seconds, so one still running after half a
 /// minute is most likely one of the servicing tools: DISM, which ran for 13
 /// minutes on one PC, with a bar that hardly moves. Half a minute of that is
@@ -170,9 +204,10 @@ fn patience_time(app: &App, elapsed: Duration) -> Option<String> {
     })
 }
 
-/// Nothing is wrong, and after a while about how long it still takes.
-fn patience(ui: &mut egui::Ui, app: &App, elapsed: Duration) {
-    let when = patience_time(app, elapsed);
+/// Nothing is wrong, in the words of the page it is on, and under them what
+/// the page knows about the wait: how long it still takes, or what it is
+/// waiting for.
+fn reassurance(ui: &mut egui::Ui, text: &str, detail: Option<String>) {
     egui::Frame::NONE
         .fill(ui.visuals().faint_bg_color)
         .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
@@ -183,12 +218,9 @@ fn patience(ui: &mut egui::Ui, app: &App, elapsed: Duration) {
             ui.horizontal_top(|ui| {
                 theme::severity_mark(ui, Severity::Info, 18.0);
                 ui.vertical(|ui| {
-                    line(
-                        ui,
-                        "Don't worry, everything is fine. WinMedic needs some time to heal.",
-                    );
-                    if let Some(when) = when {
-                        note(ui, when);
+                    line(ui, text);
+                    if let Some(detail) = detail {
+                        note(ui, detail);
                     }
                 });
             });
@@ -211,7 +243,10 @@ pub(crate) fn asks_for_restart(app: &App) -> bool {
 }
 
 /// After a scan or a repair: how the PC is doing, and the next step.
-fn result(ui: &mut egui::Ui, app: &mut App) {
+///
+/// Returns whether it said something only Advanced mode shows in full, so
+/// that [`notices`] points there once for the whole page.
+fn result(ui: &mut egui::Ui, app: &mut App) -> bool {
     let palette = theme::palette(ui);
     let open: Vec<Severity> = app
         .issues
@@ -235,12 +270,12 @@ fn result(ui: &mut egui::Ui, app: &mut App) {
         );
         ui.add_space(20.0);
         ui.horizontal(|ui| {
-            if theme::big_button(ui, "Restart now", true, true).clicked() {
+            if theme::big_button(ui, "Restart now", None, true, true).clicked() {
                 app.show_reboot_notice();
             }
             scan_again(ui, app, false);
         });
-        return;
+        return false;
     }
 
     if problems == 0 {
@@ -262,7 +297,7 @@ fn result(ui: &mut egui::Ui, app: &mut App) {
         line(ui, format!("Health {} / 100", app.health_score));
         ui.add_space(20.0);
         scan_again(ui, app, true);
-        return;
+        return false;
     }
 
     let worst = [Severity::Critical, Severity::Warning, Severity::Info]
@@ -294,10 +329,7 @@ fn result(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         if to_repair > 0 {
             let label = repair_label(app.dry_run, to_repair, "problem");
-            if theme::big_button(ui, &label, true, true)
-                .on_hover_text("F")
-                .clicked()
-            {
+            if theme::big_button(ui, &label, Some("F"), true, true).clicked() {
                 app.start_repairs();
             }
         }
@@ -338,26 +370,19 @@ fn result(ui: &mut egui::Ui, app: &mut App) {
     if failed > 0 {
         ui.colored_label(
             palette.red,
-            format!(
-                "{} did not work. Advanced mode (F7) shows why.",
-                plural(failed, "repair")
-            ),
+            format!("{} did not work.", plural(failed, "repair")),
         );
     }
 
     let left_alone = problems - to_repair;
     if left_alone > 0 {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(theme::muted(format!(
-                "{} more {} your decision.",
-                left_alone,
-                if left_alone == 1 { "needs" } else { "need" }
-            )));
-            if ui.link("Show in Advanced mode (F7)").clicked() {
-                app.toggle_advanced_mode();
-            }
-        });
+        ui.label(theme::muted(format!(
+            "{} more {} your decision.",
+            left_alone,
+            if left_alone == 1 { "needs" } else { "need" }
+        )));
     }
+    failed > 0 || left_alone > 0
 }
 
 /// What the Repair button will do, in a few short lines.
@@ -395,16 +420,18 @@ fn forecast(ui: &mut egui::Ui, app: &App) {
 }
 
 fn scan_again(ui: &mut egui::Ui, app: &mut App, primary: bool) {
-    if theme::big_button(ui, "Scan again", primary, true)
-        .on_hover_text("S")
-        .clicked()
-    {
+    if theme::big_button(ui, "Scan again", Some("S"), primary, true).clicked() {
         app.start_scan();
     }
 }
 
-/// Modules that could not be checked, in one line.
-fn notices(ui: &mut egui::Ui, app: &mut App) {
+/// Modules that could not be checked, in one line, and below everything the
+/// page left to Advanced mode, the one link that goes there. `more` is
+/// whether the page above already said something of that kind.
+///
+/// Each of those lines named Advanced mode itself, and a page with a failed
+/// repair and a finding left alone pointed there three times.
+fn notices(ui: &mut egui::Ui, app: &mut App, mut more: bool) {
     let palette = theme::palette(ui);
 
     if !app.is_scanning {
@@ -420,11 +447,16 @@ fn notices(ui: &mut egui::Ui, app: &mut App) {
             ui.add_space(6.0);
             ui.colored_label(
                 palette.red,
-                format!(
-                    "Could not check {}. Advanced mode (F7) shows why.",
-                    failed.join(", ")
-                ),
+                format!("Could not check {}.", failed.join(", ")),
             );
+            more = true;
+        }
+    }
+
+    if more {
+        ui.add_space(2.0);
+        if ui.link("Show details in Advanced mode (F7)").clicked() {
+            app.toggle_advanced_mode();
         }
     }
 }

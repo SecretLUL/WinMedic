@@ -468,31 +468,116 @@ pub fn severity_mark(ui: &mut egui::Ui, severity: Severity, size: f32) -> egui::
     response.on_hover_text(name)
 }
 
+/// The key that does what a button does, as a small key cap after the
+/// button's label, the way a game shows which key to press.
+///
+/// It was a tooltip, which shows only to who rests the pointer on the button
+/// and so told nobody who did not already look for it. Painted and not text:
+/// the button keeps its name, for a screen reader and for the tests.
+/// `color` is the label's where the button is filled; else the cap follows
+/// the button's own text colour, greyed out with it.
+fn key_cap<'a>(
+    ui: &egui::Ui,
+    key: &str,
+    label_size: f32,
+    color: Option<Color32>,
+) -> egui::Atom<'a> {
+    let font = egui::FontId::proportional((label_size * 0.72).round().max(10.0));
+    let galley = ui
+        .painter()
+        .layout_no_wrap(key.to_owned(), font, Color32::PLACEHOLDER);
+    // A square for a letter, as wide as it needs for "Esc" or "Enter".
+    let height = galley.size().y + 3.0;
+    let width = (galley.size().x + 10.0).max(height + 2.0);
+    egui::Atom::paint(egui::vec2(width, height), move |ui, args| {
+        let color = color.unwrap_or(args.fallback_text_color);
+        let cap = egui::Rect::from_center_size(args.rect.center(), egui::vec2(width, height));
+        // A soft face with no outline, and a darker edge along the bottom:
+        // the side of a key, seen from above. An outline around a letter
+        // read as a tag stuck on the button.
+        let painter = ui.painter();
+        painter.rect_filled(cap, 4.0, color.gamma_multiply(0.14));
+        let edge = egui::Rect::from_min_max(egui::pos2(cap.left(), cap.bottom() - EDGE), cap.max);
+        painter
+            .with_clip_rect(edge.intersect(painter.clip_rect()))
+            .rect_filled(cap, 4.0, color.gamma_multiply(0.22));
+        let text = cap.center() - galley.size() / 2.0 - egui::vec2(0.0, EDGE / 2.0);
+        painter.galley(text, galley.clone(), color.gamma_multiply(0.85));
+    })
+}
+
+/// How thick the bottom edge of a key cap is.
+const EDGE: f32 = 2.0;
+
+/// How far a key cap stands off the label before it.
+const CAP_GAP: f32 = 8.0;
+
+/// A button of `label`, with the cap of `key` after it if it has one.
+fn labelled<'a>(label: RichText, cap: Option<egui::Atom<'a>>) -> egui::Button<'a> {
+    match cap {
+        Some(cap) => egui::Button::new((label, cap)).gap(CAP_GAP),
+        None => egui::Button::new(label),
+    }
+}
+
+/// The size of a plain button's label.
+fn button_text_size(ui: &egui::Ui) -> f32 {
+    egui::TextStyle::Button.resolve(ui.style()).size
+}
+
+/// A plain button that shows the key that presses it ([`key_cap`]).
+pub fn keyed<'a>(ui: &egui::Ui, label: impl Into<RichText>, key: &str) -> egui::Button<'a> {
+    let cap = key_cap(ui, key, button_text_size(ui), None);
+    labelled(label.into(), Some(cap))
+}
+
 /// A large button for Easy mode, where the next step should be impossible to
-/// miss. `primary` fills it with the accent colour.
-pub fn big_button(ui: &mut egui::Ui, text: &str, primary: bool, enabled: bool) -> egui::Response {
-    let label = RichText::new(text).size(17.0);
+/// miss. `primary` fills it with the accent colour; `key` is the key that
+/// presses it, shown on it.
+pub fn big_button(
+    ui: &mut egui::Ui,
+    text: &str,
+    key: Option<&str>,
+    primary: bool,
+    enabled: bool,
+) -> egui::Response {
+    const TEXT: f32 = 17.0;
+    let label = RichText::new(text).size(TEXT);
     let size = egui::vec2(210.0, 46.0);
     if primary {
-        primary_button(ui, enabled, label, size)
+        let palette = palette(ui);
+        filled_button(
+            ui,
+            enabled,
+            label,
+            key.map(|key| (key, TEXT)),
+            size,
+            palette.accent,
+            palette.on_accent,
+        )
     } else {
-        ui.add_enabled(enabled, egui::Button::new(label.strong()).min_size(size))
+        let cap = key.map(|key| key_cap(ui, key, TEXT, None));
+        ui.add_enabled(enabled, labelled(label.strong(), cap).min_size(size))
     }
 }
 
 /// The one button on a page that moves the user forward, filled with the
-/// accent colour so the eye finds it first.
+/// accent colour so the eye finds it first. `key` is the key that presses
+/// it, shown on it.
 pub fn primary_button(
     ui: &mut egui::Ui,
     enabled: bool,
     label: RichText,
+    key: Option<&str>,
     min_size: egui::Vec2,
 ) -> egui::Response {
     let palette = palette(ui);
+    let text_size = button_text_size(ui);
     filled_button(
         ui,
         enabled,
         label,
+        key.map(|key| (key, text_size)),
         min_size,
         palette.accent,
         palette.on_accent,
@@ -505,6 +590,7 @@ pub fn danger_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
         ui,
         true,
         RichText::new(text),
+        None,
         egui::Vec2::ZERO,
         DANGER,
         Color32::WHITE,
@@ -518,12 +604,14 @@ pub fn danger_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
 const HOVERED: f32 = 0.92;
 const PRESSED: f32 = 0.85;
 
-/// A button in `fill` with its label in `text`, fading toward the panel
+/// A button in `fill` with its label in `text` and, if it has one, the cap
+/// of the `key` that presses it, sized to a label of that size; fading toward the panel
 /// under the pointer the way a Windows accent button does.
 fn filled_button(
     ui: &mut egui::Ui,
     enabled: bool,
     label: RichText,
+    key: Option<(&str, f32)>,
     min_size: egui::Vec2,
     fill: Color32,
     text: Color32,
@@ -531,7 +619,8 @@ fn filled_button(
     // Disabled, it is a plain grey button: Windows greys its accent buttons
     // out too, where a faded fill would look washed out rather than off.
     if !enabled {
-        return ui.add_enabled(false, egui::Button::new(label).min_size(min_size));
+        let cap = key.map(|(key, size)| key_cap(ui, key, size, None));
+        return ui.add_enabled(false, labelled(label, cap).min_size(min_size));
     }
     ui.scope(|ui| {
         let panel = ui.visuals().panel_fill;
@@ -544,7 +633,8 @@ fn filled_button(
             state.weak_bg_fill = panel.lerp_to_gamma(fill, share);
             state.bg_stroke = Stroke::NONE;
         }
-        ui.add(egui::Button::new(label.color(text)).min_size(min_size))
+        let cap = key.map(|(key, size)| key_cap(ui, key, size, Some(text)));
+        ui.add(labelled(label.color(text), cap).min_size(min_size))
     })
     .inner
 }

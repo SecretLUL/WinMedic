@@ -81,6 +81,10 @@ pub struct SystemActions {
     /// confirms the dialog must not have the test run delete the settings,
     /// logs and registry backups of the developer's own WinMedic.
     pub request_removal: fn(),
+    /// Send a usage report the user agreed to, and write it into the log
+    /// folder ([`crate::utils::usage_data::send_in_background`]). Inert by
+    /// default: no test and no off-screen render sends anything anywhere.
+    pub send_usage_data: fn(crate::utils::usage_data::Receiver, String),
 }
 
 fn real_restore_registry(file_path: &str) -> Result<String, String> {
@@ -148,6 +152,7 @@ impl SystemActions {
             sync_helper_task: crate::utils::background_task::sync_helper_task,
             reconcile_background: crate::utils::background_task::reconcile,
             request_removal: crate::utils::self_remove::request,
+            send_usage_data: crate::utils::usage_data::send_in_background,
         }
     }
 
@@ -167,6 +172,7 @@ impl SystemActions {
             sync_helper_task: |_, _| Ok(()),
             reconcile_background: |_, _| Ok(()),
             request_removal: || {},
+            send_usage_data: |_, _| {},
         }
     }
 }

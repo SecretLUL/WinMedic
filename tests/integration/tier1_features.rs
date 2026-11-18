@@ -1417,8 +1417,8 @@ fn test_tier1_f17_default_config_check_for_updates_is_true() {
 }
 
 #[test]
-fn test_tier1_f17_setting_count_equals_nine() {
-    assert_eq!(AppConfig::SETTING_COUNT, 9);
+fn test_tier1_f17_setting_count_equals_ten() {
+    assert_eq!(AppConfig::SETTING_COUNT, 10);
 }
 
 #[test]
@@ -1451,7 +1451,7 @@ fn test_tier1_f17_setting_row_six_is_verbose_logging_setting() {
     let (label, val, desc) = config.setting_row(6).unwrap();
     assert_eq!(label, "Enable verbose / debug logs");
     assert_eq!(val, "OFF");
-    assert!(desc.contains("debug"));
+    assert!(desc.contains("scan and repair logs"));
 }
 
 #[test]
