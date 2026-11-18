@@ -374,9 +374,13 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
     // itself: a module that failed reported no findings, and counting
     // findings alone calls it passed.
     let mut failed_modules = HashMap::new();
+    let mut not_checked = Vec::new();
     while let Some(evt) = rx.recv().await {
         match &evt {
             ScanEvent::ScanCancelled { .. } => scan_cancelled = true,
+            ScanEvent::ModuleFinished {
+                not_checked: notes, ..
+            } => not_checked.extend(notes.iter().cloned()),
             ScanEvent::ModuleFailed { module_id, error } => {
                 failed_modules.insert(module_id.clone(), error.clone());
             }
@@ -392,12 +396,19 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
                     println!("   └─ {}", msg);
                 }
             }
-            ScanEvent::ModuleFinished { module_id, issues } => {
+            ScanEvent::ModuleFinished {
+                module_id,
+                issues,
+                not_checked,
+            } => {
                 println!(
                     "[OK] Module '{}' finished ({} issues found)",
                     module_id,
                     issues.len()
                 );
+                for note in not_checked {
+                    println!("[!] {note}");
+                }
             }
             ScanEvent::ModuleFailed { module_id, error } => {
                 println!("[X] Module '{}' failed: {}", module_id, error);
@@ -457,6 +468,7 @@ async fn run_headless(args: CliArgs) -> Result<u8, Box<dyn std::error::Error>> {
             Some(scan_started.elapsed().as_secs()),
         )
         .with_archived(archived.clone())
+        .with_not_checked(not_checked)
         .carrying_over(app::ScanState::load(), &config.archived_findings);
         let (status, details) = match state.save() {
             Err(e) => ("FAILED", format!("The results could not be saved: {e}")),

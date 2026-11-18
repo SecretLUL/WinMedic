@@ -246,6 +246,17 @@ pub trait DiagnosticModule: Send + Sync {
     async fn scan(&self, progress_tx: Option<Sender<ModuleProgress>>)
     -> Result<Vec<Issue>, String>;
 
+    /// What the last [`Self::scan`] left unchecked although it finished, one
+    /// sentence each, for the user.
+    ///
+    /// A check that was given up raises no finding, and a scan without the
+    /// finding reads as "nothing wrong there". A finding of its own would
+    /// count as a problem of the PC and take from its health, on every scan
+    /// of a PC too slow for the check.
+    fn not_checked(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Apply fix for a specific issue id
     async fn fix(
         &self,

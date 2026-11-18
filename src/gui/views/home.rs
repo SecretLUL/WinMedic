@@ -345,6 +345,10 @@ fn notices(ui: &mut egui::Ui, app: &mut App) {
                 );
             }
         }
+        // Amber, not red: the check ran, and only this part of it is missing.
+        for note in &app.not_checked {
+            ui.colored_label(palette.amber, note);
+        }
     }
 }
 

@@ -137,7 +137,7 @@ pub trait CommandRunner: Send + Sync {
 
 /// The error [`run_cmd`] and [`run_cmd_streaming`] return when a command did
 /// not finish in time.
-fn timed_out(program: &str, timeout_duration: Duration) -> String {
+pub(crate) fn timed_out(program: &str, timeout_duration: Duration) -> String {
     format!("Command '{program}' timed out after {timeout_duration:?}")
 }
 

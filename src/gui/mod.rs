@@ -896,6 +896,22 @@ mod tests {
         assert!(harness.query_by_label("1 failed").is_some());
     }
 
+    /// A check that finished but left a part unchecked says so on the page
+    /// the scan ends on, in both modes: the log that also has it is folded
+    /// away.
+    #[test]
+    fn a_finished_run_says_what_it_left_unchecked() {
+        let note =
+            "The component store was not checked: DISM's analysis took longer than 15 minutes.";
+        for mode in [scanned_app, easy_scanned_app] {
+            let mut app = mode();
+            app.not_checked = vec![note.to_string()];
+            let harness = window(app);
+            assert!(harness.query_by_label(note).is_some());
+        }
+        assert!(window(scanned_app()).query_by_label(note).is_none());
+    }
+
     /// #181: a simulation of three findings repairs nothing. The header says
     /// what it planned, and once simulation is off, how the last real repair
     /// run went.
