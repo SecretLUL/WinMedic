@@ -1087,7 +1087,7 @@ pub struct SystemCleanerModule {
     /// How often the bar moves while the analysis runs.
     analysis_tick: Duration,
     /// What the last scan left unchecked, see [`DiagnosticModule::not_checked`].
-    not_checked: Mutex<Vec<String>>,
+    not_checked: crate::modules::Unchecked,
 }
 
 /// How long the WinSxS repair takes the scan's count of reclaimable packages
@@ -1123,7 +1123,7 @@ impl SystemCleanerModule {
             scan_count: Mutex::new(None),
             scan_count_max_age: SCAN_COUNT_MAX_AGE,
             analysis_tick: Duration::from_secs(1),
-            not_checked: Mutex::new(Vec::new()),
+            not_checked: Default::default(),
         }
     }
 
@@ -1371,10 +1371,7 @@ impl DiagnosticModule for SystemCleanerModule {
     }
 
     fn not_checked(&self) -> Vec<String> {
-        self.not_checked
-            .lock()
-            .map(|notes| notes.clone())
-            .unwrap_or_default()
+        self.not_checked.notes()
     }
 
     async fn scan(
@@ -1382,9 +1379,7 @@ impl DiagnosticModule for SystemCleanerModule {
         progress_tx: Option<Sender<ModuleProgress>>,
     ) -> Result<Vec<Issue>, String> {
         let mut issues = Vec::new();
-        if let Ok(mut notes) = self.not_checked.lock() {
-            notes.clear();
-        }
+        self.not_checked.clear();
 
         if self.config.verbose_logging {
             Self::send_progress(
@@ -1738,9 +1733,7 @@ impl DiagnosticModule for SystemCleanerModule {
             Err(err) => Some(err.clone()),
         };
         if let Some(reason) = unfinished {
-            if let Ok(mut notes) = self.not_checked.lock() {
-                notes.push(store_not_checked(&reason));
-            }
+            self.not_checked.push(store_not_checked(&reason));
             Self::send_progress(
                 &progress_tx,
                 99,

@@ -145,6 +145,32 @@ impl ModuleStatus {
     }
 }
 
+/// A check's own list for [`DiagnosticModule::not_checked`]: emptied when a
+/// scan starts, added to where a part of it is given up.
+///
+/// A sentence here is shown to everyone, in Easy mode too, so it carries no
+/// command's error text: that is in the scan log.
+#[derive(Default)]
+pub struct Unchecked(std::sync::Mutex<Vec<String>>);
+
+impl Unchecked {
+    pub fn clear(&self) {
+        if let Ok(mut notes) = self.0.lock() {
+            notes.clear();
+        }
+    }
+
+    pub fn push(&self, note: impl Into<String>) {
+        if let Ok(mut notes) = self.0.lock() {
+            notes.push(note.into());
+        }
+    }
+
+    pub fn notes(&self) -> Vec<String> {
+        self.0.lock().map(|notes| notes.clone()).unwrap_or_default()
+    }
+}
+
 /// One sentence of [`DiagnosticModule::not_checked`], with the check that
 /// said it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
