@@ -22,11 +22,13 @@ and, after a clean VirusTotal scan, `chocolatey.yml`.
   merged before the run. Without it Claude writes them
   ([below](#release-notes-written-by-claude)), and when that fails, they are
   generated from the commit list.
-- The run stops unless CI passed on the commit it releases; wait for CI on
-  `main` to finish first. CI does not run on a push that changes
-  documentation only, such as the release notes: then it has to have passed
-  on the newest commit before it that CI ran on. A `dry_run` skips that
-  check.
+- The run stops unless CI passed on the commit it releases. Right after a
+  merge there is no need to wait for CI on `main`: the green run of the
+  merged pull request counts in its place, as long as the merge commit has
+  exactly the files of the branch that was tested and the run on `main` has
+  not failed. CI does not run on a push that changes documentation only,
+  such as the release notes: then it has to have passed on the newest commit
+  before it that CI ran on. A `dry_run` skips that check.
 - The bump reaches `main` through the repository secret `RELEASE_TOKEN`: a
   fine-grained personal access token for this repository only, with
   **Contents: Read and write**. `main` takes changes only through pull requests
