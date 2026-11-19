@@ -524,9 +524,10 @@ const WINHTTP_NOT_CHECKED: &str =
 const WINSOCK_NOT_CHECKED: &str = "The Winsock catalog was not checked: Windows did not list it.";
 
 /// How long `netsh winsock show catalog` gets. It answers in a tenth of a
-/// second on an idle PC; with 6 seconds it did not answer on CI's runner,
-/// where every check asks Windows something at the same time.
-const WINSOCK_TIMEOUT: Duration = Duration::from_secs(20);
+/// second on an idle PC. On CI's runner it does not answer at all: 20
+/// seconds were tried (#342) and ran out like these 6, so more time only
+/// makes the scan longer there.
+const WINSOCK_TIMEOUT: Duration = Duration::from_secs(6);
 
 impl Default for NetworkModule {
     fn default() -> Self {
