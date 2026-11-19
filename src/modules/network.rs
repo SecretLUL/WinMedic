@@ -2,6 +2,7 @@ use crate::engine::issue::{Issue, RiskScore, Severity};
 use crate::modules::{DiagnosticModule, FixProgress, ModuleProgress};
 use crate::safety::reg_backup::RegBackupManager;
 use crate::utils::cmd::{CmdOutput, CommandRunner, SystemCommandRunner, is_timeout};
+use crate::utils::decode::{CodePage, decode_output_in};
 use crate::utils::registry::{self, RegKeyValues};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,39 +18,69 @@ use tokio::time::sleep;
 /// reports a failure when *no* probe resolves.
 const DNS_PROBE_NAMES: &[&str] = &["dns.google", "www.microsoft.com"];
 
-/// The provider DLL paths `netsh winsock show catalog` lists, in order.
+/// Where Windows keeps the Winsock catalog: a subkey for each entry, under
+/// `Catalog_Entries64` for 64-bit programs and under `Catalog_Entries` for
+/// 32-bit ones.
 ///
-/// The field labels are in the display language ("Anbieterpfad" on a German
-/// system), the values are not: whatever follows the first colon and ends in
-/// `.dll` is a provider path. Description lines that point into a DLL's
-/// resources (`@%SystemRoot%\system32\nlasvc.dll,-1000`) do not end in `.dll`.
+/// Read with `reg query`, not `netsh winsock show catalog`. netsh loads some
+/// twenty helper DLLs before it lists anything. On CI's runner, with nothing
+/// of them in memory yet, that took 2.6 seconds, and 17 seconds while DISM
+/// analysed the component store next to it, as it does during a scan: past
+/// every limit the check gave it, so the catalog was never checked there
+/// (#343). `reg query` of the same catalog took a second during DISM.
+const WINSOCK_CATALOG: &str =
+    r"HKLM\SYSTEM\CurrentControlSet\Services\WinSock2\Parameters\Protocol_Catalog9";
+
+/// The provider DLLs of the Winsock catalog, 64-bit entries first, from
+/// `reg query` of [`WINSOCK_CATALOG`] with its subkeys.
 ///
-/// The check this replaces looked for the words "Error" and "Fehler" in the
-/// catalog, which says nothing about its health and nothing at all in any
-/// third language.
+/// Each entry's `PackedCatalogItem` starts with the provider's path, in the
+/// ANSI code page and padded with zeros to `MAX_PATH` (260 bytes); its
+/// `WSAPROTOCOL_INFOW` follows. `reg` prints binary data as hex in every
+/// display language.
 ///
-/// An entry of the 32-bit catalog carries `(32)` after its type
-/// ("Eintragstyp: Basisdienstanbieter (32)"), in every language, and the
-/// entries are separated by empty lines.
-pub fn winsock_provider_paths(catalog: &str) -> Vec<WinsockProvider> {
-    let mut for_32_bit = false;
-    let mut providers = Vec::new();
-    for line in catalog.lines().map(str::trim) {
-        if line.is_empty() {
-            for_32_bit = false;
-        } else if line.ends_with("(32)") {
-            for_32_bit = true;
-        } else if let Some((_, value)) = line.split_once(':') {
-            let value = value.trim();
-            if value.to_ascii_lowercase().ends_with(".dll") {
-                providers.push(WinsockProvider {
-                    path: value.to_string(),
-                    for_32_bit,
-                });
-            }
-        }
+/// `None` when the catalog's key is not in `keys`, or when an entry holds no
+/// path that can be read: that is a catalog not checked, not a damaged one.
+pub fn winsock_catalog_providers(keys: &[RegKeyValues]) -> Option<Vec<WinsockProvider>> {
+    let catalog = registry::expand_hive(WINSOCK_CATALOG);
+    if !keys.iter().any(|k| k.key.eq_ignore_ascii_case(&catalog)) {
+        return None;
     }
-    providers
+    let catalog_64 = format!("{catalog}\\Catalog_Entries64");
+    let catalog_32 = format!("{catalog}\\Catalog_Entries");
+    let mut providers = Vec::new();
+    for key in keys {
+        let Some((parent, _entry)) = key.key.rsplit_once('\\') else {
+            continue;
+        };
+        let for_32_bit = if parent.eq_ignore_ascii_case(&catalog_64) {
+            false
+        } else if parent.eq_ignore_ascii_case(&catalog_32) {
+            true
+        } else {
+            continue;
+        };
+        let packed = key
+            .value("PackedCatalogItem")
+            .filter(|v| v.kind == "REG_BINARY")?;
+        providers.push(WinsockProvider {
+            path: packed_provider_path(&packed.data)?,
+            for_32_bit,
+        });
+    }
+    providers.sort_by_key(|p| p.for_32_bit);
+    Some(providers)
+}
+
+/// The provider path at the start of a `PackedCatalogItem` as `reg` prints
+/// it, in hex; `None` when no path ends within its 260 bytes.
+fn packed_provider_path(hex: &str) -> Option<String> {
+    const MAX_PATH: usize = 260;
+    let bytes: Vec<u8> = (0..hex.len().min(MAX_PATH * 2) / 2)
+        .map(|i| u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok())
+        .collect::<Option<_>>()?;
+    let end = bytes.iter().position(|&b| b == 0).filter(|&end| end > 0)?;
+    Some(decode_output_in(&bytes[..end], CodePage::Ansi))
 }
 
 /// A provider DLL the Winsock catalog names, and which catalog names it.
@@ -521,13 +552,7 @@ const RESOLVER_NOT_CHECKED: &str =
 const PROXY_NOT_CHECKED: &str = "The proxy was not checked: its settings could not be read.";
 const WINHTTP_NOT_CHECKED: &str =
     "The system proxy (WinHTTP) was not checked: its settings could not be read.";
-const WINSOCK_NOT_CHECKED: &str = "The Winsock catalog was not checked: Windows did not list it.";
-
-/// How long `netsh winsock show catalog` gets. It answers in a tenth of a
-/// second on an idle PC. On CI's runner it does not answer at all: 20
-/// seconds were tried (#342) and ran out like these 6, so more time only
-/// makes the scan longer there.
-const WINSOCK_TIMEOUT: Duration = Duration::from_secs(6);
+const WINSOCK_NOT_CHECKED: &str = "The Winsock catalog was not checked: it could not be read.";
 
 impl Default for NetworkModule {
     fn default() -> Self {
@@ -1447,102 +1472,80 @@ impl DiagnosticModule for NetworkModule {
             &progress_tx,
             85,
             "Checking Winsock catalog integrity...",
-            Some("netsh winsock audit..."),
+            Some("reg query of the Winsock catalog (Protocol_Catalog9)..."),
         )
         .await;
-        sleep(Duration::from_millis(150)).await;
 
-        let winsock_audit = self
-            .runner
-            .run(
-                "netsh.exe",
-                &["winsock", "show", "catalog"],
-                WINSOCK_TIMEOUT,
-            )
-            .await;
-        if !matches!(&winsock_audit, Ok(out) if out.success) {
-            self.not_checked.push(WINSOCK_NOT_CHECKED);
-        }
-        // Not started or out of time left no trace at all, so the scan of
-        // #341 on CI's runner could say that the catalog was not checked
-        // but not why.
-        if let Err(err) = &winsock_audit {
-            Self::send_progress(
-                &progress_tx,
-                95,
-                "Winsock catalog not checked",
-                Some(&format!("netsh winsock show catalog did not answer: {err}")),
-            )
-            .await;
-        }
-        if let Ok(out) = &winsock_audit
-            && !out.success
-        {
-            // netsh did not list the catalog: that is no catalog without
-            // providers, which is what it used to be taken for.
-            Self::send_progress(
-                &progress_tx,
-                95,
-                "Winsock catalog not checked",
-                Some(&format!(
-                    "netsh winsock show catalog failed (exit code {:?}).",
-                    out.exit_code
-                )),
-            )
-            .await;
-        } else if let Ok(out) = winsock_audit {
-            let providers = winsock_provider_paths(&out.stdout);
-            let missing: Vec<&String> = providers
-                .iter()
-                .filter(|provider| provider_is_missing(provider))
-                .map(|provider| &provider.path)
-                .collect();
-            let evidence = if providers.is_empty() {
-                Some(format!(
-                    "netsh winsock show catalog listed no provider (exit code {:?}).",
-                    out.exit_code
-                ))
-            } else if !missing.is_empty() {
-                Some(format!(
-                    "Catalog entries whose provider DLL does not exist:\n{}",
-                    missing
-                        .iter()
-                        .map(|p| p.as_str())
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                ))
-            } else {
-                None
-            };
-            if let Some(evidence) = evidence {
-                // The reset also removes the entries of VPN and security
-                // software that is still installed, and needs a restart.
-                let mut issue = Issue::new(
-                    "net_winsock_corrupt",
-                    self.id(),
-                    "The Winsock catalog is damaged",
-                    "Network & DNS",
-                    Severity::Warning,
-                    RiskScore::High,
-                    "The Winsock catalog names network components whose files are gone, usually left by an uninstalled VPN or security program. That breaks connections. The reset removes every added component, also those of programs still installed, which may need reinstalling afterwards.",
-                    evidence,
-                    "Reset the Winsock catalog (netsh winsock reset), then restart",
-                    vec![
-                        "Run netsh winsock reset".to_string(),
-                        "Restart Windows".to_string(),
-                    ],
-                )
-                .with_requires_reboot(true);
-                issue.is_selected = false;
-                issues.push(issue);
-            } else {
+        let catalog = match registry::query(&*self.runner, WINSOCK_CATALOG, true).await {
+            Ok(Some(keys)) => winsock_catalog_providers(&keys).ok_or_else(|| {
+                "an entry holds no provider path, or the catalog's key was not listed".to_string()
+            }),
+            Ok(None) => Err("reg query found no catalog".to_string()),
+            Err(err) => Err(err),
+        };
+        match catalog {
+            // A catalog that could not be read is not one without providers
+            // (#272): no finding, and the reason in the scan log.
+            Err(reason) => {
+                self.not_checked.push(WINSOCK_NOT_CHECKED);
                 Self::send_progress(
                     &progress_tx,
                     95,
-                    "Winsock catalog intact",
-                    Some("The Winsock LSP catalog is consistent."),
+                    "Winsock catalog not checked",
+                    Some(&format!("The Winsock catalog could not be read: {reason}")),
                 )
                 .await;
+            }
+            Ok(providers) => {
+                let missing: Vec<&String> = providers
+                    .iter()
+                    .filter(|provider| provider_is_missing(provider))
+                    .map(|provider| &provider.path)
+                    .collect();
+                let evidence = if providers.is_empty() {
+                    Some("The Winsock catalog in the registry has no entry.".to_string())
+                } else if !missing.is_empty() {
+                    Some(format!(
+                        "Catalog entries whose provider DLL does not exist:\n{}",
+                        missing
+                            .iter()
+                            .map(|p| p.as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    ))
+                } else {
+                    None
+                };
+                if let Some(evidence) = evidence {
+                    // The reset also removes the entries of VPN and security
+                    // software that is still installed, and needs a restart.
+                    let mut issue = Issue::new(
+                        "net_winsock_corrupt",
+                        self.id(),
+                        "The Winsock catalog is damaged",
+                        "Network & DNS",
+                        Severity::Warning,
+                        RiskScore::High,
+                        "The Winsock catalog names network components whose files are gone, usually left by an uninstalled VPN or security program. That breaks connections. The reset removes every added component, also those of programs still installed, which may need reinstalling afterwards.",
+                        evidence,
+                        "Reset the Winsock catalog (netsh winsock reset), then restart",
+                        vec![
+                            "Run netsh winsock reset".to_string(),
+                            "Restart Windows".to_string(),
+                        ],
+                    )
+                    .with_requires_reboot(true);
+                    issue.is_selected = false;
+                    issues.push(issue);
+                } else {
+                    Self::send_progress(
+                        &progress_tx,
+                        95,
+                        "Winsock catalog intact",
+                        Some("The Winsock LSP catalog is consistent."),
+                    )
+                    .await;
+                }
             }
         }
 
@@ -1659,26 +1662,112 @@ mod tests {
         );
     }
 
-    /// `netsh winsock show catalog` on a German Windows 11, as captured.
+    /// `reg query` of [`WINSOCK_CATALOG`] with its subkeys on CI's runner, as
+    /// captured.
     fn real_catalog() -> String {
         crate::utils::decode::decode_output(include_bytes!(
-            "../../tests/fixtures/console/netsh_winsock_catalog_de.bin"
+            "../../tests/fixtures/console/reg_query_winsock_catalog.bin"
         ))
     }
 
+    /// What a test's mock answers `reg query` of the catalog with. Given
+    /// first, before any answer for `reg.exe` in general, which would
+    /// otherwise answer it.
+    const CATALOG: &str = "Protocol_Catalog9";
+
+    /// [`real_catalog`] with the hex of the `PackedCatalogItem` of `entry`
+    /// (`Catalog_Entries64\000000000001`) passed through `edit`.
+    fn catalog_with_item(entry: &str, edit: impl Fn(&str) -> String) -> String {
+        const ITEM: &str = "    PackedCatalogItem    REG_BINARY    ";
+        let mut in_entry = false;
+        let lines: Vec<String> = real_catalog()
+            .lines()
+            .map(|line| {
+                if line.starts_with("HKEY_") {
+                    in_entry = line.ends_with(&format!("\\{entry}"));
+                }
+                match line.strip_prefix(ITEM) {
+                    Some(hex) if in_entry => format!("{ITEM}{}", edit(hex)),
+                    _ => line.to_string(),
+                }
+            })
+            .collect();
+        lines.join("\r\n")
+    }
+
+    /// [`real_catalog`] with `entry` naming the provider `path`.
+    fn catalog_naming(entry: &str, path: &str) -> String {
+        catalog_with_item(entry, |hex| {
+            let mut field = path.as_bytes().to_vec();
+            field.resize(260, 0);
+            let field: String = field.iter().map(|b| format!("{b:02X}")).collect();
+            format!("{field}{}", &hex[field.len()..])
+        })
+    }
+
+    fn providers_of(catalog: &str) -> Option<Vec<WinsockProvider>> {
+        winsock_catalog_providers(&registry::parse_reg_query(catalog))
+    }
+
     #[test]
-    fn provider_paths_are_read_whatever_the_labels_say() {
-        let paths = winsock_provider_paths(&real_catalog());
-        assert_eq!(paths.len(), 28, "{paths:?}");
+    fn provider_paths_are_read_from_the_registry() {
+        let providers = providers_of(&real_catalog()).unwrap();
+        assert_eq!(providers.len(), 28, "{providers:?}");
         assert!(
-            paths
+            providers
                 .iter()
                 .all(|p| p.path == r"%SystemRoot%\system32\mswsock.dll")
         );
-        // The captured catalog lists each of its 14 providers twice: once
-        // for 64-bit programs and once, marked (32), for 32-bit ones.
-        assert_eq!(paths.iter().filter(|p| p.for_32_bit).count(), 14);
-        assert!(!paths[0].for_32_bit && paths[27].for_32_bit);
+        // Each of the 14 providers is in both catalogs, the one for 64-bit
+        // programs listed first.
+        assert_eq!(providers.iter().filter(|p| p.for_32_bit).count(), 14);
+        assert!(!providers[0].for_32_bit && providers[27].for_32_bit);
+    }
+
+    #[test]
+    fn the_catalog_an_entry_is_in_says_who_loads_it() {
+        let catalog = catalog_naming(r"Catalog_Entries64\000000000013", r"C:\VPN\lsp64.dll");
+        let providers = providers_of(&catalog).unwrap();
+        assert!(providers.contains(&provider(r"C:\VPN\lsp64.dll", false)));
+
+        let catalog = catalog_naming(r"Catalog_Entries\000000000013", r"C:\VPN\lsp32.dll");
+        let providers = providers_of(&catalog).unwrap();
+        assert!(providers.contains(&provider(r"C:\VPN\lsp32.dll", true)));
+        assert_eq!(providers.len(), 28);
+    }
+
+    /// An entry whose path cannot be read, or an answer without the catalog
+    /// in it, is a catalog not read: no evidence of damage.
+    #[test]
+    fn what_holds_no_readable_path_is_not_a_catalog() {
+        let truncated = catalog_with_item(r"Catalog_Entries64\000000000001", |hex| {
+            hex[..14].to_string()
+        });
+        assert_eq!(providers_of(&truncated), None);
+        let no_path = catalog_with_item(r"Catalog_Entries\000000000002", |hex| {
+            format!("00{}", &hex[2..])
+        });
+        assert_eq!(providers_of(&no_path), None);
+        assert_eq!(providers_of(&real_internet_settings()), None);
+        assert_eq!(providers_of(""), None);
+    }
+
+    /// The catalog's own key and the two keys of entries, with no entry
+    /// under them.
+    fn catalog_without_entries() -> String {
+        let catalog = real_catalog();
+        let mut keep = false;
+        let lines: Vec<&str> = catalog
+            .lines()
+            .filter(|line| {
+                if line.starts_with("HKEY_") {
+                    keep = !line.contains(r"\Catalog_Entries\")
+                        && !line.contains(r"\Catalog_Entries64\");
+                }
+                keep
+            })
+            .collect();
+        lines.join("\r\n")
     }
 
     fn provider(path: &str, for_32_bit: bool) -> WinsockProvider {
@@ -1729,8 +1818,8 @@ mod tests {
 
     async fn scan_winsock(catalog: CmdOutput) -> Vec<Issue> {
         let mock = MockCommandRunner::new();
+        mock.add_response(CATALOG, catalog);
         mock.add_response(PROBE, resolved());
-        mock.add_response("netsh.exe", catalog);
         NetworkModule::with_runner(Arc::new(mock))
             .scan(None)
             .await
@@ -1745,10 +1834,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_catalog_entry_without_its_dll_is_a_finding() {
-        let catalog = real_catalog().replacen(
-            r"%SystemRoot%\system32\mswsock.dll",
+        let catalog = catalog_naming(
+            r"Catalog_Entries64\000000000001",
             r"C:\Program Files\GoneVPN\gone_lsp.dll",
-            1,
         );
         let issues = scan_winsock(CmdOutput::ok(catalog)).await;
         let issue = issues
@@ -1760,7 +1848,8 @@ mod tests {
 
     #[tokio::test]
     async fn an_empty_catalog_is_a_finding() {
-        let issues = scan_winsock(CmdOutput::ok("")).await;
+        assert_eq!(providers_of(&catalog_without_entries()), Some(Vec::new()));
+        let issues = scan_winsock(CmdOutput::ok(catalog_without_entries())).await;
         assert!(issues.iter().any(|i| i.id == "net_winsock_corrupt"));
     }
 
@@ -1770,8 +1859,8 @@ mod tests {
         // queries to 8.8.8.8. Pinning that server reported a critical DNS
         // failure here that no repair could ever clear.
         let mock = MockCommandRunner::new();
+        mock.add_response(CATALOG, CmdOutput::ok(real_catalog()));
         mock.add_response(PROBE, resolved());
-        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
 
         let module = NetworkModule::with_runner(Arc::new(mock.clone()));
         let issues = module.scan(None).await.unwrap();
@@ -1827,13 +1916,13 @@ mod tests {
     #[tokio::test]
     async fn test_network_detects_dns_failure() {
         let mock = MockCommandRunner::new();
+        mock.add_response(CATALOG, CmdOutput::ok(real_catalog()));
         mock.add_response(PROBE, not_resolved());
         // ping succeeds (IP reachable)
         mock.add_response(
             "ping.exe",
             CmdOutput::ok("Antwort von 1.1.1.1: Bytes=32 Zeit=7ms TTL=57"),
         );
-        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
 
         let module = NetworkModule::with_runner(Arc::new(mock));
         let issues = module.scan(None).await.unwrap();
@@ -1899,19 +1988,19 @@ mod tests {
 
     fn offline_mock(adapters: String) -> MockCommandRunner {
         let mock = MockCommandRunner::new();
+        mock.add_response(CATALOG, CmdOutput::ok(real_catalog()));
         mock.add_response("Get-NetAdapter", CmdOutput::ok(adapters));
         mock.add_response(PROBE, not_resolved());
         mock.add_response("ping.exe", CmdOutput::failed(1, ""));
-        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
         mock
     }
 
     #[tokio::test]
     async fn a_healthy_adapter_is_not_a_finding() {
         let mock = MockCommandRunner::new();
+        mock.add_response(CATALOG, CmdOutput::ok(real_catalog()));
         mock.add_response("Get-NetAdapter", CmdOutput::ok(real_adapters()));
         mock.add_response(PROBE, resolved());
-        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
         let issues = NetworkModule::with_runner(Arc::new(mock.clone()))
             .scan(None)
             .await
@@ -1966,6 +2055,7 @@ mod tests {
     #[tokio::test]
     async fn a_second_adapter_without_dhcp_is_only_information() {
         let mock = MockCommandRunner::new();
+        mock.add_response(CATALOG, CmdOutput::ok(real_catalog()));
         mock.add_response(
             "Get-NetAdapter",
             CmdOutput::ok(format!(
@@ -1974,7 +2064,6 @@ mod tests {
             )),
         );
         mock.add_response(PROBE, resolved());
-        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
         let issues = NetworkModule::with_runner(Arc::new(mock))
             .scan(None)
             .await
@@ -2099,9 +2188,9 @@ mod tests {
     /// probe that answers `probe` and records what it was asked.
     async fn scan_winhttp(winhttp: String, probe: Result<(), String>) -> (Vec<Issue>, Vec<String>) {
         let mock = MockCommandRunner::new();
+        mock.add_response(CATALOG, CmdOutput::ok(real_catalog()));
         mock.add_response("reg.exe", CmdOutput::ok(winhttp));
         mock.add_response(PROBE, resolved());
-        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
         let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
         let log = asked.clone();
         let module = NetworkModule::with_runner(Arc::new(mock)).with_proxy_probe(Arc::new(
@@ -2207,10 +2296,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_winsock_finding_waits_to_be_ticked_and_needs_a_restart() {
-        let catalog = real_catalog().replacen(
-            r"%SystemRoot%\system32\mswsock.dll",
+        let catalog = catalog_naming(
+            r"Catalog_Entries64\000000000001",
             r"C:\Program Files\GoneVPN\gone_lsp.dll",
-            1,
         );
         let issues = scan_winsock(CmdOutput::ok(catalog)).await;
         let issue = issues
@@ -2279,9 +2367,9 @@ mod tests {
 
     async fn scan_user_proxy(settings: String, probe: Result<(), String>) -> Vec<Issue> {
         let mock = MockCommandRunner::new();
+        mock.add_response(CATALOG, CmdOutput::ok(real_catalog()));
         mock.add_response("reg.exe", CmdOutput::ok(settings));
         mock.add_response(PROBE, resolved());
-        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
         NetworkModule::with_runner(Arc::new(mock))
             .with_proxy_probe(Arc::new(move |_: &str| probe.clone()))
             .scan(None)
@@ -2419,10 +2507,10 @@ mod tests {
     /// Offline, with `physical` as the physical adapters.
     fn adapter_off_mock(physical: String) -> MockCommandRunner {
         let mock = MockCommandRunner::new();
+        mock.add_response(CATALOG, CmdOutput::ok(real_catalog()));
         mock.add_response(PHYSICAL, CmdOutput::ok(physical));
         mock.add_response(PROBE, not_resolved());
         mock.add_response("ping.exe", CmdOutput::failed(1, ""));
-        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
         mock
     }
 
@@ -2462,12 +2550,12 @@ mod tests {
     #[tokio::test]
     async fn a_second_switched_off_adapter_is_only_information() {
         let mock = MockCommandRunner::new();
+        mock.add_response(CATALOG, CmdOutput::ok(real_catalog()));
         mock.add_response(
             PHYSICAL,
             CmdOutput::ok(format!("{}{WLAN_OFF}", real_adapters())),
         );
         mock.add_response(PROBE, resolved());
-        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
         let issues = NetworkModule::with_runner(Arc::new(mock))
             .scan(None)
             .await
@@ -2599,13 +2687,13 @@ mod tests {
     /// probe answering `probe`.
     fn static_dns_mock(tcpip: String, probe: CmdOutput, ping: CmdOutput) -> MockCommandRunner {
         let mock = MockCommandRunner::new();
+        mock.add_response(CATALOG, CmdOutput::ok(real_catalog()));
         mock.add_response(PHYSICAL, CmdOutput::ok(real_adapters()));
         mock.add_response("reg.exe query HKLM\\SYSTEM", CmdOutput::ok(tcpip));
         mock.add_response("reg.exe", CmdOutput::with_output(1, "", "FEHLER"));
         mock.add_response(SERVER_PROBE, probe);
         mock.add_response(PROBE, not_resolved());
         mock.add_response("ping.exe", ping);
-        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
         mock
     }
 
@@ -2887,8 +2975,8 @@ mod tests {
 
     /// What a scan of `mock` tells the window it left unchecked, after one
     /// that left a note of its own.
-    async fn notes_after(mock: MockCommandRunner) -> Vec<String> {
-        let module = NetworkModule::with_runner(Arc::new(mock))
+    async fn notes_after(runner: impl CommandRunner + 'static) -> Vec<String> {
+        let module = NetworkModule::with_runner(Arc::new(runner))
             .with_proxy_probe(Arc::new(|_: &str| Err("connection refused".to_string())));
         module.not_checked.push("From the scan before.");
         module.scan(None).await.unwrap();
@@ -2901,11 +2989,11 @@ mod tests {
     async fn what_could_not_be_asked_is_told_to_the_window() {
         let refused = || CmdOutput::failed(5, "Access is denied.");
         let mock = MockCommandRunner::new();
+        mock.add_response(CATALOG, refused());
         mock.add_response(PHYSICAL, refused());
         mock.add_response(PROBE, CmdOutput::failed(1, ""));
         mock.add_response("ping.exe", ping_answers());
         mock.add_response("reg.exe", refused());
-        mock.add_response("netsh.exe", refused());
         assert_eq!(
             notes_after(mock).await,
             [
@@ -2920,24 +3008,27 @@ mod tests {
         // Names do not resolve, and the DNS servers set on the adapters
         // cannot be read.
         let mock = MockCommandRunner::new();
+        mock.add_response(CATALOG, CmdOutput::ok(real_catalog()));
         mock.add_response("Get-NetAdapter", CmdOutput::ok(real_adapters()));
         mock.add_response(PROBE, not_resolved());
         mock.add_response("ping.exe", ping_answers());
         mock.add_response(r"Tcpip\Parameters\Interfaces", refused());
         mock.add_response("reg.exe", CmdOutput::ok(real_internet_settings()));
-        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
         assert_eq!(notes_after(mock).await, [DNS_SERVERS_NOT_CHECKED]);
 
-        // A netsh that does not start left not even a step.
+        // A catalog that does not come back in time.
         let mock = MockCommandRunner::new();
         mock.add_response("Get-NetAdapter", CmdOutput::ok(real_adapters()));
         mock.add_response(PROBE, resolved());
         mock.add_response("ping.exe", ping_answers());
         mock.add_response("reg.exe", CmdOutput::ok(real_internet_settings()));
-        assert_eq!(notes_after(mock.clone()).await, [WINSOCK_NOT_CHECKED]);
+        assert_eq!(
+            notes_after(CatalogTimesOut(mock.clone())).await,
+            [WINSOCK_NOT_CHECKED]
+        );
         // The scan log says so too, with the reason.
         let (tx, mut rx) = tokio::sync::mpsc::channel(200);
-        NetworkModule::with_runner(Arc::new(mock))
+        NetworkModule::with_runner(Arc::new(CatalogTimesOut(mock)))
             .scan(Some(tx))
             .await
             .unwrap();
@@ -2948,10 +3039,39 @@ mod tests {
             }
         }
         assert_eq!(reasons.len(), 1, "{reasons:?}");
-        assert!(
-            reasons[0].starts_with("netsh winsock show catalog did not answer: "),
-            "{reasons:?}"
+        assert_eq!(
+            reasons[0],
+            "The Winsock catalog could not be read: Command 'reg.exe' timed out after 10s",
         );
+    }
+
+    /// `.0`, except that `reg query` of the Winsock catalog does not come
+    /// back in time.
+    struct CatalogTimesOut(MockCommandRunner);
+
+    #[async_trait::async_trait]
+    impl CommandRunner for CatalogTimesOut {
+        async fn run(
+            &self,
+            program: &str,
+            args: &[&str],
+            limit: Duration,
+        ) -> Result<CmdOutput, String> {
+            if args.iter().any(|arg| arg.contains(CATALOG)) {
+                return Err(crate::utils::cmd::timed_out(program, limit));
+            }
+            self.0.run(program, args, limit).await
+        }
+
+        async fn run_streaming(
+            &self,
+            program: &str,
+            args: &[&str],
+            log_tx: Option<Sender<String>>,
+            limit: Duration,
+        ) -> Result<CmdOutput, String> {
+            self.0.run_streaming(program, args, log_tx, limit).await
+        }
     }
 
     /// A check that got through everything leaves no note, and takes the
@@ -2960,15 +3080,16 @@ mod tests {
     #[tokio::test]
     async fn a_check_that_got_through_everything_leaves_no_note() {
         let mock = MockCommandRunner::new();
+        mock.add_response(CATALOG, CmdOutput::ok(real_catalog()));
         mock.add_response("Get-NetAdapter", CmdOutput::ok(real_adapters()));
         mock.add_response(PROBE, resolved());
         mock.add_response("ping.exe", ping_answers());
         mock.add_response("reg.exe", CmdOutput::ok(real_internet_settings()));
-        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
         let notes = notes_after(mock).await;
         assert!(notes.is_empty(), "{notes:?}");
 
         let mock = MockCommandRunner::new();
+        mock.add_response(CATALOG, CmdOutput::ok(real_catalog()));
         mock.add_response("Get-NetAdapter", CmdOutput::ok(real_adapters()));
         mock.add_response(
             "reg.exe",
@@ -2976,7 +3097,6 @@ mod tests {
         );
         mock.add_response(PROBE, not_resolved());
         mock.add_response("ping.exe", CmdOutput::failed(1, ""));
-        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
         let notes = notes_after(mock).await;
         assert!(notes.is_empty(), "{notes:?}");
     }
@@ -3003,10 +3123,10 @@ mod tests {
     async fn a_proxy_is_not_judged_while_nothing_is_reachable() {
         let offline = |registry: String| {
             let mock = MockCommandRunner::new();
+            mock.add_response(CATALOG, CmdOutput::ok(real_catalog()));
             mock.add_response("reg.exe", CmdOutput::ok(registry));
             mock.add_response(PROBE, not_resolved());
             mock.add_response("ping.exe", CmdOutput::failed(1, ""));
-            mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
             mock
         };
 
@@ -3049,9 +3169,9 @@ mod tests {
         );
         assert!(!parse_adapters(&physical)[0].has_usable_address());
         let mock = MockCommandRunner::new();
+        mock.add_response(CATALOG, CmdOutput::ok(real_catalog()));
         mock.add_response(PHYSICAL, CmdOutput::ok(physical.clone()));
         mock.add_response(PROBE, resolved());
-        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
         let (issues, _) = scan_with_steps(mock).await;
         let wlan = issues
             .iter()
@@ -3063,10 +3183,10 @@ mod tests {
 
         // Names do not resolve, but 1.1.1.1 answers: connected as well.
         let mock = MockCommandRunner::new();
+        mock.add_response(CATALOG, CmdOutput::ok(real_catalog()));
         mock.add_response(PHYSICAL, CmdOutput::ok(physical.clone()));
         mock.add_response(PROBE, not_resolved());
         mock.add_response("ping.exe", ping_answers());
-        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
         let (issues, _) = scan_with_steps(mock).await;
         let wlan = issues
             .iter()
@@ -3077,10 +3197,10 @@ mod tests {
         // Nothing answers: the switched-off adapter is the only one that
         // could connect, and switching it on is ticked.
         let mock = MockCommandRunner::new();
+        mock.add_response(CATALOG, CmdOutput::ok(real_catalog()));
         mock.add_response(PHYSICAL, CmdOutput::ok(physical));
         mock.add_response(PROBE, not_resolved());
         mock.add_response("ping.exe", CmdOutput::failed(1, ""));
-        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
         let (issues, _) = scan_with_steps(mock).await;
         let wlan = issues
             .iter()
@@ -3092,10 +3212,10 @@ mod tests {
         // The adapter query failed and nothing else answers: no adapter is
         // known, so none is blamed and the scan says so.
         let mock = MockCommandRunner::new();
+        mock.add_response(CATALOG, CmdOutput::ok(real_catalog()));
         mock.add_response(PHYSICAL, CmdOutput::failed(1, "Access denied"));
         mock.add_response(PROBE, not_resolved());
         mock.add_response("ping.exe", CmdOutput::failed(1, ""));
-        mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
         let (issues, steps) = scan_with_steps(mock).await;
         assert!(
             !issues.iter().any(|i| i.id.starts_with("net_adapter_")),
@@ -3121,13 +3241,13 @@ mod tests {
             None,
         ] {
             let mock = MockCommandRunner::new();
+            mock.add_response(CATALOG, CmdOutput::ok(real_catalog()));
             mock.add_response("Get-NetAdapter", CmdOutput::ok(real_adapters()));
             if let Some(probe) = probe {
                 mock.add_response(PROBE, probe);
             }
             mock.add_response("ping.exe", ping_answers());
             mock.add_response("reg.exe", CmdOutput::ok(real_internet_settings()));
-            mock.add_response("netsh.exe", CmdOutput::ok(real_catalog()));
             let (issues, steps) = scan_with_steps(mock).await;
             assert!(issues.is_empty(), "{issues:?}");
             assert!(
@@ -3162,14 +3282,18 @@ mod tests {
         }
     }
 
-    /// #272. A netsh that did not list the catalog found no damage in it.
+    /// #272. A catalog that could not be read found no damage in it.
     #[tokio::test]
     async fn a_catalog_that_was_not_listed_is_not_a_damaged_one() {
         let mock = MockCommandRunner::new();
         mock.add_response(PROBE, resolved());
         mock.add_response(
-            "netsh.exe",
-            CmdOutput::with_output(1, "", "The request is not supported."),
+            CATALOG,
+            CmdOutput::with_output(
+                1,
+                "",
+                "ERROR: The system was unable to find the specified registry key or value.",
+            ),
         );
         let (issues, steps) = scan_with_steps(mock).await;
         assert!(!issues.iter().any(|i| i.id == "net_winsock_corrupt"));
