@@ -245,6 +245,18 @@ read-only command:
 | --- | --- | --- | --- |
 | `reg_query_winget_portable_arp.bin` | `reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Ninja-build.Ninja_Microsoft.Winget.Source_8wekyb3d8bbwe` | ASCII | What WinGet registers for a portable package, the kind WinMedic is: the key is named like the package folder under `...\WinGet\Packages` (`InstallLocation`), and `UninstallString` is `winget uninstall --product-code` with that same name. Another package's entry, since WinMedic is not installed through WinGet here. The user name in the path was replaced with `User`. |
 
+## CI's runner — `console/reg_query_winsock_catalog.bin`
+
+Captured on GitHub's `windows-latest` runner (image `windows-2025-vs2026`
+20261103.298.1: Windows Server 2025 10.0.26100, English, OEM code page 437,
+elevated), 2026-11-19, by a workflow that started `reg.exe` the way WinMedic
+does (no window, input closed) and saved the bytes of its output pipe.
+Nothing was replaced: the catalog names no machine and no user.
+
+| File | Command | Encoding | Notes |
+| --- | --- | --- | --- |
+| `reg_query_winsock_catalog.bin` | `reg query HKLM\SYSTEM\CurrentControlSet\Services\WinSock2\Parameters\Protocol_Catalog9 /s` | ASCII, CRLF | The Winsock catalog: 14 entries under `Catalog_Entries` (32-bit programs) and the same 14 under `Catalog_Entries64`, each a `PackedCatalogItem` of 888 bytes in hex and its `ProtocolName`. An item starts with its provider's path, `%SystemRoot%\system32\mswsock.dll` in all of them, padded with zeros to 260 bytes. The network tests put another path into an entry for a provider whose DLL is gone, cut an item short, and drop the entries for an empty catalog: those are **constructed**. |
+
 ## Files — `files/`
 
 | File | Content |

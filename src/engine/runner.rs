@@ -1830,7 +1830,12 @@ mod tests {
         mock.add_response("dirty query C:", CmdOutput::ok("Volume - C: is clean"));
         mock.add_response("Get-PhysicalDisk", CmdOutput::ok("S1|eui.1|Healthy|OK|SSD"));
         mock.add_response("Resolve-DnsName", CmdOutput::ok("8.8.8.8"));
-        mock.add_response("show catalog", CmdOutput::ok("Winsock Provider"));
+        mock.add_response(
+            "Protocol_Catalog9",
+            CmdOutput::ok(crate::utils::decode::decode_output(include_bytes!(
+                "../../tests/fixtures/console/reg_query_winsock_catalog.bin"
+            ))),
+        );
         mock.add_response("Level=1", CmdOutput::ok(""));
         mock.add_response("WHEA-Logger", CmdOutput::ok(""));
 
