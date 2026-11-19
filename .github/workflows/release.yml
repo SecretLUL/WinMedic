@@ -181,7 +181,8 @@ jobs:
       #
       # On `main`, a merge commit's push run can be stood in for by the run of
       # the pull request it merged: waiting for the push run to finish held up
-      # every release that followed a merge. Only when the merge commit has
+      # every release that followed a merge, and every pre-release made from
+      # `main`. Only when the merge commit has
       # exactly the files of the branch that was tested, which the ruleset's
       # "up to date before merging" makes the normal case, and never against a
       # push run that failed. A pull request that changed documentation only
@@ -219,7 +220,7 @@ jobs:
             # No push run yet, or none that got to an end of its own: the next
             # merge cancels the one before it.
             $settled = $runs | Where-Object { $_ -notin 'running', 'cancelled' }
-            if (-not $prerelease -and -not $settled) {
+            if (-not $settled) {
               # The commit and its parents: three names make a merge of one branch.
               $family = @((git rev-list --parents -n 1 $commit) -split ' ')
               if ($family.Count -eq 3) {
