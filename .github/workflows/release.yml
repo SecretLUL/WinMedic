@@ -178,6 +178,15 @@ jobs:
       # A pre-release comes from a branch, whose commits CI has only seen in
       # its pull request, so there those runs count too. Only there: a release
       # started on a branch by mistake still stops here.
+      #
+      # On `main`, a merge commit's push run can be stood in for by the run of
+      # the pull request it merged: waiting for the push run to finish held up
+      # every release that followed a merge, and every pre-release made from
+      # `main`. Only when the merge commit has
+      # exactly the files of the branch that was tested, which the ruleset's
+      # "up to date before merging" makes the normal case, and never against a
+      # push run that failed. A pull request that changed documentation only
+      # built and tested nothing, so its run does not count.
       - name: Require a green CI run on this commit
         if: github.event_name != 'workflow_dispatch' || !inputs.dry_run
         shell: pwsh
@@ -187,18 +196,43 @@ jobs:
           INPUT_PRERELEASE: ${{ inputs.prerelease }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $events = if ($env:INPUT_PRERELEASE -eq 'true') { 'push', 'pull_request' } else { , 'push' }
-          $where  = if ($env:INPUT_PRERELEASE -eq 'true') { 'the branch (its pull request has to be green)' } else { 'main' }
+          $prerelease = $env:INPUT_PRERELEASE -eq 'true'
+          $events = if ($prerelease) { 'push', 'pull_request' } else { , 'push' }
+          $where  = if ($prerelease) { 'the branch (its pull request has to be green)' } else { 'main' }
+          # The files ci.yml's push trigger ignores, as labels.yml lists them.
+          $docs = '^(.*\.md|docs/.*|LICENSE|\.github/ISSUE_TEMPLATE/.*)$'
+          function Get-CiRuns($commit, $kind) {
+            # A run that has not finished has no conclusion yet, only a status.
+            $found = @(gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$commit&event=$kind&per_page=20" --jq '.workflow_runs[] | if .status == "completed" then .conclusion else "running" end')
+            if ($LASTEXITCODE) { throw "Could not read the CI runs of $commit." }
+            $found
+          }
           # CI does not run on a push that changes documentation only, such
           # as the release notes merged right before a release, so the newest
           # commit it ran on can be one before this.
           $tested = $null
+          $merged = $null
           foreach ($commit in @(git rev-list --first-parent --max-count=50 $env:SHA)) {
             $runs = @()
             foreach ($kind in $events) {
-              # A run that has not finished has no conclusion yet, only a status.
-              $runs += @(gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$commit&event=$kind&per_page=20" --jq '.workflow_runs[] | if .status == "completed" then .conclusion else "running" end')
-              if ($LASTEXITCODE) { throw "Could not read the CI runs of $commit." }
+              $runs += @(Get-CiRuns $commit $kind)
+            }
+            # No push run yet, or none that got to an end of its own: the next
+            # merge cancels the one before it.
+            $settled = $runs | Where-Object { $_ -notin 'running', 'cancelled' }
+            if (-not $settled) {
+              # The commit and its parents: three names make a merge of one branch.
+              $family = @((git rev-list --parents -n 1 $commit) -split ' ')
+              if ($family.Count -eq 3) {
+                $branch = $family[2]
+                $same = (git rev-parse ($commit + '^{tree}')) -eq (git rev-parse ($branch + '^{tree}'))
+                $code = @(git diff --name-only --no-renames $family[1] $commit |
+                  Where-Object { $_ -cnotmatch $docs })
+                if ($same -and $code -and @(Get-CiRuns $branch 'pull_request') -contains 'success') {
+                  $runs += 'success'
+                  $merged = $branch
+                }
+              }
             }
             if ($runs) { $tested = $commit; break }
           }
@@ -211,10 +245,12 @@ jobs:
             }
             throw "CI has not passed on $tested (runs: $($runs -join ', ')). Fix $where first."
           }
+          if ($merged) {
+            Write-Host "$tested has the files of $merged, which CI passed in its pull request."
+          }
           if ($tested -ne $env:SHA) {
-            # The files ci.yml's push trigger ignores, as labels.yml lists them.
             $code = @(git diff --name-only --no-renames $tested $env:SHA |
-              Where-Object { $_ -cnotmatch '^(.*\.md|docs/.*|LICENSE|\.github/ISSUE_TEMPLATE/.*)$' })
+              Where-Object { $_ -cnotmatch $docs })
             if ($code) {
               throw "CI has not run on $env:SHA, and more than documentation changed since $tested, the newest commit it passed:`n$($code -join "`n")"
             }
